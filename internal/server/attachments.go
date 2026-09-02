@@ -180,17 +180,22 @@ func (s *Server) startACPPrompt(active *activeACP, text string) error {
 
 func (s *Server) acpPromptAttachments(sessionID string, capabilities acpPromptCapabilities, alreadySent map[string]bool) ([]acpPromptAttachment, error) {
 	snapshot := s.store.Snapshot()
-	jobID := ""
+	job := domain.Job{}
 	for _, session := range snapshot.Sessions {
 		if session.ID == strings.TrimSpace(sessionID) {
-			jobID = session.JobID
+			for _, candidate := range snapshot.Jobs {
+				if candidate.ID == session.JobID {
+					job = candidate
+					break
+				}
+			}
 			break
 		}
 	}
-	if jobID == "" {
+	if job.ID == "" {
 		return nil, nil
 	}
-	attachments := s.store.JobAttachments(jobID)
+	attachments := s.jobContextAttachments(job)
 	blocks := make([]acpPromptAttachment, 0, len(attachments))
 	for _, attachment := range attachments {
 		if alreadySent[attachment.ID] {
@@ -258,7 +263,41 @@ func (s *Server) acpPromptAttachments(sessionID string, capabilities acpPromptCa
 			"_meta": map[string]any{"name": deliverable.Name, "revision": deliverable.Revision},
 		}})
 	}
+	if job.ForkedFromJobID != "" {
+		sourceLatest := map[string]domain.Deliverable{}
+		for _, deliverable := range snapshot.Deliverables {
+			if deliverable.JobID != job.ForkedFromJobID {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(deliverable.Name))
+			if current, ok := sourceLatest[key]; !ok || deliverable.Revision > current.Revision {
+				sourceLatest[key] = deliverable
+			}
+		}
+		for _, deliverable := range sourceLatest {
+			attachmentID := "fork-deliverable:" + deliverable.ID
+			if alreadySent[attachmentID] {
+				continue
+			}
+			uri := (&url.URL{Scheme: "spin", Host: "jobs", Path: "/" + job.ForkedFromJobID + "/deliverables/" + deliverable.ID + "/document.md"}).String()
+			blocks = append(blocks, acpPromptAttachment{ID: attachmentID, Block: map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri": uri, "mimeType": "text/markdown", "text": deliverable.Content,
+				},
+				"_meta": map[string]any{"name": deliverable.Name, "revision": deliverable.Revision, "sourceJobId": job.ForkedFromJobID},
+			}})
+		}
+	}
 	return blocks, nil
+}
+
+func (s *Server) jobContextAttachments(job domain.Job) []domain.JobAttachment {
+	attachments := s.store.JobAttachments(job.ID)
+	if job.ForkedFromJobID != "" {
+		attachments = append(attachments, s.store.JobAttachments(job.ForkedFromJobID)...)
+	}
+	return attachments
 }
 
 func (s *Server) injectAttachmentIntoLiveJob(jobID, operator string, attachment domain.JobAttachment) {
@@ -294,17 +333,22 @@ func (s *Server) injectJobAttachments(ctx context.Context, composition domain.Co
 		return nil
 	}
 	snapshot := s.store.Snapshot()
-	jobID := ""
+	job := domain.Job{}
 	for _, session := range snapshot.Sessions {
 		if session.ID == composition.SessionID {
-			jobID = session.JobID
+			for _, candidate := range snapshot.Jobs {
+				if candidate.ID == session.JobID {
+					job = candidate
+					break
+				}
+			}
 			break
 		}
 	}
-	if jobID == "" {
+	if job.ID == "" {
 		return nil
 	}
-	attachments := s.store.JobAttachments(jobID)
+	attachments := s.jobContextAttachments(job)
 	if len(attachments) == 0 {
 		return nil
 	}

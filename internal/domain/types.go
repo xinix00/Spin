@@ -443,6 +443,7 @@ type Composition struct {
 
 type Job struct {
 	ID                  string            `json:"id"`
+	ForkedFromJobID     string            `json:"forked_from_job_id,omitempty"`
 	Title               string            `json:"title"`
 	Objective           string            `json:"objective"`
 	AcceptanceCriteria  []string          `json:"acceptance_criteria,omitempty"`
@@ -633,6 +634,7 @@ type Client struct {
 	Name         string             `json:"name"`
 	Capabilities ClientCapabilities `json:"capabilities"`
 	Status       string             `json:"status"`
+	Draining     bool               `json:"draining,omitempty"`
 	LastSeenAt   time.Time          `json:"last_seen_at"`
 	CreatedAt    time.Time          `json:"created_at"`
 }
@@ -710,21 +712,23 @@ const (
 // User contains authentication material and is never returned directly by the
 // public API. PublicUser is the deliberately redacted representation.
 type User struct {
-	ID           string    `json:"id"`
-	Username     string    `json:"username"`
-	DisplayName  string    `json:"display_name"`
-	Role         UserRole  `json:"role"`
-	PasswordHash string    `json:"password_hash"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           string     `json:"id"`
+	Username     string     `json:"username"`
+	DisplayName  string     `json:"display_name"`
+	Role         UserRole   `json:"role"`
+	PasswordHash string     `json:"password_hash"`
+	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 type PublicUser struct {
-	ID          string    `json:"id"`
-	Username    string    `json:"username"`
-	DisplayName string    `json:"display_name"`
-	Role        UserRole  `json:"role"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string     `json:"id"`
+	Username    string     `json:"username"`
+	DisplayName string     `json:"display_name"`
+	Role        UserRole   `json:"role"`
+	ArchivedAt  *time.Time `json:"archived_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 type AuthSession struct {
@@ -853,6 +857,7 @@ type CommandResponse struct {
 type CreateJobRequest struct {
 	Title               string   `json:"title"`
 	Objective           string   `json:"objective"`
+	ForkedFromJobID     string   `json:"forked_from_job_id,omitempty"`
 	IdempotencyKey      string   `json:"idempotency_key,omitempty"`
 	AcceptanceCriteria  []string `json:"acceptance_criteria,omitempty"`
 	Owner               string   `json:"owner,omitempty"`

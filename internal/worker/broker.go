@@ -52,7 +52,7 @@ type runnerPeer struct {
 func newRunnerPeer(client domain.Client) *runnerPeer {
 	return &runnerPeer{
 		id: client.ID, instanceID: client.InstanceID, name: client.Name, capabilities: client.Capabilities,
-		wake: make(chan struct{}, 1), pending: map[string]pendingCall{}, streams: map[string]*remoteProcess{},
+		draining: client.Draining, wake: make(chan struct{}, 1), pending: map[string]pendingCall{}, streams: map[string]*remoteProcess{},
 	}
 }
 
@@ -65,7 +65,7 @@ func (p *runnerPeer) attach(connection *websocket.Conn, client domain.Client) ui
 	p.connection = connection
 	p.generation++
 	p.connected = true
-	p.draining = false
+	p.draining = client.Draining
 	p.instanceID = client.InstanceID
 	p.name = client.Name
 	p.capabilities = client.Capabilities
@@ -148,10 +148,10 @@ func (p *runnerPeer) available() bool {
 	return p.capabilities.MaxWorkloads <= 0 || p.workloads < p.capabilities.MaxWorkloads
 }
 
-func (p *runnerPeer) connectedNow() bool {
+func (p *runnerPeer) connectedForAffinity() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.connected && !p.draining
+	return p.connected
 }
 
 func (p *runnerPeer) engineInfo() (domain.CapsuleEngineInfo, bool) {
@@ -361,13 +361,35 @@ func (b *Broker) notifyAvailable() {
 	}
 }
 
+// SetDraining keeps existing affinity usable but removes the runner from new
+// round-robin placement until an administrator resumes it.
+func (b *Broker) SetDraining(clientID string, draining bool) (domain.Client, error) {
+	client, err := b.store.Client(clientID)
+	if err != nil {
+		return domain.Client{}, err
+	}
+	peer := b.peer(client)
+	peer.mu.Lock()
+	peer.draining = draining
+	connected := peer.connected
+	peer.mu.Unlock()
+	updated, err := b.store.SetClientDraining(client.ID, draining, connected)
+	if err != nil {
+		return domain.Client{}, err
+	}
+	if !draining && connected {
+		b.notifyAvailable()
+	}
+	return updated, nil
+}
+
 func (b *Broker) choose(ctx context.Context, affinity string) (*runnerPeer, error) {
 	for {
 		b.mu.Lock()
 		if affinity != "" {
 			peer := b.peers[affinity]
 			b.mu.Unlock()
-			if peer != nil && peer.connectedNow() {
+			if peer != nil && peer.connectedForAffinity() {
 				return peer, nil
 			}
 		} else {

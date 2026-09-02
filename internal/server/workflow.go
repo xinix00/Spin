@@ -499,6 +499,53 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 	}
 	var prompt strings.Builder
 	fmt.Fprintf(&prompt, "Je voert Spin workflowfase %q uit (poging %d).\n\nJOB\nNaam: %s\nGoal: %s\n\nINSTRUCTIES\n%s\n", phase.Name, run.Attempt, job.Title, job.Objective, phase.Instructions)
+	snapshot := s.store.Snapshot()
+	if job.ForkedFromJobID != "" {
+		sourceIndex := slices.IndexFunc(snapshot.Jobs, func(candidate domain.Job) bool { return candidate.ID == job.ForkedFromJobID })
+		if sourceIndex < 0 {
+			return "", fmt.Errorf("fork source Job %s is unavailable", job.ForkedFromJobID)
+		}
+		source := snapshot.Jobs[sourceIndex]
+		fmt.Fprintf(&prompt, "\nVERVOLGCONTEXT\nDeze Job is een vervolg op de afgesloten Job %q. Werk vanaf diens remote resultaatbranch %s.\nOorspronkelijke goal: %s\n", source.Title, source.Branch, source.Objective)
+		if sourceAttachments := s.store.JobAttachments(source.ID); len(sourceAttachments) > 0 {
+			prompt.WriteString("Bijlagen uit die Job zijn opnieuw read-only beschikbaar:\n")
+			for _, attachment := range sourceAttachments {
+				fmt.Fprintf(&prompt, "- %s (%s): %s\n", attachment.Name, attachment.MediaType, attachment.CapsulePath)
+			}
+		}
+		sourceLatest := map[string]domain.Deliverable{}
+		for _, deliverable := range snapshot.Deliverables {
+			if deliverable.JobID != source.ID {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(deliverable.Name))
+			if current, ok := sourceLatest[key]; !ok || deliverable.Revision > current.Revision {
+				sourceLatest[key] = deliverable
+			}
+		}
+		if len(sourceLatest) > 0 {
+			prompt.WriteString("Gebruik ook de laatste documenten uit die Job als context:\n")
+			sourceDeliverables := make([]domain.Deliverable, 0, len(sourceLatest))
+			for _, deliverable := range sourceLatest {
+				sourceDeliverables = append(sourceDeliverables, deliverable)
+			}
+			slices.SortFunc(sourceDeliverables, func(a, b domain.Deliverable) int {
+				return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
+			})
+			for _, deliverable := range sourceDeliverables {
+				if attachInjectedDeliverables {
+					fmt.Fprintf(&prompt, "- %s (revisie %d) is als Markdown-bijlage aan dit ACP-bericht toegevoegd.\n", deliverable.Name, deliverable.Revision)
+				} else {
+					fmt.Fprintf(&prompt, "\n--- Vorige Job · %s (revisie %d) ---\n%s\n", deliverable.Name, deliverable.Revision, deliverable.Content)
+				}
+			}
+		}
+		for _, sourceRun := range snapshot.PhaseRuns {
+			if sourceRun.JobID == source.ID && sourceRun.ActionResult != nil && sourceRun.ActionResult.URL != "" {
+				fmt.Fprintf(&prompt, "Remote resultaat: %s\n", sourceRun.ActionResult.URL)
+			}
+		}
+	}
 	attachments := s.store.JobAttachments(job.ID)
 	if len(attachments) > 0 {
 		prompt.WriteString("\nJOB-BIJLAGEN\nDeze immutable bestanden zijn door een gebruiker als bron toegevoegd. Bekijk de relevante bijlagen daadwerkelijk; wijzig ze niet en kopieer ze niet naar Git.\n")
@@ -543,7 +590,6 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 			}
 		}
 	}
-	snapshot := s.store.Snapshot()
 	commentsWritten := false
 	for _, deliverable := range deliverables {
 		current := latest[strings.ToLower(strings.TrimSpace(deliverable.Name))]

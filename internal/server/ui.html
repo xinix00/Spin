@@ -138,9 +138,10 @@
       </section>
 
       <dialog id="job-dialog">
-        <div class="dialog-head"><div><h2>Nieuwe Job</h2><p>Kies de flow en geef deze uitvoering één duidelijke goal.</p></div><button class="icon-button" type="button" data-close-dialog="job-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+        <div class="dialog-head"><div><h2 id="job-dialog-title">Nieuwe Job</h2><p id="job-dialog-description">Kies de flow en geef deze uitvoering één duidelijke goal.</p></div><button class="icon-button" type="button" data-close-dialog="job-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
         <div class="form-step-note"><div class="step-indicator"><span class="step-dot active" data-job-dot="1"></span><span class="step-dot" data-job-dot="2"></span></div></div>
         <form id="job-form">
+          <div class="form-step-note" id="job-fork-context" hidden></div>
           <div class="form-grid" data-job-step="1">
             <div><label for="title">Naam</label><input id="title" name="title" required placeholder="Implementeer darkmode"></div>
             <div><label for="job-template">Template</label><select id="job-template" name="template_id" required><option value="">maak eerst een Template</option></select></div>
@@ -149,6 +150,7 @@
             <div class="wide"><label for="objective">Goal</label><textarea id="objective" name="objective" required placeholder="Werkende single switch voor darkmode"></textarea></div>
             <div class="wide"><label for="job-attachments">Bijlagen</label><input class="file-input" id="job-attachments" name="attachments" type="file" multiple accept="application/pdf,image/png,image/jpeg,image/webp,image/gif"><small>PDF of afbeelding · maximaal 8 bestanden, 15 MiB per bestand en 40 MiB totaal. Deze komen read-only buiten Git in iedere Session.</small><div class="attachment-selection" id="job-attachment-selection"></div></div>
             <input id="job-owner" name="owner" type="hidden" value="derek">
+            <input id="job-forked-from" name="forked_from_job_id" type="hidden">
           </div>
           <div class="form-grid" data-job-step="2" hidden>
             <div class="wide"><label for="environment-selector">Agent/environment</label><select id="environment-selector" name="environment_selector"><option value="">record eerst een ACP environment</option></select><small>De Job kiest de agent. Git komt uit de Template; buildtools en projectlagen komen uit de Repository.</small></div>

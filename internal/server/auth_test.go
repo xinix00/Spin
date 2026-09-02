@@ -109,6 +109,51 @@ func TestAuthenticationBindsOperatorFiltersUserStateAndProtectsMutations(t *test
 	}
 }
 
+func TestAdminCanArchiveAndRestoreUserWithoutDeletingIdentity(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), capsule.Journal{}, ServerOptions{}).Handler()
+	ownerCookie, ownerCSRF := setupTestOwner(t, handler, "derek", "correct horse battery staple")
+	create := newAuthenticatedRequest(http.MethodPost, "/api/auth/users", `{"username":"john","display_name":"John","password":"another secure passphrase","role":"member"}`, ownerCookie, ownerCSRF)
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, create)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("create user status = %d; body = %s", createResponse.Code, createResponse.Body.String())
+	}
+	var john domain.PublicUser
+	if err := json.Unmarshal(createResponse.Body.Bytes(), &john); err != nil {
+		t.Fatal(err)
+	}
+	johnCookie, _ := loginTestUser(t, handler, "john", "another secure passphrase")
+	archive := newAuthenticatedRequest(http.MethodPost, "/api/auth/users/"+john.ID+"/archive", "", ownerCookie, ownerCSRF)
+	archiveResponse := httptest.NewRecorder()
+	handler.ServeHTTP(archiveResponse, archive)
+	if archiveResponse.Code != http.StatusOK || !strings.Contains(archiveResponse.Body.String(), "archived_at") {
+		t.Fatalf("archive status = %d; body = %s", archiveResponse.Code, archiveResponse.Body.String())
+	}
+	oldSession := httptest.NewRecorder()
+	handler.ServeHTTP(oldSession, newAuthenticatedRequest(http.MethodGet, "/api/state", "", johnCookie, ""))
+	if oldSession.Code != http.StatusUnauthorized {
+		t.Fatalf("archived user's existing session status = %d; body = %s", oldSession.Code, oldSession.Body.String())
+	}
+	login := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"john","password":"another secure passphrase"}`))
+	login.Header.Set("Content-Type", "application/json")
+	loginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(loginResponse, login)
+	if loginResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("archived user login status = %d; body = %s", loginResponse.Code, loginResponse.Body.String())
+	}
+	restore := newAuthenticatedRequest(http.MethodPost, "/api/auth/users/"+john.ID+"/restore", "", ownerCookie, ownerCSRF)
+	restoreResponse := httptest.NewRecorder()
+	handler.ServeHTTP(restoreResponse, restore)
+	if restoreResponse.Code != http.StatusOK || strings.Contains(restoreResponse.Body.String(), "archived_at") {
+		t.Fatalf("restore status = %d; body = %s", restoreResponse.Code, restoreResponse.Body.String())
+	}
+	loginTestUser(t, handler, "john", "another secure passphrase")
+}
+
 func TestWorkerEndpointsRequireDedicatedBearerToken(t *testing.T) {
 	st, err := store.Open("")
 	if err != nil {

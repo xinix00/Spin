@@ -364,7 +364,7 @@ func (b *Broker) connectedSnapshotSource(snapshot domain.CapsuleSnapshot, target
 		if clientID == "" || clientID == targetID {
 			continue
 		}
-		if peer := b.peers[clientID]; peer != nil && peer.connectedNow() {
+		if peer := b.peers[clientID]; peer != nil && peer.connectedForAffinity() {
 			return clientID
 		}
 	}

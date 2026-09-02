@@ -21,7 +21,7 @@ De GUI heeft vier rustige werkvlakken:
 - **Jobs**: maak Templates uit gewone invoervelden en start een Job als automatische reeks ACP-Sessions;
 - **Environments**: beheer alle globale en user-scoped lagen en open alleen tijdens opname de fullscreen Capsule recorder;
 - **Connections**: beheer Git-remotes/accounts en MCP in twee subtabs;
-- **Access**: laat gebruikers zien en laat admins nieuwe lokale users maken.
+- **Access**: laat gebruikers zien en laat admins lokale users maken, archiveren en herstellen.
 
 ## Eerste Codex + ACP-keten
 
@@ -96,6 +96,8 @@ Een Template is een tabel van fasen, geen ingebouwd type zoals “ontwikkeling�
 `Job inschieten` bewaart de Job en eerste queued Session direct en retourneert vóór Git, Docker en ACP worden gestart. De browser blokkeert dubbel submitten; een duurzame, user-gebonden idempotency-key zorgt daarnaast dat retries of een klikburst server-side dezelfde Job teruggeven. De zware start gebeurt daarna op de achtergrond.
 
 Het kruisje op een Job annuleert een eventuele achtergrondstart, stopt zijn lokale Session-capsules en verwijdert alle bijbehorende lokale workflowstate. De Git-repository en remote Job/Session-branches blijven bewust bestaan.
+
+Een gesloten Job kan door iedere ingelogde collega als vervolg worden geforkt. De nieuwe Job wordt van die user, krijgt een eigen branch en workflow, en gebruikt diens laat gebonden Git-identity, maar begint verplicht vanaf de remote resultaatbranch van de bron-Job. De oorspronkelijke goal, laatste revisie van ieder deliverable en alle oorspronkelijke PDF-/afbeeldingsbijlagen gaan als immutable ACP-context mee. Daardoor kan feedback of een nagekomen bug worden opgepakt zonder de oude Job opnieuw te openen. Zolang een vervolg ernaar verwijst, kan de bron-Job niet worden verwijderd.
 
 Iedere workflow-Session krijgt via een intern, kortlevend MCP-kanaal dezelfde kleine set acties:
 
@@ -182,9 +184,9 @@ De oude tweedelige vormen zoals `RECORD tool codex` en `USE tool codex` worden n
 - `var/spin-worker.token`: apart bearer-token voor het headless runner-WebSocket.
 - `var/spin-client.id`: stabiele runneridentiteit; blijft gelijk over containerrestarts.
 
-Nieuwe workloads worden round-robin over online runners verdeeld. Zodra een Recording of Session een runner heeft, bewaart zijn runtime die `client_id`: een kort netwerkverlies verandert nooit de uitvoerder. Zowel server als client sturen WebSocket Ping-frames, eisen tijdige Pong-frames en vervangen een verbroken socket met exponential backoff. Pending RPC's gebruiken stabiele request-ID's en worden na reconnect idempotent hervat; ACP- en PTY-streams blijven aan dezelfde logische client gekoppeld.
+Nieuwe workloads worden round-robin over online, niet-drainende runners verdeeld. Een admin kan een runner handmatig drainen: bestaand werk en zijn vaste affinity blijven bereikbaar, maar nieuw werk slaat hem over totdat hij wordt hervat. Zodra een Recording of Session een runner heeft, bewaart zijn runtime die `client_id`: een kort netwerkverlies verandert nooit de uitvoerder. Zowel server als client sturen WebSocket Ping-frames, eisen tijdige Pong-frames en vervangen een verbroken socket met exponential backoff. Pending RPC's gebruiken stabiele request-ID's en worden na reconnect idempotent hervat; ACP- en PTY-streams blijven aan dezelfde logische client gekoppeld.
 
-Een nette SIGTERM stuurt best-effort `goodbye` met de lokale idle-status. Een harde Docker-kill of ontbrekend internet is nadrukkelijk geen bewijs dat de workload dood is en veroorzaakt dus geen automatische failover. Gebruik de bestaande Retry-actie om bewust een nieuwe Session te spawnen en opnieuw round-robin te plaatsen.
+Een nette SIGTERM stuurt best-effort `goodbye` met de lokale idle-status. Een harde Docker-kill of ontbrekend internet is nadrukkelijk geen bewijs dat de workload dood is en veroorzaakt dus geen automatische failover. De Job toont bij de actieve fase welke client ontbreekt en hoe lang die offline is. `Retry` behoudt de logische fasepoging, verbreekt bewust de oude runtime-affinity en materialiseert een nieuwe Capsule via round-robin. Een later terugkerende oude runner kan die opnieuw gekoppelde Session niet meer overnemen.
 
 Docker-images zijn runner-lokale caches, niet langer de bron van waarheid. Bij `END RECORD` streamt de runner eerst een opaque `docker image save` naar gechunkte BLOB-rows in `spin.db`; pas na die duurzame archivering wordt het Artifact afgerond. Wanneer een nieuwe Session op een andere runner landt, gebruikt Spin een online replica of laadt de centrale export terug en onthoudt de nieuwe cachekopie. Layerinhoud wordt niet geïnterpreteerd en een verdwenen laptop vernietigt dus geen Artifact.
 
@@ -202,6 +204,8 @@ POST   /api/auth/setup
 POST   /api/auth/login
 POST   /api/auth/logout
 POST   /api/auth/users
+POST   /api/auth/users/{id}/archive
+POST   /api/auth/users/{id}/restore
 DELETE /api/artifacts/{id}
 POST   /api/jobs/{job-id}/sessions
 DELETE /api/jobs/{job-id}
@@ -218,6 +222,9 @@ GET    /api/git/oauth/{provider}/callback
 DELETE /api/git/repositories/{id}
 GET    /api/sessions/{id}/acp          (WebSocket)
 GET    /api/runner/ws                   (runner WebSocket + bearer-token)
+POST   /api/clients/{id}/drain
+POST   /api/clients/{id}/resume
+POST   /api/sessions/{id}/retry
 GET    /api/sessions/{id}/changes
 POST   /api/workflow-templates
 DELETE /api/workflow-templates/{id}
@@ -256,7 +263,7 @@ docker run --restart unless-stopped \
   -id-file /client-data/client.id -capsule-network bridge
 ```
 
-Connections → Runners toont online/offline, engine, capaciteit, last-seen en hoeveel Sessions duurzaam aan iedere client hangen.
+Connections → Runners toont online/offline/draining, engine, capaciteit, last-seen en hoeveel Sessions duurzaam aan iedere client hangen. Admins kunnen daar nieuwe plaatsing per runner drainen en hervatten.
 
 ### Releases
 

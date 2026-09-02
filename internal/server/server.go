@@ -178,6 +178,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/auth/login", s.login)
 	s.mux.HandleFunc("POST /api/auth/logout", s.logout)
 	s.mux.HandleFunc("POST /api/auth/users", s.createUser)
+	s.mux.HandleFunc("POST /api/auth/users/{userID}/archive", s.archiveUser)
+	s.mux.HandleFunc("POST /api/auth/users/{userID}/restore", s.restoreUser)
 	s.mux.HandleFunc("POST /api/backup", s.downloadBackup)
 	s.mux.HandleFunc("POST /api/backup-ticket", s.createBackupTicket)
 	s.mux.HandleFunc("GET /api/backup", s.downloadBackupWithTicket)
@@ -235,6 +237,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/git/oauth/{provider}/configuration", s.saveGitOAuthConfiguration)
 	s.mux.HandleFunc("DELETE /api/git/oauth/{provider}/configuration", s.deleteGitOAuthConfiguration)
 	s.mux.HandleFunc("POST /api/clients/register", s.registerClient)
+	s.mux.HandleFunc("POST /api/clients/{clientID}/drain", s.drainClient)
+	s.mux.HandleFunc("POST /api/clients/{clientID}/resume", s.resumeClient)
 	s.mux.HandleFunc("POST /api/sessions/claim", s.claim)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/start", s.startSession)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/turns", s.startTurn)
@@ -252,6 +256,32 @@ type stateResponse struct {
 	Engine            domain.CapsuleEngineInfo `json:"engine"`
 	GitOAuthProviders []gitOAuthProviderInfo   `json:"git_oauth_providers"`
 	CurrentUser       domain.PublicUser        `json:"current_user"`
+}
+
+func (s *Server) drainClient(w http.ResponseWriter, r *http.Request) {
+	s.setClientDraining(w, r, true)
+}
+
+func (s *Server) resumeClient(w http.ResponseWriter, r *http.Request) {
+	s.setClientDraining(w, r, false)
+}
+
+func (s *Server) setClientDraining(w http.ResponseWriter, r *http.Request, draining bool) {
+	identity, ok := identityFromRequest(r)
+	if !s.authDisabled && (!ok || identity.User.Role != domain.UserAdmin) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin role required"})
+		return
+	}
+	if s.runnerBroker == nil {
+		writeError(w, fmt.Errorf("runner broker is not configured: %w", store.ErrConflict))
+		return
+	}
+	client, err := s.runnerBroker.SetDraining(r.PathValue("clientID"), draining)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, client)
 }
 
 func (s *Server) dashboard(w http.ResponseWriter, _ *http.Request) {
@@ -624,13 +654,17 @@ func (s *Server) scheduleWorkflowRetry(created domain.CreateJobResponse, request
 		}
 		if previousCompositionID != "" {
 			s.stopACPComposition(previousCompositionID)
-			cleanupContext, cleanupCancel := context.WithTimeout(launchContext, 30*time.Second)
-			_, stopErr := s.stopCapsule(cleanupContext, previousCompositionID, operator)
-			cleanupCancel()
-			if stopErr != nil && !errors.Is(stopErr, store.ErrNotFound) && !errors.Is(stopErr, context.Canceled) {
-				s.logger.Warn("clean workflow Session for retry", "session", sessionID, "composition", previousCompositionID, "error", stopErr)
-				return
-			}
+			// Cleanup retains affinity to the old runner but is deliberately not a
+			// prerequisite for Retry. The newly connected runner becomes
+			// authoritative; an old runner that returns later only receives cleanup.
+			go func() {
+				cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cleanupCancel()
+				_, stopErr := s.stopCapsule(cleanupContext, previousCompositionID, operator)
+				if stopErr != nil && !errors.Is(stopErr, store.ErrNotFound) && !errors.Is(stopErr, context.Canceled) {
+					s.logger.Warn("clean previous workflow Session after retry", "session", sessionID, "composition", previousCompositionID, "error", stopErr)
+				}
+			}()
 		}
 		if launchContext.Err() == nil {
 			s.launchWorkflowSessionContext(launchContext, sessionID, operator)

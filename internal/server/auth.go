@@ -227,7 +227,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		hash = user.PasswordHash
 	}
 	valid := verifyPassword(req.Password, hash)
-	if lookupErr != nil || !valid {
+	if lookupErr != nil || user.ArchivedAt != nil || !valid {
 		s.loginLimiter.failed(key)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid username or password"})
 		return
@@ -273,6 +273,28 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, created)
+}
+
+func (s *Server) archiveUser(w http.ResponseWriter, r *http.Request) {
+	s.setUserArchived(w, r, true)
+}
+
+func (s *Server) restoreUser(w http.ResponseWriter, r *http.Request) {
+	s.setUserArchived(w, r, false)
+}
+
+func (s *Server) setUserArchived(w http.ResponseWriter, r *http.Request, archived bool) {
+	identity, ok := identityFromRequest(r)
+	if !ok || identity.User.Role != domain.UserAdmin {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin role required"})
+		return
+	}
+	user, err := s.store.SetUserArchived(identity.User.ID, r.PathValue("userID"), archived)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, user)
 }
 
 func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, user domain.User, status *authStatusResponse) error {
@@ -365,7 +387,7 @@ func secretHash(value string) string {
 }
 
 func publicUser(user domain.User) domain.PublicUser {
-	return domain.PublicUser{ID: user.ID, Username: user.Username, DisplayName: user.DisplayName, Role: user.Role, CreatedAt: user.CreatedAt}
+	return domain.PublicUser{ID: user.ID, Username: user.Username, DisplayName: user.DisplayName, Role: user.Role, ArchivedAt: user.ArchivedAt, CreatedAt: user.CreatedAt}
 }
 
 func clientAddress(r *http.Request) string {

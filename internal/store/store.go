@@ -1009,6 +1009,52 @@ func (s *Store) CreateUser(actorID string, user domain.User) (domain.PublicUser,
 	return publicUser(user), s.saveLocked()
 }
 
+// SetUserArchived disables or restores an identity without deleting any
+// records that refer to it. Archiving also revokes every login session owned
+// by the user in the same persisted transition.
+func (s *Store) SetUserArchived(actorID, userID string, archived bool) (domain.PublicUser, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	actor, err := s.requireAdminLocked(actorID)
+	if err != nil {
+		return domain.PublicUser{}, err
+	}
+	user, ok := s.state.Users[strings.TrimSpace(userID)]
+	if !ok {
+		return domain.PublicUser{}, ErrNotFound
+	}
+	if archived && user.ID == actor.ID {
+		return domain.PublicUser{}, fmt.Errorf("an admin cannot archive their own active identity: %w", ErrConflict)
+	}
+	if archived && user.ArchivedAt == nil && user.Role == domain.UserAdmin {
+		activeAdmins := 0
+		for _, candidate := range s.state.Users {
+			if candidate.Role == domain.UserAdmin && candidate.ArchivedAt == nil {
+				activeAdmins++
+			}
+		}
+		if activeAdmins <= 1 {
+			return domain.PublicUser{}, fmt.Errorf("the last active admin cannot be archived: %w", ErrConflict)
+		}
+	}
+	now := time.Now().UTC()
+	if archived {
+		if user.ArchivedAt == nil {
+			user.ArchivedAt = &now
+		}
+		for id, session := range s.state.AuthSessions {
+			if session.UserID == user.ID {
+				delete(s.state.AuthSessions, id)
+			}
+		}
+	} else {
+		user.ArchivedAt = nil
+	}
+	user.UpdatedAt = now
+	s.state.Users[user.ID] = user
+	return publicUser(user), s.saveLocked()
+}
+
 func (s *Store) UserByUsername(username string) (domain.User, error) {
 	username = normalizeSubject(username)
 	s.mu.Lock()
@@ -1034,8 +1080,12 @@ func (s *Store) User(userID string) (domain.User, error) {
 func (s *Store) CreateAuthSession(userID, tokenHash, csrfHash string, expiresAt time.Time) (domain.AuthSession, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.state.Users[userID]; !ok {
+	user, ok := s.state.Users[userID]
+	if !ok {
 		return domain.AuthSession{}, ErrNotFound
+	}
+	if user.ArchivedAt != nil {
+		return domain.AuthSession{}, ErrConflict
 	}
 	if tokenHash == "" || csrfHash == "" || !expiresAt.After(time.Now()) {
 		return domain.AuthSession{}, fmt.Errorf("valid session hashes and expiry are required: %w", ErrConflict)
@@ -1061,7 +1111,7 @@ func (s *Store) AuthenticateSession(tokenHash string) (domain.User, domain.AuthS
 			continue
 		}
 		user, ok := s.state.Users[session.UserID]
-		if !ok {
+		if !ok || user.ArchivedAt != nil {
 			delete(s.state.AuthSessions, id)
 			_ = s.saveLocked()
 			return domain.User{}, domain.AuthSession{}, ErrNotFound
@@ -1163,14 +1213,14 @@ func (s *Store) requireAdminLocked(userID string) (domain.User, error) {
 	if !ok {
 		return domain.User{}, ErrNotFound
 	}
-	if user.Role != domain.UserAdmin {
+	if user.Role != domain.UserAdmin || user.ArchivedAt != nil {
 		return domain.User{}, ErrConflict
 	}
 	return user, nil
 }
 
 func publicUser(user domain.User) domain.PublicUser {
-	return domain.PublicUser{ID: user.ID, Username: user.Username, DisplayName: user.DisplayName, Role: user.Role, CreatedAt: user.CreatedAt}
+	return domain.PublicUser{ID: user.ID, Username: user.Username, DisplayName: user.DisplayName, Role: user.Role, ArchivedAt: user.ArchivedAt, CreatedAt: user.CreatedAt}
 }
 
 func (s *Store) CreateGitRepository(req domain.CreateGitRepositoryRequest) (domain.CreateGitRepositoryResponse, error) {
@@ -1532,7 +1582,7 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 		selector = "tool:" + normalizeName(req.Tool)
 	}
 	_, selectorName, selectorErr := parseArtifactSelector(selector)
-	if strings.TrimSpace(req.Title) == "" || strings.TrimSpace(req.Objective) == "" || strings.TrimSpace(req.GitRepositoryID) == "" || selectorErr != nil {
+	if strings.TrimSpace(req.Title) == "" || strings.TrimSpace(req.Objective) == "" || (strings.TrimSpace(req.GitRepositoryID) == "" && strings.TrimSpace(req.ForkedFromJobID) == "") || selectorErr != nil {
 		return domain.CreateJobResponse{}, fmt.Errorf("title, objective, git_repository_id and a valid environment_selector are required: %w", ErrConflict)
 	}
 	requestedWith, err := normalizeArtifactSelectors(req.WithSelectors)
@@ -1555,6 +1605,22 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 	}
 	if operator == "" {
 		return domain.CreateJobResponse{}, fmt.Errorf("operator is required: %w", ErrConflict)
+	}
+	forkedFromJobID := strings.TrimSpace(req.ForkedFromJobID)
+	if forkedFromJobID != "" {
+		source, exists := s.state.Jobs[forkedFromJobID]
+		if !exists {
+			return domain.CreateJobResponse{}, fmt.Errorf("fork source Job: %w", ErrNotFound)
+		}
+		if source.Status != domain.JobDone && source.Status != domain.JobCancelled {
+			return domain.CreateJobResponse{}, fmt.Errorf("only a closed Job can be forked: %w", ErrConflict)
+		}
+		if strings.TrimSpace(source.Branch) == "" {
+			return domain.CreateJobResponse{}, fmt.Errorf("fork source Job has no remote branch: %w", ErrConflict)
+		}
+		req.GitRepositoryID = source.GitRepositoryID
+		req.BaseRef = source.Branch
+		owner = operator
 	}
 	idempotencyKey := strings.TrimSpace(req.IdempotencyKey)
 	if len(idempotencyKey) > 128 {
@@ -1655,6 +1721,7 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 	}
 	job := domain.Job{
 		ID:                  jobID,
+		ForkedFromJobID:     forkedFromJobID,
 		Title:               strings.TrimSpace(req.Title),
 		Objective:           strings.TrimSpace(req.Objective),
 		AcceptanceCriteria:  append([]string(nil), req.AcceptanceCriteria...),
@@ -1820,6 +1887,11 @@ func (s *Store) DeleteJob(jobID, operator string) (domain.Job, error) {
 	}
 	if normalizeSubject(operator) == "" || job.Owner != normalizeSubject(operator) {
 		return domain.Job{}, ErrConflict
+	}
+	for _, candidate := range s.state.Jobs {
+		if candidate.ForkedFromJobID == job.ID {
+			return domain.Job{}, fmt.Errorf("Job is context for fork %s: %w", candidate.ID, ErrConflict)
+		}
 	}
 	sessionIDs := map[string]bool{}
 	for id, session := range s.state.Sessions {
@@ -2033,6 +2105,9 @@ func (s *Store) RegisterClient(req domain.RegisterClientRequest) (domain.Client,
 			existing.Name = strings.TrimSpace(req.Name)
 			existing.Capabilities = req.Capabilities
 			existing.Status = "online"
+			if existing.Draining {
+				existing.Status = "draining"
+			}
 			existing.LastSeenAt = now
 			s.state.Clients[id] = existing
 			return existing, s.saveLocked()
@@ -2046,6 +2121,40 @@ func (s *Store) RegisterClient(req domain.RegisterClientRequest) (domain.Client,
 		Status:       "online",
 		LastSeenAt:   now,
 		CreatedAt:    now,
+	}
+	s.state.Clients[client.ID] = client
+	return client, s.saveLocked()
+}
+
+func (s *Store) Client(clientID string) (domain.Client, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	client, ok := s.state.Clients[strings.TrimSpace(clientID)]
+	if !ok {
+		return domain.Client{}, ErrNotFound
+	}
+	return client, nil
+}
+
+// SetClientDraining changes placement policy without removing runner affinity
+// from existing Sessions. Connected is supplied by the live broker so durable
+// presence and the explicit drain flag remain separate.
+func (s *Store) SetClientDraining(clientID string, draining, connected bool) (domain.Client, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	client, ok := s.state.Clients[strings.TrimSpace(clientID)]
+	if !ok {
+		return domain.Client{}, ErrNotFound
+	}
+	client.Draining = draining
+	if connected {
+		if draining {
+			client.Status = "draining"
+		} else {
+			client.Status = "online"
+		}
+	} else {
+		client.Status = "offline"
 	}
 	s.state.Clients[client.ID] = client
 	return client, s.saveLocked()
@@ -2115,6 +2224,9 @@ func (s *Store) Claim(req domain.ClaimRequest) (domain.Assignment, error) {
 	client, ok := s.state.Clients[req.ClientID]
 	if !ok {
 		return domain.Assignment{}, ErrNotFound
+	}
+	if client.Draining {
+		return domain.Assignment{}, ErrNoWork
 	}
 	now := time.Now().UTC()
 	client.LastSeenAt = now

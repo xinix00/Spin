@@ -27,6 +27,51 @@ func (b *memoryStateBackend) WriteFile(path string, data []byte) error {
 	return nil
 }
 
+func TestArchiveUserRevokesSessionsAndCanBeRestored(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := st.CreateInitialUser(domain.User{Username: "derek", DisplayName: "Derek", PasswordHash: "owner-hash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	john, err := st.CreateUser(owner.ID, domain.User{Username: "john", DisplayName: "John", Role: domain.UserMember, PasswordHash: "john-hash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expires := time.Now().Add(time.Hour)
+	if _, err := st.CreateAuthSession(john.ID, "john-token", "john-csrf", expires); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := st.SetUserArchived(owner.ID, john.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived.ArchivedAt == nil {
+		t.Fatal("archived user has no archived_at")
+	}
+	if _, _, err := st.AuthenticateSession("john-token"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("archived login session remains valid: %v", err)
+	}
+	if _, err := st.CreateAuthSession(john.ID, "new-token", "new-csrf", expires); !errors.Is(err, ErrConflict) {
+		t.Fatalf("archived user received a new session: %v", err)
+	}
+	if _, err := st.SetUserArchived(owner.ID, owner.ID, true); !errors.Is(err, ErrConflict) {
+		t.Fatalf("owner archived their own identity: %v", err)
+	}
+	restored, err := st.SetUserArchived(owner.ID, john.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.ArchivedAt != nil {
+		t.Fatalf("restored user remains archived: %+v", restored)
+	}
+	if _, err := st.CreateAuthSession(john.ID, "restored-token", "restored-csrf", expires); err != nil {
+		t.Fatalf("restored user cannot receive a session: %v", err)
+	}
+}
+
 func TestOpenWithBackendPersistsWithoutHostFilesystem(t *testing.T) {
 	backend := &memoryStateBackend{files: map[string][]byte{}}
 	key := base64.RawStdEncoding.EncodeToString(make([]byte, 32))
@@ -864,5 +909,52 @@ func TestRunnerIdentityReconnectsAndExpiredLeaseDoesNotReassignSession(t *testin
 	retained := st.state.Sessions[created.Session.ID]
 	if retained.ClientID != first.ID || retained.ActivationID != assignment.Activation.ID || retained.Status != domain.SessionClaimed {
 		t.Fatalf("Session affinity changed after lease expiry: %+v", retained)
+	}
+}
+
+func TestRunnerDrainSurvivesReconnectAndBlocksNewClaims(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "demo", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "demo"}}})
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "drain", RemoteURL: "https://example.com/drain.git"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateJob(domain.CreateJobRequest{Title: "Queued", Objective: "Wait for a runner", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:demo"}); err != nil {
+		t.Fatal(err)
+	}
+	client, err := st.RegisterClient(domain.RegisterClientRequest{InstanceID: "drain-me", Name: "laptop", Capabilities: domain.ClientCapabilities{Tools: []string{"demo"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drained, err := st.SetClientDraining(client.ID, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !drained.Draining || drained.Status != "draining" {
+		t.Fatalf("drained client = %+v", drained)
+	}
+	reconnected, err := st.RegisterClient(domain.RegisterClientRequest{InstanceID: "drain-me", Name: "laptop", Capabilities: domain.ClientCapabilities{Tools: []string{"demo"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reconnected.Draining || reconnected.Status != "draining" {
+		t.Fatalf("drain did not survive reconnect: %+v", reconnected)
+	}
+	if _, err := st.Claim(domain.ClaimRequest{ClientID: client.ID, Tools: []string{"demo"}}); !errors.Is(err, ErrNoWork) {
+		t.Fatalf("drained runner claimed new work: %v", err)
+	}
+	resumed, err := st.SetClientDraining(client.ID, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Draining || resumed.Status != "online" {
+		t.Fatalf("resumed client = %+v", resumed)
+	}
+	if _, err := st.Claim(domain.ClaimRequest{ClientID: client.ID, Tools: []string{"demo"}}); err != nil {
+		t.Fatalf("resumed runner cannot claim queued work: %v", err)
 	}
 }

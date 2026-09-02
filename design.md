@@ -52,7 +52,7 @@ Tijdens `RECORD` draait een echte container. Iedere niet-Spin-regel start met `d
 
 ## 3. Scope en identiteit
 
-Spin-identiteit komt niet uit een vrij invulbaar requestveld. Bij first-run maakt de beheerder één lokale owner; daarna geeft een HttpOnly sessioncookie de server de actuele user. De server overschrijft ieder ontvangen `operator`/`actor`-veld met die username. Een admin kan in Access extra members of admins maken. Browsermutaties vereisen bovendien een per-session CSRF-token en een geldige same-origin request.
+Spin-identiteit komt niet uit een vrij invulbaar requestveld. Bij first-run maakt de beheerder één lokale owner; daarna geeft een HttpOnly sessioncookie de server de actuele user. De server overschrijft ieder ontvangen `operator`/`actor`-veld met die username. Een admin kan in Access extra members of admins maken. Users worden nooit verwijderd: archiveren trekt atomair al hun login-sessions in en blokkeert nieuwe logins, maar behoudt hun identity en alle verwijzende audit- en workflowrecords. Herstellen activeert dezelfde identity opnieuw. Een admin kan zichzelf en de laatste actieve admin niet archiveren. Browsermutaties vereisen bovendien een per-session CSRF-token en een geldige same-origin request.
 
 De logische naam blijft voor iedereen gelijk. Scope maakt de fysieke instantie verschillend:
 
@@ -203,7 +203,9 @@ Bij materialisatie bevat de Composition uitsluitend repository-ID, credentialsco
 
 De GUI maakt dit één handeling: kies bij de Job een Template, repository en één opgenomen Git-capabele entry-Artifact en druk `Job inschieten`. De server bewaart eerst atomair de Job en eerste fase-Session en antwoordt direct met `202 Accepted`. Git-checkout, Docker-materialisatie en ACP-start draaien daarna buiten de HTTP-request op de achtergrond. De browser vergrendelt de submit tijdens de korte opslagactie en stuurt een stabiele idempotency-key; dezelfde request levert steeds dezelfde Job op en kan nooit een tweede achtergrondstart naast de eerste plannen. Als starten mislukt blijft de duurzame queued Job/Session bestaan en kan dezelfde start veilig opnieuw worden aangeboden.
 
-Jobverwijdering is lokale lifecycle-cleanup: Spin annuleert eerst een nog lopende achtergrondstart, sluit ACP, stopt iedere runtime en verwijdert daarna atomair Job, Sessions, compositions, activations, turns, checkpoints, results en workflowbijlagen. Repositoryconfiguratie en remote Git-refs vallen buiten deze destructieve grens en blijven herstelbaar aanwezig.
+Jobverwijdering is lokale lifecycle-cleanup: Spin annuleert eerst een nog lopende achtergrondstart, sluit ACP, stopt iedere runtime en verwijdert daarna atomair Job, Sessions, compositions, activations, turns, checkpoints, results en workflowbijlagen. Repositoryconfiguratie en remote Git-refs vallen buiten deze destructieve grens en blijven herstelbaar aanwezig. Een Job die context levert aan een vervolg-Job kan niet worden verwijderd zolang die verwijzing bestaat.
+
+Een gesloten Job kan door iedere ingelogde user worden geforkt als nieuwe vervolg-Job. Dit is geen processcheckpoint: de nieuwe Job wordt eigendom van de forkende user, krijgt een eigen branch, eigen Templateflow en diens laat gebonden Git-identity, maar zijn `base_ref` en repository worden server-side vastgezet op de remote resultaatbranch van de bron. De oorspronkelijke goal, alle bronbijlagen en de laatste revisie van ieder bron-deliverable worden als read-only ACP-context meegegeven. Daarmee blijven feedback en nagekomen bugs onderdeel van dezelfde inhoudelijke lijn zonder een afgesloten workflow weer mutabel te maken.
 
 Hierdoor kan John een Job starten en Derek hem overnemen zonder Johns Git-account te lenen: iedere actie resolveert opnieuw op repositoryscope en uitvoerende gebruiker. Een checkpoint-fork en een vers aangemaakte Job-Session komen allebei als afzonderlijke Session bij dezelfde Job terecht. De eerste bewaart continuïteit met een checkpoint; de tweede begint doelbewust vanuit de gekozen environment. De orchestrator kan dus worker-, criticus-, reviewer- en synthesevarianten plannen met dezelfde primitief.
 
@@ -271,9 +273,9 @@ De servercontainer mount geen Docker-socket. `spin-client` bezit de concrete `ca
 
 Iedere client heeft een persistent random `instance_id`. De server vertaalt die één keer naar een duurzame `Client.id`; een nieuwe fysieke socket vervangt alleen de verbinding van dat object. Zowel server als client sturen iedere tien seconden een WebSocket Ping, antwoorden via Pong en verbreken een kanaal dat 35 seconden niets meer bevestigt. De client reconnect met begrensde exponential backoff en jitter. Request-ID's zijn idempotent: de server mag een onbeantwoorde opdracht na reconnect opnieuw sturen; de client koppelt die aan de lopende uitvoering of herhaalt zijn gecachete response.
 
-Round-robin is uitsluitend plaatsingsbeleid voor een nieuwe workload. `CapsuleRuntime.client_id`, `CapsuleSnapshot.client_id` en `Session.client_id` vormen daarna harde affinity. Terminalinput, ACP, changes, accept/push en cleanup wachten bij een onderbreking op precies diezelfde client. Het verlopen van een heartbeat zet een Session niet terug in de queue. Daarmee kan een paar minuten offline internet geen tweede agent op dezelfde opdracht veroorzaken. De expliciete Retry-flow maakt een nieuwe Session en mag opnieuw worden geplaatst.
+Round-robin is uitsluitend plaatsingsbeleid voor een nieuwe workload. `CapsuleRuntime.client_id`, `CapsuleSnapshot.client_id` en `Session.client_id` vormen daarna harde affinity. Terminalinput, ACP, changes, accept/push en cleanup wachten bij een onderbreking op precies diezelfde client. Het verlopen van een heartbeat zet een Session niet terug in de queue. Daarmee kan een paar minuten offline internet geen tweede agent op dezelfde opdracht veroorzaken. De GUI toont bij de actieve fase welke client ontbreekt en hoe lang die offline is. De expliciete Retry-flow behoudt de logische Session/fasepoging, wist haar oude runtimebinding en materialiseert opnieuw via round-robin; een later terugkerende oude runner kan door de vervangen composition- en activation-ID's geen eigenaar meer worden.
 
-Bij SIGTERM probeert de client eerst `goodbye(idle=...)` te sturen. Alleen een idle runner weet zeker dat er niets lokaals leeft. Een onverwachte socket-close, harde containerkill of een niet-idle goodbye wordt nooit vertaald naar automatische failover. Een latere swarmcontroller kan drain/kill/retry als expliciet beleid toevoegen zonder deze veilige default te veranderen.
+Bij SIGTERM probeert de client eerst `goodbye(idle=...)` te sturen. Alleen een idle runner weet zeker dat er niets lokaals leeft. Een onverwachte socket-close, harde containerkill of een niet-idle goodbye wordt nooit vertaald naar automatische failover. Een admin kan een runner expliciet `drain` zetten: bestaande affinity blijft bruikbaar, maar de runner verdwijnt duurzaam uit nieuwe round-robinplaatsing en blijft ook na reconnect drained totdat hij wordt hervat. Drain doodt of verplaatst nooit zelfstandig werk; Retry blijft de bewuste failoverbeslissing.
 
 Dockerimages zijn lokaal aan een daemon. Een nieuwe Recording met een parent blijft daarom op een runner waar die parent aanwezig is. Een nieuwe Session mag wél round-robin landen: ontbrekende immutable snapshots worden als opaque tarstream rechtstreeks van een bekende bronrunner via de server naar de doelrunner gekopieerd. De server materialiseert of inspecteert de inhoud niet. `replica_client_ids` worden duurzaam bijgehouden; delete probeert zowel primary als iedere bekende replica te wissen. Een offline bron of replica blokkeert de betreffende handeling eerlijk. Een OCI-registry kan later dezelfde export/importgrens implementeren zonder de Artifactresolver te wijzigen.
 
@@ -308,6 +310,8 @@ POST /api/auth/setup
 POST /api/auth/login
 POST /api/auth/logout
 POST /api/auth/users
+POST /api/auth/users/{id}/archive
+POST /api/auth/users/{id}/restore
 POST /api/commands
 DELETE /api/artifacts/{id}
 POST /api/recordings
@@ -320,7 +324,10 @@ POST /api/jobs
 POST /api/jobs/{id}/sessions
 GET  /api/sessions/{id}/acp        (WebSocket)
 GET  /api/runner/ws                 (runner WebSocket + bearer-token)
+POST /api/clients/{id}/drain
+POST /api/clients/{id}/resume
 GET  /api/sessions/{id}/changes
+POST /api/sessions/{id}/retry
 POST /api/mcp-servers
 DELETE /api/mcp-servers/{id}
 POST /api/git/accounts
@@ -353,6 +360,7 @@ Invarianten:
 - `enabled` wordt uitsluitend uit die closure opgebouwd;
 - onbekende Artifacttypes en capabilities blijven bruikbaar als opaque metadata;
 - iedere Job heeft precies één Git repository en iedere Session erft die binding;
+- een vervolg-Job begint vanaf de remote branch van een gesloten bron-Job en maakt die bron zolang de verwijzing bestaat niet verwijderbaar;
 - iedere Session-environment bevat verplicht `tool:git` in haar Artifactclosure;
 - een Job heeft één `jobs/<slug-id>/main`-doelbranch en iedere Session één siblingref onder `jobs/<slug-id>/sessions/`;
 - Git-accounts worden per operator laat gebonden; tokens zijn geen layers en worden alleen via stdin aan de checkouthelper blootgesteld;
@@ -364,6 +372,7 @@ Invarianten:
 - MCP-definities zijn user-scoped en secretwaarden zijn geredigeerd in publieke responses;
 - Docker-images claimen nooit process- of providercachecontinuïteit.
 - alleen nieuwe workloads worden round-robin geplaatst; een bestaande Runtime en Session behouden altijd hun `client_id`;
+- een drained runner behoudt bestaande affinity maar ontvangt geen nieuwe round-robinplaatsing totdat een admin hem hervat;
 - een disconnect of verlopen heartbeat veroorzaakt nooit impliciete failover;
 - snapshots hebben één primaire runner en nul of meer bekende replica's; opaque replicatie verandert hun digest of graphidentiteit niet;
 - alleen runners bezitten de Docker-engine; de servercontainer heeft geen Docker-socket.

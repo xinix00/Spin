@@ -336,12 +336,87 @@ func TestWorkflowPromptInjectsOnlySelectedLatestDeliverablesAndAlwaysGoal(t *tes
 	}
 }
 
+func TestForkedWorkflowReceivesPreviousGoalAndLatestDeliverables(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), &testEngine{}, ServerOptions{DisableAuthentication: true})
+	for _, line := range []string{
+		"RECORD tool:git --scope=global --enable=git", "install git", "END RECORD",
+		"RECORD tool:agent --scope=global --from=tool:git --enable=acp --command=agent-acp", "install agent", "END RECORD",
+	} {
+		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
+			t.Fatalf("%s: %v", line, err)
+		}
+	}
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "follow-up", RemoteURL: "https://example.com/follow-up.git"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Context", Phases: []domain.WorkflowPhase{{
+		ID: "plan", Name: "Plan", Instructions: "Maak een plan", Deliverables: []domain.DeliverableDefinition{{Name: "FO", Required: true}},
+		Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := st.CreateJob(domain.CreateJobRequest{Title: "Betalingen synchroniseren", Objective: "Synchroniseer Exact dagelijks", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkWorkflowPhaseRunning(source.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddWorkflowDeliverable(source.Session.ID, "FO", "oude context"); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := st.AddWorkflowDeliverable(source.Session.ID, "FO", "# Laatste FO\n\nVerwerk deelbetalingen.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := st.CloseJob(source.Job.ID, "derek")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork, err := st.CreateJob(domain.CreateJobRequest{Title: "Nagekomen bug", Objective: "Los afrondingsverschil op", Operator: "derek", ForkedFromJobID: closed.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := srv.workflowPrompt(fork.Session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"VERVOLGCONTEXT", closed.Title, closed.Branch, "Synchroniseer Exact dagelijks", "# Laatste FO", "Verwerk deelbetalingen."} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("fork prompt missing %q:\n%s", expected, prompt)
+		}
+	}
+	if strings.Contains(prompt, "oude context") {
+		t.Fatalf("fork prompt contains stale deliverable revision:\n%s", prompt)
+	}
+	resources, err := srv.acpPromptAttachments(fork.Session.ID, acpPromptCapabilities{EmbeddedContext: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantedID := "fork-deliverable:" + latest.ID
+	found := false
+	for _, resource := range resources {
+		if resource.ID == wantedID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("latest source deliverable %q was not supplied as ACP context: %#v", wantedID, resources)
+	}
+}
+
 func TestWorkflowRetryEndpointStopsOldCompositionAndReturnsImmediately(t *testing.T) {
 	st, err := store.Open("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := &testEngine{}
+	engine := &blockingStopEngine{started: make(chan struct{}), release: make(chan struct{})}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
 	for _, line := range []string{
 		"RECORD tool:git --scope=global --enable=git", "install git", "END RECORD",
@@ -386,18 +461,38 @@ func TestWorkflowRetryEndpointStopsOldCompositionAndReturnsImmediately(t *testin
 	if retried.Session.ID != created.Session.ID || retried.Session.PhaseRunID != created.Session.PhaseRunID {
 		t.Fatalf("retry replaced Session: %+v", retried)
 	}
+	select {
+	case <-engine.started:
+	case <-time.After(time.Second):
+		t.Fatal("previous composition cleanup did not start")
+	}
+	replacement, err := srv.useCapsule(context.Background(), domain.UseRequest{Selector: "session:" + created.Session.ID, Operator: "derek"})
+	if err != nil {
+		t.Fatalf("materialize replacement while old runner cleanup is pending: %v", err)
+	}
+	close(engine.release)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		stopped, err := st.Composition(composition.ID)
 		if err == nil && stopped.Runtime != nil && stopped.Runtime.Status == "stopped" {
 			snapshot := st.Snapshot()
+			var current domain.Session
+			for _, session := range snapshot.Sessions {
+				if session.ID == created.Session.ID {
+					current = session
+					break
+				}
+			}
 			if len(snapshot.PhaseRuns) != 1 || snapshot.PhaseRuns[0].Status != domain.PhaseRunQueued || snapshot.PhaseRuns[0].Attempt != 1 {
 				t.Fatalf("retry phase = %+v", snapshot.PhaseRuns)
+			}
+			if current.PreparedCompositionID != replacement.ID {
+				t.Fatalf("returning old runner displaced replacement: old=%s replacement=%s current=%+v", composition.ID, replacement.ID, current)
 			}
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatal("retry did not stop the previous composition in the background")
+	t.Fatalf("retry did not replace the previous composition while cleaning it in the background: %+v", st.Snapshot())
 }

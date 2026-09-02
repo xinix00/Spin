@@ -536,12 +536,17 @@ func TestRetryWorkflowSessionRequeuesSameAttemptAndClosesOpenQuestion(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	st.mu.Lock()
+	prepared := st.state.Sessions[created.Session.ID]
+	prepared.PreparedCompositionID = "cmp_previous"
+	st.state.Sessions[prepared.ID] = prepared
+	st.mu.Unlock()
 
 	retried, compositionID, err := st.RetryWorkflowSession(created.Session.ID, "derek")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if compositionID != "" || retried.Job.ID != created.Job.ID || retried.Session.ID != created.Session.ID {
+	if compositionID != "cmp_previous" || retried.Job.ID != created.Job.ID || retried.Session.ID != created.Session.ID || retried.Session.PreparedCompositionID != "" {
 		t.Fatalf("retry created replacement state: response=%+v composition=%q", retried, compositionID)
 	}
 	snapshot := st.Snapshot()
@@ -610,5 +615,63 @@ func TestCloseJobPreservesWorkflowHistoryAndClosesActiveDecision(t *testing.T) {
 	}
 	if got := reopened.Snapshot(); len(got.PhaseRuns) != 1 || got.Jobs[0].Status != domain.JobCancelled {
 		t.Fatalf("closed Job was reactivated on open: %+v / %+v", got.Jobs, got.PhaseRuns)
+	}
+}
+
+func TestClosedJobForkStartsFromRemoteResultAndPreservesContextReference(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "agent", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "agent-acp"}}})
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "source", RemoteURL: "https://example.com/source.git", DefaultRef: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherRepository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "other", RemoteURL: "https://example.com/other.git", DefaultRef: "develop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Fork context", Phases: []domain.WorkflowPhase{{
+		ID: "plan", Name: "Plan", Instructions: "Documenteer", Deliverables: []domain.DeliverableDefinition{{Name: "FO", Description: "Functioneel ontwerp"}},
+		Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := st.CreateJob(domain.CreateJobRequest{Title: "Eerste implementatie", Objective: "Lever de eerste versie", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkWorkflowPhaseRunning(source.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddWorkflowDeliverable(source.Session.ID, "FO", "# Bestaand ontwerp\n\nGebruik dit in vervolgwerk."); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := st.CloseJob(source.Job.ID, "derek")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork, err := st.CreateJob(domain.CreateJobRequest{
+		Title: "Feedback verwerken", Objective: "Los de nagekomen feedback op", Operator: "john",
+		ForkedFromJobID: closed.ID, GitRepositoryID: otherRepository.Repository.ID, BaseRef: "wrong-base",
+		EnvironmentSelector: "tool:agent", TemplateID: template.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fork.Job.ForkedFromJobID != closed.ID || fork.Job.GitRepositoryID != repository.Repository.ID || fork.Job.BaseRef != closed.Branch || fork.Job.Owner != "john" {
+		t.Fatalf("fork did not inherit immutable source coordinates: source=%+v fork=%+v", closed, fork.Job)
+	}
+	if fork.Job.Branch == closed.Branch {
+		t.Fatalf("fork reused source branch %q", closed.Branch)
+	}
+	if _, err := st.DeleteJob(closed.ID, "derek"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("context source could be deleted while fork refers to it: %v", err)
+	}
+	if _, err := st.CreateJob(domain.CreateJobRequest{Title: "Invalid", Objective: "Cannot fork active", Operator: "john", ForkedFromJobID: fork.Job.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("active Job was forkable: %v", err)
 	}
 }

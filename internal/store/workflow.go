@@ -526,6 +526,8 @@ func (s *Store) RetryWorkflowSession(sessionID, operator string) (domain.CreateJ
 	job.PendingReason = ""
 	job.UpdatedAt = now
 	session.Status = domain.SessionQueued
+	previousCompositionID := session.PreparedCompositionID
+	session.PreparedCompositionID = ""
 	session.ClientID = ""
 	session.ActivationID = ""
 	session.LeaseExpiresAt = nil
@@ -539,7 +541,7 @@ func (s *Store) RetryWorkflowSession(sessionID, operator string) (domain.CreateJ
 	if err := s.saveLocked(); err != nil {
 		return domain.CreateJobResponse{}, "", err
 	}
-	return domain.CreateJobResponse{Job: job, Session: session}, session.PreparedCompositionID, nil
+	return domain.CreateJobResponse{Job: job, Session: session}, previousCompositionID, nil
 }
 
 func (s *Store) AddWorkflowDeliverable(sessionID, name, content string) (domain.Deliverable, error) {

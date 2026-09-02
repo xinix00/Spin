@@ -41,6 +41,13 @@ type blockingMaterializeEngine struct {
 	once    sync.Once
 }
 
+type blockingStopEngine struct {
+	testEngine
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
 func (e *blockingMaterializeEngine) Materialize(ctx context.Context, composition domain.Composition, artifacts []domain.Artifact) (domain.CapsuleRuntime, error) {
 	e.once.Do(func() { close(e.started) })
 	select {
@@ -48,6 +55,16 @@ func (e *blockingMaterializeEngine) Materialize(ctx context.Context, composition
 		return e.testEngine.Materialize(ctx, composition, artifacts)
 	case <-ctx.Done():
 		return domain.CapsuleRuntime{}, ctx.Err()
+	}
+}
+
+func (e *blockingStopEngine) Stop(ctx context.Context, _ domain.CapsuleRuntime) error {
+	e.once.Do(func() { close(e.started) })
+	select {
+	case <-e.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
