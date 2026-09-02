@@ -1,0 +1,5 @@
+/var/
+/dist/
+/spin-server
+/spin-client
+.DS_Store

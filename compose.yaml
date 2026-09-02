@@ -1,0 +1,47 @@
+services:
+  server:
+    build:
+      context: .
+      target: server
+    ports:
+      - "${SPIN_BIND:-127.0.0.1}:${SPIN_PORT:-8080}:8080"
+    environment:
+      SPIN_PUBLIC_URL: "${SPIN_PUBLIC_URL:-}"
+      SPIN_INTERNAL_URL: "http://server:8080"
+      SPIN_GITHUB_CLIENT_ID: "${SPIN_GITHUB_CLIENT_ID:-}"
+      SPIN_GITHUB_CLIENT_SECRET: "${SPIN_GITHUB_CLIENT_SECRET:-}"
+      SPIN_GITLAB_CLIENT_ID: "${SPIN_GITLAB_CLIENT_ID:-}"
+      SPIN_GITLAB_CLIENT_SECRET: "${SPIN_GITLAB_CLIENT_SECRET:-}"
+    volumes:
+      - spin-data:/data
+      - spin-keys:/keys
+      - spin-worker-auth:/worker-auth
+    command: ["-addr", ":8080", "-state", "/data/spin-state.json", "-attachments", "/data/job-attachments", "-master-key-file", "/keys/master.key", "-worker-token-file", "/worker-auth/token", "-capsule-driver", "runner"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 20
+
+  client:
+    build:
+      context: .
+      target: client
+    command: ["-server", "http://server:8080", "-name", "local-docker", "-tools", "docker", "-token-file", "/worker-auth/token", "-id-file", "/client-data/client.id", "-capsule-network", "spin-network"]
+    volumes:
+      - spin-worker-auth:/worker-auth:ro
+      - spin-client-data:/client-data
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      server:
+        condition: service_healthy
+
+volumes:
+  spin-data:
+  spin-keys:
+  spin-worker-auth:
+  spin-client-data:
+
+networks:
+  default:
+    name: spin-network
