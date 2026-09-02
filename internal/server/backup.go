@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"easyacp/internal/domain"
@@ -14,6 +16,8 @@ import (
 )
 
 const maxBackupUploadBytes int64 = 64 << 30
+
+const restoreProgressMediaType = "application/x-ndjson"
 
 type restoreResponse struct {
 	Status       string `json:"status"`
@@ -29,6 +33,56 @@ type backupTicket struct {
 	UserID    string
 	SessionID string
 	ExpiresAt time.Time
+}
+
+type restoreProgressEvent struct {
+	Type    string           `json:"type"`
+	Stage   string           `json:"stage,omitempty"`
+	Message string           `json:"message,omitempty"`
+	Current int              `json:"current,omitempty"`
+	Total   int              `json:"total,omitempty"`
+	Result  *restoreResponse `json:"result,omitempty"`
+	Error   string           `json:"error,omitempty"`
+}
+
+type restoreProgressWriter struct {
+	w       http.ResponseWriter
+	enabled bool
+	started bool
+}
+
+func newRestoreProgressWriter(w http.ResponseWriter, r *http.Request) *restoreProgressWriter {
+	return &restoreProgressWriter{w: w, enabled: strings.Contains(r.Header.Get("Accept"), restoreProgressMediaType)}
+}
+
+func (p *restoreProgressWriter) send(event restoreProgressEvent) {
+	if !p.enabled {
+		return
+	}
+	if !p.started {
+		p.w.Header().Set("Content-Type", restoreProgressMediaType)
+		p.w.Header().Set("Cache-Control", "no-store")
+		p.w.Header().Set("X-Accel-Buffering", "no")
+		p.started = true
+	}
+	if err := json.NewEncoder(p.w).Encode(event); err != nil {
+		return
+	}
+	if flusher, ok := p.w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (p *restoreProgressWriter) progress(stage, message string, current, total int) {
+	p.send(restoreProgressEvent{Type: "progress", Stage: stage, Message: message, Current: current, Total: total})
+}
+
+func (p *restoreProgressWriter) fail(status int, err error) {
+	if p.started {
+		p.send(restoreProgressEvent{Type: "error", Error: err.Error()})
+		return
+	}
+	writeJSON(p.w, status, map[string]string{"error": err.Error()})
 }
 
 func (s *Server) downloadBackup(w http.ResponseWriter, r *http.Request) {
@@ -136,59 +190,77 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "stop active terminals, chats and background Job launches before restoring a backup"})
 		return
 	}
-	s.backupMu.Lock()
+	if !s.backupMu.TryLock() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "another backup or restore is already running"})
+		return
+	}
 	defer s.backupMu.Unlock()
+	progress := newRestoreProgressWriter(w, r)
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxBackupUploadBytes)
 	staged, err := s.database.StageBackup(r.Context(), r.Body, maxBackupUploadBytes)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		progress.fail(http.StatusBadRequest, err)
 		return
 	}
 	defer staged.Close()
+	progress.progress("open", "Upload compleet · database geopend", 1, 1)
 	stateJSON, err := staged.Database.ReadFile("state")
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Spin backup contains no state"})
+		progress.fail(http.StatusBadRequest, errors.New("Spin backup contains no state"))
 		return
 	}
 	inspection, err := s.store.InspectPortableState(stateJSON, staged.MasterKey)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		progress.fail(http.StatusBadRequest, err)
 		return
 	}
-	if err := validateDatabaseObjects(r.Context(), staged.Database, inspection); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	progress.progress("state", "State en credentials ontsleuteld", 1, 1)
+	if err := validateDatabaseObjects(r.Context(), staged.Database, inspection, progress.progress); err != nil {
+		progress.fail(http.StatusBadRequest, err)
 		return
 	}
 
+	progress.progress("rollback", "Veilig rollbackpunt van de huidige database maken", 0, 0)
 	rollback, err := s.database.RollbackPoint(r.Context())
 	if err != nil {
-		writeError(w, err)
+		progress.fail(http.StatusInternalServerError, err)
 		return
 	}
 	defer rollback.Close()
+	progress.progress("install", "Gevalideerde database activeren", 0, 0)
 	if err := s.database.RestoreFrom(r.Context(), staged); err != nil {
-		writeError(w, err)
+		progress.fail(http.StatusInternalServerError, err)
 		return
 	}
+	progress.progress("secrets", "Credentials onder de server-key opnieuw versleutelen", 0, 0)
 	if err := s.store.RestorePortableState(stateJSON, staged.MasterKey); err != nil {
 		rollbackErr := s.database.RestoreFrom(context.Background(), rollback)
-		writeError(w, errors.Join(err, rollbackErr))
+		progress.fail(http.StatusInternalServerError, errors.Join(err, rollbackErr))
 		return
 	}
 	s.csrfTokens.clear()
 	s.workflowMu.Lock()
 	s.workflowTokens = map[string]string{}
 	s.workflowMu.Unlock()
-	writeJSON(w, http.StatusOK, restoreResponse{
+	result := restoreResponse{
 		Status: "restored", Users: inspection.Users, Jobs: inspection.Jobs, Templates: inspection.Templates,
 		Deliverables: inspection.Deliverables, Attachments: len(inspection.Attachments), Snapshots: restorableSnapshotCount(inspection.Artifacts),
-	})
+	}
+	if progress.enabled {
+		progress.send(restoreProgressEvent{Type: "complete", Stage: "complete", Message: "Restore compleet", Result: &result})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
-func validateDatabaseObjects(ctx context.Context, database *persistence.SQLite, inspection store.PortableStateInspection) error {
+func validateDatabaseObjects(ctx context.Context, database *persistence.SQLite, inspection store.PortableStateInspection, report ...func(string, string, int, int)) error {
+	progress := func(string, string, int, int) {}
+	if len(report) > 0 && report[0] != nil {
+		progress = report[0]
+	}
 	attachments := database.Files("attachment:", "job-attachment", maxJobAttachmentBytes)
-	for _, attachment := range inspection.Attachments {
+	for index, attachment := range inspection.Attachments {
 		data, err := attachments.ReadFile(attachment.ID)
 		if err != nil {
 			return fmt.Errorf("backup is missing attachment %s: %w", attachment.Name, err)
@@ -196,26 +268,30 @@ func validateDatabaseObjects(ctx context.Context, database *persistence.SQLite, 
 		if err := verifyAttachmentData(attachment, data); err != nil {
 			return err
 		}
+		progress("attachments", fmt.Sprintf("Bijlage %s gecontroleerd", attachment.Name), index+1, len(inspection.Attachments))
 	}
-	for _, artifact := range inspection.Artifacts {
-		if !artifact.Snapshot.Restorable {
-			continue
-		}
+	restorable := restorableArtifacts(inspection.Artifacts)
+	for index, artifact := range restorable {
 		if err := database.RestoreSnapshot(ctx, artifact.Snapshot, io.Discard); err != nil {
 			return fmt.Errorf("backup Docker snapshot %s:%s (%s) is missing or corrupt: %w", artifact.Kind, artifact.Name, artifact.Snapshot.Digest, err)
 		}
+		progress("snapshots", fmt.Sprintf("Docker-laag %s:%s gecontroleerd", artifact.Kind, artifact.Name), index+1, len(restorable))
 	}
 	return nil
 }
 
-func restorableSnapshotCount(artifacts []domain.Artifact) int {
-	count := 0
+func restorableArtifacts(artifacts []domain.Artifact) []domain.Artifact {
+	result := make([]domain.Artifact, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		if artifact.Snapshot.Restorable {
-			count++
+			result = append(result, artifact)
 		}
 	}
-	return count
+	return result
+}
+
+func restorableSnapshotCount(artifacts []domain.Artifact) int {
+	return len(restorableArtifacts(artifacts))
 }
 
 func (s *Server) requireBackupAdmin(w http.ResponseWriter, r *http.Request) bool {

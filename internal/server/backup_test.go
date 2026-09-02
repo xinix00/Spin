@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -90,6 +91,42 @@ func TestSQLiteBackupRestoresStateSecretsAndAttachmentsUnderDestinationKey(t *te
 	}
 	if got, err := destinationAttachments.ReadFile(attachment.ID); err != nil || !bytes.Equal(got, png) {
 		t.Fatalf("restored attachment bytes=%d error=%v", len(got), err)
+	}
+
+	streamRequest := httptest.NewRequest(http.MethodPost, "/api/restore", bytes.NewReader(backupResponse.Body.Bytes()))
+	streamRequest.Header.Set("Content-Type", "application/vnd.sqlite3")
+	streamRequest.Header.Set("Accept", restoreProgressMediaType)
+	streamRecorder := httptest.NewRecorder()
+	destinationServer.Handler().ServeHTTP(streamRecorder, streamRequest)
+	if streamRecorder.Code != http.StatusOK || streamRecorder.Header().Get("Content-Type") != restoreProgressMediaType {
+		t.Fatalf("stream restore status=%d content-type=%q body=%s", streamRecorder.Code, streamRecorder.Header().Get("Content-Type"), streamRecorder.Body.String())
+	}
+	stages := map[string]bool{}
+	var completed *restoreResponse
+	scanner := bufio.NewScanner(bytes.NewReader(streamRecorder.Body.Bytes()))
+	for scanner.Scan() {
+		var event restoreProgressEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("decode progress %q: %v", scanner.Text(), err)
+		}
+		stages[event.Stage] = true
+		if event.Type == "error" {
+			t.Fatalf("stream restore error: %s", event.Error)
+		}
+		if event.Type == "complete" {
+			completed = event.Result
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range []string{"open", "state", "attachments", "rollback", "install", "secrets", "complete"} {
+		if !stages[stage] {
+			t.Errorf("missing restore progress stage %q in %s", stage, streamRecorder.Body.String())
+		}
+	}
+	if completed == nil || completed.Status != "restored" || completed.Attachments != 1 {
+		t.Fatalf("stream completion = %+v", completed)
 	}
 
 	if err := destinationDatabase.Close(); err != nil {
