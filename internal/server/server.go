@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -122,19 +123,34 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data:; media-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'")
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			w.Header().Set("Cache-Control", "no-store")
+			preventCaching(w)
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
+func preventCaching(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("CDN-Cache-Control", "no-store")
+	w.Header().Set("Cloudflare-CDN-Cache-Control", "no-store")
+	w.Header().Set("Surrogate-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+}
+
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /", s.dashboard)
-	assets := http.FileServer(http.FS(dashboardAssets))
-	s.mux.Handle("GET /assets/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	assetFiles, err := fs.Sub(dashboardAssets, "assets")
+	if err != nil {
+		panic(fmt.Sprintf("prepare embedded dashboard assets: %v", err))
+	}
+	assetPrefix := "/assets/v" + frontendAssetVersion + "/"
+	assets := http.StripPrefix(assetPrefix, http.FileServer(http.FS(assetFiles)))
+	s.mux.Handle("GET "+assetPrefix, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		assets.ServeHTTP(w, r)
 	}))
+	s.mux.HandleFunc("GET /assets/", http.NotFound)
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -224,8 +240,9 @@ type stateResponse struct {
 
 func (s *Server) dashboard(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(dashboardHTML)
+	w.Header().Set("X-Spin-UI-Version", frontendAssetVersion)
+	preventCaching(w)
+	_, _ = w.Write(dashboardDocument)
 }
 
 func (s *Server) listArtifacts(w http.ResponseWriter, r *http.Request) {

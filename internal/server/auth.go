@@ -152,7 +152,7 @@ func (s *Server) validWorkerBearer(header string) bool {
 }
 
 func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
+	preventCaching(w)
 	status := authStatusResponse{Configured: s.store.HasUsers()}
 	if !status.Configured {
 		writeJSON(w, http.StatusOK, status)
