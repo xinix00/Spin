@@ -4,17 +4,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"easyacp/internal/buildinfo"
 	"easyacp/internal/capsule"
+	"easyacp/internal/persistence"
 	"easyacp/internal/security"
 	spinserver "easyacp/internal/server"
 	"easyacp/internal/store"
@@ -24,8 +27,9 @@ import (
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
-	statePath := flag.String("state", "./var/spin-state.json", "persistent concept-state file")
-	attachmentDir := flag.String("attachments", "./var/job-attachments", "persistent Job attachment directory")
+	databasePath := flag.String("database", envOr("SPIN_DATABASE", "./var/spin.db"), "persistent Spin SQLite database")
+	legacyStatePath := flag.String("state", "./var/spin-state.json", "legacy JSON state to import once")
+	legacyAttachmentDir := flag.String("attachments", "./var/job-attachments", "legacy Job attachment directory to import once")
 	capsuleDriver := flag.String("capsule-driver", "runner", "capsule engine: runner, docker or journal")
 	capsuleBase := flag.String("capsule-base", "alpine:3.24", "clean substrate image for root Docker recordings")
 	capsuleNetwork := flag.String("capsule-network", "bridge", "Docker network for capsule containers")
@@ -38,9 +42,26 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	st, err := store.OpenWithOptions(*statePath, store.OpenOptions{MasterKey: os.Getenv("SPIN_MASTER_KEY"), MasterKeyFile: *masterKeyFile})
+	database, err := persistence.Open(*databasePath, persistence.OpenOptions{})
+	if err != nil {
+		logger.Error("open database", "error", err)
+		os.Exit(1)
+	}
+	defer database.Close()
+	if imported, err := database.ImportFileIfMissing("state", *legacyStatePath); err != nil {
+		logger.Error("import legacy JSON state", "error", err)
+		os.Exit(1)
+	} else if imported {
+		logger.Info("imported legacy JSON state", "source", *legacyStatePath, "database", *databasePath)
+	}
+	st, err := store.OpenWithBackend("state", store.OpenOptions{MasterKey: os.Getenv("SPIN_MASTER_KEY"), MasterKeyFile: *masterKeyFile}, database)
 	if err != nil {
 		logger.Error("open store", "error", err)
+		os.Exit(1)
+	}
+	attachmentFiles := database.Files("attachment:", "job-attachment", 15<<20)
+	if err := importLegacyAttachments(st, attachmentFiles, *legacyAttachmentDir); err != nil {
+		logger.Error("import legacy Job attachments", "error", err)
 		os.Exit(1)
 	}
 	workerToken := strings.TrimSpace(os.Getenv("SPIN_WORKER_TOKEN"))
@@ -55,7 +76,7 @@ func main() {
 	var runnerBroker *worker.Broker
 	if *capsuleDriver == "runner" {
 		runnerBroker = worker.NewBroker(st, logger)
-		engine = worker.NewRemoteEngine(runnerBroker)
+		engine = worker.NewRemoteEngine(runnerBroker, database)
 	} else if *capsuleDriver == "docker" {
 		probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -74,7 +95,9 @@ func main() {
 		Handler: func() http.Handler {
 			options := spinserver.ServerOptionsFromEnvironment()
 			options.WorkerToken = workerToken
-			options.AttachmentDir = *attachmentDir
+			options.AttachmentStorage = attachmentFiles
+			options.SnapshotArchive = database
+			options.Database = database
 			options.RunnerBroker = runnerBroker
 			return spinserver.NewWithOptions(st, logger, engine, options).Handler()
 		}(),
@@ -91,11 +114,35 @@ func main() {
 		_ = httpServer.Shutdown(shutdownCtx)
 	}()
 
-	logger.Info("Spin server listening", "addr", *addr, "state", *statePath, "capsule_driver", engine.Info().Driver, "capsule_base", engine.Info().BaseImage)
+	logger.Info("Spin server listening", "addr", *addr, "database", *databasePath, "capsule_driver", engine.Info().Driver, "capsule_base", engine.Info().BaseImage)
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("serve", "error", err)
 		os.Exit(1)
 	}
+}
+
+type legacyAttachmentStore interface {
+	ReadFile(string) ([]byte, error)
+	WriteFile(string, []byte) error
+}
+
+func importLegacyAttachments(st *store.Store, destination legacyAttachmentStore, directory string) error {
+	for _, attachment := range st.Snapshot().JobAttachments {
+		if _, err := destination.ReadFile(attachment.ID); err == nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(directory, attachment.ID))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := destination.WriteFile(attachment.ID, data); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func envOr(name, fallback string) string {

@@ -10,6 +10,10 @@ require (
 )
 
 require (
+	github.com/ncruces/go-sqlite3 v0.35.4 // indirect
+	github.com/ncruces/go-sqlite3-wasm/v5 v5.0.35304 // indirect
+	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/usbarmory/tamago v1.26.4 // indirect
 	github.com/xinix00/lean v0.99.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 )

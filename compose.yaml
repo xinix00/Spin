@@ -16,7 +16,7 @@ services:
       - spin-data:/data
       - spin-keys:/keys
       - spin-worker-auth:/worker-auth
-    command: ["-addr", ":8080", "-state", "/data/spin-state.json", "-attachments", "/data/job-attachments", "-master-key-file", "/keys/master.key", "-worker-token-file", "/worker-auth/token", "-capsule-driver", "runner"]
+    command: ["-addr", ":8080", "-database", "/data/spin.db", "-state", "/data/spin-state.json", "-attachments", "/data/job-attachments", "-master-key-file", "/keys/master.key", "-worker-token-file", "/worker-auth/token", "-capsule-driver", "runner"]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 2s

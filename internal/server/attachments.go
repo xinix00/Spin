@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -11,7 +12,6 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -45,7 +45,7 @@ func (s *Server) uploadJobAttachment(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) uploadJobAttachmentFor(w http.ResponseWriter, r *http.Request, jobID string) {
 	operator := s.requestOperator(r, r.URL.Query().Get("operator"))
-	if strings.TrimSpace(s.attachmentDir) == "" {
+	if s.attachments == nil {
 		writeError(w, fmt.Errorf("Job attachment storage is not configured: %w", store.ErrConflict))
 		return
 	}
@@ -91,49 +91,32 @@ func (s *Server) uploadJobAttachmentFor(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "only PDF, PNG, JPEG, WebP and GIF attachments are supported"})
 		return
 	}
-	if err := os.MkdirAll(s.attachmentDir, 0o750); err != nil {
-		writeError(w, fmt.Errorf("create attachment directory: %w", err))
-		return
-	}
 	idValue, err := randomOAuthValue(18)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	attachmentID := "att_" + idValue
-	temporary, err := os.CreateTemp(s.attachmentDir, ".spin-attachment-*")
+	data, err := io.ReadAll(io.LimitReader(io.MultiReader(bytes.NewReader(first), upload), maxJobAttachmentBytes+1))
 	if err != nil {
-		writeError(w, fmt.Errorf("create attachment file: %w", err))
+		writeError(w, fmt.Errorf("read attachment: %w", err))
 		return
 	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	hash := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(temporary, hash), io.MultiReader(strings.NewReader(string(first)), io.LimitReader(upload, maxJobAttachmentBytes-int64(firstCount)+1)))
-	closeErr := temporary.Close()
-	if copyErr != nil || closeErr != nil {
-		writeError(w, fmt.Errorf("store attachment: %w", errors.Join(copyErr, closeErr)))
-		return
-	}
-	if written > maxJobAttachmentBytes {
+	if len(data) > maxJobAttachmentBytes {
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "an attachment may be at most 15 MiB"})
 		return
 	}
-	if err := os.Chmod(temporaryPath, 0o600); err != nil {
-		writeError(w, err)
-		return
-	}
-	finalPath := s.jobAttachmentPath(attachmentID)
-	if err := os.Rename(temporaryPath, finalPath); err != nil {
-		writeError(w, fmt.Errorf("publish attachment: %w", err))
+	hash := sha256.Sum256(data)
+	if err := s.attachments.WriteFile(attachmentID, data); err != nil {
+		writeError(w, fmt.Errorf("store attachment: %w", err))
 		return
 	}
 	attachment, err := s.store.CreateJobAttachment(domain.CreateJobAttachmentRequest{
-		ID: attachmentID, JobID: jobID, Name: name, MediaType: mediaType, Size: written,
-		SHA256: hex.EncodeToString(hash.Sum(nil)), CapsulePath: attachmentCapsuleDir + attachmentTargetName(attachmentID, name, mediaType), Operator: operator,
+		ID: attachmentID, JobID: jobID, Name: name, MediaType: mediaType, Size: int64(len(data)),
+		SHA256: hex.EncodeToString(hash[:]), CapsulePath: attachmentCapsuleDir + attachmentTargetName(attachmentID, name, mediaType), Operator: operator,
 	})
 	if err != nil {
-		_ = os.Remove(finalPath)
+		_ = s.attachments.Remove(attachmentID)
 		writeError(w, err)
 		return
 	}
@@ -150,18 +133,16 @@ func (s *Server) downloadJobAttachment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	file, err := os.Open(s.jobAttachmentPath(attachment.ID))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			writeError(w, store.ErrNotFound)
-		} else {
-			writeError(w, err)
-		}
+	if s.attachments == nil {
+		writeError(w, store.ErrNotFound)
 		return
 	}
-	defer file.Close()
-	info, err := file.Stat()
+	data, err := s.attachments.ReadFile(attachment.ID)
 	if err != nil {
+		writeError(w, store.ErrNotFound)
+		return
+	}
+	if err := verifyAttachmentData(attachment, data); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -171,7 +152,7 @@ func (s *Server) downloadJobAttachment(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:")
 	w.Header().Set("Cache-Control", "private, no-store")
-	http.ServeContent(w, r, attachment.Name, info.ModTime(), file)
+	http.ServeContent(w, r, attachment.Name, attachment.CreatedAt, bytes.NewReader(data))
 }
 
 func (s *Server) deleteStagedJobAttachment(w http.ResponseWriter, r *http.Request) {
@@ -181,12 +162,10 @@ func (s *Server) deleteStagedJobAttachment(w http.ResponseWriter, r *http.Reques
 		writeError(w, err)
 		return
 	}
-	_ = os.Remove(s.jobAttachmentPath(attachment.ID))
+	if s.attachments != nil {
+		_ = s.attachments.Remove(attachment.ID)
+	}
 	writeJSON(w, http.StatusOK, attachment)
-}
-
-func (s *Server) jobAttachmentPath(attachmentID string) string {
-	return filepath.Join(s.attachmentDir, filepath.Base(attachmentID))
 }
 
 // startACPPrompt enriches the textual turn with any Job attachments that this
@@ -225,12 +204,15 @@ func (s *Server) acpPromptAttachments(sessionID string, capabilities acpPromptCa
 		}
 		isImage := strings.HasPrefix(attachment.MediaType, "image/")
 		if (isImage && capabilities.Image) || (!isImage && capabilities.EmbeddedContext) {
-			data, err := os.ReadFile(s.jobAttachmentPath(attachment.ID))
+			if s.attachments == nil {
+				return nil, fmt.Errorf("attachment storage is not configured")
+			}
+			data, err := s.attachments.ReadFile(attachment.ID)
 			if err != nil {
 				return nil, fmt.Errorf("read %s: %w", attachment.Name, err)
 			}
-			if int64(len(data)) != attachment.Size {
-				return nil, fmt.Errorf("attachment %s changed after upload", attachment.Name)
+			if err := verifyAttachmentData(attachment, data); err != nil {
+				return nil, err
 			}
 			encoded := base64.StdEncoding.EncodeToString(data)
 			if isImage {
@@ -293,7 +275,13 @@ func (s *Server) injectAttachmentIntoLiveJob(jobID, operator string, attachment 
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := injector.InjectWorkspaceAttachments(ctx, *composition.Runtime, []capsule.WorkspaceAttachment{{SourcePath: s.jobAttachmentPath(attachment.ID), TargetPath: attachment.CapsulePath}})
+		file, fileErr := s.capsuleAttachment(attachment)
+		if fileErr != nil {
+			s.logger.Warn("read new Job attachment", "job", jobID, "attachment", attachment.ID, "error", fileErr)
+			cancel()
+			continue
+		}
+		err := injector.InjectWorkspaceAttachments(ctx, *composition.Runtime, []capsule.WorkspaceAttachment{file})
 		cancel()
 		if err != nil {
 			s.logger.Warn("inject new Job attachment", "job", jobID, "attachment", attachment.ID, "composition", composition.ID, "error", err)
@@ -326,9 +314,41 @@ func (s *Server) injectJobAttachments(ctx context.Context, composition domain.Co
 	}
 	files := make([]capsule.WorkspaceAttachment, 0, len(attachments))
 	for _, attachment := range attachments {
-		files = append(files, capsule.WorkspaceAttachment{SourcePath: s.jobAttachmentPath(attachment.ID), TargetPath: attachment.CapsulePath})
+		file, err := s.capsuleAttachment(attachment)
+		if err != nil {
+			return err
+		}
+		files = append(files, file)
 	}
 	return injector.InjectWorkspaceAttachments(ctx, runtime, files)
+}
+
+func (s *Server) capsuleAttachment(attachment domain.JobAttachment) (capsule.WorkspaceAttachment, error) {
+	if s.attachments == nil {
+		return capsule.WorkspaceAttachment{}, fmt.Errorf("Job attachment storage is not configured: %w", store.ErrConflict)
+	}
+	if localPath := s.attachments.LocalPath(attachment.ID); localPath != "" {
+		return capsule.WorkspaceAttachment{SourcePath: localPath, TargetPath: attachment.CapsulePath}, nil
+	}
+	data, err := s.attachments.ReadFile(attachment.ID)
+	if err != nil {
+		return capsule.WorkspaceAttachment{}, fmt.Errorf("read attachment %s: %w", attachment.Name, err)
+	}
+	if err := verifyAttachmentData(attachment, data); err != nil {
+		return capsule.WorkspaceAttachment{}, err
+	}
+	return capsule.WorkspaceAttachment{Data: data, TargetPath: attachment.CapsulePath}, nil
+}
+
+func verifyAttachmentData(attachment domain.JobAttachment, data []byte) error {
+	if int64(len(data)) != attachment.Size {
+		return fmt.Errorf("attachment %s changed after upload", attachment.Name)
+	}
+	hash := sha256.Sum256(data)
+	if !strings.EqualFold(hex.EncodeToString(hash[:]), attachment.SHA256) {
+		return fmt.Errorf("attachment %s checksum changed after upload", attachment.Name)
+	}
+	return nil
 }
 
 func cleanAttachmentName(value string) string {

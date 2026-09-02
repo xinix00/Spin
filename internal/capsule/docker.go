@@ -667,10 +667,28 @@ func (d *Docker) InjectWorkspaceAttachments(ctx context.Context, runtime domain.
 		return fmt.Errorf("prepare Job attachment directory (exit %d): %s: %w", code, strings.TrimSpace(output), err)
 	}
 	for _, attachment := range attachments {
-		if strings.TrimSpace(attachment.SourcePath) == "" || !strings.HasPrefix(attachment.TargetPath, "/spin/job-attachments/") || strings.Contains(strings.TrimPrefix(attachment.TargetPath, "/spin/job-attachments/"), "/") {
+		if (strings.TrimSpace(attachment.SourcePath) == "" && attachment.Data == nil) || !strings.HasPrefix(attachment.TargetPath, "/spin/job-attachments/") || strings.Contains(strings.TrimPrefix(attachment.TargetPath, "/spin/job-attachments/"), "/") {
 			return fmt.Errorf("invalid Job attachment target %q", attachment.TargetPath)
 		}
-		if output, code, err := d.run(ctx, "cp", attachment.SourcePath, runtime.ContainerID+":"+attachment.TargetPath); err != nil || code != 0 {
+		sourcePath := attachment.SourcePath
+		if attachment.Data != nil {
+			temporary, err := os.CreateTemp("", "spin-capsule-attachment-*")
+			if err != nil {
+				return err
+			}
+			sourcePath = temporary.Name()
+			if _, err := temporary.Write(attachment.Data); err != nil {
+				_ = temporary.Close()
+				_ = os.Remove(sourcePath)
+				return err
+			}
+			if err := temporary.Close(); err != nil {
+				_ = os.Remove(sourcePath)
+				return err
+			}
+			defer os.Remove(sourcePath)
+		}
+		if output, code, err := d.run(ctx, "cp", sourcePath, runtime.ContainerID+":"+attachment.TargetPath); err != nil || code != 0 {
 			return fmt.Errorf("copy Job attachment %s (exit %d): %s: %w", attachment.TargetPath, code, strings.TrimSpace(output), err)
 		}
 		if output, code, err := d.run(ctx, "exec", runtime.ContainerID, "chmod", "0444", attachment.TargetPath); err != nil || code != 0 {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"easyacp/internal/buildinfo"
+	"easyacp/internal/persistence"
 	spinserver "easyacp/internal/server"
 	"easyacp/internal/store"
 	"easyacp/internal/worker"
@@ -29,19 +30,6 @@ type ringWriter struct{ app *applib.App }
 func (w ringWriter) Write(p []byte) (int, error) {
 	w.app.Logf("%s", strings.TrimRight(string(p), "\n"))
 	return len(p), nil
-}
-
-// hopStateBackend stores Spin's JSON state through the hop-ABI filesystem.
-// A mounted /data volume therefore survives an app replacement without
-// pretending the freestanding runtime has a Unix filesystem.
-type hopStateBackend struct{ app *applib.App }
-
-func (b hopStateBackend) ReadFile(path string) ([]byte, error) {
-	return b.app.ReadFile(path)
-}
-
-func (b hopStateBackend) WriteFile(path string, data []byte) error {
-	return b.app.WriteFile(path, data)
 }
 
 func main() {
@@ -66,25 +54,51 @@ func main() {
 		masterKey = ephemeralMasterKey()
 		app.Logf("spin-server: WARNING: SPIN_MASTER_KEY is empty; encrypted credentials cannot survive a restart")
 	}
-	statePath := strings.TrimSpace(app.Env("SPIN_STATE"))
-	if statePath == "" {
-		statePath = "/data/spin-state.json"
+	databasePath := strings.TrimSpace(app.Env("SPIN_DATABASE"))
+	if databasePath == "" {
+		databasePath = "/data/spin.db"
 	}
-	st, err := store.OpenWithBackend(statePath, store.OpenOptions{MasterKey: masterKey}, hopStateBackend{app: app})
-	if err != nil && errors.Is(err, fs.ErrNotExist) {
-		st, err = store.OpenWithBackend("", store.OpenOptions{MasterKey: masterKey}, hopStateBackend{app: app})
+	database, err := persistence.Open(databasePath, persistence.OpenOptions{VFS: persistence.RegisterHopVFS(app)})
+	if err != nil {
+		app.Logf("spin-server: open database: %v", err)
+		app.Exit(1)
 	}
+	defer database.Close()
+	if _, err := database.ReadFile("state"); errors.Is(err, fs.ErrNotExist) {
+		if legacy, legacyErr := app.ReadFile("/data/spin-state.json"); legacyErr == nil {
+			if err := database.WriteFile("state", legacy); err != nil {
+				app.Logf("spin-server: import legacy state: %v", err)
+				app.Exit(1)
+			}
+			app.Logf("spin-server: imported /data/spin-state.json into %s", databasePath)
+		}
+	}
+	st, err := store.OpenWithBackend("state", store.OpenOptions{MasterKey: masterKey}, database)
 	if err != nil {
 		app.Logf("spin-server: open state: %v", err)
 		app.Exit(1)
 	}
+	attachmentFiles := database.Files("attachment:", "job-attachment", 15<<20)
+	for _, attachment := range st.Snapshot().JobAttachments {
+		if _, err := attachmentFiles.ReadFile(attachment.ID); err == nil {
+			continue
+		}
+		if legacy, legacyErr := app.ReadFile("/data/job-attachments/" + attachment.ID); legacyErr == nil {
+			if err := attachmentFiles.WriteFile(attachment.ID, legacy); err != nil {
+				app.Logf("spin-server: import attachment %s: %v", attachment.ID, err)
+				app.Exit(1)
+			}
+		}
+	}
 
 	broker := worker.NewBroker(st, logger)
-	engine := worker.NewRemoteEngine(broker)
+	engine := worker.NewRemoteEngine(broker, database)
 	options := spinserver.ServerOptionsFromEnvironment()
 	options.WorkerToken = workerToken
 	options.RunnerBroker = broker
-	options.AttachmentDir = "" // HopOS attachments need an explicit volume adapter; fail closed for now.
+	options.AttachmentStorage = attachmentFiles
+	options.SnapshotArchive = database
+	options.Database = database
 
 	port := strings.TrimSpace(app.Env("ER_PORT_HTTP"))
 	if port == "" {
@@ -97,7 +111,7 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 	app.Logf("%s", buildinfo.String("spin-server"))
-	app.Logf("spin-server: listening on :%s; state=%s", port, statePath)
+	app.Logf("spin-server: listening on :%s; database=%s", port, databasePath)
 	app.Logf("spin-server: http: %v", server.ListenAndServe())
 	app.Exit(1)
 }

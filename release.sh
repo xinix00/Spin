@@ -104,7 +104,7 @@ Artifacts:
 
 The client connects outbound to the configured server URL; it derives wss:// from https:// and uses /api/runner/ws. Supply the same SPIN_WORKER_TOKEN on both sides.
 
-HopOS: publish ER_PORT_HTTP, mount /data for state, and provide SPIN_WORKER_TOKEN plus a stable SPIN_MASTER_KEY. Job attachments currently fail closed on the HopOS build because their filesystem adapter is not implemented; Linux is the complete production server target.
+HopOS: publish ER_PORT_HTTP, mount /data for /data/spin.db, and provide SPIN_WORKER_TOKEN plus a stable SPIN_MASTER_KEY. The libc-free SQLite build uses Spin's HopOS VFS; Job attachments, central Docker snapshot archives and one-file database backup/restore are enabled on arm64 and riscv64.
 EOF
 ASSETS+=("$OUTDIR/RELEASE-NOTES.md")
 

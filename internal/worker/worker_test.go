@@ -13,6 +13,7 @@ import (
 
 	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
+	"easyacp/internal/persistence"
 	spinserver "easyacp/internal/server"
 	"easyacp/internal/store"
 	"easyacp/internal/worker"
@@ -29,7 +30,15 @@ func (e *fakeRunnerEngine) Info() domain.CapsuleEngineInfo {
 	return domain.CapsuleEngineInfo{Driver: "fake", Available: true, FilesystemSnapshots: true}
 }
 
-func (e *fakeRunnerEngine) StartRecording(_ context.Context, recording domain.Recording, _ []domain.Artifact) (domain.CapsuleRuntime, error) {
+func (e *fakeRunnerEngine) StartRecording(_ context.Context, recording domain.Recording, parents []domain.Artifact) (domain.CapsuleRuntime, error) {
+	e.mu.Lock()
+	for _, artifact := range parents {
+		if artifact.Snapshot.Ref != "" && len(e.images[artifact.Snapshot.Ref]) == 0 {
+			e.mu.Unlock()
+			return domain.CapsuleRuntime{}, fmt.Errorf("image %s is missing on %s", artifact.Snapshot.Ref, e.name)
+		}
+	}
+	e.mu.Unlock()
 	e.called("start:" + recording.ID)
 	return domain.CapsuleRuntime{Driver: "fake", ContainerID: e.name + ":" + recording.ID, Status: "recording"}, nil
 }
@@ -245,6 +254,71 @@ func TestRemoteEngineRoundRobinsAndRetainsAffinityAcrossReconnect(t *testing.T) 
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("affinity call did not resume after runner reconnect")
+	}
+}
+
+func TestRemoteEngineRestoresRecordedParentBeforeStartingOnAnotherRunner(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := persistence.Open(t.TempDir()+"/spin.db", persistence.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	broker := worker.NewBroker(st, logger)
+	remote := worker.NewRemoteEngine(broker, database)
+	const token = "runner-test-token-with-enough-entropy"
+	handler := spinserver.NewWithOptions(st, logger, remote, spinserver.ServerOptions{
+		DisableAuthentication: true, WorkerToken: token, RunnerBroker: broker,
+	}).Handler()
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	target := &fakeRunnerEngine{name: "new-runner", images: map[string][]byte{}}
+	runnerCtx, cancelRunner := context.WithCancel(context.Background())
+	defer cancelRunner()
+	runWorker(t, runnerCtx, worker.Config{ServerURL: server.URL, InstanceID: "new", Name: "New", Token: token, Engine: target})
+	waitFor(t, func() bool { return onlineClients(st) == 1 })
+
+	recording, err := st.CreateRecording(domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "parent", Scope: domain.ScopeGlobal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := domain.CapsuleSnapshot{
+		Driver: "fake", ClientID: "gone-runner", Ref: "fake:parent", Digest: "sha256:parent", Restorable: true,
+	}
+	parent, err := st.EndRecording(recording.ID, domain.EndRecordingRequest{Actor: "derek", Snapshot: snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StoreSnapshot(context.Background(), snapshot, bytes.NewReader([]byte("recorded parent image"))); err != nil {
+		t.Fatal(err)
+	}
+
+	callCtx, cancelCall := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCall()
+	runtime, err := remote.StartRecording(callCtx, domain.Recording{ID: "derived"}, []domain.Artifact{parent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.ClientID == "" || runtime.ClientID == snapshot.ClientID {
+		t.Fatalf("recording placement = %q", runtime.ClientID)
+	}
+	target.mu.Lock()
+	got := append([]byte(nil), target.images[snapshot.Ref]...)
+	target.mu.Unlock()
+	if !bytes.Equal(got, []byte("recorded parent image")) {
+		t.Fatalf("restored parent = %q", got)
+	}
+	stored, err := st.Artifact(parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Snapshot.ReplicaClientIDs) != 1 || stored.Snapshot.ReplicaClientIDs[0] != runtime.ClientID {
+		t.Fatalf("snapshot replicas = %+v", stored.Snapshot.ReplicaClientIDs)
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -16,32 +15,38 @@ import (
 	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
 	"easyacp/internal/orchestrator"
+	"easyacp/internal/persistence"
 	"easyacp/internal/store"
 	"easyacp/internal/worker"
 )
 
 type Server struct {
-	store          *store.Store
-	logger         *slog.Logger
-	mux            *http.ServeMux
-	engine         capsule.Engine
-	httpClient     *http.Client
-	gitOAuth       *gitOAuthManager
-	authDisabled   bool
-	workerToken    string
-	runnerBroker   *worker.Broker
-	internalURL    string
-	attachmentDir  string
-	loginLimiter   loginLimiter
-	csrfTokens     csrfTokenCache
-	terminalMu     sync.Mutex
-	terminals      map[string]map[*activeTerminal]struct{}
-	acpMu          sync.Mutex
-	acpSessions    map[string]*activeACP
-	workflowMu     sync.Mutex
-	workflowTokens map[string]string
-	jobLaunchMu    sync.Mutex
-	jobLaunching   map[string]*backgroundJobLaunch
+	store           *store.Store
+	logger          *slog.Logger
+	mux             *http.ServeMux
+	engine          capsule.Engine
+	httpClient      *http.Client
+	gitOAuth        *gitOAuthManager
+	authDisabled    bool
+	workerToken     string
+	runnerBroker    *worker.Broker
+	internalURL     string
+	attachments     AttachmentStorage
+	snapshotArchive capsule.SnapshotArchive
+	database        *persistence.SQLite
+	loginLimiter    loginLimiter
+	csrfTokens      csrfTokenCache
+	terminalMu      sync.Mutex
+	terminals       map[string]map[*activeTerminal]struct{}
+	acpMu           sync.Mutex
+	acpSessions     map[string]*activeACP
+	workflowMu      sync.Mutex
+	workflowTokens  map[string]string
+	jobLaunchMu     sync.Mutex
+	jobLaunching    map[string]*backgroundJobLaunch
+	backupMu        sync.Mutex
+	backupTicketMu  sync.Mutex
+	backupTickets   map[string]backupTicket
 }
 
 type backgroundJobLaunch struct {
@@ -68,14 +73,18 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 20 * time.Second}
 	}
+	attachmentStorage := options.AttachmentStorage
+	if attachmentStorage == nil {
+		attachmentStorage = newFilesystemAttachmentStorage(options.AttachmentDir)
+	}
 	s := &Server{
 		store: st, logger: logger, mux: http.NewServeMux(), engine: engine, httpClient: httpClient,
 		authDisabled: options.DisableAuthentication, workerToken: strings.TrimSpace(options.WorkerToken),
-		runnerBroker:  options.RunnerBroker,
-		internalURL:   strings.TrimRight(strings.TrimSpace(options.InternalURL), "/"),
-		attachmentDir: strings.TrimSpace(options.AttachmentDir),
-		loginLimiter:  loginLimiter{attempts: map[string]loginAttempt{}}, csrfTokens: csrfTokenCache{values: map[string]string{}},
-		terminals: map[string]map[*activeTerminal]struct{}{}, acpSessions: map[string]*activeACP{}, workflowTokens: map[string]string{}, jobLaunching: map[string]*backgroundJobLaunch{},
+		runnerBroker: options.RunnerBroker,
+		internalURL:  strings.TrimRight(strings.TrimSpace(options.InternalURL), "/"),
+		attachments:  attachmentStorage, snapshotArchive: options.SnapshotArchive, database: options.Database,
+		loginLimiter: loginLimiter{attempts: map[string]loginAttempt{}}, csrfTokens: csrfTokenCache{values: map[string]string{}},
+		terminals: map[string]map[*activeTerminal]struct{}{}, acpSessions: map[string]*activeACP{}, workflowTokens: map[string]string{}, jobLaunching: map[string]*backgroundJobLaunch{}, backupTickets: map[string]backupTicket{},
 	}
 	s.gitOAuth = newGitOAuthManager(options, st)
 	s.routes()
@@ -137,6 +146,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/auth/login", s.login)
 	s.mux.HandleFunc("POST /api/auth/logout", s.logout)
 	s.mux.HandleFunc("POST /api/auth/users", s.createUser)
+	s.mux.HandleFunc("POST /api/backup", s.downloadBackup)
+	s.mux.HandleFunc("POST /api/backup-ticket", s.createBackupTicket)
+	s.mux.HandleFunc("GET /api/backup", s.downloadBackupWithTicket)
+	s.mux.HandleFunc("POST /api/restore", s.restoreBackup)
 	s.mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		identity, _ := identityFromRequest(r)
 		snapshot := s.store.Snapshot()
@@ -416,8 +429,10 @@ func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, attachmentID := range deleted.AttachmentIDs {
-		if removeErr := os.Remove(s.jobAttachmentPath(attachmentID)); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			s.logger.Warn("remove Job attachment", "job", deleted.ID, "attachment", attachmentID, "error", removeErr)
+		if s.attachments != nil {
+			if removeErr := s.attachments.Remove(attachmentID); removeErr != nil {
+				s.logger.Warn("remove Job attachment", "job", deleted.ID, "attachment", attachmentID, "error", removeErr)
+			}
 		}
 	}
 	s.workflowMu.Lock()

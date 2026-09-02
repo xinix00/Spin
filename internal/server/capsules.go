@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"easyacp/internal/capsule"
@@ -67,8 +68,38 @@ func (s *Server) endCapsuleRecording(ctx context.Context, recordingID string, re
 	if err != nil {
 		return domain.Artifact{}, fmt.Errorf("seal capsule recording: %w", err)
 	}
+	if err := s.archiveCapsuleSnapshot(ctx, snapshot); err != nil {
+		return domain.Artifact{}, fmt.Errorf("archive capsule snapshot: %w", err)
+	}
 	req.Snapshot = snapshot
-	return s.store.EndRecording(recordingID, req)
+	artifact, err := s.store.EndRecording(recordingID, req)
+	if err != nil && s.snapshotArchive != nil {
+		_ = s.snapshotArchive.RemoveArchivedSnapshot(ctx, snapshot)
+	}
+	return artifact, err
+}
+
+func (s *Server) archiveCapsuleSnapshot(ctx context.Context, snapshot domain.CapsuleSnapshot) error {
+	if !snapshot.Restorable || s.snapshotArchive == nil {
+		return nil
+	}
+	exporter, ok := s.engine.(capsule.SnapshotExporter)
+	if !ok {
+		return errors.New("Capsule engine cannot export its restorable snapshot")
+	}
+	reader, writer := io.Pipe()
+	exported := make(chan error, 1)
+	go func() {
+		err := exporter.ExportSnapshot(ctx, snapshot, writer)
+		_ = writer.CloseWithError(err)
+		exported <- err
+	}()
+	storeErr := s.snapshotArchive.StoreSnapshot(ctx, snapshot, reader)
+	if storeErr != nil {
+		_ = reader.CloseWithError(storeErr)
+	}
+	exportErr := <-exported
+	return errors.Join(storeErr, exportErr)
 }
 
 func (s *Server) cancelCapsuleRecording(ctx context.Context, recordingID string, req domain.CancelRecordingRequest) (domain.Recording, error) {

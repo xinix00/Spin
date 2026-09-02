@@ -176,7 +176,8 @@ De oude tweedelige vormen zoals `RECORD tool codex` en `USE tool codex` worden n
 - `internal/capsule`: journalengine en echte Docker commit/clone-engine.
 - `internal/store`: persistente Artifactgraph, scope-resolutie, Jobs en Sessions.
 - `internal/server`: GUI, REST, commandparser en de langlevende ACP-session-supervisor.
-- `var/spin-state.json`: standaard metadataopslag.
+- `var/spin.db`: centrale SQLite-database met control-plane-state, Job-bijlagen en de opaque exports van iedere afgeronde Docker-snapshot.
+- `var/spin-state.json` en `var/job-attachments`: alleen eenmalige legacy-importbronnen; na import is `spin.db` leidend.
 - `var/spin-master.key`: lokale AES-masterkey; apart van de state back-uppen en nooit publiceren.
 - `var/spin-worker.token`: apart bearer-token voor het headless runner-WebSocket.
 - `var/spin-client.id`: stabiele runneridentiteit; blijft gelijk over containerrestarts.
@@ -185,7 +186,11 @@ Nieuwe workloads worden round-robin over online runners verdeeld. Zodra een Reco
 
 Een nette SIGTERM stuurt best-effort `goodbye` met de lokale idle-status. Een harde Docker-kill of ontbrekend internet is nadrukkelijk geen bewijs dat de workload dood is en veroorzaakt dus geen automatische failover. Gebruik de bestaande Retry-actie om bewust een nieuwe Session te spawnen en opnieuw round-robin te plaatsen.
 
-Docker-images zijn daemon-lokaal. Iedere snapshot bewaart daarom zijn primaire runner plus bekende replica's. Wanneer een nieuwe Session op een andere runner landt, streamt Spin de benodigde images opaque via de twee runnerkanalen (`docker image save` → `docker image load`) en onthoudt de replica. Layerinhoud wordt niet geïnterpreteerd. Snapshot-remove verwijdert alle bekende kopieën en wacht eerlijk op een offline runner in plaats van een secretimage als verwijderd voor te stellen.
+Docker-images zijn runner-lokale caches, niet langer de bron van waarheid. Bij `END RECORD` streamt de runner eerst een opaque `docker image save` naar gechunkte BLOB-rows in `spin.db`; pas na die duurzame archivering wordt het Artifact afgerond. Wanneer een nieuwe Session op een andere runner landt, gebruikt Spin een online replica of laadt de centrale export terug en onthoudt de nieuwe cachekopie. Layerinhoud wordt niet geïnterpreteerd en een verdwenen laptop vernietigt dus geen Artifact.
+
+Die opslaggrens is bewust hard: uitsluitend afgeronde `RECORD … END RECORD`-lagen worden centrale artifacts. Tijdelijke composities, containers, Session-worktrees en hun Docker-delta's blijven wegwerpcache op de runner. Retry begint opnieuw bij de opgeslagen artifacts en de actuele remote Job-branch; er hoeft geen half afgemaakte runtime te worden verhuisd.
+
+Access → Backup downloadt één consistente `spin-backup-<tijd>.db` met state, portable masterkey, bijlagen en alle vereiste Docker-snapshots. Restore opent de upload eerst apart, ontsleutelt en valideert de state, leest iedere BLOB volledig terug met SHA-256, maakt een lokaal rollbackpunt en vervangt daarna pas de actieve database. Zo'n backup bevat zowel credentials als credential-images en moet als een passwordbestand worden behandeld.
 
 Bij de eerste bestaande-state-start worden oude plaintext Git/MCP/OAuth-secretwaarden automatisch herschreven als AES-256-GCM-enveloppen. Starten met een ontbrekende of verkeerde bestaande masterkey stopt met een expliciete fout; Spin overschrijft de state dan niet.
 
@@ -265,7 +270,7 @@ De Linux-server en -client worden statisch gebouwd voor amd64 en arm64. De clien
 
 Een client krijgt alleen de publieke server-URL. `https://spin.example.test` wordt automatisch `wss://spin.example.test/api/runner/ws`; bij disconnect gebruikt hij ping/pong en exponential reconnect. Server en client delen uitsluitend `SPIN_WORKER_TOKEN`.
 
-De HopOS-server verwacht een gepubliceerde `ER_PORT_HTTP`, een gemounte `/data` voor de JSON-state, `SPIN_WORKER_TOKEN` en bij voorkeur een vaste base64 `SPIN_MASTER_KEY`. De control plane en runner-WebSocket zijn native beschikbaar. Job attachments zijn op HopOS voorlopig bewust uitgeschakeld; de Linux-server is voor 1.0.0 het volledige productiedoel.
+De HopOS-server verwacht een gepubliceerde `ER_PORT_HTTP`, een gemounte `/data` voor `/data/spin.db`, `SPIN_WORKER_TOKEN` en bij voorkeur een vaste base64 `SPIN_MASTER_KEY`. SQLite v0.35.4 is libc-vrij via wasm2go; een eigen HopOS-VFS vertaalt random-access pagina-I/O naar de volume-ABI. De echte releasegate bouwt dit pad voor arm64 én riscv64. Control plane, runner-WebSocket, Job-bijlagen, centrale Docker-snapshots en databasebackup zijn daardoor op beide targets beschikbaar.
 
 Bij runners buiten het lokale Compose-netwerk moet `SPIN_INTERNAL_URL` op de server een voor de agentcontainers bereikbare HTTPS-URL zijn (meestal dezelfde reverse-proxy-URL als `SPIN_PUBLIC_URL`). De standaard `http://server:8080` is alleen geldig voor de meegeleverde lokale Compose-runner; workflow-MCP gebruikt deze URL vanuit de Session-container.
 
@@ -279,7 +284,7 @@ GOCACHE=/tmp/easyacp-go-cache go build ./cmd/spin-server ./cmd/spin-client
 
 ## Belangrijke grens
 
-Een Docker image commit bewaart filesystemstate, geen RAM, open sockets of provider-side KV/prompt cache. Tool-loginimages zoals `credential:codex` bevatten echte secrets en moeten daarom als secretmateriaal worden behandeld. Git-, MCP- en OAuth-secrets staan AES-256-GCM-versleuteld in de server-state en worden nooit door de state-API teruggestuurd; de masterkey staat bewust in een apart bestand/volume. Back-up daarom state én key, maar bewaar ze gescheiden.
+Een Docker image commit bewaart filesystemstate, geen RAM, open sockets of provider-side KV/prompt cache. Tool-loginimages zoals `credential:codex` bevatten echte secrets en moeten daarom als secretmateriaal worden behandeld. Git-, MCP- en OAuth-secrets staan AES-256-GCM-versleuteld in de server-state en worden nooit door de state-API teruggestuurd; de live masterkey staat bewust in een apart bestand/volume. Alleen een expliciete admin-backup voegt een portable kopie van die key aan de gedownloade database toe, zodat één bestand daadwerkelijk herstelbaar is.
 
 Spin heeft nu lokale app-authenticatie, user-scoped zichtbaarheid, CSRF-bescherming en een apart runnerkanaal. Voor toegang buiten localhost blijft TLS via een vertrouwde reverse proxy vereist. Iedere toegelaten runner en diens Docker-daemon vallen binnen de trust boundary; credentialimages kunnen naar de runner van de betreffende workload worden gerepliceerd. Tokenrotatie/revocation, per-runner attestatie en een externe secret manager zijn logische vervolgstappen voor een echte multi-tenant deployment.
 

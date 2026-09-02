@@ -427,6 +427,12 @@ func (c *csrfTokenCache) delete(sessionID string) {
 	c.mu.Unlock()
 }
 
+func (c *csrfTokenCache) clear() {
+	c.mu.Lock()
+	c.values = map[string]string{}
+	c.mu.Unlock()
+}
+
 var fakePasswordHash = func() string {
 	// Constant valid encoding used to equalize unknown-user login work.
 	salt := make([]byte, 16)

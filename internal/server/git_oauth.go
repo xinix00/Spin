@@ -17,7 +17,9 @@ import (
 	"sync"
 	"time"
 
+	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
+	"easyacp/internal/persistence"
 	"easyacp/internal/store"
 	"easyacp/internal/worker"
 )
@@ -41,6 +43,9 @@ type ServerOptions struct {
 	DisableAuthentication bool
 	WorkerToken           string
 	AttachmentDir         string
+	AttachmentStorage     AttachmentStorage
+	SnapshotArchive       capsule.SnapshotArchive
+	Database              *persistence.SQLite
 	RunnerBroker          *worker.Broker
 }
 

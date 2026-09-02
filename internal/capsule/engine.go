@@ -103,6 +103,7 @@ type WorkspaceInspector interface {
 
 type WorkspaceAttachment struct {
 	SourcePath string
+	Data       []byte
 	TargetPath string
 }
 
@@ -160,6 +161,16 @@ type SnapshotExporter interface {
 
 type SnapshotImporter interface {
 	ImportSnapshot(context.Context, domain.CapsuleSnapshot, io.Reader) error
+}
+
+// SnapshotArchive is the server-owned source of truth for immutable Capsule
+// snapshots. Docker daemons are caches: a runner may disappear without taking
+// an Artifact with it.
+type SnapshotArchive interface {
+	StoreSnapshot(context.Context, domain.CapsuleSnapshot, io.Reader) error
+	RestoreSnapshot(context.Context, domain.CapsuleSnapshot, io.Writer) error
+	HasSnapshot(context.Context, domain.CapsuleSnapshot) (bool, error)
+	RemoveArchivedSnapshot(context.Context, domain.CapsuleSnapshot) error
 }
 
 // Journal keeps unit tests and metadata-only deployments useful without ever

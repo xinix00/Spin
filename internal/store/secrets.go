@@ -26,6 +26,7 @@ type OpenOptions struct {
 
 type secretCipher struct {
 	aead cipher.AEAD
+	key  []byte
 }
 
 func newSecretCipher(options OpenOptions, statePath string) (*secretCipher, error) {
@@ -67,7 +68,11 @@ func newSecretCipher(options OpenOptions, statePath string) (*secretCipher, erro
 	if err != nil {
 		return nil, err
 	}
-	return &secretCipher{aead: aead}, nil
+	return &secretCipher{aead: aead, key: append([]byte(nil), key...)}, nil
+}
+
+func (c *secretCipher) portableKey() string {
+	return base64.RawStdEncoding.EncodeToString(c.key)
 }
 
 func loadOrCreateMasterKey(path string) ([]byte, error) {

@@ -169,6 +169,8 @@
       <section class="tab-page" id="tab-access">
         <div class="page-header"><div><div class="eyebrow">Server identity</div><h1>Access</h1><p class="subtitle">De ingelogde user bepaalt server-side alle persoonlijke snapshots, accounts en credentials.</p></div><button class="primary" id="open-user-dialog"><span class="material-symbols-outlined" aria-hidden="true">add</span>Gebruiker toevoegen</button></div>
         <section class="panel"><div class="panel-head"><div><h2>Gebruikers</h2><small>Admins beheren toegang; passwords en sessions blijven volledig server-side.</small></div></div><div class="mcp-list" id="user-list"></div></section>
+        <section class="panel" id="backup-panel"><div class="panel-head"><div><h2>Backup & restore</h2><small>Eén spin.db met Jobs, credentials, bijlagen en alle opgenomen Docker-lagen.</small></div><div class="panel-actions"><button class="small-button" id="download-backup" type="button"><span class="material-symbols-outlined" aria-hidden="true">download</span>Backup</button><button class="danger" id="choose-restore" type="button"><span class="material-symbols-outlined" aria-hidden="true">restore</span>Restore</button></div></div><div class="section"><p class="hint">De databasebackup bevat de portable AES-key en geeft dus toegang tot Git- en MCP-credentials. Bewaar hem als een passwordbestand. Restore valideert eerst de state, bijlagen en iedere vereiste Docker-snapshot; browser-sessions en oude runtime-handles worden bewust niet hervat.</p></div></section>
+        <input id="restore-backup-input" type="file" accept=".db,.sqlite,.sqlite3,application/vnd.sqlite3,application/x-sqlite3" hidden>
       </section>
 
       <dialog id="job-dialog">
@@ -971,8 +973,24 @@
 
     function renderAccess(){
       const admin=authState.user?.role==='admin',form=document.getElementById('user-form'),button=document.getElementById('open-user-dialog'),root=document.getElementById('user-list');
-      form.hidden=!admin;button.hidden=!admin;
+      form.hidden=!admin;button.hidden=!admin;document.getElementById('backup-panel').hidden=!admin;
       root.innerHTML=snapshot.users.length?snapshot.users.map(user=>`<article class="mcp-card"><div><div class="artifact-title"><strong>${esc(user.display_name||user.username)}</strong><span class="tag ${user.role==='admin'?'secret':''}">${esc(user.role)}</span>${user.id===authState.user?.id?'<span class="tag capability">you</span>':''}</div><small>@${esc(user.username)} · created ${esc(new Date(user.created_at).toLocaleDateString())}</small></div></article>`).join(''):'<div class="empty">Nog geen gebruikers.</div>';
+    }
+
+    async function backupResponse(path,options={}){
+      const headers={...(options.headers||{})};if(csrfToken)headers['X-Spin-CSRF']=csrfToken;
+      const response=await fetch(path,{...options,headers,credentials:'same-origin'});
+      if(!response.ok){const body=await response.json().catch(()=>({error:response.statusText}));const error=new Error(body.error||response.statusText);error.status=response.status;throw error;}
+      return response;
+    }
+    async function downloadPortableBackup(){
+      const button=document.getElementById('download-backup'),label=button.innerHTML;button.disabled=true;button.innerHTML=`${icon('progress_activity')}Backup maken…`;
+      try{const response=await backupResponse('/api/backup-ticket',{method:'POST'}),result=await response.json(),link=document.createElement('a');link.href=result.url;link.download='';document.body.appendChild(link);link.click();link.remove();print('system','SQLite-backup gestart · de server streamt state, secrets, bijlagen en opgenomen Docker-lagen rechtstreeks naar schijf.');}catch(error){showError(error);}finally{button.disabled=false;button.innerHTML=label;}
+    }
+    async function restorePortableBackup(file){
+      if(!file)return;if(!confirm(`Restore “${file.name}”?\n\nDe huidige server-state wordt vervangen. Actieve browser-sessions worden afgesloten; lopende runtime-handles worden niet meegenomen.`))return;
+      const button=document.getElementById('choose-restore'),label=button.innerHTML;button.disabled=true;button.innerHTML=`${icon('progress_activity')}Valideren…`;
+      try{const response=await backupResponse('/api/restore',{method:'POST',headers:{'Content-Type':'application/vnd.sqlite3'},body:file}),result=await response.json();if(pollTimer){clearInterval(pollTimer);pollTimer=null;}alert(`Restore compleet: ${result.jobs} Jobs, ${result.templates} Templates, ${result.deliverables} deliverables, ${result.attachments} bijlagen en ${result.snapshots} Docker-snapshots. Log opnieuw in.`);location.reload();}catch(error){showError(error);}finally{button.disabled=false;button.innerHTML=label;document.getElementById('restore-backup-input').value='';}
     }
 
     function bindCommandButtons(root=document){root.querySelectorAll('[data-command]').forEach(button=>button.onclick=()=>{setTab('environments');openConsole();execute(button.dataset.command);});}
@@ -1067,6 +1085,9 @@
     document.getElementById('open-git-dialog').onclick=()=>{resetGitForm();openDialog('git-dialog');};
     document.getElementById('open-mcp-dialog').onclick=()=>openDialog('mcp-dialog');
     document.getElementById('open-user-dialog').onclick=()=>openDialog('user-dialog');
+    document.getElementById('download-backup').onclick=downloadPortableBackup;
+    document.getElementById('choose-restore').onclick=()=>document.getElementById('restore-backup-input').click();
+    document.getElementById('restore-backup-input').onchange=event=>restorePortableBackup(event.target.files[0]);
     document.getElementById('add-snapshot').onclick=()=>openConsole('RECORD <kind>:<name> --scope=user');
     document.getElementById('record-git-tool').onclick=()=>openConsole('RECORD tool:git --scope=global --enable=git');
     document.getElementById('list-snapshots').onclick=()=>refresh(true);

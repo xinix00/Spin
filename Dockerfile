@@ -18,7 +18,7 @@ RUN apk add --no-cache ca-certificates && mkdir -p /data
 COPY --from=build /out/spin-server /usr/local/bin/spin-server
 EXPOSE 8080
 ENTRYPOINT ["spin-server"]
-CMD ["-addr", ":8080", "-state", "/data/spin-state.json"]
+CMD ["-addr", ":8080", "-database", "/data/spin.db", "-state", "/data/spin-state.json"]
 
 FROM alpine:3.24 AS client
 RUN apk add --no-cache ca-certificates docker-cli && mkdir -p /client-data

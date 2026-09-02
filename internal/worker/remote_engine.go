@@ -20,20 +20,37 @@ import (
 // every Docker operation behind the runner broker. Runtime and snapshot
 // ClientIDs are the only placement knowledge that leaks into durable state.
 type RemoteEngine struct {
-	broker *Broker
+	broker  *Broker
+	archive capsule.SnapshotArchive
 }
 
-func NewRemoteEngine(broker *Broker) *RemoteEngine { return &RemoteEngine{broker: broker} }
+func NewRemoteEngine(broker *Broker, archive ...capsule.SnapshotArchive) *RemoteEngine {
+	engine := &RemoteEngine{broker: broker}
+	if len(archive) > 0 {
+		engine.archive = archive[0]
+	}
+	return engine
+}
 
 func (e *RemoteEngine) Info() domain.CapsuleEngineInfo { return e.broker.info() }
 
 func (e *RemoteEngine) StartRecording(ctx context.Context, recording domain.Recording, parents []domain.Artifact) (domain.CapsuleRuntime, error) {
-	affinity, err := artifactAffinity(parents)
+	target, err := e.broker.choose(ctx, "")
 	if err != nil {
 		return domain.CapsuleRuntime{}, err
 	}
+	for index := range parents {
+		parent := &parents[index]
+		if !parent.Snapshot.Restorable || parent.Snapshot.Ref == "" || snapshotAvailableOn(parent.Snapshot, target.id) {
+			continue
+		}
+		if err := e.ensureSnapshotOn(ctx, *parent, target.id); err != nil {
+			return domain.CapsuleRuntime{}, fmt.Errorf("provide parent %s to runner %s: %w", parent.ID, target.id, err)
+		}
+		parent.Snapshot.ReplicaClientIDs = append(parent.Snapshot.ReplicaClientIDs, target.id)
+	}
 	var runtime domain.CapsuleRuntime
-	peer, err := e.broker.call(ctx, affinity, methodStartRecording, startRecordingPayload{Recording: recording, Parents: parents}, &runtime)
+	peer, err := e.broker.call(ctx, target.id, methodStartRecording, startRecordingPayload{Recording: recording, Parents: parents}, &runtime)
 	if err != nil {
 		return domain.CapsuleRuntime{}, err
 	}
@@ -89,8 +106,8 @@ func (e *RemoteEngine) materialize(ctx context.Context, composition domain.Compo
 		if !artifact.Snapshot.Restorable || artifact.Snapshot.Ref == "" || snapshotAvailableOn(artifact.Snapshot, target.id) {
 			continue
 		}
-		if err := e.replicateSnapshot(ctx, *artifact, target.id); err != nil {
-			return domain.CapsuleRuntime{}, fmt.Errorf("replicate %s to runner %s: %w", artifact.ID, target.id, err)
+		if err := e.ensureSnapshotOn(ctx, *artifact, target.id); err != nil {
+			return domain.CapsuleRuntime{}, fmt.Errorf("provide %s to runner %s: %w", artifact.ID, target.id, err)
 		}
 		artifact.Snapshot.ReplicaClientIDs = append(artifact.Snapshot.ReplicaClientIDs, target.id)
 	}
@@ -102,6 +119,16 @@ func (e *RemoteEngine) materialize(ctx context.Context, composition domain.Compo
 	runtime.ClientID = peer.id
 	peer.addWorkload(1)
 	return runtime, nil
+}
+
+func (e *RemoteEngine) ExportSnapshot(ctx context.Context, snapshot domain.CapsuleSnapshot, destination io.Writer) error {
+	process, err := e.broker.openStream(ctx, snapshot.ClientID, methodExportSnapshot, snapshotPayload{Snapshot: snapshot})
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(destination, process)
+	execution, waitErr := process.Wait()
+	return errors.Join(copyErr, waitErr, executionError("snapshot export", execution))
 }
 
 func (e *RemoteEngine) Stop(ctx context.Context, runtime domain.CapsuleRuntime) error {
@@ -141,16 +168,22 @@ func (e *RemoteEngine) InspectWorkspaceRange(ctx context.Context, runtime domain
 
 func (e *RemoteEngine) InjectWorkspaceAttachments(ctx context.Context, runtime domain.CapsuleRuntime, attachments []capsule.WorkspaceAttachment) error {
 	for _, attachment := range attachments {
-		info, err := os.Stat(attachment.SourcePath)
-		if err != nil {
-			return err
+		data := attachment.Data
+		if data == nil {
+			info, err := os.Stat(attachment.SourcePath)
+			if err != nil {
+				return err
+			}
+			if info.Size() > 15<<20 {
+				return errors.New("runner attachment exceeds the 15 MiB upload limit")
+			}
+			data, err = os.ReadFile(attachment.SourcePath)
+			if err != nil {
+				return err
+			}
 		}
-		if info.Size() > 15<<20 {
+		if len(data) > 15<<20 {
 			return errors.New("runner attachment exceeds the 15 MiB upload limit")
-		}
-		data, err := os.ReadFile(attachment.SourcePath)
-		if err != nil {
-			return err
 		}
 		payload := injectAttachmentsPayload{Runtime: runtime, Attachments: []attachmentPayload{{TargetPath: attachment.TargetPath, Data: data}}}
 		if _, err := e.broker.call(ctx, runtime.ClientID, methodInjectAttachments, payload, nil); err != nil {
@@ -178,6 +211,9 @@ func (e *RemoteEngine) RemoveSnapshot(ctx context.Context, snapshot domain.Capsu
 		if _, err := e.broker.call(ctx, clientID, methodRemoveSnapshot, snapshotPayload{Snapshot: snapshot}, nil); err != nil {
 			return err
 		}
+	}
+	if e.archive != nil {
+		return e.archive.RemoveArchivedSnapshot(ctx, snapshot)
 	}
 	return nil
 }
@@ -221,6 +257,47 @@ func (e *RemoteEngine) replicateSnapshot(ctx context.Context, artifact domain.Ar
 	return err
 }
 
+func (e *RemoteEngine) ensureSnapshotOn(ctx context.Context, artifact domain.Artifact, targetID string) error {
+	var replicaErr error
+	connectedSource := e.broker.connectedSnapshotSource(artifact.Snapshot, targetID)
+	if e.archive == nil || connectedSource != "" {
+		replicaErr = e.replicateSnapshot(ctx, artifact, targetID)
+		if replicaErr == nil && connectedSource != "" {
+			return nil
+		}
+	}
+	if e.archive == nil {
+		return replicaErr
+	}
+	hasSnapshot, archiveErr := e.archive.HasSnapshot(ctx, artifact.Snapshot)
+	if archiveErr != nil {
+		return errors.Join(replicaErr, archiveErr)
+	}
+	if !hasSnapshot {
+		if replicaErr != nil {
+			return replicaErr
+		}
+		// Legacy state without runner affinity may still share the target
+		// daemon. Preserve that compatibility until it has been archived.
+		if !snapshotHasPlacement(artifact.Snapshot) {
+			return nil
+		}
+		return errors.New("snapshot is absent from the central archive and every known runner is offline")
+	}
+	process, err := e.broker.openStream(ctx, targetID, methodImportSnapshot, snapshotPayload{Snapshot: artifact.Snapshot})
+	if err != nil {
+		return errors.Join(replicaErr, err)
+	}
+	restoreErr := e.archive.RestoreSnapshot(ctx, artifact.Snapshot, process)
+	closeErr := process.Close()
+	execution, waitErr := process.Wait()
+	if err := errors.Join(restoreErr, closeErr, waitErr, executionError("snapshot import", execution)); err != nil {
+		return errors.Join(replicaErr, err)
+	}
+	_, err = e.broker.store.AddSnapshotReplica(artifact.ID, targetID)
+	return err
+}
+
 func executionError(operation string, execution capsule.Execution) error {
 	if execution.ExitCode == 0 {
 		return nil
@@ -230,6 +307,18 @@ func executionError(operation string, execution capsule.Execution) error {
 
 func snapshotAvailableOn(snapshot domain.CapsuleSnapshot, clientID string) bool {
 	return snapshot.ClientID == clientID || slices.Contains(snapshot.ReplicaClientIDs, clientID)
+}
+
+func snapshotHasPlacement(snapshot domain.CapsuleSnapshot) bool {
+	if strings.TrimSpace(snapshot.ClientID) != "" {
+		return true
+	}
+	for _, clientID := range snapshot.ReplicaClientIDs {
+		if strings.TrimSpace(clientID) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func recordingAffinity(recording domain.Recording) string {
@@ -255,6 +344,19 @@ func artifactAffinity(artifacts []domain.Artifact) (string, error) {
 }
 
 func (b *Broker) snapshotSource(snapshot domain.CapsuleSnapshot, targetID string) string {
+	if connected := b.connectedSnapshotSource(snapshot, targetID); connected != "" {
+		return connected
+	}
+	candidates := append([]string{snapshot.ClientID}, snapshot.ReplicaClientIDs...)
+	for _, clientID := range candidates {
+		if clientID != "" && clientID != targetID {
+			return clientID
+		}
+	}
+	return ""
+}
+
+func (b *Broker) connectedSnapshotSource(snapshot domain.CapsuleSnapshot, targetID string) string {
 	candidates := append([]string{snapshot.ClientID}, snapshot.ReplicaClientIDs...)
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -263,11 +365,6 @@ func (b *Broker) snapshotSource(snapshot domain.CapsuleSnapshot, targetID string
 			continue
 		}
 		if peer := b.peers[clientID]; peer != nil && peer.connectedNow() {
-			return clientID
-		}
-	}
-	for _, clientID := range candidates {
-		if clientID != "" && clientID != targetID {
 			return clientID
 		}
 	}

@@ -286,11 +286,12 @@ Een toolcredential-Artifact, zoals `credential:codex`, is een image met secrets 
 - user-scoped resolutie is standaard;
 - geen impliciete delegatie tussen gebruikers;
 - Docker images en de daemon zijn onderdeel van de trust boundary;
-- exports, registries en backups moeten credentialimages standaard uitsluiten;
+- de centrale snapshot-BLOB en iedere volledige backup die credentialimages bevat zijn zelf credentialmateriaal;
+- alleen een afgeronde `RECORD … END RECORD`-snapshot wordt centraal opgeslagen; compositions, Session-worktrees en runtime-delta's zijn vervangbare runnercache en Retry bouwt ze opnieuw op;
 - logs en metadata mogen nooit credentialinhoud tonen;
 - revocation en garbage collection zijn vereist voor productie.
 
-Git-auth volgt een smallere grens: OAuth-/toegangstokens zijn user-scoped serverstate, worden geredigeerd uit de publieke API en alleen vluchtig aan de checkouthelper aangeboden. Git access/refresh tokens, MCP env/headerwaarden en OAuth client secrets worden met AES-256-GCM en contextgebonden associated data opgeslagen. De masterkey staat buiten `spin-state.json`; bij Compose in het afzonderlijke `spin-keys`-volume. Legacy plaintext wordt bij de eerste succesvolle open atomisch gemigreerd. Zonder de juiste bestaande key weigert de server te starten en blijft de state onaangeraakt.
+Git-auth volgt een smallere grens: OAuth-/toegangstokens zijn user-scoped serverstate, worden geredigeerd uit de publieke API en alleen vluchtig aan de checkouthelper aangeboden. Git access/refresh tokens, MCP env/headerwaarden en OAuth client secrets worden met AES-256-GCM en contextgebonden associated data opgeslagen. De live masterkey staat buiten `spin.db`; bij Compose in het afzonderlijke `spin-keys`-volume. Legacy JSON en losse attachments worden bij de eerste succesvolle open in SQLite geïmporteerd. Een expliciete admin-backup is één zelfstandige database en bevat daarom een portable key; die backup is secretmateriaal. Zonder de juiste bestaande live key weigert de server te starten en blijft de state onaangeraakt.
 
 Lokale passwords zijn PBKDF2-HMAC-SHA256 hashes met unieke salts; login-sessions bewaren uitsluitend hashes van de random cookie en CSRF-token. De browsercookie is HttpOnly, SameSite=Lax en onder HTTPS `Secure` met een `__Host-` naam. Mutaties vereisen daarnaast de expliciete CSRF-header. Headless workers delen geen browserlogin: zij gebruiken een random bearer-token uit een apart volume dat geen masterkey bevat.
 
