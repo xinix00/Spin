@@ -165,6 +165,74 @@ type DeliverableComment struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// CodeReviewRevision is an immutable capture of one explicit Changes review.
+// Files live in persisted state and are only returned by the focused review
+// API; Snapshot exposes the lightweight summary below.
+type CodeReviewRevision struct {
+	ID                string           `json:"id"`
+	JobID             string           `json:"job_id"`
+	SourcePhaseRunID  string           `json:"source_phase_run_id,omitempty"`
+	ContextPhaseRunID string           `json:"context_phase_run_id,omitempty"`
+	SessionID         string           `json:"session_id,omitempty"`
+	PhaseID           string           `json:"phase_id,omitempty"`
+	PhaseName         string           `json:"phase_name,omitempty"`
+	Attempt           int              `json:"attempt,omitempty"`
+	Scope             string           `json:"scope"`
+	ScopeKey          string           `json:"scope_key"`
+	Live              bool             `json:"live,omitempty"`
+	Branch            string           `json:"branch,omitempty"`
+	Digest            string           `json:"digest"`
+	Added             int              `json:"added"`
+	Deleted           int              `json:"deleted"`
+	Files             []CodeReviewFile `json:"files"`
+	CreatedBy         string           `json:"created_by"`
+	CreatedAt         time.Time        `json:"created_at"`
+}
+
+type CodeReviewFile struct {
+	Path      string `json:"path"`
+	Status    string `json:"status"`
+	Added     int    `json:"added"`
+	Deleted   int    `json:"deleted"`
+	Patch     string `json:"patch,omitempty"`
+	Binary    bool   `json:"binary,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+type CodeReviewRevisionSummary struct {
+	ID                string    `json:"id"`
+	JobID             string    `json:"job_id"`
+	SourcePhaseRunID  string    `json:"source_phase_run_id,omitempty"`
+	ContextPhaseRunID string    `json:"context_phase_run_id,omitempty"`
+	SessionID         string    `json:"session_id,omitempty"`
+	PhaseID           string    `json:"phase_id,omitempty"`
+	PhaseName         string    `json:"phase_name,omitempty"`
+	Attempt           int       `json:"attempt,omitempty"`
+	Scope             string    `json:"scope"`
+	ScopeKey          string    `json:"scope_key"`
+	Branch            string    `json:"branch,omitempty"`
+	Added             int       `json:"added"`
+	Deleted           int       `json:"deleted"`
+	FileCount         int       `json:"file_count"`
+	CreatedBy         string    `json:"created_by"`
+	CreatedAt         time.Time `json:"created_at"`
+}
+
+// CodeReviewComment never changes or resolves. It remains attached to the
+// exact captured diff revision on which an author selected the code.
+type CodeReviewComment struct {
+	ID         string    `json:"id"`
+	RevisionID string    `json:"revision_id"`
+	Path       string    `json:"path"`
+	Side       string    `json:"side"`
+	StartLine  int       `json:"start_line"`
+	EndLine    int       `json:"end_line"`
+	Selected   string    `json:"selected_text"`
+	Body       string    `json:"body"`
+	Author     string    `json:"author"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 type WorkflowQuestion struct {
 	ID             string     `json:"id"`
 	JobID          string     `json:"job_id"`
@@ -753,26 +821,28 @@ type GitOAuthConfiguration struct {
 }
 
 type Snapshot struct {
-	Artifacts           []Artifact           `json:"artifacts"`
-	Recordings          []Recording          `json:"recordings"`
-	Compositions        []Composition        `json:"compositions"`
-	Jobs                []Job                `json:"jobs"`
-	JobAttachments      []JobAttachment      `json:"job_attachments"`
-	WorkflowTemplates   []WorkflowTemplate   `json:"workflow_templates"`
-	PhaseRuns           []PhaseRun           `json:"phase_runs"`
-	Deliverables        []Deliverable        `json:"deliverables"`
-	DeliverableComments []DeliverableComment `json:"deliverable_comments"`
-	WorkflowQuestions   []WorkflowQuestion   `json:"workflow_questions"`
-	Sessions            []Session            `json:"sessions"`
-	Activations         []Activation         `json:"activations"`
-	Turns               []Turn               `json:"turns"`
-	Checkpoints         []Checkpoint         `json:"checkpoints"`
-	Results             []Result             `json:"results"`
-	Clients             []Client             `json:"clients"`
-	MCPServers          []MCPServer          `json:"mcp_servers"`
-	GitRepositories     []GitRepository      `json:"git_repositories"`
-	GitAccounts         []GitAccount         `json:"git_accounts"`
-	Users               []PublicUser         `json:"users"`
+	Artifacts           []Artifact                  `json:"artifacts"`
+	Recordings          []Recording                 `json:"recordings"`
+	Compositions        []Composition               `json:"compositions"`
+	Jobs                []Job                       `json:"jobs"`
+	JobAttachments      []JobAttachment             `json:"job_attachments"`
+	WorkflowTemplates   []WorkflowTemplate          `json:"workflow_templates"`
+	PhaseRuns           []PhaseRun                  `json:"phase_runs"`
+	Deliverables        []Deliverable               `json:"deliverables"`
+	DeliverableComments []DeliverableComment        `json:"deliverable_comments"`
+	CodeReviewRevisions []CodeReviewRevisionSummary `json:"code_review_revisions"`
+	CodeReviewComments  []CodeReviewComment         `json:"code_review_comments"`
+	WorkflowQuestions   []WorkflowQuestion          `json:"workflow_questions"`
+	Sessions            []Session                   `json:"sessions"`
+	Activations         []Activation                `json:"activations"`
+	Turns               []Turn                      `json:"turns"`
+	Checkpoints         []Checkpoint                `json:"checkpoints"`
+	Results             []Result                    `json:"results"`
+	Clients             []Client                    `json:"clients"`
+	MCPServers          []MCPServer                 `json:"mcp_servers"`
+	GitRepositories     []GitRepository             `json:"git_repositories"`
+	GitAccounts         []GitAccount                `json:"git_accounts"`
+	Users               []PublicUser                `json:"users"`
 }
 
 type Recommendation struct {
@@ -927,6 +997,29 @@ type CreateDeliverableCommentRequest struct {
 	Prefix       string `json:"prefix,omitempty"`
 	Suffix       string `json:"suffix,omitempty"`
 	Body         string `json:"body"`
+}
+
+type CreateCodeReviewRequest struct {
+	SessionID string `json:"session_id,omitempty"`
+	Live      bool   `json:"live,omitempty"`
+}
+
+type CreateCodeReviewCommentRequest struct {
+	Operator     string `json:"operator,omitempty"`
+	Path         string `json:"path"`
+	Side         string `json:"side"`
+	StartLine    int    `json:"start_line"`
+	EndLine      int    `json:"end_line"`
+	SelectedText string `json:"selected_text"`
+	Body         string `json:"body"`
+}
+
+type CodeReviewBundle struct {
+	Revision         CodeReviewRevision          `json:"revision"`
+	History          []CodeReviewRevisionSummary `json:"history"`
+	Comments         []CodeReviewComment         `json:"comments"`
+	LatestRevisionID string                      `json:"latest_revision_id,omitempty"`
+	Annotatable      bool                        `json:"annotatable"`
 }
 
 type AnswerWorkflowQuestionRequest struct {

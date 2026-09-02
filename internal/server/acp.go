@@ -202,23 +202,7 @@ func (s *Server) sessionACP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sessionChanges(w http.ResponseWriter, r *http.Request) {
-	session, composition, err := s.sessionComposition(r.PathValue("sessionID"), s.requestOperator(r, r.URL.Query().Get("operator")))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if session.PreparedCompositionID == "" || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
-		writeError(w, fmt.Errorf("session has no running workspace: %w", store.ErrConflict))
-		return
-	}
-	inspector, ok := s.engine.(capsule.WorkspaceInspector)
-	if !ok {
-		writeError(w, fmt.Errorf("capsule engine %s cannot inspect workspaces: %w", s.engine.Info().Driver, store.ErrConflict))
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	changes, err := inspector.InspectWorkspace(ctx, *composition.Runtime)
+	changes, err := s.inspectSessionChanges(r.Context(), r.PathValue("sessionID"), s.requestOperator(r, r.URL.Query().Get("operator")))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -228,13 +212,37 @@ func (s *Server) sessionChanges(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) jobChanges(w http.ResponseWriter, r *http.Request) {
 	operator := s.requestOperator(r, r.URL.Query().Get("operator"))
-	job, compositions, err := s.store.PrepareJobDeletion(r.PathValue("jobID"), operator)
+	changes, err := s.inspectJobChanges(r.Context(), r.PathValue("jobID"), operator, strings.TrimSpace(r.URL.Query().Get("session_id")))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, changes)
+}
+
+func (s *Server) inspectSessionChanges(ctx context.Context, sessionID, operator string) (capsule.WorkspaceChanges, error) {
+	session, composition, err := s.sessionComposition(sessionID, operator)
+	if err != nil {
+		return capsule.WorkspaceChanges{}, err
+	}
+	if session.PreparedCompositionID == "" || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+		return capsule.WorkspaceChanges{}, fmt.Errorf("session has no running workspace: %w", store.ErrConflict)
+	}
+	inspector, ok := s.engine.(capsule.WorkspaceInspector)
+	if !ok {
+		return capsule.WorkspaceChanges{}, fmt.Errorf("capsule engine %s cannot inspect workspaces: %w", s.engine.Info().Driver, store.ErrConflict)
+	}
+	inspectContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return inspector.InspectWorkspace(inspectContext, *composition.Runtime)
+}
+
+func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, sessionID string) (capsule.WorkspaceChanges, error) {
+	job, compositions, err := s.store.JobWorkspaceHistory(jobID)
+	if err != nil {
+		return capsule.WorkspaceChanges{}, err
+	}
 	snapshot := s.store.Snapshot()
-	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
 	phaseName := ""
 	if sessionID != "" {
 		sessionIndex := -1
@@ -245,8 +253,7 @@ func (s *Server) jobChanges(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if sessionIndex < 0 {
-			writeError(w, store.ErrNotFound)
-			return
+			return capsule.WorkspaceChanges{}, store.ErrNotFound
 		}
 		for _, run := range snapshot.PhaseRuns {
 			if run.SessionID == sessionID && run.JobID == job.ID {
@@ -273,19 +280,16 @@ func (s *Server) jobChanges(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if composition == nil {
-		writeError(w, fmt.Errorf("Job has no materialized workspace history for comparison: %w", store.ErrConflict))
-		return
+		return capsule.WorkspaceChanges{}, fmt.Errorf("Job has no materialized workspace history for comparison: %w", store.ErrConflict)
 	}
 	inspector, ok := s.engine.(capsule.WorkspaceRangeInspector)
 	if !ok {
-		writeError(w, fmt.Errorf("capsule engine %s cannot compare Job workspaces: %w", s.engine.Info().Driver, store.ErrConflict))
-		return
+		return capsule.WorkspaceChanges{}, fmt.Errorf("capsule engine %s cannot compare Job workspaces: %w", s.engine.Info().Driver, store.ErrConflict)
 	}
 	authentication := &capsule.GitAuthentication{}
-	account, authenticated, accountErr := s.gitAccountForWorkspace(r.Context(), composition.Git, composition.Operator)
+	account, authenticated, accountErr := s.gitAccountForWorkspace(ctx, composition.Git, composition.Operator)
 	if accountErr != nil {
-		writeError(w, accountErr)
-		return
+		return capsule.WorkspaceChanges{}, accountErr
 	}
 	if authenticated {
 		username := account.Login
@@ -297,22 +301,20 @@ func (s *Server) jobChanges(w http.ResponseWriter, r *http.Request) {
 	}
 	runtime := composition.Runtime
 	if runtime.Status == "stopped" {
-		comparisonContext, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+		comparisonContext, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()
 		var restored domain.CapsuleRuntime
 		if authenticated {
 			materializer, supported := s.engine.(capsule.SecretMaterializer)
 			if !supported {
-				writeError(w, fmt.Errorf("capsule engine cannot restore a private Job workspace: %w", store.ErrConflict))
-				return
+				return capsule.WorkspaceChanges{}, fmt.Errorf("capsule engine cannot restore a private Job workspace: %w", store.ErrConflict)
 			}
 			restored, err = materializer.MaterializeWithGitAuthentication(comparisonContext, *composition, snapshot.Artifacts, authentication)
 		} else {
 			restored, err = s.engine.Materialize(comparisonContext, *composition, snapshot.Artifacts)
 		}
 		if err != nil {
-			writeError(w, fmt.Errorf("restore Job workspace for comparison: %w", err))
-			return
+			return capsule.WorkspaceChanges{}, fmt.Errorf("restore Job workspace for comparison: %w", err)
 		}
 		runtime = &restored
 		defer func() {
@@ -329,12 +331,11 @@ func (s *Server) jobChanges(w http.ResponseWriter, r *http.Request) {
 	if sessionID != "" {
 		comparison.CommitMessageMatch = "Spin-Session: " + sessionID
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	inspectContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	changes, err := inspector.InspectWorkspaceRange(ctx, *runtime, comparison)
+	changes, err := inspector.InspectWorkspaceRange(inspectContext, *runtime, comparison)
 	if err != nil {
-		writeError(w, err)
-		return
+		return capsule.WorkspaceChanges{}, err
 	}
 	if sessionID == "" {
 		changes.Branch = job.Branch + " ← " + job.BaseRef
@@ -343,7 +344,7 @@ func (s *Server) jobChanges(w http.ResponseWriter, r *http.Request) {
 	} else {
 		changes.Branch = sessionID
 	}
-	writeJSON(w, http.StatusOK, changes)
+	return changes, nil
 }
 
 func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {

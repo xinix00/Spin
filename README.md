@@ -113,6 +113,8 @@ De Job Goal wordt altijd geïnjecteerd. Een fase ontvangt daarnaast uitsluitend 
 
 Deliverables staan als bijlagen bij zowel de fase als de chat en openen als volledig Markdown-document. Bovenin kan tussen alle immutable revisies worden gewisseld. Alleen op de laatste revisie kan een ingelogde gebruiker tekst selecteren en een permanente comment plaatsen; historische revisies en hun bestaande comments zijn read-only. De server controleert bij iedere comment opnieuw of de revisie nog actueel is, zodat een oude browsertab geen retroactieve feedback kan toevoegen. Comments op de laatste revisies gaan als onafhankelijke context naar iedere nieuwe workflow-Session en staan los van ACCEPT/REJECT.
 
+Code review volgt hetzelfde immutable model. De algemene `Changes`-knop op een Job opent altijd de volledige boom vanaf de basisbranch; de knop bij een fase opent uitsluitend de laatste diff van die poging. Het openen van deze grote reviewweergave legt precies één dedupliceerde revisie vast. Selecteer tekst of klik een coderegel om een permanente comment met bestand, zijde en regelbereik te plaatsen. Oudere diffrevisies blijven via de revisiebalk terugleesbaar maar kunnen niet achteraf worden aangepast. Wanneer de bijbehorende workflowpoging wordt gereject, injecteert Spin zowel de rejectreden als alle codecomments in de volgende Session; diens fasediff begint opnieuw klein terwijl de volledige Job-boom bovenin beschikbaar blijft.
+
 De Job toont `BEZIG`, `PENDING · ASK`, `PENDING · USER` of `KLAAR`, plus alle pogingen. Zo blijft de flow generiek terwijl Templateconfiguratie bepaalt waar iedere beslissing heen gaat.
 
 ## Het model
@@ -226,6 +228,9 @@ POST   /api/clients/{id}/drain
 POST   /api/clients/{id}/resume
 POST   /api/sessions/{id}/retry
 GET    /api/sessions/{id}/changes
+POST   /api/jobs/{job-id}/code-reviews
+GET    /api/code-reviews/{revision-id}
+POST   /api/code-reviews/{revision-id}/comments
 POST   /api/workflow-templates
 DELETE /api/workflow-templates/{id}
 POST   /api/workflow/questions/{id}/answer

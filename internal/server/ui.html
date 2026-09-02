@@ -251,6 +251,18 @@
           <div class="job-changes-body">
             <aside class="job-changes-files"><div class="changes-head"><div class="changes-title"><h3>Bestanden</h3><span class="tag" id="job-changes-file-count">0</span></div><span class="changes-branch" id="job-changes-branch">branch laden…</span></div><div class="changes-list" id="job-changes-list"><div class="empty">Changes laden…</div></div></aside>
             <section class="job-changes-view"><div class="diff-drawer-head"><div class="diff-file-copy"><strong id="job-change-file-name">Selecteer een bestand</strong><small id="job-change-file-meta">Side by side op brede schermen · inline op smalle schermen</small></div></div><div class="diff-scroll" id="job-change-diff"><div class="diff-empty">Selecteer links een bestand om de diff te bekijken.</div></div></section>
+            <aside class="code-review-pane">
+              <div class="comment-pane-head"><strong>Codecomments</strong><small id="code-review-help">Selecteer code in de laatste revisie.</small><div class="code-review-revisions" id="code-review-revisions"></div></div>
+              <div class="comment-list" id="code-review-comments"><div class="comment-history-note">Open een diff en selecteer code.</div></div>
+              <form class="comment-compose" id="code-review-comment-form" hidden>
+                <div class="comment-compose-location" id="code-review-comment-location"></div>
+                <div class="comment-compose-quote" id="code-review-comment-quote"></div>
+                <label for="code-review-comment-body">Wat moet hiermee?</label>
+                <textarea id="code-review-comment-body" name="body" required maxlength="8192" placeholder="Schrijf een concrete opmerking…"></textarea>
+                <div class="panel-actions"><button class="small-button" type="button" id="cancel-code-review-comment">Annuleren</button><button class="primary" type="submit">Comment plaatsen</button></div>
+              </form>
+              <div class="code-review-decision" id="code-review-decision"></div>
+            </aside>
           </div>
         </div>
       </dialog>

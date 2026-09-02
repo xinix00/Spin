@@ -36,6 +36,8 @@ type persistedState struct {
 	PhaseRuns                map[string]domain.PhaseRun              `json:"phase_runs"`
 	Deliverables             map[string]domain.Deliverable           `json:"deliverables"`
 	DeliverableComments      map[string]domain.DeliverableComment    `json:"deliverable_comments"`
+	CodeReviewRevisions      map[string]domain.CodeReviewRevision    `json:"code_review_revisions"`
+	CodeReviewComments       map[string]domain.CodeReviewComment     `json:"code_review_comments"`
 	WorkflowQuestions        map[string]domain.WorkflowQuestion      `json:"workflow_questions"`
 	JobRequestKeys           map[string]string                       `json:"job_request_keys"`
 	Sessions                 map[string]domain.Session               `json:"sessions"`
@@ -129,6 +131,8 @@ func newState() persistedState {
 		PhaseRuns:                map[string]domain.PhaseRun{},
 		Deliverables:             map[string]domain.Deliverable{},
 		DeliverableComments:      map[string]domain.DeliverableComment{},
+		CodeReviewRevisions:      map[string]domain.CodeReviewRevision{},
+		CodeReviewComments:       map[string]domain.CodeReviewComment{},
 		WorkflowQuestions:        map[string]domain.WorkflowQuestion{},
 		JobRequestKeys:           map[string]string{},
 		Sessions:                 map[string]domain.Session{},
@@ -260,6 +264,12 @@ func (s *Store) ensureMaps() {
 	}
 	if s.state.DeliverableComments == nil {
 		s.state.DeliverableComments = map[string]domain.DeliverableComment{}
+	}
+	if s.state.CodeReviewRevisions == nil {
+		s.state.CodeReviewRevisions = map[string]domain.CodeReviewRevision{}
+	}
+	if s.state.CodeReviewComments == nil {
+		s.state.CodeReviewComments = map[string]domain.CodeReviewComment{}
 	}
 	if s.state.WorkflowQuestions == nil {
 		s.state.WorkflowQuestions = map[string]domain.WorkflowQuestion{}
@@ -1947,6 +1957,18 @@ func (s *Store) DeleteJob(jobID, operator string) (domain.Job, error) {
 			delete(s.state.DeliverableComments, id)
 		}
 	}
+	removedReviewRevisions := map[string]bool{}
+	for id, revision := range s.state.CodeReviewRevisions {
+		if revision.JobID == job.ID {
+			delete(s.state.CodeReviewRevisions, id)
+			removedReviewRevisions[id] = true
+		}
+	}
+	for id, comment := range s.state.CodeReviewComments {
+		if removedReviewRevisions[comment.RevisionID] {
+			delete(s.state.CodeReviewComments, id)
+		}
+	}
 	for id, question := range s.state.WorkflowQuestions {
 		if question.JobID == job.ID {
 			delete(s.state.WorkflowQuestions, id)
@@ -2586,6 +2608,8 @@ func (s *Store) Snapshot() domain.Snapshot {
 		PhaseRuns:           []domain.PhaseRun{},
 		Deliverables:        []domain.Deliverable{},
 		DeliverableComments: []domain.DeliverableComment{},
+		CodeReviewRevisions: []domain.CodeReviewRevisionSummary{},
+		CodeReviewComments:  []domain.CodeReviewComment{},
 		WorkflowQuestions:   []domain.WorkflowQuestion{},
 		Sessions:            []domain.Session{},
 		Activations:         []domain.Activation{},
@@ -2626,6 +2650,12 @@ func (s *Store) Snapshot() domain.Snapshot {
 	}
 	for _, v := range s.state.DeliverableComments {
 		out.DeliverableComments = append(out.DeliverableComments, v)
+	}
+	for _, v := range s.state.CodeReviewRevisions {
+		out.CodeReviewRevisions = append(out.CodeReviewRevisions, codeReviewSummary(v))
+	}
+	for _, v := range s.state.CodeReviewComments {
+		out.CodeReviewComments = append(out.CodeReviewComments, v)
 	}
 	for _, v := range s.state.WorkflowQuestions {
 		out.WorkflowQuestions = append(out.WorkflowQuestions, v)
@@ -2669,6 +2699,8 @@ func (s *Store) Snapshot() domain.Snapshot {
 	slices.SortFunc(out.PhaseRuns, func(a, b domain.PhaseRun) int { return a.StartedAt.Compare(b.StartedAt) })
 	slices.SortFunc(out.Deliverables, func(a, b domain.Deliverable) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	slices.SortFunc(out.DeliverableComments, func(a, b domain.DeliverableComment) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	slices.SortFunc(out.CodeReviewRevisions, func(a, b domain.CodeReviewRevisionSummary) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	slices.SortFunc(out.CodeReviewComments, func(a, b domain.CodeReviewComment) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	slices.SortFunc(out.WorkflowQuestions, func(a, b domain.WorkflowQuestion) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	slices.SortFunc(out.Sessions, func(a, b domain.Session) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	slices.SortFunc(out.Activations, func(a, b domain.Activation) int { return a.StartedAt.Compare(b.StartedAt) })

@@ -644,6 +644,33 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 		}
 		fmt.Fprintf(&prompt, "- %s, poging %d: %s\n", previous.PhaseName, previous.Attempt, previous.RejectReason)
 	}
+	codeFeedbackWritten := false
+	for _, previous := range history {
+		if previous.JobID != job.ID || previous.ID == run.ID || previous.RejectReason == "" {
+			continue
+		}
+		for _, revision := range snapshot.CodeReviewRevisions {
+			if revision.ContextPhaseRunID != previous.ID {
+				continue
+			}
+			for _, comment := range snapshot.CodeReviewComments {
+				if comment.RevisionID != revision.ID {
+					continue
+				}
+				if !codeFeedbackWritten {
+					prompt.WriteString("\nCODECOMMENTS UIT AFGEWEZEN REVIEWS\nDeze opmerkingen horen bij immutable diffrevisies. Verwerk ze in deze poging; verander de oude comments zelf nooit.\n")
+					codeFeedbackWritten = true
+				}
+				location := fmt.Sprintf("%s:%d", comment.Path, comment.StartLine)
+				if comment.EndLine > comment.StartLine {
+					location = fmt.Sprintf("%s:%d-%d", comment.Path, comment.StartLine, comment.EndLine)
+				}
+				selected := strings.ReplaceAll(strings.TrimSpace(comment.Selected), "\n", "\n    ")
+				body := strings.ReplaceAll(strings.TrimSpace(comment.Body), "\n", "\n  ")
+				fmt.Fprintf(&prompt, "- %s (%s, %s) door %s:\n    %s\n  Opmerking: %s\n", location, comment.Side, previous.PhaseName, comment.Author, selected, body)
+			}
+		}
+	}
 	prompt.WriteString("\nWERKWIJZE\nGebruik uitsluitend de aangeboden Spin workflowtools om workflowstate te wijzigen. ask stelt precies één vraag; bundel geen vragen. ")
 	if len(phase.Deliverables) > 0 {
 		prompt.WriteString("Lever ieder hierboven gevraagd document volledig als Markdown aan met add_deliverable. ")

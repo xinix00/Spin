@@ -80,6 +80,21 @@ func TestWorkflowAcceptOwnsCommitAndPublishesSessionToJobBranch(t *testing.T) {
 			t.Fatal("commit must never be exposed as an agent workflow tool")
 		}
 	}
+	reviewRequest := httptest.NewRequest(http.MethodPost, "/api/jobs/"+created.Job.ID+"/code-reviews?operator=derek", bytes.NewBufferString(`{"session_id":"`+created.Session.ID+`","live":true}`))
+	reviewRequest.Header.Set("Content-Type", "application/json")
+	reviewResponse := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(reviewResponse, reviewRequest)
+	var review domain.CodeReviewBundle
+	if reviewResponse.Code != http.StatusCreated || json.Unmarshal(reviewResponse.Body.Bytes(), &review) != nil || !review.Annotatable || len(review.Revision.Files) != 1 || review.Revision.Files[0].Path != "active.go" {
+		t.Fatalf("code review status=%d body=%s decoded=%+v", reviewResponse.Code, reviewResponse.Body.String(), review)
+	}
+	commentRequest := httptest.NewRequest(http.MethodPost, "/api/code-reviews/"+review.Revision.ID+"/comments", bytes.NewBufferString(`{"operator":"derek","path":"active.go","side":"new","start_line":2,"end_line":2,"selected_text":"new","body":"Geef dit een duidelijke naam."}`))
+	commentRequest.Header.Set("Content-Type", "application/json")
+	commentResponse := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(commentResponse, commentRequest)
+	if commentResponse.Code != http.StatusCreated || len(st.Snapshot().CodeReviewComments) != 1 {
+		t.Fatalf("code comment status=%d body=%s", commentResponse.Code, commentResponse.Body.String())
+	}
 	if _, err := srv.callWorkflowTool(context.Background(), created.Session.ID, "accept", map[string]any{"summary": "Darkmode gereed"}); err != nil {
 		t.Fatal(err)
 	}
@@ -333,6 +348,44 @@ func TestWorkflowPromptInjectsOnlySelectedLatestDeliverablesAndAlwaysGoal(t *tes
 	resource := resources[0].Block["resource"].(map[string]any)
 	if resource["mimeType"] != "text/markdown" || resource["text"] != "laatste FO" {
 		t.Fatalf("ACP deliverable resource = %#v", resource)
+	}
+	if _, err := st.MarkWorkflowPhaseRunning(advance.NextSession.ID); err != nil {
+		t.Fatal(err)
+	}
+	var buildRun domain.PhaseRun
+	for _, candidate := range st.Snapshot().PhaseRuns {
+		if candidate.SessionID == advance.NextSession.ID {
+			buildRun = candidate
+			break
+		}
+	}
+	if buildRun.ID == "" {
+		t.Fatal("build PhaseRun not found")
+	}
+	review, err := st.SaveCodeReviewRevision(domain.CodeReviewRevision{
+		JobID: created.Job.ID, SourcePhaseRunID: buildRun.ID, ContextPhaseRunID: buildRun.ID,
+		SessionID: advance.NextSession.ID, PhaseID: buildRun.PhaseID, PhaseName: buildRun.PhaseName,
+		Attempt: buildRun.Attempt, Scope: "phase", ScopeKey: "job:" + created.Job.ID + ":phase:" + buildRun.PhaseID,
+		Digest: "review-feedback", CreatedBy: "derek", Files: []domain.CodeReviewFile{{Path: "ui/theme.go", Patch: "+fallback := light"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddCodeReviewComment(review.ID, "john", domain.CreateCodeReviewCommentRequest{Path: "ui/theme.go", Side: "new", StartLine: 42, EndLine: 42, SelectedText: "fallback := light", Body: "Gebruik hier het opgeslagen user preference."}); err != nil {
+		t.Fatal(err)
+	}
+	rejected, err := st.CompleteWorkflowPhase(advance.NextSession.ID, "reject", "Darkmode onthoudt de keuze nog niet")
+	if err != nil || rejected.NextSession == nil {
+		t.Fatalf("reject advance = %+v, error = %v", rejected, err)
+	}
+	retryPrompt, err := srv.workflowPrompt(rejected.NextSession.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"CODECOMMENTS UIT AFGEWEZEN REVIEWS", "ui/theme.go:42", "fallback := light", "Gebruik hier het opgeslagen user preference."} {
+		if !strings.Contains(retryPrompt, expected) {
+			t.Fatalf("retry prompt missing %q:\n%s", expected, retryPrompt)
+		}
 	}
 }
 
