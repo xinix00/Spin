@@ -1,3 +1,7 @@
+> [!CAUTION]
+> # DEPRECATED — DO NOT USE
+> Spin is niet onderhouden, niet ondersteund en niet bedoeld voor productiegebruik. Deze repository is uitsluitend openbaar als gearchiveerd referentiemateriaal. Er wordt geen toestemming gegeven om de code te gebruiken, uit te voeren, kopiëren, wijzigen of distribueren. Zie [LICENSE](LICENSE).
+
 # EasyACP / Spin
 
 Tool-onafhankelijke Docker-snapshots voor overdraagbare agentomgevingen. Spin kent niet het interne login- of sessieformaat van een tool: je bouwt een expliciete snapshotketen en kiest later één logisch Artifact als entrypoint. De webserver is de control plane; één of meer uitgaande WebSocket-runners leveren de Docker-compute.
