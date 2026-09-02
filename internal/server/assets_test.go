@@ -66,11 +66,17 @@ func TestDashboardServesPinnedRichMarkdownAssets(t *testing.T) {
 		}
 	}
 
-	oldAssetRequest := httptest.NewRequest(http.MethodGet, "/assets/vendor/marked-18.0.11.js", nil)
-	oldAssetResponse := httptest.NewRecorder()
-	server.Handler().ServeHTTP(oldAssetResponse, oldAssetRequest)
-	if oldAssetResponse.Code != http.StatusNotFound {
-		t.Fatalf("unversioned asset status = %d, want %d", oldAssetResponse.Code, http.StatusNotFound)
+	for _, fallbackPath := range []string{
+		"/assets/vendor/marked-18.0.11.js",
+		"/assets/v0/vendor/marked-18.0.11.js",
+	} {
+		fallbackRequest := httptest.NewRequest(http.MethodGet, fallbackPath, nil)
+		fallbackResponse := httptest.NewRecorder()
+		server.Handler().ServeHTTP(fallbackResponse, fallbackRequest)
+		if fallbackResponse.Code != http.StatusOK || fallbackResponse.Body.Len() == 0 {
+			t.Fatalf("fallback GET %s = %d, %d bytes", fallbackPath, fallbackResponse.Code, fallbackResponse.Body.Len())
+		}
+		assertNotCached(t, fallbackResponse)
 	}
 
 	if strings.Contains(dashboard, "fonts.googleapis.com") {

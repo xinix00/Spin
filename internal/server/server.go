@@ -145,12 +145,28 @@ func (s *Server) routes() {
 		panic(fmt.Sprintf("prepare embedded dashboard assets: %v", err))
 	}
 	assetPrefix := "/assets/v" + frontendAssetVersion + "/"
-	assets := http.StripPrefix(assetPrefix, http.FileServer(http.FS(assetFiles)))
-	s.mux.Handle("GET "+assetPrefix, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		assets.ServeHTTP(w, r)
+	assets := http.FileServer(http.FS(assetFiles))
+	s.mux.Handle("GET /assets/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assetPath := strings.TrimPrefix(r.URL.Path, "/assets/")
+		requestedPrefix := "/assets/"
+		if separator := strings.IndexByte(assetPath, '/'); separator > 1 && assetPath[0] == 'v' {
+			version := assetPath[1:separator]
+			if strings.IndexFunc(version, func(character rune) bool { return character < '0' || character > '9' }) == -1 {
+				requestedPrefix += assetPath[:separator+1]
+				assetPath = assetPath[separator+1:]
+			}
+		}
+		if requestedPrefix == assetPrefix {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			// Keep an already-open or edge-cached older dashboard functional during
+			// rolling deploys, without making fallback responses immutable.
+			preventCaching(w)
+		}
+		request := r.Clone(r.Context())
+		request.URL.Path = "/" + assetPath
+		assets.ServeHTTP(w, request)
 	}))
-	s.mux.HandleFunc("GET /assets/", http.NotFound)
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
