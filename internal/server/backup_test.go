@@ -3,8 +3,10 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -42,6 +44,13 @@ func TestSQLiteBackupRestoresStateSecretsAndAttachmentsUnderDestinationKey(t *te
 	})
 	png := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{7}, 128)...)
 	attachment := uploadAttachmentForTest(t, sourceServer.Handler(), "/api/job-attachments?operator=derek", "bewijs.png", png, http.StatusCreated)
+	largePayload := make([]byte, 2<<20)
+	for index := range largePayload {
+		largePayload[index] = byte(index*31 + index/251)
+	}
+	if _, err := sourceDatabase.PutBlob(context.Background(), "restore:test-large", "test", bytes.NewReader(largePayload)); err != nil {
+		t.Fatal(err)
+	}
 
 	backupRequest := httptest.NewRequest(http.MethodPost, "/api/backup", nil)
 	backupResponse := httptest.NewRecorder()
@@ -51,6 +60,9 @@ func TestSQLiteBackupRestoresStateSecretsAndAttachmentsUnderDestinationKey(t *te
 	}
 	if backupResponse.Header().Get("Content-Type") != "application/vnd.sqlite3" || backupResponse.Body.Len() < 4096 {
 		t.Fatalf("backup content type=%q size=%d", backupResponse.Header().Get("Content-Type"), backupResponse.Body.Len())
+	}
+	if backupResponse.Body.Len() <= 1<<20 {
+		t.Fatalf("backup size=%d does not exercise Lean's 1 MiB request boundary", backupResponse.Body.Len())
 	}
 
 	destinationDirectory := t.TempDir()
@@ -127,6 +139,58 @@ func TestSQLiteBackupRestoresStateSecretsAndAttachmentsUnderDestinationKey(t *te
 	}
 	if completed == nil || completed.Status != "restored" || completed.Attachments != 1 {
 		t.Fatalf("stream completion = %+v", completed)
+	}
+
+	createBody, err := json.Marshal(map[string]any{"name": "large-spin.db", "size": backupResponse.Body.Len()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/restore-uploads", bytes.NewReader(createBody))
+	createRecorder := httptest.NewRecorder()
+	destinationServer.Handler().ServeHTTP(createRecorder, createRequest)
+	var upload restoreUploadResponse
+	if createRecorder.Code != http.StatusCreated || json.Unmarshal(createRecorder.Body.Bytes(), &upload) != nil {
+		t.Fatalf("create upload status=%d body=%s", createRecorder.Code, createRecorder.Body.String())
+	}
+	if upload.ChunkSize > 1<<20 || upload.ChunkSize <= 0 {
+		t.Fatalf("chunk size=%d exceeds Lean boundary", upload.ChunkSize)
+	}
+	offset := int64(0)
+	chunks := 0
+	for offset < int64(backupResponse.Body.Len()) {
+		end := offset + upload.ChunkSize
+		if end > int64(backupResponse.Body.Len()) {
+			end = int64(backupResponse.Body.Len())
+		}
+		chunkRequest := httptest.NewRequest(http.MethodPut, "/api/restore-uploads/"+upload.ID, bytes.NewReader(backupResponse.Body.Bytes()[offset:end]))
+		chunkRequest.Header.Set("X-Spin-Upload-Offset", fmt.Sprint(offset))
+		chunkRecorder := httptest.NewRecorder()
+		destinationServer.Handler().ServeHTTP(chunkRecorder, chunkRequest)
+		var current restoreUploadResponse
+		if chunkRecorder.Code != http.StatusOK || json.Unmarshal(chunkRecorder.Body.Bytes(), &current) != nil || current.Offset != end {
+			t.Fatalf("append chunk status=%d body=%s", chunkRecorder.Code, chunkRecorder.Body.String())
+		}
+		if chunks == 0 {
+			staleRequest := httptest.NewRequest(http.MethodPut, "/api/restore-uploads/"+upload.ID, bytes.NewReader([]byte("stale")))
+			staleRequest.Header.Set("X-Spin-Upload-Offset", "0")
+			staleRecorder := httptest.NewRecorder()
+			destinationServer.Handler().ServeHTTP(staleRecorder, staleRequest)
+			if staleRecorder.Code != http.StatusConflict {
+				t.Fatalf("stale chunk status=%d body=%s", staleRecorder.Code, staleRecorder.Body.String())
+			}
+		}
+		offset = end
+		chunks++
+	}
+	if chunks < 2 {
+		t.Fatalf("chunk count=%d does not cross Lean boundary", chunks)
+	}
+	completeRequest := httptest.NewRequest(http.MethodPost, "/api/restore-uploads/"+upload.ID+"/complete", nil)
+	completeRequest.Header.Set("Accept", restoreProgressMediaType)
+	completeRecorder := httptest.NewRecorder()
+	destinationServer.Handler().ServeHTTP(completeRecorder, completeRequest)
+	if completeRecorder.Code != http.StatusOK || !bytes.Contains(completeRecorder.Body.Bytes(), []byte(`"type":"complete"`)) {
+		t.Fatalf("complete chunked restore status=%d body=%s", completeRecorder.Code, completeRecorder.Body.String())
 	}
 
 	if err := destinationDatabase.Close(); err != nil {

@@ -145,3 +145,58 @@ func TestSQLiteBackupAndRestoreIsOneDatabase(t *testing.T) {
 		t.Fatalf("live database retained portable key: %v", err)
 	}
 }
+
+func TestSQLiteBackupUploadResumesAtCommittedOffset(t *testing.T) {
+	ctx := context.Background()
+	source, err := Open(filepath.Join(t.TempDir(), "source.db"), OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.WriteFile("state", []byte(`{"chunked":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	var backup bytes.Buffer
+	if err := source.WriteBackup(ctx, &backup, "portable-secret"); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	destination, err := Open(filepath.Join(t.TempDir(), "destination.db"), OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer destination.Close()
+	upload, err := destination.BeginBackupUpload(int64(backup.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upload.Close()
+	if offset, err := upload.Append(ctx, 12, 4, bytes.NewReader([]byte("nope"))); !errors.Is(err, ErrBackupUploadOffset) || offset != 0 {
+		t.Fatalf("stale append offset=%d error=%v", offset, err)
+	}
+	for offset := int64(0); offset < int64(backup.Len()); {
+		end := offset + 997
+		if end > int64(backup.Len()) {
+			end = int64(backup.Len())
+		}
+		next, err := upload.Append(ctx, offset, end-offset, bytes.NewReader(backup.Bytes()[offset:end]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		offset = next
+	}
+	staged, err := upload.Stage(int64(backup.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer staged.Close()
+	if staged.MasterKey != "portable-secret" {
+		t.Fatalf("master key = %q", staged.MasterKey)
+	}
+	state, err := staged.Database.ReadFile("state")
+	if err != nil || string(state) != `{"chunked":true}` {
+		t.Fatalf("state = %q, %v", state, err)
+	}
+}

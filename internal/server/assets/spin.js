@@ -714,14 +714,46 @@ function restoreProgressEvent(event){
   if(event.type==='complete'){updateRestoreProgress('Restore compleet','100%',100);return event.result;}
   const names={open:'Database openen',state:'State controleren',attachments:'Bijlagen controleren',snapshots:'Docker-lagen controleren',rollback:'Rollbackpunt maken',install:'Database activeren',secrets:'Credentials beveiligen'},percentage=event.total?event.current/event.total*100:null,detail=event.total?`${event.current}/${event.total}`:'';updateRestoreProgress(names[event.stage]||'Restore uitvoeren',event.message+(detail?` · ${detail}`:''),percentage);return null;
 }
-function uploadRestoreDatabase(file){
-  return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();let cursor=0,pending='',result=null,streamError=null;xhr.open('POST','/api/restore');xhr.withCredentials=true;xhr.setRequestHeader('Content-Type','application/vnd.sqlite3');xhr.setRequestHeader('Accept','application/x-ndjson');if(csrfToken)xhr.setRequestHeader('X-Spin-CSRF',csrfToken);
-    const consume=final=>{const type=xhr.getResponseHeader('Content-Type')||'';if(!type.includes('application/x-ndjson'))return;pending+=xhr.responseText.slice(cursor);cursor=xhr.responseText.length;const lines=pending.split('\n');pending=final?'':lines.pop();if(final&&pending.trim())lines.push(pending);for(const line of lines){if(!line.trim())continue;try{const event=JSON.parse(line),completed=restoreProgressEvent(event);if(completed)result=completed;}catch(error){streamError=error;}}};
-    xhr.upload.onprogress=event=>{const total=event.total||file.size,percentage=total?event.loaded/total*100:0;updateRestoreProgress('Database uploaden',`${formatBytes(event.loaded)} / ${formatBytes(total)} · ${Math.floor(percentage)}%`,percentage);};
-    xhr.upload.onload=()=>updateRestoreProgress('Upload compleet',`${formatBytes(file.size)} verzonden · Spin opent de database…`,null);
-    xhr.onprogress=()=>consume(false);xhr.onerror=()=>reject(new Error('Verbinding verbroken tijdens restore'));xhr.onabort=()=>reject(new Error('Restore geannuleerd'));
-    xhr.onload=()=>{consume(true);if(streamError){reject(streamError);return;}if(result){resolve(result);return;}let body={};try{body=JSON.parse(xhr.responseText||'{}');}catch(_){}if(xhr.status<200||xhr.status>=300){reject(new Error(body.error||xhr.statusText||'Restore mislukt'));return;}reject(new Error('Restore eindigde zonder resultaat'));};xhr.send(file);
+function uploadRestoreChunk(uploadID,offset,chunk,total){
+  return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('PUT',`/api/restore-uploads/${encodeURIComponent(uploadID)}`);xhr.withCredentials=true;xhr.setRequestHeader('Content-Type','application/octet-stream');xhr.setRequestHeader('X-Spin-Upload-Offset',String(offset));if(csrfToken)xhr.setRequestHeader('X-Spin-CSRF',csrfToken);
+    xhr.upload.onprogress=event=>{const sent=offset+event.loaded,percentage=total?sent/total*100:0;updateRestoreProgress('Database uploaden',`${formatBytes(sent)} / ${formatBytes(total)} · ${Math.floor(percentage)}%`,percentage);};
+    xhr.onerror=()=>reject(new Error('Verbinding verbroken tijdens restore-chunk'));xhr.onabort=()=>reject(new Error('Restore geannuleerd'));
+    xhr.onload=()=>{let body={};try{body=JSON.parse(xhr.responseText||'{}');}catch(_){}if(xhr.status<200||xhr.status>=300){const error=new Error(body.error||xhr.statusText||'Restore-chunk geweigerd');error.status=xhr.status;error.offset=body.offset;reject(error);return;}resolve(body);};xhr.send(chunk);
   });
+}
+function completeRestoreUpload(uploadID){
+  return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();let cursor=0,pending='',result=null,streamError=null;xhr.open('POST',`/api/restore-uploads/${encodeURIComponent(uploadID)}/complete`);xhr.withCredentials=true;xhr.setRequestHeader('Accept','application/x-ndjson');if(csrfToken)xhr.setRequestHeader('X-Spin-CSRF',csrfToken);
+    const consume=final=>{const type=xhr.getResponseHeader('Content-Type')||'';if(!type.includes('application/x-ndjson'))return;pending+=xhr.responseText.slice(cursor);cursor=xhr.responseText.length;const lines=pending.split('\n');pending=final?'':lines.pop();if(final&&pending.trim())lines.push(pending);for(const line of lines){if(!line.trim())continue;try{const event=JSON.parse(line),completed=restoreProgressEvent(event);if(completed)result=completed;}catch(error){streamError=error;}}};
+    xhr.onprogress=()=>consume(false);xhr.onerror=()=>reject(new Error('Verbinding verbroken tijdens het activeren van de restore'));xhr.onabort=()=>reject(new Error('Restore geannuleerd'));
+    xhr.onload=()=>{consume(true);if(streamError){reject(streamError);return;}if(result){resolve(result);return;}let body={};try{body=JSON.parse(xhr.responseText||'{}');}catch(_){}if(xhr.status<200||xhr.status>=300){reject(new Error(body.error||xhr.statusText||'Restore mislukt'));return;}reject(new Error('Restore eindigde zonder resultaat'));};xhr.send();
+  });
+}
+async function uploadRestoreDatabase(file){
+  const createdResponse=await backupResponse('/api/restore-uploads',{method:'POST',body:JSON.stringify({name:file.name,size:file.size})}),upload=await createdResponse.json(),chunkSize=Math.min(Number(upload.chunk_size)||1048576,1048576);let offset=Number(upload.offset)||0,failures=0;
+  try{
+    while(offset<file.size){
+      const end=Math.min(offset+chunkSize,file.size),chunk=file.slice(offset,end);
+      try{
+        const next=await uploadRestoreChunk(upload.id,offset,chunk,file.size),nextOffset=Number(next.offset);
+        if(!Number.isFinite(nextOffset)||nextOffset<=offset||nextOffset>file.size)throw new Error('Spin gaf een ongeldige restore-offset terug');
+        offset=nextOffset;failures=0;
+      }catch(error){
+        failures+=1;if(failures>5)throw error;
+        updateRestoreProgress('Uploadverbinding herstellen',`Poging ${failures}/5 · ontvangen offset opvragen…`,offset/file.size*100);
+        await new Promise(resolve=>setTimeout(resolve,Math.min(5000,500*2**(failures-1))));
+        try{
+          const statusResponse=await backupResponse(`/api/restore-uploads/${encodeURIComponent(upload.id)}`),status=await statusResponse.json(),serverOffset=Number(status.offset);
+          if(Number(status.size)!==file.size||!Number.isFinite(serverOffset)||serverOffset<0||serverOffset>file.size)throw new Error('Restore-uploadstatus komt niet overeen met het gekozen bestand');
+          offset=serverOffset;
+        }catch(statusError){if(failures>=5)throw error;}
+      }
+    }
+    updateRestoreProgress('Upload compleet',`${formatBytes(file.size)} ontvangen · Spin opent de database…`,null);
+    return await completeRestoreUpload(upload.id);
+  }catch(error){
+    await backupResponse(`/api/restore-uploads/${encodeURIComponent(upload.id)}`,{method:'DELETE'}).catch(()=>{});
+    throw error;
+  }
 }
 async function restorePortableBackup(file){
   if(!file)return;if(!confirm(`Restore “${file.name}”?\n\nDe huidige server-state wordt vervangen. Actieve browser-sessions worden afgesloten; lopende runtime-handles worden niet meegenomen.`)){document.getElementById('restore-backup-input').value='';return;}

@@ -51,42 +51,62 @@ func readPhysicalFile(ctx context.Context, path string, destination io.Writer) e
 	return nil
 }
 
-func writePhysicalFile(ctx context.Context, path string, source io.Reader, maxBytes int64) error {
+func createPhysicalFile(path string) error {
 	if physicalHopApp == nil {
 		return errors.New("HopOS persistence is not registered")
 	}
-	if err := physicalHopApp.Truncate(path, 0); err != nil {
-		return err
+	return physicalHopApp.Truncate(path, 0)
+}
+
+func appendPhysicalFile(ctx context.Context, path string, source io.Reader, offset, maxBytes int64) (int64, error) {
+	if physicalHopApp == nil {
+		return 0, errors.New("HopOS persistence is not registered")
 	}
 	buffer := make([]byte, hopabi.MaxChunk)
-	var offset int64
+	var total int64
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return total, ctx.Err()
 		default:
 		}
-		count, readErr := source.Read(buffer)
+		remaining := maxBytes - total
+		if remaining <= 0 {
+			return total, nil
+		}
+		chunk := buffer
+		if int64(len(chunk)) > remaining {
+			chunk = chunk[:remaining]
+		}
+		count, readErr := source.Read(chunk)
 		if count > 0 {
-			if offset+int64(count) > maxBytes {
-				return errors.New("backup exceeds upload limit")
-			}
-			written, err := physicalHopApp.WriteAt(path, uint64(offset), buffer[:count])
+			written, err := physicalHopApp.WriteAt(path, uint64(offset+total), chunk[:count])
 			if err != nil {
-				return err
+				return total, err
 			}
 			if written != count {
-				return io.ErrShortWrite
+				return total, io.ErrShortWrite
 			}
-			offset += int64(count)
+			total += int64(count)
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
-				return nil
+				return total, nil
 			}
-			return readErr
+			return total, readErr
 		}
 	}
+}
+
+func writePhysicalFile(ctx context.Context, path string, source io.Reader, maxBytes int64) error {
+	if err := createPhysicalFile(path); err != nil {
+		return err
+	}
+	written, copyErr := appendPhysicalFile(ctx, path, source, 0, maxBytes+1)
+	if written > maxBytes {
+		return errors.Join(errors.New("backup exceeds upload limit"), copyErr)
+	}
+	return copyErr
 }
 
 func removePhysicalFile(path string) error {

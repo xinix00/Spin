@@ -20,7 +20,7 @@ func readPhysicalFile(ctx context.Context, path string, destination io.Writer) e
 	return err
 }
 
-func writePhysicalFile(ctx context.Context, path string, source io.Reader, maxBytes int64) error {
+func createPhysicalFile(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
@@ -28,12 +28,31 @@ func writePhysicalFile(ctx context.Context, path string, source io.Reader, maxBy
 	if err != nil {
 		return err
 	}
-	written, copyErr := io.Copy(file, io.LimitReader(&contextReader{ctx: ctx, reader: source}, maxBytes+1))
-	closeErr := file.Close()
-	if written > maxBytes {
-		return errors.Join(errors.New("backup exceeds upload limit"), copyErr, closeErr)
+	return file.Close()
+}
+
+func appendPhysicalFile(ctx context.Context, path string, source io.Reader, offset, maxBytes int64) (int64, error) {
+	file, err := os.OpenFile(path, os.O_WRONLY, 0o600)
+	if err != nil {
+		return 0, err
 	}
-	return errors.Join(copyErr, closeErr)
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		_ = file.Close()
+		return 0, err
+	}
+	written, copyErr := io.Copy(file, io.LimitReader(&contextReader{ctx: ctx, reader: source}, maxBytes))
+	return written, errors.Join(copyErr, file.Close())
+}
+
+func writePhysicalFile(ctx context.Context, path string, source io.Reader, maxBytes int64) error {
+	if err := createPhysicalFile(path); err != nil {
+		return err
+	}
+	written, copyErr := appendPhysicalFile(ctx, path, source, 0, maxBytes+1)
+	if written > maxBytes {
+		return errors.Join(errors.New("backup exceeds upload limit"), copyErr)
+	}
+	return copyErr
 }
 
 func removePhysicalFile(path string) error {

@@ -48,6 +48,8 @@ type Server struct {
 	backupMu        sync.Mutex
 	backupTicketMu  sync.Mutex
 	backupTickets   map[string]backupTicket
+	restoreUploadMu sync.Mutex
+	restoreUploads  map[string]*restoreUpload
 }
 
 type backgroundJobLaunch struct {
@@ -85,7 +87,7 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 		internalURL:  strings.TrimRight(strings.TrimSpace(options.InternalURL), "/"),
 		attachments:  attachmentStorage, snapshotArchive: options.SnapshotArchive, database: options.Database,
 		loginLimiter: loginLimiter{attempts: map[string]loginAttempt{}}, csrfTokens: csrfTokenCache{values: map[string]string{}},
-		terminals: map[string]map[*activeTerminal]struct{}{}, acpSessions: map[string]*activeACP{}, workflowTokens: map[string]string{}, jobLaunching: map[string]*backgroundJobLaunch{}, backupTickets: map[string]backupTicket{},
+		terminals: map[string]map[*activeTerminal]struct{}{}, acpSessions: map[string]*activeACP{}, workflowTokens: map[string]string{}, jobLaunching: map[string]*backgroundJobLaunch{}, backupTickets: map[string]backupTicket{}, restoreUploads: map[string]*restoreUpload{},
 	}
 	s.gitOAuth = newGitOAuthManager(options, st)
 	s.routes()
@@ -184,6 +186,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/backup-ticket", s.createBackupTicket)
 	s.mux.HandleFunc("GET /api/backup", s.downloadBackupWithTicket)
 	s.mux.HandleFunc("POST /api/restore", s.restoreBackup)
+	s.mux.HandleFunc("POST /api/restore-uploads", s.createRestoreUpload)
+	s.mux.HandleFunc("GET /api/restore-uploads/{uploadID}", s.getRestoreUpload)
+	s.mux.HandleFunc("PUT /api/restore-uploads/{uploadID}", s.appendRestoreUpload)
+	s.mux.HandleFunc("DELETE /api/restore-uploads/{uploadID}", s.deleteRestoreUpload)
+	s.mux.HandleFunc("POST /api/restore-uploads/{uploadID}/complete", s.completeRestoreUpload)
 	s.mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		identity, _ := identityFromRequest(r)
 		snapshot := s.store.Snapshot()

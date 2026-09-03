@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"strings"
+	"sync"
 
 	sqliteDriver "github.com/ncruces/go-sqlite3/driver"
 )
@@ -17,11 +18,95 @@ const (
 	backupFormat    = "spin-sqlite-backup-v1"
 )
 
+var ErrBackupUploadOffset = errors.New("backup upload offset mismatch")
+
 type StagedBackup struct {
 	Path      string
 	Database  *SQLite
 	MasterKey string
 	remove    func(string) error
+}
+
+// BackupUpload incrementally assembles one portable database without ever
+// requiring a request body larger than the surrounding HTTP transport allows.
+// Appends are serialized and report their committed offset so an interrupted
+// client can resume at the first byte that did not reach physical storage.
+type BackupUpload struct {
+	mu       sync.Mutex
+	path     string
+	vfs      string
+	maxBytes int64
+	offset   int64
+}
+
+func (s *SQLite) BeginBackupUpload(maxBytes int64) (*BackupUpload, error) {
+	if maxBytes <= 0 {
+		return nil, errors.New("backup upload limit must be positive")
+	}
+	path := s.temporaryPath("restore-upload")
+	if err := createPhysicalFile(path); err != nil {
+		return nil, err
+	}
+	return &BackupUpload{path: path, vfs: s.vfs, maxBytes: maxBytes}, nil
+}
+
+func (u *BackupUpload) Offset() int64 {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.offset
+}
+
+func (u *BackupUpload) Append(ctx context.Context, expectedOffset, length int64, source io.Reader) (int64, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.path == "" {
+		return u.offset, errors.New("backup upload is closed")
+	}
+	if expectedOffset != u.offset {
+		return u.offset, fmt.Errorf("%w: received %d, expected %d", ErrBackupUploadOffset, expectedOffset, u.offset)
+	}
+	if length <= 0 {
+		return u.offset, errors.New("backup upload chunk is empty")
+	}
+	if length > u.maxBytes-u.offset {
+		return u.offset, errors.New("backup exceeds upload limit")
+	}
+	written, err := appendPhysicalFile(ctx, u.path, io.LimitReader(source, length), u.offset, length)
+	u.offset += written
+	if err == nil && written != length {
+		err = io.ErrUnexpectedEOF
+	}
+	return u.offset, err
+}
+
+// Stage transfers ownership of the completed physical file to StagedBackup.
+// The caller must close either the returned stage or this upload, never both.
+func (u *BackupUpload) Stage(expectedSize int64) (*StagedBackup, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.path == "" {
+		return nil, errors.New("backup upload is closed")
+	}
+	if u.offset != expectedSize {
+		return nil, fmt.Errorf("backup upload is incomplete: received %d of %d bytes", u.offset, expectedSize)
+	}
+	backup, err := openStagedBackup(u.path, u.vfs)
+	if err != nil {
+		return nil, err
+	}
+	u.path = ""
+	return backup, nil
+}
+
+func (u *BackupUpload) Close() error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.path == "" {
+		return nil
+	}
+	err := removePhysicalFile(u.path)
+	u.path = ""
+	return err
 }
 
 func (b *StagedBackup) Close() error {
@@ -90,24 +175,30 @@ func (s *SQLite) StageBackup(ctx context.Context, source io.Reader, maxBytes int
 		_ = removePhysicalFile(temporary)
 		return nil, err
 	}
-	backup, err := Open(temporary, OpenOptions{VFS: s.vfs})
+	backup, err := openStagedBackup(temporary, s.vfs)
 	if err != nil {
 		_ = removePhysicalFile(temporary)
+		return nil, err
+	}
+	return backup, nil
+}
+
+func openStagedBackup(path, vfs string) (*StagedBackup, error) {
+	backup, err := Open(path, OpenOptions{VFS: vfs})
+	if err != nil {
 		return nil, fmt.Errorf("open uploaded backup: %w", err)
 	}
 	format, err := backup.ReadFile(backupFormatKey)
 	if err != nil || string(format) != backupFormat {
 		_ = backup.Close()
-		_ = removePhysicalFile(temporary)
 		return nil, errors.New("not a supported Spin database backup")
 	}
 	key, err := backup.ReadFile(backupKeyKey)
 	if err != nil || strings.TrimSpace(string(key)) == "" {
 		_ = backup.Close()
-		_ = removePhysicalFile(temporary)
 		return nil, errors.New("Spin backup has no master key")
 	}
-	return &StagedBackup{Path: temporary, Database: backup, MasterKey: strings.TrimSpace(string(key)), remove: removePhysicalFile}, nil
+	return &StagedBackup{Path: path, Database: backup, MasterKey: strings.TrimSpace(string(key)), remove: removePhysicalFile}, nil
 }
 
 func (s *SQLite) RestoreFrom(ctx context.Context, backup *StagedBackup) error {

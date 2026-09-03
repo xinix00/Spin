@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,12 @@ import (
 )
 
 const maxBackupUploadBytes int64 = 64 << 30
+
+// Lean intentionally accepts at most 1 MiB per HTTP request. Keep restore
+// chunks at that exact transport boundary; metadata travels in headers.
+const restoreUploadChunkBytes int64 = 1 << 20
+
+const restoreUploadLifetime = 6 * time.Hour
 
 const restoreProgressMediaType = "application/x-ndjson"
 
@@ -33,6 +40,24 @@ type backupTicket struct {
 	UserID    string
 	SessionID string
 	ExpiresAt time.Time
+}
+
+type restoreUpload struct {
+	ID        string
+	UserID    string
+	Name      string
+	Size      int64
+	ExpiresAt time.Time
+	File      *persistence.BackupUpload
+}
+
+type restoreUploadResponse struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Size      int64     `json:"size"`
+	Offset    int64     `json:"offset"`
+	ChunkSize int64     `json:"chunk_size"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type restoreProgressEvent struct {
@@ -204,6 +229,157 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer staged.Close()
+	s.restoreStagedBackup(w, r, staged, progress)
+}
+
+func (s *Server) createRestoreUpload(w http.ResponseWriter, r *http.Request) {
+	if !s.requireBackupAdmin(w, r) {
+		return
+	}
+	if s.database == nil {
+		writeError(w, fmt.Errorf("SQLite restore is not configured: %w", store.ErrConflict))
+		return
+	}
+	if s.hasInteractiveActivity() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "stop active terminals, chats and background Job launches before restoring a backup"})
+		return
+	}
+	var request struct {
+		Name string `json:"name"`
+		Size int64  `json:"size"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+	if err := decoder.Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid restore upload: " + err.Error()})
+		return
+	}
+	request.Name = strings.TrimSpace(request.Name)
+	if request.Name == "" || len(request.Name) > 255 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "backup filename must contain 1 to 255 characters"})
+		return
+	}
+	if request.Size <= 0 || request.Size > maxBackupUploadBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "backup size must be between 1 byte and 64 GiB"})
+		return
+	}
+	file, err := s.database.BeginBackupUpload(maxBackupUploadBytes)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	id, err := randomOAuthValue(24)
+	if err != nil {
+		_ = file.Close()
+		writeError(w, err)
+		return
+	}
+	identity, authenticated := identityFromRequest(r)
+	upload := &restoreUpload{ID: id, Name: request.Name, Size: request.Size, ExpiresAt: time.Now().Add(restoreUploadLifetime), File: file}
+	if authenticated {
+		upload.UserID = identity.User.ID
+	}
+	expired := s.storeRestoreUpload(upload)
+	for _, candidate := range expired {
+		_ = candidate.File.Close()
+	}
+	writeJSON(w, http.StatusCreated, s.restoreUploadResult(upload))
+}
+
+func (s *Server) getRestoreUpload(w http.ResponseWriter, r *http.Request) {
+	if !s.requireBackupAdmin(w, r) {
+		return
+	}
+	upload, ok := s.restoreUploadForRequest(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.restoreUploadResult(upload))
+}
+
+func (s *Server) appendRestoreUpload(w http.ResponseWriter, r *http.Request) {
+	if !s.requireBackupAdmin(w, r) {
+		return
+	}
+	upload, ok := s.restoreUploadForRequest(w, r)
+	if !ok {
+		return
+	}
+	if r.ContentLength <= 0 || r.ContentLength > restoreUploadChunkBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "restore chunks must contain at most 1 MiB", "offset": upload.File.Offset()})
+		return
+	}
+	offset, err := strconv.ParseInt(strings.TrimSpace(r.Header.Get("X-Spin-Upload-Offset")), 10, 64)
+	if err != nil || offset < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "X-Spin-Upload-Offset must be a non-negative integer"})
+		return
+	}
+	if offset+r.ContentLength > upload.Size {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "restore chunk exceeds the declared backup size", "offset": upload.File.Offset()})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, restoreUploadChunkBytes)
+	next, err := upload.File.Append(r.Context(), offset, r.ContentLength, r.Body)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, persistence.ErrBackupUploadOffset) {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]any{"error": err.Error(), "offset": next, "size": upload.Size})
+		return
+	}
+	s.touchRestoreUpload(upload)
+	writeJSON(w, http.StatusOK, s.restoreUploadResult(upload))
+}
+
+func (s *Server) deleteRestoreUpload(w http.ResponseWriter, r *http.Request) {
+	if !s.requireBackupAdmin(w, r) {
+		return
+	}
+	upload, ok := s.restoreUploadForRequest(w, r)
+	if !ok {
+		return
+	}
+	s.removeRestoreUpload(upload)
+	if err := upload.File.Close(); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) completeRestoreUpload(w http.ResponseWriter, r *http.Request) {
+	if !s.requireBackupAdmin(w, r) {
+		return
+	}
+	upload, ok := s.restoreUploadForRequest(w, r)
+	if !ok {
+		return
+	}
+	if upload.File.Offset() != upload.Size {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "restore upload is incomplete", "offset": upload.File.Offset(), "size": upload.Size})
+		return
+	}
+	if s.hasInteractiveActivity() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "stop active terminals, chats and background Job launches before restoring a backup"})
+		return
+	}
+	if !s.backupMu.TryLock() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "another backup or restore is already running"})
+		return
+	}
+	defer s.backupMu.Unlock()
+	s.removeRestoreUpload(upload)
+	staged, err := upload.File.Stage(upload.Size)
+	if err != nil {
+		_ = upload.File.Close()
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	defer staged.Close()
+	s.restoreStagedBackup(w, r, staged, newRestoreProgressWriter(w, r))
+}
+
+func (s *Server) restoreStagedBackup(w http.ResponseWriter, r *http.Request, staged *persistence.StagedBackup, progress *restoreProgressWriter) {
 	progress.progress("open", "Upload compleet · database geopend", 1, 1)
 	stateJSON, err := staged.Database.ReadFile("state")
 	if err != nil {
@@ -252,6 +428,74 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) restoreUploadResult(upload *restoreUpload) restoreUploadResponse {
+	s.restoreUploadMu.Lock()
+	expiresAt := upload.ExpiresAt
+	s.restoreUploadMu.Unlock()
+	return restoreUploadResponse{
+		ID: upload.ID, Name: upload.Name, Size: upload.Size, Offset: upload.File.Offset(),
+		ChunkSize: restoreUploadChunkBytes, ExpiresAt: expiresAt,
+	}
+}
+
+func (s *Server) storeRestoreUpload(upload *restoreUpload) []*restoreUpload {
+	now := time.Now()
+	var expired []*restoreUpload
+	s.restoreUploadMu.Lock()
+	for id, candidate := range s.restoreUploads {
+		if !candidate.ExpiresAt.After(now) {
+			delete(s.restoreUploads, id)
+			expired = append(expired, candidate)
+		}
+	}
+	s.restoreUploads[upload.ID] = upload
+	s.restoreUploadMu.Unlock()
+	return expired
+}
+
+func (s *Server) restoreUploadForRequest(w http.ResponseWriter, r *http.Request) (*restoreUpload, bool) {
+	id := strings.TrimSpace(r.PathValue("uploadID"))
+	identity, authenticated := identityFromRequest(r)
+	now := time.Now()
+	s.restoreUploadMu.Lock()
+	upload, ok := s.restoreUploads[id]
+	if ok && !upload.ExpiresAt.After(now) {
+		delete(s.restoreUploads, id)
+		ok = false
+	}
+	if ok && authenticated && upload.UserID != identity.User.ID {
+		ok = false
+	}
+	if ok {
+		upload.ExpiresAt = now.Add(restoreUploadLifetime)
+	}
+	s.restoreUploadMu.Unlock()
+	if !ok {
+		if upload != nil && !upload.ExpiresAt.After(now) {
+			_ = upload.File.Close()
+		}
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "restore upload not found or expired"})
+		return nil, false
+	}
+	return upload, true
+}
+
+func (s *Server) touchRestoreUpload(upload *restoreUpload) {
+	s.restoreUploadMu.Lock()
+	if s.restoreUploads[upload.ID] == upload {
+		upload.ExpiresAt = time.Now().Add(restoreUploadLifetime)
+	}
+	s.restoreUploadMu.Unlock()
+}
+
+func (s *Server) removeRestoreUpload(upload *restoreUpload) {
+	s.restoreUploadMu.Lock()
+	if s.restoreUploads[upload.ID] == upload {
+		delete(s.restoreUploads, upload.ID)
+	}
+	s.restoreUploadMu.Unlock()
 }
 
 func validateDatabaseObjects(ctx context.Context, database *persistence.SQLite, inspection store.PortableStateInspection, report ...func(string, string, int, int)) error {
