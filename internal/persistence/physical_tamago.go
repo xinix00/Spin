@@ -8,7 +8,6 @@ import (
 	"io"
 	"io/fs"
 
-	"github.com/xinix00/HopOS/metal/abi/hopabi"
 	"github.com/xinix00/HopOS/metal/app/applib"
 )
 
@@ -29,8 +28,8 @@ func readPhysicalFile(ctx context.Context, path string, destination io.Writer) e
 		default:
 		}
 		count := int(size - offset)
-		if count > hopabi.MaxChunk {
-			count = hopabi.MaxChunk
+		if count > applib.MaxIOChunk {
+			count = applib.MaxIOChunk
 		}
 		chunk, err := physicalHopApp.ReadAt(path, offset, count)
 		if err != nil {
@@ -62,7 +61,7 @@ func appendPhysicalFile(ctx context.Context, path string, source io.Reader, offs
 	if physicalHopApp == nil {
 		return 0, errors.New("HopOS persistence is not registered")
 	}
-	buffer := make([]byte, hopabi.MaxChunk)
+	buffer := make([]byte, applib.MaxIOChunk)
 	var total int64
 	for {
 		select {
@@ -78,7 +77,7 @@ func appendPhysicalFile(ctx context.Context, path string, source io.Reader, offs
 		if int64(len(chunk)) > remaining {
 			chunk = chunk[:remaining]
 		}
-		count, readErr := source.Read(chunk)
+		count, readErr := io.ReadFull(source, chunk)
 		if count > 0 {
 			written, err := physicalHopApp.WriteAt(path, uint64(offset+total), chunk[:count])
 			if err != nil {
@@ -90,7 +89,7 @@ func appendPhysicalFile(ctx context.Context, path string, source io.Reader, offs
 			total += int64(count)
 		}
 		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
+			if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
 				return total, nil
 			}
 			return total, readErr

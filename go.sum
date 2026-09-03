@@ -10,11 +10,13 @@ github.com/ncruces/julianday v1.0.0 h1:fH0OKwa7NWvniGQtxdJRxAgkBMolni2BjDHaWTxqt
 github.com/ncruces/julianday v1.0.0/go.mod h1:Dusn2KvZrrovOMJuOt0TNXL6tB7U2E8kvza5fFc9G7g=
 github.com/usbarmory/tamago v1.26.4 h1:laFvRANKgVYFHxLHjIlhqJCc3Xm+qMyab2SlUoNw6zY=
 github.com/usbarmory/tamago v1.26.4/go.mod h1:HZkb+ZkzFl8aCxAuF7exsKX+XaNM0mYG9Iv7ooX1WDY=
-github.com/xinix00/HopOS/metal v1.9999.0 h1:5sNXI2ouIOKgRaDfVvjmtxmcHfoS/YPilG8M5Ik9bow=
-github.com/xinix00/HopOS/metal v1.9999.0/go.mod h1:GoGwET318SbAf3+Q8jjlboLvnWJ4apblDaaVrQEIE9w=
+github.com/xinix00/HopOS/metal v1.99999.0 h1:+plj02hDRcjb5Ai2eQCXKD75dXWvOPl6ZchKn4Hv9DA=
+github.com/xinix00/HopOS/metal v1.99999.0/go.mod h1:GoGwET318SbAf3+Q8jjlboLvnWJ4apblDaaVrQEIE9w=
 github.com/xinix00/lean v0.99.0 h1:gMptiTTkVGDlCEQfVT0WstW9PEV35mamEY8GZpa0zYc=
 github.com/xinix00/lean v0.99.0/go.mod h1:gRIa2nL/SIEsi1L/eq9EUqrKQ+jnjxUGb3IAsuVQX7U=
 golang.org/x/crypto/x509roots/fallback v0.0.0-20260709184058-243e02a382f8 h1:OZy0hsjD/gbnVKENxnVK6I3e4bdKwYy4R3dfdKosYyA=
 golang.org/x/crypto/x509roots/fallback v0.0.0-20260709184058-243e02a382f8/go.mod h1:+UoQFNBq2p2wO+Q6ddVtYc25GZ6VNdOMyyrd4nrqrKs=
 golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
 golang.org/x/sys v0.47.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
+golang.org/x/text v0.41.0 h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=
+golang.org/x/text v0.41.0/go.mod h1:jvf1O8ajNzZqhSrQBPbutR/EB83Cc0CFrezNQIwbb5M=

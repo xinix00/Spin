@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 
 	"github.com/ncruces/go-sqlite3/vfs"
-	"github.com/xinix00/HopOS/metal/abi/hopabi"
 	"github.com/xinix00/HopOS/metal/app/applib"
 )
 
@@ -94,8 +93,8 @@ func (f *hopFile) ReadAt(target []byte, offset int64) (int, error) {
 	total := 0
 	for total < len(target) {
 		count := len(target) - total
-		if count > hopabi.MaxChunk {
-			count = hopabi.MaxChunk
+		if count > applib.MaxIOChunk {
+			count = applib.MaxIOChunk
 		}
 		chunk, err := f.app.ReadAt(f.path, uint64(offset)+uint64(total), count)
 		copy(target[total:], chunk)
@@ -117,8 +116,8 @@ func (f *hopFile) WriteAt(source []byte, offset int64) (int, error) {
 	total := 0
 	for total < len(source) {
 		count := len(source) - total
-		if count > hopabi.MaxChunk {
-			count = hopabi.MaxChunk
+		if count > applib.MaxIOChunk {
+			count = applib.MaxIOChunk
 		}
 		written, err := f.app.WriteAt(f.path, uint64(offset)+uint64(total), source[total:total+count])
 		total += written
