@@ -93,14 +93,21 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 	}
 	s.gitOAuth = newGitOAuthManager(options, st)
 	s.routes()
+	if s.runnerBroker != nil {
+		s.runnerBroker.OnRunnerConnected(s.resumeQueuedWorkflowPhases)
+	}
 	go s.resumeQueuedWorkflowActions()
 	return s
 }
 
-func (s *Server) resumeQueuedWorkflowActions() {
+// queuedWorkflowSessions returns the Sessions whose Job is parked on their own
+// phase run while that run is still queued: work Spin already decided to start
+// but never did.
+func (s *Server) queuedWorkflowSessions() []domain.Session {
 	snapshot := s.store.Snapshot()
+	var queued []domain.Session
 	for _, session := range snapshot.Sessions {
-		if session.Executor != domain.WorkflowExecutorAction || session.PhaseRunID == "" {
+		if session.PhaseRunID == "" {
 			continue
 		}
 		jobIndex := slices.IndexFunc(snapshot.Jobs, func(job domain.Job) bool {
@@ -110,9 +117,73 @@ func (s *Server) resumeQueuedWorkflowActions() {
 			return run.ID == session.PhaseRunID && run.Status == domain.PhaseRunQueued
 		})
 		if jobIndex >= 0 && runIndex >= 0 {
-			s.launchWorkflowSession(session.ID, session.Operator)
+			queued = append(queued, session)
 		}
 	}
+	return queued
+}
+
+// resumeQueuedWorkflowActions restarts queued action phases at boot. They need
+// no runner, so a restart is the only thing that can have interrupted them.
+func (s *Server) resumeQueuedWorkflowActions() {
+	for _, session := range s.queuedWorkflowSessions() {
+		if session.Executor == domain.WorkflowExecutorAction {
+			s.startQueuedWorkflowLaunch(session)
+		}
+	}
+}
+
+// resumeQueuedWorkflowPhases restarts every queued phase once a runner has
+// connected. Waiting for a runner is bounded, and a launch that ran out of
+// patience leaves its phase queued with nothing left to look at it again, so
+// the Job kept reporting "waiting for a runner" long after one came back.
+func (s *Server) resumeQueuedWorkflowPhases() {
+	for _, session := range s.queuedWorkflowSessions() {
+		if s.startQueuedWorkflowLaunch(session) {
+			s.logger.Info("runner connected; resuming queued workflow phase",
+				"session", session.ID, "job", session.JobID, "phase_run", session.PhaseRunID)
+		}
+	}
+}
+
+func (s *Server) startQueuedWorkflowLaunch(session domain.Session) bool {
+	sessionID, operator := session.ID, session.Operator
+	return s.beginTrackedLaunch(sessionID,
+		func() bool { return s.jobSessionNeedsLaunch(sessionID, true) },
+		func(ctx context.Context) { s.launchWorkflowSessionContext(ctx, sessionID, operator) })
+}
+
+// beginTrackedLaunch runs body as the tracked background launch for a Session
+// and reports whether it started one. Guard runs while the bookkeeping lock is
+// held, so a concurrent launch cannot slip between its verdict and the
+// registration that makes this launch visible.
+func (s *Server) beginTrackedLaunch(sessionID string, guard func() bool, body func(context.Context)) bool {
+	s.jobLaunchMu.Lock()
+	if s.jobLaunching[sessionID] != nil {
+		s.jobLaunchMu.Unlock()
+		return false
+	}
+	if guard != nil && !guard() {
+		s.jobLaunchMu.Unlock()
+		return false
+	}
+	launchContext, cancel := context.WithCancel(context.Background())
+	launch := &backgroundJobLaunch{cancel: cancel, done: make(chan struct{})}
+	s.jobLaunching[sessionID] = launch
+	s.jobLaunchMu.Unlock()
+	go func() {
+		defer func() {
+			cancel()
+			s.jobLaunchMu.Lock()
+			if s.jobLaunching[sessionID] == launch {
+				delete(s.jobLaunching, sessionID)
+			}
+			s.jobLaunchMu.Unlock()
+			close(launch.done)
+		}()
+		body(launchContext)
+	}()
+	return true
 }
 
 func (s *Server) Handler() http.Handler {
@@ -587,39 +658,20 @@ func (s *Server) scheduleJobLaunch(created domain.CreateJobResponse, requestedOp
 	if sessionID == "" || operator == "" {
 		return
 	}
-	s.jobLaunchMu.Lock()
-	if s.jobLaunching[sessionID] != nil {
-		s.jobLaunchMu.Unlock()
-		return
-	}
-	if !s.jobSessionNeedsLaunch(sessionID, created.Job.TemplateID != "") {
-		s.jobLaunchMu.Unlock()
-		return
-	}
-	launchContext, cancel := context.WithCancel(context.Background())
-	launch := &backgroundJobLaunch{cancel: cancel, done: make(chan struct{})}
-	s.jobLaunching[sessionID] = launch
-	s.jobLaunchMu.Unlock()
-	go func() {
-		defer func() {
-			cancel()
-			s.jobLaunchMu.Lock()
-			if s.jobLaunching[sessionID] == launch {
-				delete(s.jobLaunching, sessionID)
+	workflow := created.Job.TemplateID != ""
+	s.beginTrackedLaunch(sessionID,
+		func() bool { return s.jobSessionNeedsLaunch(sessionID, workflow) },
+		func(ctx context.Context) {
+			if workflow {
+				s.launchWorkflowSessionContext(ctx, sessionID, operator)
+				return
 			}
-			s.jobLaunchMu.Unlock()
-			close(launch.done)
-		}()
-		if created.Job.TemplateID != "" {
-			s.launchWorkflowSessionContext(launchContext, sessionID, operator)
-			return
-		}
-		materializeContext, materializeCancel := context.WithTimeout(launchContext, 2*time.Minute)
-		defer materializeCancel()
-		if _, err := s.useCapsule(materializeContext, domain.UseRequest{Selector: "session:" + sessionID, Operator: operator}); err != nil && !errors.Is(err, context.Canceled) {
-			s.logger.Warn("start queued Job Session", "session", sessionID, "error", err)
-		}
-	}()
+			materializeContext, materializeCancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer materializeCancel()
+			if _, err := s.useCapsule(materializeContext, domain.UseRequest{Selector: "session:" + sessionID, Operator: operator}); err != nil && !errors.Is(err, context.Canceled) {
+				s.logger.Warn("start queued Job Session", "session", sessionID, "error", err)
+			}
+		})
 }
 
 // scheduleWorkflowRetry replaces any in-flight launch for this Session. It is

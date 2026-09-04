@@ -475,6 +475,12 @@ func (s *Server) performRestore(ctx context.Context, staged *persistence.StagedB
 	s.workflowMu.Lock()
 	s.workflowTokens = map[string]string{}
 	s.workflowMu.Unlock()
+	if s.runnerBroker != nil {
+		progress("runners", "Verbonden runners opnieuw laten aanmelden", 0, 0)
+		if closed := s.runnerBroker.DisconnectAll("Spin state restored; reconnect to register again"); closed > 0 {
+			s.logger.Info("restore closed runner sockets for re-registration", "runners", closed)
+		}
+	}
 	result := restoreResponse{
 		Status: "restored", Users: inspection.Users, Jobs: inspection.Jobs, Templates: inspection.Templates,
 		Deliverables: inspection.Deliverables, Attachments: len(inspection.Attachments), Snapshots: restorableSnapshotCount(inspection.Artifacts),

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -191,6 +192,7 @@ type Broker struct {
 	order     []string
 	cursor    int
 	available chan struct{}
+	listeners []func()
 	nextID    atomic.Uint64
 }
 
@@ -246,6 +248,7 @@ func (b *Broker) Handler(w http.ResponseWriter, r *http.Request) {
 	generation := peer.attach(connection, client)
 	b.notifyAvailable()
 	b.logger.Info("runner connected", "client_id", client.ID, "instance_id", client.InstanceID, "name", client.Name)
+	b.announceConnected()
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -359,6 +362,56 @@ func (b *Broker) notifyAvailable() {
 	case b.available <- struct{}{}:
 	default:
 	}
+}
+
+// OnRunnerConnected registers a callback that runs after a runner completes
+// its hello handshake. Waiting for a runner is bounded, so work that already
+// gave up has no other trigger to look again once one arrives.
+func (b *Broker) OnRunnerConnected(listener func()) {
+	if listener == nil {
+		return
+	}
+	b.mu.Lock()
+	b.listeners = append(b.listeners, listener)
+	b.mu.Unlock()
+}
+
+func (b *Broker) announceConnected() {
+	b.mu.Lock()
+	listeners := slices.Clone(b.listeners)
+	b.mu.Unlock()
+	for _, listener := range listeners {
+		go listener()
+	}
+}
+
+// DisconnectAll closes every live runner socket so each client reconnects and
+// runs the hello handshake again. A restore replaces the durable state under
+// healthy connections, and that handshake is the one path that binds a runner
+// to whatever state the server now holds. Affinity survives: the peer keeps
+// its pending calls and replays them on the next attach.
+func (b *Broker) DisconnectAll(reason string) int {
+	b.mu.Lock()
+	peers := make([]*runnerPeer, 0, len(b.peers))
+	for _, peer := range b.peers {
+		peers = append(peers, peer)
+	}
+	b.mu.Unlock()
+	closed := 0
+	for _, peer := range peers {
+		peer.mu.Lock()
+		connection := peer.connection
+		connected := peer.connected
+		peer.mu.Unlock()
+		if !connected || connection == nil {
+			continue
+		}
+		message := websocket.FormatCloseMessage(websocket.CloseServiceRestart, reason)
+		_ = connection.WriteControl(websocket.CloseMessage, message, time.Now().Add(writeWait))
+		_ = connection.Close()
+		closed++
+	}
+	return closed
 }
 
 // SetDraining keeps existing affinity usable but removes the runner from new

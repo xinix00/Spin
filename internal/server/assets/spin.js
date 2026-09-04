@@ -710,7 +710,7 @@ function updateRestoreProgress(label,detail='',percentage=null,error=false){
   const root=document.getElementById('restore-progress'),track=document.getElementById('restore-progress-track'),fill=document.getElementById('restore-progress-fill');root.hidden=false;root.classList.toggle('error',error);document.getElementById('restore-progress-label').textContent=label;document.getElementById('restore-progress-detail').textContent=detail;track.classList.toggle('indeterminate',percentage==null);if(percentage!=null)fill.style.width=`${Math.max(0,Math.min(100,percentage))}%`;
 }
 function updateRestoreStage(stage,message,current=0,total=0){
-  const names={open:'Database openen',state:'State controleren',attachments:'Bijlagen controleren',snapshots:'Docker-lagen controleren',rollback:'Rollbackpunt maken',install:'Database activeren',secrets:'Credentials beveiligen'},percentage=total?current/total*100:null,detail=total?`${current}/${total}`:'';updateRestoreProgress(names[stage]||'Restore uitvoeren',message+(detail?` · ${detail}`:''),percentage);
+  const names={open:'Database openen',state:'State controleren',attachments:'Bijlagen controleren',snapshots:'Docker-lagen controleren',rollback:'Rollbackpunt maken',install:'Database activeren',secrets:'Credentials beveiligen',runners:'Runners opnieuw aanmelden'},percentage=total?current/total*100:null,detail=total?`${current}/${total}`:'';updateRestoreProgress(names[stage]||'Restore uitvoeren',message+(detail?` · ${detail}`:''),percentage);
 }
 function restoreProgressEvent(event){
   if(event.type==='error')throw new Error(event.error||'Restore mislukt');
