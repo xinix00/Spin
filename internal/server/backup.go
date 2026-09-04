@@ -22,6 +22,12 @@ const maxBackupUploadBytes int64 = 64 << 30
 // chunks at that exact transport boundary; metadata travels in headers.
 const restoreUploadChunkBytes int64 = 1 << 20
 
+// restoreUploadParallelism is how many chunks a browser keeps in flight. Every
+// chunk costs one round trip through Cloudflare and the HopOS tunnel (about
+// 0.1 s), so sequential 1 MiB chunks cap out near 10 MB/s. The tunnel app
+// buffers each request body inside a 32 MB slot, which keeps this modest.
+const restoreUploadParallelism = 4
+
 const restoreUploadLifetime = 6 * time.Hour
 
 const restoreJobResultLifetime = 6 * time.Hour
@@ -59,6 +65,7 @@ type restoreUploadResponse struct {
 	Size      int64     `json:"size"`
 	Offset    int64     `json:"offset"`
 	ChunkSize int64     `json:"chunk_size"`
+	Parallel  int       `json:"parallel"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
@@ -344,7 +351,7 @@ func (s *Server) appendRestoreUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, restoreUploadChunkBytes)
-	next, err := upload.File.Append(r.Context(), offset, r.ContentLength, r.Body)
+	next, err := upload.File.WriteAt(r.Context(), offset, r.ContentLength, r.Body)
 	if err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, persistence.ErrBackupUploadOffset) {
@@ -566,7 +573,7 @@ func (s *Server) restoreUploadResult(upload *restoreUpload) restoreUploadRespons
 	s.restoreUploadMu.Unlock()
 	return restoreUploadResponse{
 		ID: upload.ID, Name: upload.Name, Size: upload.Size, Offset: upload.File.Offset(),
-		ChunkSize: restoreUploadChunkBytes, ExpiresAt: expiresAt,
+		ChunkSize: restoreUploadChunkBytes, Parallel: restoreUploadParallelism, ExpiresAt: expiresAt,
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io/fs"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -168,24 +170,56 @@ func TestSQLiteBackupUploadResumesAtCommittedOffset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer destination.Close()
-	upload, err := destination.BeginBackupUpload(int64(backup.Len()))
+	upload, err := destination.BeginBackupUpload(int64(backup.Len()) + backupUploadWindow + 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer upload.Close()
-	if offset, err := upload.Append(ctx, 12, 4, bytes.NewReader([]byte("nope"))); !errors.Is(err, ErrBackupUploadOffset) || offset != 0 {
-		t.Fatalf("stale append offset=%d error=%v", offset, err)
+	size := int64(backup.Len())
+	const chunk = 997
+	// Out of order: the second chunk lands first and waits ahead of the prefix.
+	if committed, err := upload.WriteAt(ctx, chunk, chunk, bytes.NewReader(backup.Bytes()[chunk:2*chunk])); err != nil || committed != 0 {
+		t.Fatalf("ahead write committed=%d error=%v", committed, err)
 	}
-	for offset := int64(0); offset < int64(backup.Len()); {
-		end := offset + 997
-		if end > int64(backup.Len()) {
-			end = int64(backup.Len())
+	if _, err := upload.Stage(size); err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("stage incomplete upload error = %v", err)
+	}
+	if committed, err := upload.WriteAt(ctx, 0, chunk, bytes.NewReader(backup.Bytes()[:chunk])); err != nil || committed != 2*chunk {
+		t.Fatalf("first write committed=%d error=%v", committed, err)
+	}
+	// Retrying a committed chunk is idempotent; straddling the prefix or leaving the window is refused.
+	if committed, err := upload.WriteAt(ctx, 0, chunk, bytes.NewReader(bytes.Repeat([]byte{0xff}, chunk))); err != nil || committed != 2*chunk {
+		t.Fatalf("duplicate write committed=%d error=%v", committed, err)
+	}
+	if committed, err := upload.WriteAt(ctx, chunk, 2*chunk, bytes.NewReader(backup.Bytes()[chunk:3*chunk])); !errors.Is(err, ErrBackupUploadOffset) || committed != 2*chunk {
+		t.Fatalf("straddling write committed=%d error=%v", committed, err)
+	}
+	if _, err := upload.WriteAt(ctx, 2*chunk+backupUploadWindow+1, 1, bytes.NewReader([]byte{1})); !errors.Is(err, ErrBackupUploadOffset) {
+		t.Fatalf("write beyond window error = %v", err)
+	}
+	// The remaining chunks stream concurrently in whatever order the scheduler picks.
+	var group sync.WaitGroup
+	writeErrors := make(chan error, int(size/chunk)+1)
+	for offset := int64(2 * chunk); offset < size; offset += chunk {
+		start, end := offset, offset+chunk
+		if end > size {
+			end = size
 		}
-		next, err := upload.Append(ctx, offset, end-offset, bytes.NewReader(backup.Bytes()[offset:end]))
-		if err != nil {
-			t.Fatal(err)
-		}
-		offset = next
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			if _, err := upload.WriteAt(ctx, start, end-start, bytes.NewReader(backup.Bytes()[start:end])); err != nil {
+				writeErrors <- err
+			}
+		}()
+	}
+	group.Wait()
+	close(writeErrors)
+	for err := range writeErrors {
+		t.Fatal(err)
+	}
+	if upload.Offset() != size {
+		t.Fatalf("committed prefix = %d, want %d", upload.Offset(), size)
 	}
 	staged, err := upload.Stage(int64(backup.Len()))
 	if err != nil {

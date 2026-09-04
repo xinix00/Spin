@@ -717,12 +717,39 @@ function restoreProgressEvent(event){
   if(event.type==='complete'){updateRestoreProgress('Restore compleet','100%',100);return event.result;}
   updateRestoreStage(event.stage,event.message,event.current,event.total);return null;
 }
-function uploadRestoreChunk(uploadID,offset,chunk,total){
+function uploadRestoreChunk(uploadID,offset,chunk,onProgress){
   return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('PUT',`/api/restore-uploads/${encodeURIComponent(uploadID)}`);xhr.withCredentials=true;xhr.setRequestHeader('Content-Type','application/octet-stream');xhr.setRequestHeader('X-Spin-Upload-Offset',String(offset));if(csrfToken)xhr.setRequestHeader('X-Spin-CSRF',csrfToken);
-    xhr.upload.onprogress=event=>{const sent=offset+event.loaded,percentage=total?sent/total*100:0;updateRestoreProgress('Database uploaden',`${formatBytes(sent)} / ${formatBytes(total)} · ${Math.floor(percentage)}%`,percentage);};
+    xhr.upload.onprogress=event=>onProgress(event.loaded);
     xhr.onerror=()=>reject(new Error('Verbinding verbroken tijdens restore-chunk'));xhr.onabort=()=>reject(new Error('Restore geannuleerd'));
-    xhr.onload=()=>{let body={};try{body=JSON.parse(xhr.responseText||'{}');}catch(_){}if(xhr.status<200||xhr.status>=300){const error=new Error(body.error||xhr.statusText||'Restore-chunk geweigerd');error.status=xhr.status;error.offset=body.offset;reject(error);return;}resolve(body);};xhr.send(chunk);
+    xhr.onload=()=>{let body={};try{body=JSON.parse(xhr.responseText||'{}');}catch(_){}if(xhr.status<200||xhr.status>=300){const error=new Error(body.error||xhr.statusText||'Restore-chunk geweigerd');error.status=xhr.status;error.offset=Number(body.offset);reject(error);return;}resolve(body);};xhr.send(chunk);
   });
+}
+function showRestoreUploadProgress(state){
+  let sent=state.done;for(const loaded of state.inFlight.values())sent+=loaded;sent=Math.min(sent,state.size);const percentage=state.size?sent/state.size*100:0;updateRestoreProgress('Database uploaden',`${formatBytes(sent)} / ${formatBytes(state.size)} · ${Math.floor(percentage)}% · ${state.inFlight.size} chunks onderweg`,percentage);
+}
+// Every chunk is one round trip through the edge and the tunnel, so a few
+// workers keep chunks in flight at once. The server stores them at their own
+// offset and answers with the contiguous committed prefix.
+async function restoreUploadWorker(upload,file,state){
+  while(!state.error&&state.next<state.size){
+    const offset=state.next,end=Math.min(offset+state.chunkSize,state.size);state.next=end;
+    for(let attempt=1;!state.error;attempt++){
+      state.inFlight.set(offset,0);
+      try{
+        const next=await uploadRestoreChunk(upload.id,offset,file.slice(offset,end),loaded=>{state.inFlight.set(offset,loaded);showRestoreUploadProgress(state);}),committed=Number(next.offset);
+        if(!Number.isFinite(committed)||committed<0||committed>state.size)throw new Error('Spin gaf een ongeldige restore-offset terug');
+        state.inFlight.delete(offset);state.done+=end-offset;state.committed=Math.max(state.committed,committed);showRestoreUploadProgress(state);break;
+      }catch(error){
+        state.inFlight.delete(offset);
+        if(error.status===409&&error.offset>=end){state.done+=end-offset;state.committed=Math.max(state.committed,error.offset);break;}
+        if(attempt>=5||error.status===404||error.status===413){state.error=error;return;}
+        updateRestoreProgress('Uploadverbinding herstellen',`Poging ${attempt}/5 · chunk op ${formatBytes(offset)} opnieuw sturen…`,state.size?state.done/state.size*100:0);
+        await new Promise(resolve=>setTimeout(resolve,Math.min(5000,500*2**(attempt-1))));
+        try{const status=await (await backupResponse(`/api/restore-uploads/${encodeURIComponent(upload.id)}`)).json();if(Number(status.size)!==state.size){state.error=new Error('Restore-uploadstatus komt niet overeen met het gekozen bestand');return;}}
+        catch(statusError){if(statusError.status){state.error=statusError;return;}}
+      }
+    }
+  }
 }
 const restoreJobStorageKey='spin-restore-job';
 function rememberRestoreJob(id){try{sessionStorage.setItem(restoreJobStorageKey,id);}catch(_){}}
@@ -747,25 +774,12 @@ async function completeRestoreUpload(uploadID){
 }
 function announceRestoreComplete(result){alert(`Restore compleet: ${result.jobs} Jobs, ${result.templates} Templates, ${result.deliverables} deliverables, ${result.attachments} bijlagen en ${result.snapshots} Docker-snapshots. Log opnieuw in.`);location.reload();}
 async function uploadRestoreDatabase(file){
-  const createdResponse=await backupResponse('/api/restore-uploads',{method:'POST',body:JSON.stringify({name:file.name,size:file.size})}),upload=await createdResponse.json(),chunkSize=Math.min(Number(upload.chunk_size)||1048576,1048576);let offset=Number(upload.offset)||0,failures=0;
+  const createdResponse=await backupResponse('/api/restore-uploads',{method:'POST',body:JSON.stringify({name:file.name,size:file.size})}),upload=await createdResponse.json(),offset=Number(upload.offset)||0;
+  const state={size:file.size,chunkSize:Math.min(Number(upload.chunk_size)||1048576,1048576),next:offset,done:offset,committed:offset,inFlight:new Map(),error:null},parallel=Math.max(1,Math.min(Number(upload.parallel)||1,16));
   try{
-    while(offset<file.size){
-      const end=Math.min(offset+chunkSize,file.size),chunk=file.slice(offset,end);
-      try{
-        const next=await uploadRestoreChunk(upload.id,offset,chunk,file.size),nextOffset=Number(next.offset);
-        if(!Number.isFinite(nextOffset)||nextOffset<=offset||nextOffset>file.size)throw new Error('Spin gaf een ongeldige restore-offset terug');
-        offset=nextOffset;failures=0;
-      }catch(error){
-        failures+=1;if(failures>5)throw error;
-        updateRestoreProgress('Uploadverbinding herstellen',`Poging ${failures}/5 · ontvangen offset opvragen…`,offset/file.size*100);
-        await new Promise(resolve=>setTimeout(resolve,Math.min(5000,500*2**(failures-1))));
-        try{
-          const statusResponse=await backupResponse(`/api/restore-uploads/${encodeURIComponent(upload.id)}`),status=await statusResponse.json(),serverOffset=Number(status.offset);
-          if(Number(status.size)!==file.size||!Number.isFinite(serverOffset)||serverOffset<0||serverOffset>file.size)throw new Error('Restore-uploadstatus komt niet overeen met het gekozen bestand');
-          offset=serverOffset;
-        }catch(statusError){if(failures>=5)throw error;}
-      }
-    }
+    await Promise.all(Array.from({length:parallel},()=>restoreUploadWorker(upload,file,state)));
+    if(state.error)throw state.error;
+    if(state.committed!==file.size)throw new Error(`Spin bevestigde ${formatBytes(state.committed)} van ${formatBytes(file.size)}`);
     updateRestoreProgress('Upload compleet',`${formatBytes(file.size)} ontvangen · Spin opent de database…`,null);
     return await completeRestoreUpload(upload.id);
   }catch(error){

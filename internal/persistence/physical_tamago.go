@@ -7,11 +7,20 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"sync"
 
 	"github.com/xinix00/HopOS/metal/v2/app/applib"
 )
 
 var physicalHopApp *applib.App
+
+// ioChunkPool recycles the 1 MiB transfer buffers. Parallel restore chunks
+// and backup streams would otherwise allocate one per call, and that garbage
+// keeps the app's GC busy enough to starve the network pump on one core.
+var ioChunkPool = sync.Pool{New: func() any {
+	buffer := make([]byte, applib.MaxIOChunk)
+	return &buffer
+}}
 
 func readPhysicalFile(ctx context.Context, path string, destination io.Writer) error {
 	if physicalHopApp == nil {
@@ -21,31 +30,34 @@ func readPhysicalFile(ctx context.Context, path string, destination io.Writer) e
 	if err != nil {
 		return err
 	}
+	bufferPtr := ioChunkPool.Get().(*[]byte)
+	defer ioChunkPool.Put(bufferPtr)
+	buffer := *bufferPtr
 	for offset := uint64(0); offset < size; {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		count := int(size - offset)
-		if count > applib.MaxIOChunk {
-			count = applib.MaxIOChunk
+		count := size - offset
+		if count > uint64(len(buffer)) {
+			count = uint64(len(buffer))
 		}
-		chunk, err := physicalHopApp.ReadAt(path, offset, count)
+		read, err := physicalHopApp.ReadInto(path, offset, buffer[:count])
 		if err != nil {
 			return err
 		}
-		if len(chunk) == 0 {
+		if read == 0 {
 			return io.ErrUnexpectedEOF
 		}
-		written, err := destination.Write(chunk)
+		written, err := destination.Write(buffer[:read])
 		if err != nil {
 			return err
 		}
-		if written != len(chunk) {
+		if written != read {
 			return io.ErrShortWrite
 		}
-		offset += uint64(len(chunk))
+		offset += uint64(read)
 	}
 	return nil
 }
@@ -61,7 +73,9 @@ func appendPhysicalFile(ctx context.Context, path string, source io.Reader, offs
 	if physicalHopApp == nil {
 		return 0, errors.New("HopOS persistence is not registered")
 	}
-	buffer := make([]byte, applib.MaxIOChunk)
+	bufferPtr := ioChunkPool.Get().(*[]byte)
+	defer ioChunkPool.Put(bufferPtr)
+	buffer := *bufferPtr
 	var total int64
 	for {
 		select {

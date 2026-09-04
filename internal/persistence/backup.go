@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 
@@ -27,17 +28,29 @@ type StagedBackup struct {
 	remove    func(string) error
 }
 
+// backupUploadWindow bounds how far ahead of the committed prefix a chunk may
+// land. Parallel uploaders keep a handful of chunks in flight; anything further
+// ahead is a client bug rather than reordering, and the bound keeps the sparse
+// gap in the staging file small.
+const backupUploadWindow int64 = 64 << 20
+
 // BackupUpload incrementally assembles one portable database without ever
 // requiring a request body larger than the surrounding HTTP transport allows.
-// Appends are serialized and report their committed offset so an interrupted
-// client can resume at the first byte that did not reach physical storage.
+// Chunks may arrive concurrently and out of order: every write lands at its own
+// offset while the upload tracks the contiguous committed prefix, the first
+// byte that did not reach physical storage yet, so an interrupted client can
+// resume there.
 type BackupUpload struct {
 	mu       sync.Mutex
 	path     string
 	vfs      string
 	maxBytes int64
-	offset   int64
+	offset   int64        // contiguous committed prefix
+	ahead    []uploadSpan // completed chunks beyond offset, sorted by start
+	pending  int          // writes in flight
 }
+
+type uploadSpan struct{ start, end int64 }
 
 func (s *SQLite) BeginBackupUpload(maxBytes int64) (*BackupUpload, error) {
 	if maxBytes <= 0 {
@@ -50,42 +63,87 @@ func (s *SQLite) BeginBackupUpload(maxBytes int64) (*BackupUpload, error) {
 	return &BackupUpload{path: path, vfs: s.vfs, maxBytes: maxBytes}, nil
 }
 
+// Offset reports the committed prefix.
 func (u *BackupUpload) Offset() int64 {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.offset
 }
 
-func (u *BackupUpload) Append(ctx context.Context, expectedOffset, length int64, source io.Reader) (int64, error) {
+// WriteAt stores one chunk at offset and reports the committed prefix. A chunk
+// that lies entirely inside the prefix is acknowledged without rewriting it, so
+// retries stay idempotent. A chunk that straddles the prefix boundary or lands
+// beyond the reorder window reports ErrBackupUploadOffset with the prefix. The
+// physical write runs outside the lock so several chunks can stream at once.
+func (u *BackupUpload) WriteAt(ctx context.Context, offset, length int64, source io.Reader) (int64, error) {
 	u.mu.Lock()
-	defer u.mu.Unlock()
 	if u.path == "" {
+		u.mu.Unlock()
 		return u.offset, errors.New("backup upload is closed")
 	}
-	if expectedOffset != u.offset {
-		return u.offset, fmt.Errorf("%w: received %d, expected %d", ErrBackupUploadOffset, expectedOffset, u.offset)
-	}
 	if length <= 0 {
+		u.mu.Unlock()
 		return u.offset, errors.New("backup upload chunk is empty")
 	}
-	if length > u.maxBytes-u.offset {
+	if offset < 0 || length > u.maxBytes-offset {
+		u.mu.Unlock()
 		return u.offset, errors.New("backup exceeds upload limit")
 	}
-	written, err := appendPhysicalFile(ctx, u.path, io.LimitReader(source, length), u.offset, length)
-	u.offset += written
+	if offset+length <= u.offset {
+		committed := u.offset
+		u.mu.Unlock()
+		return committed, nil
+	}
+	if offset < u.offset || offset > u.offset+backupUploadWindow {
+		committed := u.offset
+		u.mu.Unlock()
+		return committed, fmt.Errorf("%w: received %d, committed %d", ErrBackupUploadOffset, offset, committed)
+	}
+	path := u.path
+	u.pending++
+	u.mu.Unlock()
+
+	written, err := appendPhysicalFile(ctx, path, io.LimitReader(source, length), offset, length)
 	if err == nil && written != length {
 		err = io.ErrUnexpectedEOF
 	}
-	return u.offset, err
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.pending--
+	if u.path == "" {
+		return u.offset, errors.New("backup upload is closed")
+	}
+	if err != nil {
+		return u.offset, err
+	}
+	u.commit(uploadSpan{start: offset, end: offset + length})
+	return u.offset, nil
 }
 
-// Stage transfers ownership of the completed physical file to StagedBackup.
-// The caller must close either the returned stage or this upload, never both.
+func (u *BackupUpload) commit(span uploadSpan) {
+	index := sort.Search(len(u.ahead), func(i int) bool { return u.ahead[i].start >= span.start })
+	u.ahead = append(u.ahead, uploadSpan{})
+	copy(u.ahead[index+1:], u.ahead[index:])
+	u.ahead[index] = span
+	consumed := 0
+	for consumed < len(u.ahead) && u.ahead[consumed].start <= u.offset {
+		if u.ahead[consumed].end > u.offset {
+			u.offset = u.ahead[consumed].end
+		}
+		consumed++
+	}
+	u.ahead = append(u.ahead[:0], u.ahead[consumed:]...)
+}
+
 func (u *BackupUpload) Stage(expectedSize int64) (*StagedBackup, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.path == "" {
 		return nil, errors.New("backup upload is closed")
+	}
+	if u.pending > 0 {
+		return nil, errors.New("backup upload still has chunks in flight")
 	}
 	if u.offset != expectedSize {
 		return nil, fmt.Errorf("backup upload is incomplete: received %d of %d bytes", u.offset, expectedSize)

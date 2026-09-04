@@ -156,32 +156,50 @@ func TestSQLiteBackupRestoresStateSecretsAndAttachmentsUnderDestinationKey(t *te
 	if upload.ChunkSize > 1<<20 || upload.ChunkSize <= 0 {
 		t.Fatalf("chunk size=%d exceeds Lean boundary", upload.ChunkSize)
 	}
-	offset := int64(0)
-	chunks := 0
-	for offset < int64(backupResponse.Body.Len()) {
-		end := offset + upload.ChunkSize
-		if end > int64(backupResponse.Body.Len()) {
-			end = int64(backupResponse.Body.Len())
-		}
-		chunkRequest := httptest.NewRequest(http.MethodPut, "/api/restore-uploads/"+upload.ID, bytes.NewReader(backupResponse.Body.Bytes()[offset:end]))
-		chunkRequest.Header.Set("X-Spin-Upload-Offset", fmt.Sprint(offset))
-		chunkRecorder := httptest.NewRecorder()
-		destinationServer.Handler().ServeHTTP(chunkRecorder, chunkRequest)
+	if upload.Parallel < 1 {
+		t.Fatalf("parallel=%d", upload.Parallel)
+	}
+	data := backupResponse.Body.Bytes()
+	total := int64(len(data))
+	lastStart := (total - 1) / upload.ChunkSize * upload.ChunkSize
+	putChunk := func(offset int64, body []byte) (int, restoreUploadResponse, string) {
+		request := httptest.NewRequest(http.MethodPut, "/api/restore-uploads/"+upload.ID, bytes.NewReader(body))
+		request.Header.Set("X-Spin-Upload-Offset", fmt.Sprint(offset))
+		recorder := httptest.NewRecorder()
+		destinationServer.Handler().ServeHTTP(recorder, request)
 		var current restoreUploadResponse
-		if chunkRecorder.Code != http.StatusOK || json.Unmarshal(chunkRecorder.Body.Bytes(), &current) != nil || current.Offset != end {
-			t.Fatalf("append chunk status=%d body=%s", chunkRecorder.Code, chunkRecorder.Body.String())
+		_ = json.Unmarshal(recorder.Body.Bytes(), &current)
+		return recorder.Code, current, recorder.Body.String()
+	}
+	if code, current, body := putChunk(0, data[:upload.ChunkSize]); code != http.StatusOK || current.Offset != upload.ChunkSize {
+		t.Fatalf("first chunk status=%d body=%s", code, body)
+	}
+	if code, _, body := putChunk(upload.ChunkSize-2, []byte("stale")); code != http.StatusConflict {
+		t.Fatalf("straddling chunk status=%d body=%s", code, body)
+	}
+	// The final chunk arrives ahead of its turn and waits beyond the prefix.
+	expected := upload.ChunkSize
+	if lastStart == upload.ChunkSize {
+		expected = total
+	}
+	if code, current, body := putChunk(lastStart, data[lastStart:]); code != http.StatusOK || current.Offset != expected {
+		t.Fatalf("ahead chunk status=%d body=%s", code, body)
+	}
+	if code, current, body := putChunk(0, bytes.Repeat([]byte{0xff}, int(upload.ChunkSize))); code != http.StatusOK || current.Offset != expected {
+		t.Fatalf("duplicate chunk status=%d body=%s", code, body)
+	}
+	chunks := 2
+	for offset := upload.ChunkSize; offset < lastStart; chunks++ {
+		end := offset + upload.ChunkSize
+		want := end
+		if end == lastStart {
+			want = total
 		}
-		if chunks == 0 {
-			staleRequest := httptest.NewRequest(http.MethodPut, "/api/restore-uploads/"+upload.ID, bytes.NewReader([]byte("stale")))
-			staleRequest.Header.Set("X-Spin-Upload-Offset", "0")
-			staleRecorder := httptest.NewRecorder()
-			destinationServer.Handler().ServeHTTP(staleRecorder, staleRequest)
-			if staleRecorder.Code != http.StatusConflict {
-				t.Fatalf("stale chunk status=%d body=%s", staleRecorder.Code, staleRecorder.Body.String())
-			}
+		code, current, body := putChunk(offset, data[offset:end])
+		if code != http.StatusOK || current.Offset != want {
+			t.Fatalf("append chunk status=%d body=%s", code, body)
 		}
 		offset = end
-		chunks++
 	}
 	if chunks < 2 {
 		t.Fatalf("chunk count=%d does not cross Lean boundary", chunks)
