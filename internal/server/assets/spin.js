@@ -709,10 +709,13 @@ async function downloadPortableBackup(){
 function updateRestoreProgress(label,detail='',percentage=null,error=false){
   const root=document.getElementById('restore-progress'),track=document.getElementById('restore-progress-track'),fill=document.getElementById('restore-progress-fill');root.hidden=false;root.classList.toggle('error',error);document.getElementById('restore-progress-label').textContent=label;document.getElementById('restore-progress-detail').textContent=detail;track.classList.toggle('indeterminate',percentage==null);if(percentage!=null)fill.style.width=`${Math.max(0,Math.min(100,percentage))}%`;
 }
+function updateRestoreStage(stage,message,current=0,total=0){
+  const names={open:'Database openen',state:'State controleren',attachments:'Bijlagen controleren',snapshots:'Docker-lagen controleren',rollback:'Rollbackpunt maken',install:'Database activeren',secrets:'Credentials beveiligen'},percentage=total?current/total*100:null,detail=total?`${current}/${total}`:'';updateRestoreProgress(names[stage]||'Restore uitvoeren',message+(detail?` · ${detail}`:''),percentage);
+}
 function restoreProgressEvent(event){
   if(event.type==='error')throw new Error(event.error||'Restore mislukt');
   if(event.type==='complete'){updateRestoreProgress('Restore compleet','100%',100);return event.result;}
-  const names={open:'Database openen',state:'State controleren',attachments:'Bijlagen controleren',snapshots:'Docker-lagen controleren',rollback:'Rollbackpunt maken',install:'Database activeren',secrets:'Credentials beveiligen'},percentage=event.total?event.current/event.total*100:null,detail=event.total?`${event.current}/${event.total}`:'';updateRestoreProgress(names[event.stage]||'Restore uitvoeren',event.message+(detail?` · ${detail}`:''),percentage);return null;
+  updateRestoreStage(event.stage,event.message,event.current,event.total);return null;
 }
 function uploadRestoreChunk(uploadID,offset,chunk,total){
   return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('PUT',`/api/restore-uploads/${encodeURIComponent(uploadID)}`);xhr.withCredentials=true;xhr.setRequestHeader('Content-Type','application/octet-stream');xhr.setRequestHeader('X-Spin-Upload-Offset',String(offset));if(csrfToken)xhr.setRequestHeader('X-Spin-CSRF',csrfToken);
@@ -721,13 +724,28 @@ function uploadRestoreChunk(uploadID,offset,chunk,total){
     xhr.onload=()=>{let body={};try{body=JSON.parse(xhr.responseText||'{}');}catch(_){}if(xhr.status<200||xhr.status>=300){const error=new Error(body.error||xhr.statusText||'Restore-chunk geweigerd');error.status=xhr.status;error.offset=body.offset;reject(error);return;}resolve(body);};xhr.send(chunk);
   });
 }
-function completeRestoreUpload(uploadID){
-  return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();let cursor=0,pending='',result=null,streamError=null;xhr.open('POST',`/api/restore-uploads/${encodeURIComponent(uploadID)}/complete`);xhr.withCredentials=true;xhr.setRequestHeader('Accept','application/x-ndjson');if(csrfToken)xhr.setRequestHeader('X-Spin-CSRF',csrfToken);
-    const consume=final=>{const type=xhr.getResponseHeader('Content-Type')||'';if(!type.includes('application/x-ndjson'))return;pending+=xhr.responseText.slice(cursor);cursor=xhr.responseText.length;const lines=pending.split('\n');pending=final?'':lines.pop();if(final&&pending.trim())lines.push(pending);for(const line of lines){if(!line.trim())continue;try{const event=JSON.parse(line),completed=restoreProgressEvent(event);if(completed)result=completed;}catch(error){streamError=error;}}};
-    xhr.onprogress=()=>consume(false);xhr.onerror=()=>reject(new Error('Verbinding verbroken tijdens het activeren van de restore'));xhr.onabort=()=>reject(new Error('Restore geannuleerd'));
-    xhr.onload=()=>{consume(true);if(streamError){reject(streamError);return;}if(result){resolve(result);return;}let body={};try{body=JSON.parse(xhr.responseText||'{}');}catch(_){}if(xhr.status<200||xhr.status>=300){reject(new Error(body.error||xhr.statusText||'Restore mislukt'));return;}reject(new Error('Restore eindigde zonder resultaat'));};xhr.send();
-  });
+const restoreJobStorageKey='spin-restore-job';
+function rememberRestoreJob(id){try{sessionStorage.setItem(restoreJobStorageKey,id);}catch(_){}}
+function forgetRestoreJob(){try{sessionStorage.removeItem(restoreJobStorageKey);}catch(_){}}
+function rememberedRestoreJob(){try{return sessionStorage.getItem(restoreJobStorageKey)||'';}catch(_){return '';}}
+function restoreJobProgress(job){
+  if(job.status==='error'){const error=new Error(job.error||'Restore mislukt');error.restoreTerminal=true;throw error;}
+  if(job.status==='complete'){if(!job.result)throw new Error('Restore eindigde zonder resultaat');updateRestoreProgress('Restore compleet','100%',100);return job.result;}
+  updateRestoreStage(job.stage,job.message,job.current,job.total);return null;
 }
+async function pollRestoreJob(initial){
+  let job=initial,failures=0;
+  for(;;){
+    let completed;try{completed=restoreJobProgress(job);}catch(error){if(error.restoreTerminal)forgetRestoreJob();throw error;}if(completed){forgetRestoreJob();return completed;}
+    await new Promise(resolve=>setTimeout(resolve,Math.min(5000,1000+failures*500)));
+    try{const response=await backupResponse(`/api/restores/${encodeURIComponent(job.id)}`);job=await response.json();failures=0;}
+    catch(error){if(error.status===404){forgetRestoreJob();throw error;}failures+=1;updateRestoreProgress('Restore-status ophalen',`Verbinding herstellen · poging ${failures}`,null);if(failures>=12)throw new Error('Restore draait mogelijk nog op de server, maar de status is tijdelijk niet bereikbaar. Herlaad deze pagina om opnieuw te verbinden.');}
+  }
+}
+async function completeRestoreUpload(uploadID){
+  const response=await backupResponse(`/api/restore-uploads/${encodeURIComponent(uploadID)}/complete`,{method:'POST'}),job=await response.json();if(!job.id)throw new Error('Spin gaf geen restore-status-ID terug');rememberRestoreJob(job.id);if(pollTimer){clearInterval(pollTimer);pollTimer=null;}return pollRestoreJob(job);
+}
+function announceRestoreComplete(result){alert(`Restore compleet: ${result.jobs} Jobs, ${result.templates} Templates, ${result.deliverables} deliverables, ${result.attachments} bijlagen en ${result.snapshots} Docker-snapshots. Log opnieuw in.`);location.reload();}
 async function uploadRestoreDatabase(file){
   const createdResponse=await backupResponse('/api/restore-uploads',{method:'POST',body:JSON.stringify({name:file.name,size:file.size})}),upload=await createdResponse.json(),chunkSize=Math.min(Number(upload.chunk_size)||1048576,1048576);let offset=Number(upload.offset)||0,failures=0;
   try{
@@ -757,8 +775,8 @@ async function uploadRestoreDatabase(file){
 }
 async function restorePortableBackup(file){
   if(!file)return;if(!confirm(`Restore “${file.name}”?\n\nDe huidige server-state wordt vervangen. Actieve browser-sessions worden afgesloten; lopende runtime-handles worden niet meegenomen.`)){document.getElementById('restore-backup-input').value='';return;}
-  const button=document.getElementById('choose-restore'),backupButton=document.getElementById('download-backup'),label=button.innerHTML;button.disabled=true;backupButton.disabled=true;button.innerHTML=`${icon('progress_activity')}Restore bezig…`;updateRestoreProgress('Upload starten',formatBytes(file.size),0);
-  try{const result=await uploadRestoreDatabase(file);if(pollTimer){clearInterval(pollTimer);pollTimer=null;}alert(`Restore compleet: ${result.jobs} Jobs, ${result.templates} Templates, ${result.deliverables} deliverables, ${result.attachments} bijlagen en ${result.snapshots} Docker-snapshots. Log opnieuw in.`);location.reload();}catch(error){updateRestoreProgress('Restore mislukt',error.message||String(error),100,true);showError(error);}finally{button.disabled=false;backupButton.disabled=false;button.innerHTML=label;document.getElementById('restore-backup-input').value='';}
+  const button=document.getElementById('choose-restore'),backupButton=document.getElementById('download-backup'),label=button.innerHTML;let restored=false;button.disabled=true;backupButton.disabled=true;button.innerHTML=`${icon('progress_activity')}Restore bezig…`;updateRestoreProgress('Upload starten',formatBytes(file.size),0);
+  try{const result=await uploadRestoreDatabase(file);restored=true;announceRestoreComplete(result);}catch(error){updateRestoreProgress('Restore mislukt',error.message||String(error),100,true);showError(error);}finally{if(!restored&&!rememberedRestoreJob()&&authState.authenticated&&!pollTimer)pollTimer=setInterval(()=>refresh(false),2500);button.disabled=false;backupButton.disabled=false;button.innerHTML=label;document.getElementById('restore-backup-input').value='';}
 }
 
 function bindCommandButtons(root=document){root.querySelectorAll('[data-command]').forEach(button=>button.onclick=()=>{setTab('environments');openConsole();execute(button.dataset.command);});}
@@ -821,6 +839,12 @@ function handleOAuthStatus(){
 }
 
 async function bootstrap(){
+  const restoreID=rememberedRestoreJob();let restoreError=null;
+  if(restoreID){
+    updateRestoreProgress('Restore-status ophalen','Opnieuw verbinden met de server…',null);
+    try{const response=await backupResponse(`/api/restores/${encodeURIComponent(restoreID)}`),result=await pollRestoreJob(await response.json());announceRestoreComplete(result);return;}
+    catch(error){restoreError=error;if(rememberedRestoreJob()){showAuthGate(`Restore draait mogelijk nog: ${error.message||error}`);return;}}
+  }
   try{
     const status=await api('/api/auth/status');authState=status;csrfToken=status.csrf_token||'';
     if(!status.configured){showAuthGate('Maak de eerste owner. Daarna bepaalt de server de operator voor iedere actie.','setup');return;}
@@ -828,7 +852,7 @@ async function bootstrap(){
     enterApp(status);
     setTab(localStorage.getItem('spin-tab')||'jobs');setWorkView(localStorage.getItem('spin-work-view')||'jobs');setJobState(jobStateFilter);setConnection(localStorage.getItem('spin-connection')||'git');handleOAuthStatus();
     print('output',`Current operator: ${currentOperator()} · Jobs → Sessions → isolated branches → review into Job branch`);
-    await refresh(true);
+    await refresh(true);if(restoreError)showError(restoreError);
   }catch(error){showAuthGate(`Server niet bereikbaar: ${error.message||error}`);}
 }
 

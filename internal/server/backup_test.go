@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"easyacp/internal/domain"
 	"easyacp/internal/persistence"
@@ -185,12 +186,32 @@ func TestSQLiteBackupRestoresStateSecretsAndAttachmentsUnderDestinationKey(t *te
 	if chunks < 2 {
 		t.Fatalf("chunk count=%d does not cross Lean boundary", chunks)
 	}
-	completeRequest := httptest.NewRequest(http.MethodPost, "/api/restore-uploads/"+upload.ID+"/complete", nil)
-	completeRequest.Header.Set("Accept", restoreProgressMediaType)
+	completeContext, cancelComplete := context.WithCancel(context.Background())
+	cancelComplete()
+	completeRequest := httptest.NewRequest(http.MethodPost, "/api/restore-uploads/"+upload.ID+"/complete", nil).WithContext(completeContext)
 	completeRecorder := httptest.NewRecorder()
 	destinationServer.Handler().ServeHTTP(completeRecorder, completeRequest)
-	if completeRecorder.Code != http.StatusOK || !bytes.Contains(completeRecorder.Body.Bytes(), []byte(`"type":"complete"`)) {
+	var restoreJob restoreJobResponse
+	if completeRecorder.Code != http.StatusAccepted || json.Unmarshal(completeRecorder.Body.Bytes(), &restoreJob) != nil || restoreJob.ID == "" || restoreJob.Status != "running" {
 		t.Fatalf("complete chunked restore status=%d body=%s", completeRecorder.Code, completeRecorder.Body.String())
+	}
+	if completeRecorder.Header().Get("Location") != "/api/restores/"+restoreJob.ID {
+		t.Fatalf("restore job location=%q", completeRecorder.Header().Get("Location"))
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for restoreJob.Status == "running" && time.Now().Before(deadline) {
+		statusRequest := httptest.NewRequest(http.MethodGet, "/api/restores/"+restoreJob.ID, nil)
+		statusRecorder := httptest.NewRecorder()
+		destinationServer.Handler().ServeHTTP(statusRecorder, statusRequest)
+		if statusRecorder.Code != http.StatusOK || json.Unmarshal(statusRecorder.Body.Bytes(), &restoreJob) != nil {
+			t.Fatalf("poll restore status=%d body=%s", statusRecorder.Code, statusRecorder.Body.String())
+		}
+		if restoreJob.Status == "running" {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	if restoreJob.Status != "complete" || restoreJob.Result == nil || restoreJob.Result.Status != "restored" {
+		t.Fatalf("restore job did not complete: %+v", restoreJob)
 	}
 
 	if err := destinationDatabase.Close(); err != nil {

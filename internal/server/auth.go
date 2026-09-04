@@ -84,6 +84,9 @@ func publicAPIPath(r *http.Request) bool {
 	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/workflow/mcp/") {
 		return true // the workflow handler validates its short-lived bearer token
 	}
+	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/restores/") {
+		return true // restore IDs are short-lived bearer capabilities and survive session replacement
+	}
 	if r.URL.Path == "/healthz" || r.URL.Path == "/api/auth/status" || r.URL.Path == "/api/auth/setup" || r.URL.Path == "/api/auth/login" {
 		return true
 	}

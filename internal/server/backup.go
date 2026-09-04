@@ -24,6 +24,8 @@ const restoreUploadChunkBytes int64 = 1 << 20
 
 const restoreUploadLifetime = 6 * time.Hour
 
+const restoreJobResultLifetime = 6 * time.Hour
+
 const restoreProgressMediaType = "application/x-ndjson"
 
 type restoreResponse struct {
@@ -68,6 +70,30 @@ type restoreProgressEvent struct {
 	Total   int              `json:"total,omitempty"`
 	Result  *restoreResponse `json:"result,omitempty"`
 	Error   string           `json:"error,omitempty"`
+}
+
+type restoreJob struct {
+	ID        string
+	Status    string
+	Stage     string
+	Message   string
+	Current   int
+	Total     int
+	Result    *restoreResponse
+	Error     string
+	ExpiresAt time.Time
+}
+
+type restoreJobResponse struct {
+	ID        string           `json:"id"`
+	Status    string           `json:"status"`
+	Stage     string           `json:"stage,omitempty"`
+	Message   string           `json:"message,omitempty"`
+	Current   int              `json:"current,omitempty"`
+	Total     int              `json:"total,omitempty"`
+	Result    *restoreResponse `json:"result,omitempty"`
+	Error     string           `json:"error,omitempty"`
+	ExpiresAt time.Time        `json:"expires_at"`
 }
 
 type restoreProgressWriter struct {
@@ -363,57 +389,80 @@ func (s *Server) completeRestoreUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "stop active terminals, chats and background Job launches before restoring a backup"})
 		return
 	}
+	jobID, err := randomOAuthValue(24)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	if !s.backupMu.TryLock() {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "another backup or restore is already running"})
 		return
 	}
-	defer s.backupMu.Unlock()
 	s.removeRestoreUpload(upload)
 	staged, err := upload.File.Stage(upload.Size)
 	if err != nil {
+		s.backupMu.Unlock()
 		_ = upload.File.Close()
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	defer staged.Close()
-	s.restoreStagedBackup(w, r, staged, newRestoreProgressWriter(w, r))
+	job := &restoreJob{
+		ID: jobID, Status: "running", Stage: "open", Message: "Restore wordt gestart",
+		ExpiresAt: time.Now().Add(restoreJobResultLifetime),
+	}
+	s.storeRestoreJob(job)
+	initial := s.restoreJobResult(job)
+	go s.runRestoreJob(job, staged)
+	w.Header().Set("Location", "/api/restores/"+job.ID)
+	w.Header().Set("Retry-After", "1")
+	writeJSON(w, http.StatusAccepted, initial)
 }
 
 func (s *Server) restoreStagedBackup(w http.ResponseWriter, r *http.Request, staged *persistence.StagedBackup, progress *restoreProgressWriter) {
-	progress.progress("open", "Upload compleet · database geopend", 1, 1)
+	result, status, err := s.performRestore(r.Context(), staged, progress.progress)
+	if err != nil {
+		progress.fail(status, err)
+		return
+	}
+	if progress.enabled {
+		progress.send(restoreProgressEvent{Type: "complete", Stage: "complete", Message: "Restore compleet", Result: &result})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) performRestore(ctx context.Context, staged *persistence.StagedBackup, progress func(string, string, int, int)) (restoreResponse, int, error) {
+	if progress == nil {
+		progress = func(string, string, int, int) {}
+	}
+	progress("open", "Upload compleet · database geopend", 1, 1)
 	stateJSON, err := staged.Database.ReadFile("state")
 	if err != nil {
-		progress.fail(http.StatusBadRequest, errors.New("Spin backup contains no state"))
-		return
+		return restoreResponse{}, http.StatusBadRequest, errors.New("Spin backup contains no state")
 	}
 	inspection, err := s.store.InspectPortableState(stateJSON, staged.MasterKey)
 	if err != nil {
-		progress.fail(http.StatusBadRequest, err)
-		return
+		return restoreResponse{}, http.StatusBadRequest, err
 	}
-	progress.progress("state", "State en credentials ontsleuteld", 1, 1)
-	if err := validateDatabaseObjects(r.Context(), staged.Database, inspection, progress.progress); err != nil {
-		progress.fail(http.StatusBadRequest, err)
-		return
+	progress("state", "State en credentials ontsleuteld", 1, 1)
+	if err := validateDatabaseObjects(ctx, staged.Database, inspection, progress); err != nil {
+		return restoreResponse{}, http.StatusBadRequest, err
 	}
 
-	progress.progress("rollback", "Veilig rollbackpunt van de huidige database maken", 0, 0)
-	rollback, err := s.database.RollbackPoint(r.Context())
+	progress("rollback", "Veilig rollbackpunt van de huidige database maken", 0, 0)
+	rollback, err := s.database.RollbackPoint(ctx)
 	if err != nil {
-		progress.fail(http.StatusInternalServerError, err)
-		return
+		return restoreResponse{}, http.StatusInternalServerError, err
 	}
 	defer rollback.Close()
-	progress.progress("install", "Gevalideerde database activeren", 0, 0)
-	if err := s.database.RestoreFrom(r.Context(), staged); err != nil {
-		progress.fail(http.StatusInternalServerError, err)
-		return
+	progress("install", "Gevalideerde database activeren", 0, 0)
+	if err := s.database.RestoreFrom(ctx, staged); err != nil {
+		return restoreResponse{}, http.StatusInternalServerError, err
 	}
-	progress.progress("secrets", "Credentials onder de server-key opnieuw versleutelen", 0, 0)
+	progress("secrets", "Credentials onder de server-key opnieuw versleutelen", 0, 0)
 	if err := s.store.RestorePortableState(stateJSON, staged.MasterKey); err != nil {
 		rollbackErr := s.database.RestoreFrom(context.Background(), rollback)
-		progress.fail(http.StatusInternalServerError, errors.Join(err, rollbackErr))
-		return
+		return restoreResponse{}, http.StatusInternalServerError, errors.Join(err, rollbackErr)
 	}
 	s.csrfTokens.clear()
 	s.workflowMu.Lock()
@@ -423,11 +472,92 @@ func (s *Server) restoreStagedBackup(w http.ResponseWriter, r *http.Request, sta
 		Status: "restored", Users: inspection.Users, Jobs: inspection.Jobs, Templates: inspection.Templates,
 		Deliverables: inspection.Deliverables, Attachments: len(inspection.Attachments), Snapshots: restorableSnapshotCount(inspection.Artifacts),
 	}
-	if progress.enabled {
-		progress.send(restoreProgressEvent{Type: "complete", Stage: "complete", Message: "Restore compleet", Result: &result})
+	return result, http.StatusOK, nil
+}
+
+func (s *Server) runRestoreJob(job *restoreJob, staged *persistence.StagedBackup) {
+	defer s.backupMu.Unlock()
+	defer staged.Close()
+	result, _, err := s.performRestore(context.Background(), staged, func(stage, message string, current, total int) {
+		s.updateRestoreJob(job, func(candidate *restoreJob) {
+			candidate.Stage = stage
+			candidate.Message = message
+			candidate.Current = current
+			candidate.Total = total
+		})
+	})
+	if err != nil {
+		s.updateRestoreJob(job, func(candidate *restoreJob) {
+			candidate.Status = "error"
+			candidate.Error = err.Error()
+			candidate.ExpiresAt = time.Now().Add(restoreJobResultLifetime)
+		})
+		s.logger.Warn("background restore failed", "error", err)
+		return
+	}
+	s.updateRestoreJob(job, func(candidate *restoreJob) {
+		candidate.Status = "complete"
+		candidate.Stage = "complete"
+		candidate.Message = "Restore compleet"
+		candidate.Current = 1
+		candidate.Total = 1
+		candidate.Result = &result
+		candidate.ExpiresAt = time.Now().Add(restoreJobResultLifetime)
+	})
+}
+
+func (s *Server) getRestoreJob(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("restoreID"))
+	now := time.Now()
+	s.restoreJobMu.Lock()
+	job, ok := s.restoreJobs[id]
+	if ok && job.Status != "running" && !job.ExpiresAt.After(now) {
+		delete(s.restoreJobs, id)
+		ok = false
+	}
+	var result restoreJobResponse
+	if ok {
+		result = restoreJobResponseFrom(job)
+	}
+	s.restoreJobMu.Unlock()
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "restore status not found or expired"})
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) storeRestoreJob(job *restoreJob) {
+	now := time.Now()
+	s.restoreJobMu.Lock()
+	for id, candidate := range s.restoreJobs {
+		if candidate.Status != "running" && !candidate.ExpiresAt.After(now) {
+			delete(s.restoreJobs, id)
+		}
+	}
+	s.restoreJobs[job.ID] = job
+	s.restoreJobMu.Unlock()
+}
+
+func (s *Server) updateRestoreJob(job *restoreJob, update func(*restoreJob)) {
+	s.restoreJobMu.Lock()
+	if s.restoreJobs[job.ID] == job {
+		update(job)
+	}
+	s.restoreJobMu.Unlock()
+}
+
+func (s *Server) restoreJobResult(job *restoreJob) restoreJobResponse {
+	s.restoreJobMu.Lock()
+	defer s.restoreJobMu.Unlock()
+	return restoreJobResponseFrom(job)
+}
+
+func restoreJobResponseFrom(job *restoreJob) restoreJobResponse {
+	return restoreJobResponse{
+		ID: job.ID, Status: job.Status, Stage: job.Stage, Message: job.Message,
+		Current: job.Current, Total: job.Total, Result: job.Result, Error: job.Error, ExpiresAt: job.ExpiresAt,
+	}
 }
 
 func (s *Server) restoreUploadResult(upload *restoreUpload) restoreUploadResponse {

@@ -27,6 +27,11 @@ func TestAuthenticationBindsOperatorFiltersUserStateAndProtectsMutations(t *test
 	if unauthenticated.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated state status = %d; body = %s", unauthenticated.Code, unauthenticated.Body.String())
 	}
+	publicRestoreStatus := httptest.NewRecorder()
+	handler.ServeHTTP(publicRestoreStatus, httptest.NewRequest(http.MethodGet, "/api/restores/unguessable-status-id", nil))
+	if publicRestoreStatus.Code != http.StatusNotFound {
+		t.Fatalf("public restore status = %d; body = %s", publicRestoreStatus.Code, publicRestoreStatus.Body.String())
+	}
 
 	derekCookie, derekCSRF := setupTestOwner(t, handler, "derek", "correct horse battery staple")
 	withoutCSRF := newAuthenticatedRequest(http.MethodPost, "/api/mcp-servers", `{"operator":"john","name":"private","transport":"http","url":"https://mcp.example.test"}`, derekCookie, "")
