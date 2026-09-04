@@ -58,6 +58,7 @@ type acpBrowserEvent struct {
 	AgentSessionID string          `json:"agent_session_id,omitempty"`
 	AgentName      string          `json:"agent_name,omitempty"`
 	StopReason     string          `json:"stop_reason,omitempty"`
+	Queued         int             `json:"queued,omitempty"`
 	Busy           bool            `json:"busy,omitempty"`
 	Fatal          bool            `json:"fatal,omitempty"`
 	Error          string          `json:"error,omitempty"`
@@ -103,8 +104,21 @@ type activeACP struct {
 	history         []acpBrowserEvent
 	sentAttachments map[string]bool
 	busy            bool
+	queued          []queuedPrompt
 	failure         error
 }
+
+// queuedPrompt is a message the operator wrote while the agent was still
+// working. ACP runs one prompt turn per session, so steering is queueing: the
+// message becomes the next turn instead of interrupting the running one.
+type queuedPrompt struct {
+	text        string
+	attachments []acpPromptAttachment
+}
+
+// maxQueuedPrompts bounds how far ahead an operator can steer. Beyond this the
+// queue stops being steering and starts being a script written blind.
+const maxQueuedPrompts = 16
 
 func (s *Server) probeACPHandler(w http.ResponseWriter, r *http.Request) {
 	var req acpProbeRequest
@@ -138,7 +152,7 @@ func (s *Server) sessionACP(w http.ResponseWriter, r *http.Request) {
 	events, history := active.subscribe()
 	defer active.unsubscribe(events)
 	agentSessionID, agentName, busy := active.info()
-	ready := acpBrowserEvent{Type: "ready", AgentSessionID: agentSessionID, AgentName: agentName, Busy: busy}
+	ready := acpBrowserEvent{Type: "ready", AgentSessionID: agentSessionID, AgentName: agentName, Busy: busy, Queued: active.queuedCount()}
 	if err := connection.WriteJSON(ready); err != nil {
 		return
 	}
@@ -669,15 +683,75 @@ func (a *activeACP) startPromptWithAttachments(text string, attachments []acpPro
 	}
 	a.mu.Lock()
 	if a.busy {
+		if len(a.queued) >= maxQueuedPrompts {
+			a.mu.Unlock()
+			return errors.New("too many messages are already waiting for the running turn")
+		}
+		a.queued = append(a.queued, queuedPrompt{text: text, attachments: attachments})
+		depth := len(a.queued)
 		a.mu.Unlock()
-		return errors.New("this ACP session is already processing a prompt")
+		a.broadcast(acpBrowserEvent{Type: "queued", Text: text, Queued: depth}, true)
+		return nil
 	}
+	a.busy = true
+	a.mu.Unlock()
+	a.runPrompts(queuedPrompt{text: text, attachments: attachments})
+	return nil
+}
+
+// runPrompts sends one turn and then takes whatever the operator queued while
+// it ran, until the queue is empty. Busy stays set across that hand-over, so a
+// steered conversation never briefly reads as idle between two of its own
+// turns. A failed turn drops the queue: an agent that just returned an error is
+// not in a state to receive what was meant to follow.
+func (a *activeACP) runPrompts(first queuedPrompt) {
+	go func() {
+		current, stillWaiting := first, 0
+		for {
+			prompt, newAttachmentIDs := a.buildPrompt(current)
+			a.broadcast(acpBrowserEvent{Type: "user", Text: current.text, Queued: stillWaiting}, true)
+			result, err := a.request(context.Background(), "session/prompt", map[string]any{
+				"sessionId": a.agentSessionID,
+				"prompt":    prompt,
+			})
+			if err != nil {
+				a.mu.Lock()
+				for _, attachmentID := range newAttachmentIDs {
+					delete(a.sentAttachments, attachmentID)
+				}
+				a.mu.Unlock()
+			}
+			next, remaining, more := a.finishTurn(err != nil)
+			if err != nil {
+				message := "ACP prompt: " + err.Error()
+				if remaining > 0 {
+					message += fmt.Sprintf(" · %d wachtende bericht(en) verwijderd", remaining)
+				}
+				a.broadcast(acpBrowserEvent{Type: "error", Error: message}, true)
+				return
+			}
+			var completed struct {
+				StopReason string `json:"stopReason"`
+			}
+			_ = json.Unmarshal(result, &completed)
+			a.broadcast(acpBrowserEvent{Type: "turn_end", StopReason: completed.StopReason, Queued: remaining}, true)
+			if !more {
+				return
+			}
+			current, stillWaiting = next, remaining-1
+		}
+	}()
+}
+
+func (a *activeACP) buildPrompt(message queuedPrompt) ([]map[string]any, []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.sentAttachments == nil {
 		a.sentAttachments = map[string]bool{}
 	}
-	prompt := []map[string]any{{"type": "text", "text": text}}
-	newAttachmentIDs := make([]string, 0, len(attachments))
-	for _, attachment := range attachments {
+	prompt := []map[string]any{{"type": "text", "text": message.text}}
+	newAttachmentIDs := make([]string, 0, len(message.attachments))
+	for _, attachment := range message.attachments {
 		attachment.ID = strings.TrimSpace(attachment.ID)
 		if attachment.ID == "" || len(attachment.Block) == 0 || a.sentAttachments[attachment.ID] {
 			continue
@@ -686,33 +760,36 @@ func (a *activeACP) startPromptWithAttachments(text string, attachments []acpPro
 		a.sentAttachments[attachment.ID] = true
 		newAttachmentIDs = append(newAttachmentIDs, attachment.ID)
 	}
-	a.busy = true
-	a.mu.Unlock()
-	a.broadcast(acpBrowserEvent{Type: "user", Text: text}, true)
-	go func() {
-		result, err := a.request(context.Background(), "session/prompt", map[string]any{
-			"sessionId": a.agentSessionID,
-			"prompt":    prompt,
-		})
-		a.mu.Lock()
+	return prompt, newAttachmentIDs
+}
+
+// finishTurn hands back the next queued message. The count it reports is the
+// queue as the turn ended, so it includes the message about to start: the
+// browser reads it as "more is coming" and never shows an idle gap between two
+// turns the operator queued. Busy is cleared only when nothing is waiting.
+// With discard set the queue is dropped and its former size is returned.
+func (a *activeACP) finishTurn(discard bool) (queuedPrompt, int, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	waiting := len(a.queued)
+	if discard {
+		a.queued = nil
 		a.busy = false
-		if err != nil {
-			for _, attachmentID := range newAttachmentIDs {
-				delete(a.sentAttachments, attachmentID)
-			}
-		}
-		a.mu.Unlock()
-		if err != nil {
-			a.broadcast(acpBrowserEvent{Type: "error", Error: "ACP prompt: " + err.Error()}, true)
-			return
-		}
-		var completed struct {
-			StopReason string `json:"stopReason"`
-		}
-		_ = json.Unmarshal(result, &completed)
-		a.broadcast(acpBrowserEvent{Type: "turn_end", StopReason: completed.StopReason}, true)
-	}()
-	return nil
+		return queuedPrompt{}, waiting, false
+	}
+	if waiting == 0 {
+		a.busy = false
+		return queuedPrompt{}, 0, false
+	}
+	next := a.queued[0]
+	a.queued = a.queued[1:]
+	return next, waiting, true
+}
+
+func (a *activeACP) queuedCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.queued)
 }
 
 func (a *activeACP) promptCapabilities() acpPromptCapabilities {
@@ -736,11 +813,16 @@ func (a *activeACP) cancelPrompt() error {
 		return errors.New("there is no running prompt")
 	}
 	a.mu.Lock()
+	dropped := len(a.queued)
+	a.queued = nil
 	pending := make([]string, 0, len(a.permissions))
 	for id := range a.permissions {
 		pending = append(pending, id)
 	}
 	a.mu.Unlock()
+	if dropped > 0 {
+		a.broadcast(acpBrowserEvent{Type: "queued", Queued: 0, Text: fmt.Sprintf("%d wachtende bericht(en) geannuleerd", dropped)}, true)
+	}
 	for _, id := range pending {
 		_ = a.resolvePermissionOutcome(id, map[string]string{"outcome": "cancelled"})
 	}
