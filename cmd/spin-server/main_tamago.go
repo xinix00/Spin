@@ -19,8 +19,8 @@ import (
 	"easyacp/internal/store"
 	"easyacp/internal/worker"
 
-	"github.com/xinix00/HopOS/metal/app/applib"
-	"github.com/xinix00/HopOS/metal/app/applib/appnet"
+	"github.com/xinix00/HopOS/metal/v2/app/applib"
+	"github.com/xinix00/HopOS/metal/v2/app/applib/appnet"
 	_ "golang.org/x/crypto/x509roots/fallback"
 )
 

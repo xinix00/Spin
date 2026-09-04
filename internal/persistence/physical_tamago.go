@@ -8,7 +8,7 @@ import (
 	"io"
 	"io/fs"
 
-	"github.com/xinix00/HopOS/metal/app/applib"
+	"github.com/xinix00/HopOS/metal/v2/app/applib"
 )
 
 var physicalHopApp *applib.App

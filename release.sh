@@ -65,7 +65,7 @@ cleanup() { rm -rf "$tmpdir"; }
 trap cleanup EXIT INT TERM
 cp "$ROOTDIR/go.mod" "$tmpdir/hopos.mod"
 cp "$ROOTDIR/go.sum" "$tmpdir/hopos.sum"
-go mod edit -modfile="$tmpdir/hopos.mod" -replace="github.com/xinix00/HopOS/metal=$HOPOS_DIR/metal"
+go mod edit -modfile="$tmpdir/hopos.mod" -replace="github.com/xinix00/HopOS/metal/v2=$HOPOS_DIR/metal"
 
 echo ">> HopOS/arm64"
 hopos_arm="$OUTDIR/spin-server-arm64-tamago.elf"
