@@ -55,8 +55,20 @@ type Server struct {
 }
 
 type backgroundJobLaunch struct {
-	cancel context.CancelFunc
-	done   chan struct{}
+	cancel    context.CancelFunc
+	done      chan struct{}
+	startedAt time.Time
+	clientID  string // set once the engine reports which runner took the work
+}
+
+// sessionPreparation tells the browser that a Session is being started right
+// now, and on which runner once one has been chosen. It is deliberately
+// transient: it lives in the launch bookkeeping, never in durable state, so a
+// failed attempt leaves nothing behind to clean up or to pin a Session with.
+type sessionPreparation struct {
+	SessionID string    `json:"session_id"`
+	ClientID  string    `json:"client_id,omitempty"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 func New(st *store.Store, logger *slog.Logger) *Server {
@@ -95,6 +107,9 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 	s.routes()
 	if s.runnerBroker != nil {
 		s.runnerBroker.OnRunnerConnected(s.resumeQueuedWorkflowPhases)
+	}
+	if reporter, ok := engine.(placementReporter); ok {
+		reporter.OnPlacement(s.recordLaunchPlacement)
 	}
 	go s.resumeQueuedWorkflowActions()
 	return s
@@ -153,6 +168,33 @@ func (s *Server) startQueuedWorkflowLaunch(session domain.Session) bool {
 		func(ctx context.Context) { s.launchWorkflowSessionContext(ctx, sessionID, operator) })
 }
 
+// placementReporter is implemented by an engine that picks its runner before it
+// does the slow part of materializing.
+type placementReporter interface {
+	OnPlacement(func(sessionID, clientID string))
+}
+
+// recordLaunchPlacement notes which runner took an in-flight launch, so the
+// browser can name it while the workspace is still being built.
+func (s *Server) recordLaunchPlacement(sessionID, clientID string) {
+	s.jobLaunchMu.Lock()
+	if launch := s.jobLaunching[sessionID]; launch != nil {
+		launch.clientID = clientID
+	}
+	s.jobLaunchMu.Unlock()
+}
+
+func (s *Server) sessionPreparations() []sessionPreparation {
+	s.jobLaunchMu.Lock()
+	preparations := make([]sessionPreparation, 0, len(s.jobLaunching))
+	for sessionID, launch := range s.jobLaunching {
+		preparations = append(preparations, sessionPreparation{SessionID: sessionID, ClientID: launch.clientID, StartedAt: launch.startedAt})
+	}
+	s.jobLaunchMu.Unlock()
+	slices.SortFunc(preparations, func(a, b sessionPreparation) int { return strings.Compare(a.SessionID, b.SessionID) })
+	return preparations
+}
+
 // beginTrackedLaunch runs body as the tracked background launch for a Session
 // and reports whether it started one. Guard runs while the bookkeeping lock is
 // held, so a concurrent launch cannot slip between its verdict and the
@@ -168,7 +210,7 @@ func (s *Server) beginTrackedLaunch(sessionID string, guard func() bool, body fu
 		return false
 	}
 	launchContext, cancel := context.WithCancel(context.Background())
-	launch := &backgroundJobLaunch{cancel: cancel, done: make(chan struct{})}
+	launch := &backgroundJobLaunch{cancel: cancel, done: make(chan struct{}), startedAt: time.Now().UTC()}
 	s.jobLaunching[sessionID] = launch
 	s.jobLaunchMu.Unlock()
 	go func() {
@@ -275,7 +317,7 @@ func (s *Server) routes() {
 		if recommendations == nil {
 			recommendations = []domain.Recommendation{}
 		}
-		writeJSON(w, http.StatusOK, stateResponse{Snapshot: snapshot, Recommendations: recommendations, Engine: s.engine.Info(), GitOAuthProviders: s.gitOAuth.publicProviders(r), CurrentUser: publicUser(identity.User)})
+		writeJSON(w, http.StatusOK, stateResponse{Snapshot: snapshot, Recommendations: recommendations, Engine: s.engine.Info(), GitOAuthProviders: s.gitOAuth.publicProviders(r), CurrentUser: publicUser(identity.User), Preparing: s.sessionPreparations()})
 	})
 	s.mux.HandleFunc("GET /api/artifacts", s.listArtifacts)
 	s.mux.HandleFunc("DELETE /api/artifacts/{artifactID}", s.deleteArtifact)
@@ -340,6 +382,7 @@ type stateResponse struct {
 	Engine            domain.CapsuleEngineInfo `json:"engine"`
 	GitOAuthProviders []gitOAuthProviderInfo   `json:"git_oauth_providers"`
 	CurrentUser       domain.PublicUser        `json:"current_user"`
+	Preparing         []sessionPreparation     `json:"preparing"`
 }
 
 func (s *Server) drainClient(w http.ResponseWriter, r *http.Request) {
@@ -693,7 +736,7 @@ func (s *Server) scheduleWorkflowRetry(created domain.CreateJobResponse, request
 		previous.cancel()
 	}
 	launchContext, cancel := context.WithCancel(context.Background())
-	launch := &backgroundJobLaunch{cancel: cancel, done: make(chan struct{})}
+	launch := &backgroundJobLaunch{cancel: cancel, done: make(chan struct{}), startedAt: time.Now().UTC()}
 	s.jobLaunching[sessionID] = launch
 	s.jobLaunchMu.Unlock()
 

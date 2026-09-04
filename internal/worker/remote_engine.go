@@ -22,6 +22,9 @@ import (
 type RemoteEngine struct {
 	broker  *Broker
 	archive capsule.SnapshotArchive
+
+	placementMu sync.Mutex
+	placement   func(sessionID, clientID string)
 }
 
 func NewRemoteEngine(broker *Broker, archive ...capsule.SnapshotArchive) *RemoteEngine {
@@ -33,6 +36,28 @@ func NewRemoteEngine(broker *Broker, archive ...capsule.SnapshotArchive) *Remote
 }
 
 func (e *RemoteEngine) Info() domain.CapsuleEngineInfo { return e.broker.info() }
+
+// OnPlacement registers an observer that learns which runner will materialize a
+// Session before the slow part begins. Choosing a runner is instant once one is
+// connected, while pulling images and checking out a repository is not, so
+// without this a Job reports "waiting for a runner" for work already under way.
+func (e *RemoteEngine) OnPlacement(observe func(sessionID, clientID string)) {
+	e.placementMu.Lock()
+	e.placement = observe
+	e.placementMu.Unlock()
+}
+
+func (e *RemoteEngine) reportPlacement(sessionID, clientID string) {
+	if sessionID == "" || clientID == "" {
+		return
+	}
+	e.placementMu.Lock()
+	observe := e.placement
+	e.placementMu.Unlock()
+	if observe != nil {
+		observe(sessionID, clientID)
+	}
+}
 
 func (e *RemoteEngine) StartRecording(ctx context.Context, recording domain.Recording, parents []domain.Artifact) (domain.CapsuleRuntime, error) {
 	target, err := e.broker.choose(ctx, "")
@@ -101,6 +126,7 @@ func (e *RemoteEngine) materialize(ctx context.Context, composition domain.Compo
 	if err != nil {
 		return domain.CapsuleRuntime{}, err
 	}
+	e.reportPlacement(composition.SessionID, target.id)
 	for index := range artifacts {
 		artifact := &artifacts[index]
 		if !artifact.Snapshot.Restorable || artifact.Snapshot.Ref == "" || snapshotAvailableOn(artifact.Snapshot, target.id) {
