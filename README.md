@@ -38,6 +38,8 @@ END RECORD
 
 RECORD tool:codex --scope=global --from=tool:node --enable=acp --command=codex-acp
 npm install -g @openai/codex @agentclientprotocol/codex-acp
+mkdir -p /etc/spin/enabled
+printf '%s\n' 'CODEX_CONFIG={"sandbox_workspace_write":{"network_access":true}}' > /etc/spin/enabled/acp.env
 codex --version
 END RECORD
 
@@ -245,16 +247,7 @@ Snapshot-remove is bewust streng: alleen de maker kan verwijderen, en alleen als
 
 Een laag kan de startomgeving van een capability aanvullen via `/etc/spin/enabled/<capability>.env`. Spin exporteert de variabelen uit dit bestand alleen wanneer die `ENABLED` entrypoint start. Dit houdt runtimebeleid stapelbaar en toolonafhankelijk; secrets horen nog steeds in user-scoped credentiallagen en niet in een globale configlaag.
 
-De Session-container heeft gewoon netwerk (`-capsule-network bridge`), maar de sandbox van Codex zelf staat in de standaardmodus `agent` (workspace-write) zonder netwerktoegang. Een `dotnet restore` of `npm install` strandt dan op de packagebronnen, ook al kan de container ze bereiken. codex-acp leest `CODEX_CONFIG`, een JSON-object dat in de Codex-sessieconfig wordt gemerged; zet het netwerk aan met een configlaag die alleen dit bestand levert:
-
-```text
-RECORD config:codex-network --scope=global --from=tool:codex
-mkdir -p /etc/spin/enabled
-printf '%s\n' 'CODEX_CONFIG={"sandbox_workspace_write":{"network_access":true}}' > /etc/spin/enabled/acp.env
-END RECORD
-```
-
-Voeg `config:codex-network` toe aan de toolinglagen van de repository of aan de `WITH`-lagen van een fase. Spin interpreteert de variabele niet; dezelfde haak draagt ook `INITIAL_AGENT_MODE` (`read-only`, `agent`, `agent-full-access`) of een andere ACP-wrapper.
+De Session-container heeft gewoon netwerk (`-capsule-network bridge`), maar de sandbox van Codex zelf staat in de standaardmodus `agent` (workspace-write) zonder netwerktoegang. Een `dotnet restore` of `npm install` strandt dan op de packagebronnen, ook al kan de container ze bereiken. codex-acp leest `CODEX_CONFIG`, een JSON-object dat in de Codex-sessieconfig wordt gemerged; de `tool:codex`-opname hierboven zet daarmee het netwerk aan. Wil je dat los van de toollaag kunnen schakelen, dan kan diezelfde regel ook in een aparte `config:`-laag die je per repository of als `WITH`-laag op een fase meegeeft. Spin interpreteert de variabele niet; dezelfde haak draagt ook `INITIAL_AGENT_MODE` (`read-only`, `agent`, `agent-full-access`) of een andere ACP-wrapper.
 
 Bij `session/new` geeft Spin zowel `/workspace` als de capsule-HOME `/root` door. ACP-agents die `additionalDirectories` ondersteunen nemen HOME daardoor op als writable root van hun workspace-sandbox. Gewone tooling kan dus zonder productspecifieke uitzonderingen naar bijvoorbeeld `/root/.dotnet`, `/root/.npm` of `/root/.cache` schrijven. Dit is uitsluitend `/root` ín de geïsoleerde, gematerialiseerde Session-container; de host en de immutable bronsnapshot worden niet schrijfbaar. Een laag kan `/etc/spin/enabled/acp.env` nog steeds gebruiken voor aanvullende runtimeconfiguratie zoals netwerkbeleid.
 
