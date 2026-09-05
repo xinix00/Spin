@@ -513,7 +513,7 @@ function setWorkView(name){if(!document.getElementById(`work-${name}`))name='job
 function jobIsClosed(job){return job.status==='done'||job.status==='cancelled'||job.workflow_status==='done';}
 function setJobState(name){jobStateFilter=name==='closed'?'closed':'open';document.querySelectorAll('[data-job-state]').forEach(button=>button.classList.toggle('active',button.dataset.jobState===jobStateFilter));document.getElementById('jobs-list-title').textContent=jobStateFilter==='open'?'Actief werk':'Afgerond werk';document.getElementById('jobs-list-copy').textContent=jobStateFilter==='open'?'Open een Job voor Sessions, branches en resultaten.':'Afgeronde en handmatig gesloten Jobs blijven volledig terugleesbaar.';localStorage.setItem('spin-job-state',jobStateFilter);renderJobs();}
 function activeRecording(){return snapshot.recordings.find(recording=>recording.actor===currentOperator()&&recording.status==='recording');}
-function isSpinCommand(line){return ['RECORD','END','CANCEL','FROM','LIST','USE','ACP','STOP'].includes(String(line||'').trim().split(/\s+/,1)[0].toUpperCase());}
+function isSpinCommand(line){return ['RECORD','EDIT','END','CANCEL','FROM','LIST','USE','ACP','STOP'].includes(String(line||'').trim().split(/\s+/,1)[0].toUpperCase());}
 function terminalSize(){const terminal=document.getElementById('terminal');return {cols:Math.max(40,Math.min(240,Math.floor(terminal.clientWidth/7.6))),rows:Math.max(12,Math.min(80,Math.floor(terminal.clientHeight/20)))};}
 function cleanTerminalOutput(value){return String(value||'').replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g,'').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').replace(/\r/g,'');}
 function activeTerminal(){return activeTerminalID?terminalSessions.get(activeTerminalID):null;}
