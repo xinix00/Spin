@@ -571,12 +571,15 @@ function renderArtifacts(){
   root.innerHTML=artifacts.map(artifact=>{
     const identity=artifact.subject?`${artifact.scope}:${artifact.subject}`:artifact.scope;
     const use=canUse(artifact)?`<button class="small-button" data-command="USE ${esc(artifactSelector(artifact))}">${icon('arrow_forward')}Start</button>`:'';
-    const next=`<button class="small-button" data-record-from="${esc(artifactSelector(artifact))}">${icon('add')}Laag</button>`;
+    const next=`<button class="small-button" data-record-from="${esc(artifactSelector(artifact))}">${icon('add')}Laag</button><button class="small-button" data-record-version="${esc(artifactSelector(artifact))}" data-record-scope="${esc(artifact.scope||'user')}" title="Neem deze laag opnieuw op vanaf de huidige versie en voeg toe wat ontbreekt; de naam blijft, selectors kiezen daarna de nieuwste versie">${icon('history')}Nieuwe versie</button>`;
     const remove=artifact.created_by===currentOperator()?`<button class="danger" data-remove-artifact="${esc(artifact.id)}" data-artifact-label="${esc(artifactSelector(artifact))}">${icon('delete')}Verwijder</button>`:'';
     return `<article class="artifact"><div><div class="artifact-title"><span>${esc(artifactSelector(artifact))}</span><span class="tag">L${artifactLayer(artifact)}</span><span class="tag ${esc(artifact.kind)}">${esc(artifact.kind)}</span><span class="tag">${esc(identity)}</span>${artifact.sensitivity==='secret'?'<span class="tag secret">secret</span>':''}</div><small>${esc(artifact.profile)} · ${esc(artifact.snapshot?.driver||'legacy')} · ${esc(artifact.snapshot_digest)}</small><small>parent ${(artifact.parent_artifact_ids||[]).map(id=>esc(byID(snapshot.artifacts,id)?.name||id)).join(', ')||'Alpine substrate'}</small>${artifact.enables?.length?`<small>ENABLES <span class="capability">${esc(enabledNames(artifact.enables))}</span></small>`:''}</div><div class="artifact-actions">${use}${next}${remove}</div></article>`;
   }).join('');
   bindCommandButtons(root);bindArtifactRemove(root);
   root.querySelectorAll('[data-record-from]').forEach(button=>button.onclick=()=>openConsole(`RECORD <kind>:<name> --scope=user --from=${button.dataset.recordFrom}`));
+  // A layer is immutable; adding to it means recording it again under the same
+  // name, from the version that exists. Selectors then resolve to the new one.
+  root.querySelectorAll('[data-record-version]').forEach(button=>button.onclick=()=>openConsole(`RECORD ${button.dataset.recordVersion} --scope=${button.dataset.recordScope} --from=${button.dataset.recordVersion}`));
 }
 
 function usableSelectors(){return [...new Set(snapshot.artifacts.filter(canUse).map(artifactSelector))];}
