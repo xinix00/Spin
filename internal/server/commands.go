@@ -96,6 +96,41 @@ func (s *Server) runCommandContext(ctx context.Context, req domain.CommandReques
 			Recording: &recording,
 		}, nil
 
+	case "EDIT":
+		// EDIT records the current version of a layer again, with every setting
+		// it already has, and END RECORD makes the result the new version.
+		if len(fields) < 2 {
+			return domain.CommandResponse{}, fmt.Errorf("usage: EDIT kind:name [--profile=default]: %w", store.ErrConflict)
+		}
+		kind, name, flagStart, err := recordTarget(append([]string{"RECORD"}, fields[1:]...))
+		if err != nil {
+			return domain.CommandResponse{}, err
+		}
+		flags := commandFlags(fields[flagStart:])
+		profile := flags["profile"]
+		if profile == "" {
+			profile = "default"
+		}
+		current, err := s.store.LatestArtifact(kind, name, actor, profile)
+		if err != nil {
+			return domain.CommandResponse{}, fmt.Errorf("EDIT %s:%s: %w", kind, name, err)
+		}
+		recording, err := s.createCapsuleRecording(ctx, domain.CreateRecordingRequest{
+			Actor: actor, Kind: current.Kind, Name: current.Name,
+			Scope: current.Scope, Subject: current.Subject, Profile: current.Profile,
+			Provides: current.Provides, Requires: current.Requires, Enables: current.Enables, Slot: current.Slot,
+			ParentArtifactIDs: []string{current.ID}, CompatibilityFingerprint: current.CompatibilityFingerprint,
+			Sensitivity: current.Sensitivity, ReplacesArtifactID: current.ID,
+		})
+		if err != nil {
+			return domain.CommandResponse{}, err
+		}
+		message := fmt.Sprintf("● EDITING %s:%s · scope=%s · from current version %s · type what you want to add, then END RECORD replaces the current version", recording.Kind, recording.Name, recording.Scope, current.SnapshotDigest)
+		if len(recording.Enables) > 0 {
+			message += " · ENABLES=" + enablementNames(recording.Enables)
+		}
+		return domain.CommandResponse{Message: message, Recording: &recording}, nil
+
 	case "END":
 		if len(fields) != 2 || strings.ToUpper(fields[1]) != "RECORD" {
 			return domain.CommandResponse{}, fmt.Errorf("usage: END RECORD: %w", store.ErrConflict)
@@ -257,6 +292,9 @@ func (s *Server) runCommandContext(ctx context.Context, req domain.CommandReques
 		artifacts := s.store.Snapshot().Artifacts
 		filtered := make([]domain.Artifact, 0, len(artifacts))
 		for _, artifact := range artifacts {
+			if artifact.SupersededBy != "" {
+				continue
+			}
 			if kind == "" || string(artifact.Kind) == kind {
 				filtered = append(filtered, artifact)
 			}

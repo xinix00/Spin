@@ -162,6 +162,7 @@ De ACP-hook volgt het stabiele ACP v1-transport: newline-delimited JSON-RPC 2.0 
 RECORD kind:name [--scope=user|global] [--from=kind:name]
                  [--enable=git|acp] [--command=codex-acp]
                  [--transport=stdio] [--protocol-version=1]
+EDIT kind:name [--profile=default]
 <opaque shell command>
 END RECORD
 CANCEL RECORD
@@ -173,15 +174,15 @@ ACP PROBE [composition-id]
 STOP USE [composition-id]
 ```
 
-Een laag is immutable; er is geen bewerken-in-plaats. Iets toevoegen doe je met een nieuwe opname onder dezelfde naam, `--from` de versie die er al is (de knop **Nieuwe versie** op een laag vult dit in):
+Een laag is een immutable snapshot, dus bewerken is opnieuw opnemen. `EDIT` (de knop **Bewerk** op een laag) start een opname van de huidige versie met al haar instellingen: scope, profiel, `ENABLES` en entrypoint komen mee, en de opname begint in de bestaande snapshot. Je typt alleen wat erbij moet:
 
 ```text
-RECORD tool:codex --scope=global --from=tool:codex
+EDIT tool:codex
 printf '%s\n' 'CODEX_CONFIG={"sandbox_workspace_write":{"network_access":true}}' > /etc/spin/enabled/acp.env
 END RECORD
 ```
 
-Een selector zoals `tool:codex` resolvet altijd naar de nieuwste versie in de hoogste zichtbare scope, dus `USE`, Jobs en toolinglagen pakken de nieuwe versie vanzelf op. Lagen die eerder ván de oude versie zijn opgenomen, zoals `credential:codex --from=tool:codex`, houden hun eigen parent-image en zien de aanvulling niet: neem die ook opnieuw op, of zet de aanvulling in een aparte `config:`-laag die je er naast selecteert. De oude versie blijft bestaan voor lopende Sessions en kan daarna worden verwijderd.
+`END RECORD` maakt het resultaat de nieuwe versie en zet de oude opzij: die verschijnt niet meer in lijsten en selectors, maar haar snapshot blijft bestaan voor lopende Sessions en voor lagen die ervan zijn afgeleid. Die afgeleide lagen volgen de bewerking vanzelf: een compositie die de oude versie in haar closure aantreft (bijvoorbeeld via `credential:codex --from=tool:codex`) bindt de nieuwste versie in dat slot, en de Docker-engine unioned die over de afgeleide snapshot. Een EDIT van `tool:codex` bereikt zo ook iedere credential- en toolinglaag die erop is gebouwd, zonder die opnieuw op te nemen.
 
 De oude tweedelige vormen zoals `RECORD tool codex` en `USE tool codex` worden nog gelezen als compatibiliteit, maar de GUI en documentatie schrijven alleen de canonieke selectorvorm.
 

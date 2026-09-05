@@ -443,6 +443,10 @@ type Artifact struct {
 	Sensitivity              ArtifactSensitivity `json:"sensitivity"`
 	CreatedBy                string              `json:"created_by"`
 	CreatedAt                time.Time           `json:"created_at"`
+	// SupersededBy points at the version that replaced this one through EDIT.
+	// The snapshot stays: layers recorded from it still resolve their parent by
+	// ID, and a composition that meets it binds the newest version instead.
+	SupersededBy string `json:"superseded_by,omitempty"`
 }
 
 type RecordingCommand struct {
@@ -470,6 +474,7 @@ type Recording struct {
 	Status                   RecordingStatus     `json:"status"`
 	Commands                 []RecordingCommand  `json:"commands"`
 	ArtifactID               string              `json:"artifact_id,omitempty"`
+	ReplacesArtifactID       string              `json:"replaces_artifact_id,omitempty"`
 	StartedAt                time.Time           `json:"started_at"`
 	EndedAt                  *time.Time          `json:"ended_at,omitempty"`
 }
@@ -887,6 +892,9 @@ type CreateRecordingRequest struct {
 	ParentArtifactIDs        []string            `json:"parent_artifact_ids,omitempty"`
 	CompatibilityFingerprint string              `json:"compatibility_fingerprint,omitempty"`
 	Sensitivity              ArtifactSensitivity `json:"sensitivity,omitempty"`
+	// ReplacesArtifactID marks an EDIT: the finished recording becomes the new
+	// version of that artifact, which is then superseded.
+	ReplacesArtifactID string `json:"replaces_artifact_id,omitempty"`
 }
 
 type ExecuteRecordingCommandRequest struct {

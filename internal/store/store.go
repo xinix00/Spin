@@ -423,6 +423,19 @@ func (s *Store) CreateRecording(req domain.CreateRecordingRequest) (domain.Recor
 			return domain.Recording{}, fmt.Errorf("parent artifact %s: %w", parentID, ErrNotFound)
 		}
 	}
+	replaces := strings.TrimSpace(req.ReplacesArtifactID)
+	if replaces != "" {
+		previous, ok := s.state.Artifacts[replaces]
+		if !ok || !canUseArtifact(actor, previous) {
+			return domain.Recording{}, fmt.Errorf("artifact to edit %s: %w", replaces, ErrNotFound)
+		}
+		if previous.Kind != req.Kind || previous.Name != name || previous.SupersededBy != "" {
+			return domain.Recording{}, fmt.Errorf("EDIT must record the current version of %s:%s: %w", req.Kind, name, ErrConflict)
+		}
+		if !slices.Contains(parents, replaces) {
+			return domain.Recording{}, fmt.Errorf("an EDIT records from the version it replaces: %w", ErrConflict)
+		}
+	}
 	now := time.Now().UTC()
 	recording := domain.Recording{
 		ID:                       newID("rec"),
@@ -439,6 +452,7 @@ func (s *Store) CreateRecording(req domain.CreateRecordingRequest) (domain.Recor
 		ParentArtifactIDs:        parents,
 		CompatibilityFingerprint: strings.TrimSpace(req.CompatibilityFingerprint),
 		Sensitivity:              req.Sensitivity,
+		ReplacesArtifactID:       replaces,
 		Status:                   domain.RecordingOpen,
 		Commands:                 []domain.RecordingCommand{},
 		StartedAt:                now,
@@ -536,6 +550,12 @@ func (s *Store) EndRecording(recordingID string, req domain.EndRecordingRequest)
 	recording.ArtifactID = artifact.ID
 	recording.EndedAt = &now
 	s.state.Artifacts[artifact.ID] = artifact
+	if previous, ok := s.state.Artifacts[recording.ReplacesArtifactID]; ok && previous.SupersededBy == "" {
+		// The edit is complete: the old version steps aside. Its snapshot stays
+		// for the layers recorded from it and for anything still running on it.
+		previous.SupersededBy = artifact.ID
+		s.state.Artifacts[previous.ID] = previous
+	}
 	s.state.Recordings[recording.ID] = recording
 	return artifact, s.saveLocked()
 }
@@ -812,6 +832,25 @@ func (s *Store) Use(req domain.UseRequest) (domain.Composition, error) {
 			composition.RequestedArtifactIDs = append(composition.RequestedArtifactIDs, artifact.ID)
 		}
 		if err := s.addArtifactLocked(&composition, artifact, "WITH "+withSelector); err != nil {
+			return domain.Composition{}, err
+		}
+	}
+	// An EDIT replaced a layer somewhere in this closure: bind the newest
+	// version in its slot. The engine unions it over whatever was recorded from
+	// the old one, so an edit reaches every layer built on top of it.
+	for _, resolved := range append([]domain.ResolvedArtifact{}, composition.ResolvedArtifacts...) {
+		current, ok := s.state.Artifacts[resolved.ArtifactID]
+		if !ok || current.SupersededBy == "" {
+			continue
+		}
+		newest, replaced := s.newestVersionLocked(current, operator)
+		if !replaced {
+			continue
+		}
+		if !slices.Contains(composition.RequestedArtifactIDs, newest.ID) {
+			composition.RequestedArtifactIDs = append(composition.RequestedArtifactIDs, newest.ID)
+		}
+		if err := s.addArtifactLocked(&composition, newest, "replaces "+current.ID); err != nil {
 			return domain.Composition{}, err
 		}
 	}
@@ -2854,7 +2893,7 @@ func (s *Store) latestArtifactLocked(kind domain.ArtifactKind, name, actor, prof
 	var selected domain.Artifact
 	selectedRank := -1
 	for _, artifact := range s.state.Artifacts {
-		if artifact.Kind != kind || artifact.Name != name || !canUseArtifact(actor, artifact) {
+		if artifact.Kind != kind || artifact.Name != name || artifact.SupersededBy != "" || !canUseArtifact(actor, artifact) {
 			continue
 		}
 		if profile != "" && artifact.Profile != profile {
@@ -2877,7 +2916,7 @@ func (s *Store) resolveArtifactSelectorLocked(selector, operator, profile string
 	var selected domain.Artifact
 	selectedRank := -1
 	for _, artifact := range s.state.Artifacts {
-		if artifact.Kind != kind || artifact.Name != name || !canUseArtifact(operator, artifact) {
+		if artifact.Kind != kind || artifact.Name != name || artifact.SupersededBy != "" || !canUseArtifact(operator, artifact) {
 			continue
 		}
 		if profile != "" && artifact.Profile != profile {
@@ -2893,6 +2932,20 @@ func (s *Store) resolveArtifactSelectorLocked(selector, operator, profile string
 		return domain.Artifact{}, fmt.Errorf("%s: %w", selector, ErrNotFound)
 	}
 	return selected, nil
+}
+
+// newestVersionLocked follows the EDIT chain from artifact to the last version
+// the operator may use. It reports false when artifact is already that version.
+func (s *Store) newestVersionLocked(artifact domain.Artifact, operator string) (domain.Artifact, bool) {
+	newest, replaced := artifact, false
+	for depth := 0; newest.SupersededBy != "" && depth < 64; depth++ {
+		next, ok := s.state.Artifacts[newest.SupersededBy]
+		if !ok || !canUseArtifact(operator, next) {
+			break
+		}
+		newest, replaced = next, true
+	}
+	return newest, replaced
 }
 
 func (s *Store) addArtifactLocked(composition *domain.Composition, artifact domain.Artifact, reason string) error {
