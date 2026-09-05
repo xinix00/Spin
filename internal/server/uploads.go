@@ -74,9 +74,14 @@ type createUploadRequest struct {
 	Snapshot domain.CapsuleSnapshot `json:"snapshot"`
 }
 
-func isWorkerRequest(r *http.Request) bool {
-	value, _ := r.Context().Value(workerContextKey{}).(bool)
-	return value
+// workerRequest reports whether the caller is a runner. The middleware marks
+// that on the context; with authentication disabled it never runs, so a valid
+// worker bearer is honoured directly.
+func (s *Server) workerRequest(r *http.Request) bool {
+	if value, _ := r.Context().Value(workerContextKey{}).(bool); value {
+		return true
+	}
+	return s.authDisabled && s.validWorkerBearer(r.Header.Get("Authorization"))
 }
 
 func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
@@ -120,7 +125,7 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 			upload.UserID = identity.User.ID
 		}
 	case "snapshot":
-		if !isWorkerRequest(r) {
+		if !s.workerRequest(r) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "snapshot uploads are sent by runners with the worker token"})
 			return
 		}
@@ -267,7 +272,7 @@ func (s *Server) storeUpload(upload *chunkedUpload) []*chunkedUpload {
 // backup admin who started it.
 func (s *Server) uploadForRequest(w http.ResponseWriter, r *http.Request) (*chunkedUpload, bool) {
 	id := strings.TrimSpace(r.PathValue("uploadID"))
-	worker := isWorkerRequest(r)
+	worker := s.workerRequest(r)
 	now := time.Now()
 	s.uploadMu.Lock()
 	upload, ok := s.uploads[id]
