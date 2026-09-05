@@ -907,7 +907,7 @@ async function bootstrap(){
     catch(error){restoreError=error;if(rememberedRestoreJob()){showAuthGate(`Restore draait mogelijk nog: ${error.message||error}`);return;}}
   }
   try{
-    const status=await api('/api/auth/status');authState=status;csrfToken=status.csrf_token||'';
+    const status=await api('/api/auth/status');authState=status;csrfToken=status.csrf_token||'';document.querySelectorAll('.brand-version').forEach(node=>{node.textContent=status.version&&status.version!=='dev'?status.version:'';node.title=status.version||'';});
     if(!status.configured){showAuthGate('Maak de eerste owner. Daarna bepaalt de server de operator voor iedere actie.','setup');return;}
     if(!status.authenticated){showAuthGate('Log in om jouw Snapshots, credentials en Git-identiteit te gebruiken.');return;}
     enterApp(status);

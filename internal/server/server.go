@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"easyacp/internal/buildinfo"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -285,7 +286,7 @@ func (s *Server) routes() {
 		assets.ServeHTTP(w, request)
 	}))
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": buildinfo.Version, "commit": buildinfo.Commit})
 	})
 	if s.runnerBroker != nil {
 		s.mux.HandleFunc("GET /api/runner/ws", s.runnerBroker.Handler)

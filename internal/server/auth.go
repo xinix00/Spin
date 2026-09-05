@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"easyacp/internal/buildinfo"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -48,6 +49,7 @@ type loginLimiter struct {
 }
 
 type authStatusResponse struct {
+	Version       string             `json:"version"`
 	Configured    bool               `json:"configured"`
 	Authenticated bool               `json:"authenticated"`
 	User          *domain.PublicUser `json:"user,omitempty"`
@@ -156,7 +158,7 @@ func (s *Server) validWorkerBearer(header string) bool {
 
 func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 	preventCaching(w)
-	status := authStatusResponse{Configured: s.store.HasUsers()}
+	status := authStatusResponse{Configured: s.store.HasUsers(), Version: buildinfo.Version}
 	if !status.Configured {
 		writeJSON(w, http.StatusOK, status)
 		return
