@@ -653,11 +653,47 @@ func (s *Store) AddDeliverableComment(deliverableID, author string, req domain.C
 	return comment, s.saveLocked()
 }
 
+const (
+	maxWorkflowQuestionItems   = 6
+	maxWorkflowQuestionOptions = 8
+)
+
+// AskWorkflowQuestion asks one open question; see AskWorkflowQuestions.
 func (s *Store) AskWorkflowQuestion(sessionID, question string) (domain.WorkflowQuestion, error) {
-	question = strings.TrimSpace(question)
-	if question == "" || len(question) > 4000 {
-		return domain.WorkflowQuestion{}, fmt.Errorf("one question of at most 4000 characters is required: %w", ErrConflict)
+	return s.AskWorkflowQuestions(sessionID, []domain.WorkflowQuestionItem{{Question: question}})
+}
+
+// AskWorkflowQuestions pauses the phase with one form of questions. Each item
+// may carry the answers the agent expects; the operator can always answer in
+// their own words, so an "other" option never has to be spelled out.
+func (s *Store) AskWorkflowQuestions(sessionID string, items []domain.WorkflowQuestionItem) (domain.WorkflowQuestion, error) {
+	if len(items) == 0 || len(items) > maxWorkflowQuestionItems {
+		return domain.WorkflowQuestion{}, fmt.Errorf("between 1 and %d questions are required: %w", maxWorkflowQuestionItems, ErrConflict)
 	}
+	cleaned := make([]domain.WorkflowQuestionItem, 0, len(items))
+	headlines := make([]string, 0, len(items))
+	for index, item := range items {
+		text := strings.TrimSpace(item.Question)
+		if text == "" || len(text) > 4000 {
+			return domain.WorkflowQuestion{}, fmt.Errorf("question %d must contain 1 to 4000 characters: %w", index+1, ErrConflict)
+		}
+		if len(item.Options) > maxWorkflowQuestionOptions {
+			return domain.WorkflowQuestion{}, fmt.Errorf("question %d offers more than %d options: %w", index+1, maxWorkflowQuestionOptions, ErrConflict)
+		}
+		options := make([]string, 0, len(item.Options))
+		for _, option := range item.Options {
+			option = strings.TrimSpace(option)
+			if option == "" || len(option) > 400 {
+				return domain.WorkflowQuestion{}, fmt.Errorf("question %d has an option outside 1 to 400 characters: %w", index+1, ErrConflict)
+			}
+			if !slices.Contains(options, option) {
+				options = append(options, option)
+			}
+		}
+		cleaned = append(cleaned, domain.WorkflowQuestionItem{ID: fmt.Sprintf("q%d", index+1), Question: text, Options: options})
+		headlines = append(headlines, text)
+	}
+	question := strings.Join(headlines, " · ")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	session, ok := s.state.Sessions[sessionID]
@@ -679,7 +715,7 @@ func (s *Store) AskWorkflowQuestion(sessionID, question string) (domain.Workflow
 	now := time.Now().UTC()
 	created := domain.WorkflowQuestion{
 		ID: newID("ask"), JobID: job.ID, PhaseRunID: run.ID, SessionID: session.ID,
-		Kind: "agent", Question: question, Outcome: "ask",
+		Kind: "agent", Question: question, Items: cleaned, Outcome: "ask",
 		AcceptTarget: humanWorkflowTarget(template, phase.ID, phase.Accept.Target, domain.WorkflowTargetNext),
 		RejectTarget: humanWorkflowTarget(template, phase.ID, phase.Reject.Target, domain.WorkflowTargetSelf),
 		Status:       "open", CreatedAt: now,
@@ -1099,6 +1135,70 @@ func (s *Store) AnswerWorkflowQuestion(questionID, operator, action, reason stri
 		return domain.WorkflowAdvance{}, err
 	}
 	return advance, nil
+}
+
+// AnswerWorkflowQuestions records the operator's answer to every item of an
+// agent ask and hands the phase back to the same Session. Unlike ACCEPT and
+// REJECT it routes nowhere: the agent asked because it needed input to carry on,
+// not because the phase was finished. An answer that is not one of the offered
+// options is kept verbatim and marked as the operator's own words.
+func (s *Store) AnswerWorkflowQuestions(questionID, operator string, answers []domain.WorkflowQuestionAnswer) (domain.WorkflowQuestion, error) {
+	operator = normalizeSubject(operator)
+	if operator == "" {
+		return domain.WorkflowQuestion{}, fmt.Errorf("operator is required: %w", ErrConflict)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	question, ok := s.state.WorkflowQuestions[questionID]
+	if !ok || question.Status != "open" {
+		return domain.WorkflowQuestion{}, ErrNotFound
+	}
+	if question.Kind != "agent" || len(question.Items) == 0 {
+		return domain.WorkflowQuestion{}, fmt.Errorf("this question has no answer form; use accept, reject or chat: %w", ErrConflict)
+	}
+	run, ok := s.state.PhaseRuns[question.PhaseRunID]
+	if !ok || run.Status != domain.PhaseRunPending {
+		return domain.WorkflowQuestion{}, ErrConflict
+	}
+	job, ok := s.state.Jobs[run.JobID]
+	if !ok {
+		return domain.WorkflowQuestion{}, ErrNotFound
+	}
+	given := make(map[string]string, len(answers))
+	for _, answer := range answers {
+		given[strings.TrimSpace(answer.ItemID)] = strings.TrimSpace(answer.Answer)
+	}
+	items := make([]domain.WorkflowQuestionItem, len(question.Items))
+	for index, item := range question.Items {
+		answer, ok := given[item.ID]
+		if !ok || answer == "" {
+			return domain.WorkflowQuestion{}, fmt.Errorf("question %d (%s) has no answer: %w", index+1, item.Question, ErrConflict)
+		}
+		if len(answer) > 4000 {
+			return domain.WorkflowQuestion{}, fmt.Errorf("answer %d exceeds 4000 characters: %w", index+1, ErrConflict)
+		}
+		item.Answer = answer
+		item.Other = !slices.Contains(item.Options, answer)
+		items[index] = item
+	}
+	now := time.Now().UTC()
+	question.Items = items
+	question.Answer = "answered"
+	question.Reason = ""
+	question.AnsweredBy = operator
+	question.Status = "answered"
+	question.AnsweredAt = &now
+	run.Status = domain.PhaseRunRunning
+	run.PendingReason = ""
+	run.PendingOutcome = ""
+	run.CompletedAt = nil
+	job.WorkflowStatus = domain.WorkflowBusy
+	job.PendingReason = ""
+	job.UpdatedAt = now
+	s.state.WorkflowQuestions[question.ID] = question
+	s.state.PhaseRuns[run.ID] = run
+	s.state.Jobs[job.ID] = job
+	return question, s.saveLocked()
 }
 
 // ResumeWorkflowPhaseForChat keeps CHAT separate from ACCEPT/REJECT. Opening

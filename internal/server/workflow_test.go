@@ -246,9 +246,30 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 	if historicalResponse.Code != http.StatusConflict {
 		t.Fatalf("historical comment status=%d body=%s", historicalResponse.Code, historicalResponse.Body.String())
 	}
-	asked := call(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ask","arguments":{"question":"Doorgaan?"}}}`)
+	asked := call(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ask","arguments":{"questions":[{"question":"Doorgaan?","options":["Ja","Nee"]},{"question":"Welke naam?"}]}}}`)
 	if asked.Error != nil || len(st.Snapshot().WorkflowQuestions) != 1 || st.Snapshot().Jobs[0].WorkflowStatus != domain.WorkflowPending {
 		t.Fatalf("ask call = %+v, snapshot = %+v", asked, st.Snapshot())
+	}
+	form := st.Snapshot().WorkflowQuestions[0]
+	if len(form.Items) != 2 || form.Items[0].Question != "Doorgaan?" || len(form.Items[0].Options) != 2 || form.Items[1].Question != "Welke naam?" || len(form.Items[1].Options) != 0 {
+		t.Fatalf("ask form = %+v", form.Items)
+	}
+	// Answering records first and resumes the agent second. Without a running
+	// capsule the second step fails, and the answers must already be durable.
+	answerRequest := httptest.NewRequest(http.MethodPost, "/api/workflow/questions/"+form.ID+"/answer", bytes.NewBufferString(`{"action":"answer","answers":[{"item_id":"q1","answer":"Ja"},{"item_id":"q2","answer":"Notulen"}]}`))
+	answerRequest.Header.Set("Content-Type", "application/json")
+	answerRequest = answerRequest.WithContext(context.WithValue(answerRequest.Context(), authContextKey{}, authenticatedIdentity{User: domain.User{Username: "derek"}}))
+	answerResponse := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(answerResponse, answerRequest)
+	if answerResponse.Code == http.StatusOK || !strings.Contains(answerResponse.Body.String(), "answers are recorded") {
+		t.Fatalf("answer without a capsule status=%d body=%s", answerResponse.Code, answerResponse.Body.String())
+	}
+	answered := st.Snapshot().WorkflowQuestions[0]
+	if answered.Status != "answered" || answered.Items[0].Answer != "Ja" || answered.Items[0].Other || answered.Items[1].Answer != "Notulen" || !answered.Items[1].Other {
+		t.Fatalf("answered form = %+v", answered.Items)
+	}
+	if st.Snapshot().Jobs[0].WorkflowStatus != domain.WorkflowBusy {
+		t.Fatalf("job after answers = %+v", st.Snapshot().Jobs[0])
 	}
 }
 

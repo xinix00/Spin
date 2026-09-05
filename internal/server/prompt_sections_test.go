@@ -51,6 +51,17 @@ func TestPromptSeparatesReviewFeedbackFromRecordedDecisions(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A form asked during Build: every answered question is a recorded decision.
+	form, err := st.AskWorkflowQuestions(session, []domain.WorkflowQuestionItem{
+		{Question: "Waar komt de sleutel vandaan?", Options: []string{"appsettings", "environment"}},
+		{Question: "Hoe heet de knop?"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AnswerWorkflowQuestions(form.ID, "derek", []domain.WorkflowQuestionAnswer{{ItemID: "q1", Answer: "environment"}, {ItemID: "q2", Answer: "+ Nieuwe transcriptie"}}); err != nil {
+		t.Fatal(err)
+	}
 	// The agent asks the operator something during Build. That is the only real
 	// decision anyone made, and answering it carries the Job into Review.
 	question, err := st.AskWorkflowQuestion(session, "Mag de sleutel uit de broncode?")
@@ -117,6 +128,11 @@ func TestPromptSeparatesReviewFeedbackFromRecordedDecisions(t *testing.T) {
 	}
 	if !strings.Contains(decisions, "Mag de sleutel uit de broncode?") || !strings.Contains(decisions, "Ja, via configuratie") {
 		t.Fatalf("the asked question is missing from the decisions:\n%s", decisions)
+	}
+	for _, expected := range []string{"- Waar komt de sleutel vandaan? → environment", "- Hoe heet de knop? → + Nieuwe transcriptie"} {
+		if !strings.Contains(decisions, expected) {
+			t.Fatalf("decisions miss %q:\n%s", expected, decisions)
+		}
 	}
 	// Nothing the reviewer said may appear twice anywhere in the prompt.
 	for _, reason := range rejections {

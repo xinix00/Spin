@@ -233,24 +233,42 @@ type CodeReviewComment struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+// WorkflowQuestionItem is one question inside an agent ask. Options are the
+// answers the agent expects; the operator can always answer in their own words
+// instead, which Other records.
+type WorkflowQuestionItem struct {
+	ID       string   `json:"id"`
+	Question string   `json:"question"`
+	Options  []string `json:"options,omitempty"`
+	Answer   string   `json:"answer,omitempty"`
+	Other    bool     `json:"other,omitempty"`
+}
+
+// WorkflowQuestionAnswer answers one item of an agent ask.
+type WorkflowQuestionAnswer struct {
+	ItemID string `json:"item_id"`
+	Answer string `json:"answer"`
+}
+
 type WorkflowQuestion struct {
-	ID             string     `json:"id"`
-	JobID          string     `json:"job_id"`
-	PhaseRunID     string     `json:"phase_run_id"`
-	SessionID      string     `json:"session_id"`
-	Kind           string     `json:"kind"`
-	Question       string     `json:"question"`
-	Outcome        string     `json:"outcome,omitempty"`
-	AgentDetail    string     `json:"agent_detail,omitempty"`
-	AgentOutcomeID string     `json:"agent_outcome_id,omitempty"`
-	AcceptTarget   string     `json:"accept_target,omitempty"`
-	RejectTarget   string     `json:"reject_target,omitempty"`
-	Answer         string     `json:"answer,omitempty"`
-	Reason         string     `json:"reason,omitempty"`
-	AnsweredBy     string     `json:"answered_by,omitempty"`
-	Status         string     `json:"status"`
-	CreatedAt      time.Time  `json:"created_at"`
-	AnsweredAt     *time.Time `json:"answered_at,omitempty"`
+	ID             string                 `json:"id"`
+	JobID          string                 `json:"job_id"`
+	PhaseRunID     string                 `json:"phase_run_id"`
+	SessionID      string                 `json:"session_id"`
+	Kind           string                 `json:"kind"`
+	Question       string                 `json:"question"`
+	Items          []WorkflowQuestionItem `json:"items,omitempty"`
+	Outcome        string                 `json:"outcome,omitempty"`
+	AgentDetail    string                 `json:"agent_detail,omitempty"`
+	AgentOutcomeID string                 `json:"agent_outcome_id,omitempty"`
+	AcceptTarget   string                 `json:"accept_target,omitempty"`
+	RejectTarget   string                 `json:"reject_target,omitempty"`
+	Answer         string                 `json:"answer,omitempty"`
+	Reason         string                 `json:"reason,omitempty"`
+	AnsweredBy     string                 `json:"answered_by,omitempty"`
+	Status         string                 `json:"status"`
+	CreatedAt      time.Time              `json:"created_at"`
+	AnsweredAt     *time.Time             `json:"answered_at,omitempty"`
 }
 
 type SessionStatus string
@@ -1023,8 +1041,9 @@ type CodeReviewBundle struct {
 }
 
 type AnswerWorkflowQuestionRequest struct {
-	Action string `json:"action"`
-	Reason string `json:"reason,omitempty"`
+	Action  string                   `json:"action"`
+	Reason  string                   `json:"reason,omitempty"`
+	Answers []WorkflowQuestionAnswer `json:"answers,omitempty"`
 }
 
 type WorkflowAdvance struct {

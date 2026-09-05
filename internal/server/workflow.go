@@ -103,6 +103,27 @@ func (s *Server) answerWorkflowQuestion(w http.ResponseWriter, r *http.Request) 
 		writeError(w, store.ErrNotFound)
 		return
 	}
+	if strings.EqualFold(req.Action, "answer") {
+		operator := s.requestOperator(r, "")
+		question, err := s.store.AnswerWorkflowQuestions(questionID, operator, req.Answers)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		// The answers are durable from here; delivering them is a second step.
+		// If the agent cannot be reached the operator can still open the chat,
+		// which sends into the same running phase.
+		active, err := s.getOrStartACP(question.SessionID, operator)
+		if err == nil {
+			err = s.startACPPrompt(active, workflowAnswersPrompt(question))
+		}
+		if err != nil {
+			writeError(w, fmt.Errorf("answers are recorded, but the agent could not be resumed: %w", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, domain.WorkflowAdvance{Question: &question})
+		return
+	}
 	if strings.EqualFold(req.Action, "accept") {
 		if err := s.store.ValidateWorkflowQuestionTransition(questionID, req.Action); err != nil {
 			writeError(w, err)
@@ -234,7 +255,13 @@ func (s *Server) workflowTools(sessionID string) ([]workflowTool, error) {
 		return schema
 	}
 	tools := []workflowTool{
-		{Name: "ask", Title: "Vraag de gebruiker", Description: "Stel precies één noodzakelijke beslisvraag en pauzeer deze fase tot de gebruiker antwoordt.", InputSchema: object(map[string]any{"question": map[string]any{"type": "string", "description": "Eén concrete vraag"}}, "question")},
+		{Name: "ask", Title: "Vraag de gebruiker", Description: "Stel de gebruiker één of meer concrete vragen tegelijk en pauzeer deze fase tot alles beantwoord is. Geef per vraag de antwoorden die je verwacht als options; de gebruiker kan altijd een eigen antwoord typen, dus voeg zelf geen optie 'anders' toe. Bundel alles wat je nu wilt weten in één ask.", InputSchema: object(map[string]any{
+			"question": map[string]any{"type": "string", "description": "Verkorte vorm: één open vraag zonder opties"},
+			"questions": map[string]any{"type": "array", "minItems": 1, "maxItems": 6, "description": "Eén formulier met vragen", "items": object(map[string]any{
+				"question": map[string]any{"type": "string", "description": "Eén concrete vraag"},
+				"options":  map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string"}, "description": "Verwachte antwoorden, in de volgorde die je aanbeveelt"},
+			}, "question")},
+		})},
 		{Name: "accept", Title: "Accepteer fase", Description: "Markeer deze fase als geslaagd en volg de geconfigureerde accept-overgang.", InputSchema: object(map[string]any{"summary": map[string]any{"type": "string"}})},
 		{Name: "reject", Title: "Wijs fase af", Description: "Wijs deze fase af met een concrete reden en volg de geconfigureerde reject-overgang.", InputSchema: object(map[string]any{"reason": map[string]any{"type": "string"}}, "reason")},
 	}
@@ -259,11 +286,16 @@ func (s *Server) callWorkflowTool(ctx context.Context, sessionID, name string, a
 	}
 	switch name {
 	case "ask":
-		question, err := s.store.AskWorkflowQuestion(sessionID, stringArgument("question"))
+		items := workflowQuestionItems(arguments)
+		question, err := s.store.AskWorkflowQuestions(sessionID, items)
 		if err != nil {
 			return "", err
 		}
-		return "Vraag staat klaar voor de gebruiker: " + question.Question + ". Beëindig nu je beurt; dezelfde ACP Session wordt na het antwoord hervat.", nil
+		noun := "Vraag staat"
+		if len(question.Items) > 1 {
+			noun = fmt.Sprintf("%d vragen staan", len(question.Items))
+		}
+		return noun + " klaar voor de gebruiker: " + question.Question + ". Beëindig nu je beurt; dezelfde ACP Session wordt met de antwoorden hervat.", nil
 	case "add_deliverable":
 		deliverable, err := s.store.AddWorkflowDeliverable(sessionID, stringArgument("name"), stringArgument("content"))
 		if err != nil {
@@ -635,6 +667,14 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 	if len(answered) > 0 {
 		prompt.WriteString("\nVASTGELEGDE BESLUITEN\n")
 		for _, question := range answered {
+			// A form answered as a form lists every question; a form the
+			// operator resolved with ACCEPT or REJECT is one decision.
+			if question.Answer == "answered" && len(question.Items) > 0 {
+				for _, item := range question.Items {
+					fmt.Fprintf(&prompt, "- %s → %s\n", item.Question, item.Answer)
+				}
+				continue
+			}
 			decision := strings.ToUpper(question.Answer)
 			if question.Reason != "" {
 				decision += ": " + question.Reason
@@ -711,7 +751,7 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 			}
 		}
 	}
-	prompt.WriteString("\nWERKWIJZE\nGebruik uitsluitend de aangeboden Spin workflowtools om workflowstate te wijzigen. ask stelt precies één vraag; bundel geen vragen. ")
+	prompt.WriteString("\nWERKWIJZE\nGebruik uitsluitend de aangeboden Spin workflowtools om workflowstate te wijzigen. ask stelt één formulier met één of meer vragen, elk met de antwoordopties die je verwacht; stel alleen wat je niet zelf kunt uitzoeken en bundel alles in één ask. ")
 	if len(phase.Deliverables) > 0 {
 		prompt.WriteString("Lever ieder hierboven gevraagd document volledig als Markdown aan met add_deliverable. ")
 	} else {
@@ -748,4 +788,48 @@ func (s *Server) validWorkflowBearer(sessionID, header string) bool {
 	s.workflowMu.Unlock()
 	actual := secretHash(strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")))
 	return expected != "" && subtle.ConstantTimeCompare([]byte(expected), []byte(actual)) == 1
+}
+
+// workflowQuestionItems reads an ask call. "questions" is the form; "question"
+// is the shorthand for one open question. Malformed entries are dropped here
+// and the store rejects an empty form, so the agent hears about a bad call.
+func workflowQuestionItems(arguments map[string]any) []domain.WorkflowQuestionItem {
+	items := make([]domain.WorkflowQuestionItem, 0, 4)
+	if raw, ok := arguments["questions"].([]any); ok {
+		for _, entry := range raw {
+			fields, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			text, _ := fields["question"].(string)
+			item := domain.WorkflowQuestionItem{Question: strings.TrimSpace(text)}
+			if options, ok := fields["options"].([]any); ok {
+				for _, option := range options {
+					if value, ok := option.(string); ok {
+						item.Options = append(item.Options, value)
+					}
+				}
+			}
+			items = append(items, item)
+		}
+	}
+	if single, ok := arguments["question"].(string); ok && strings.TrimSpace(single) != "" && len(items) == 0 {
+		items = append(items, domain.WorkflowQuestionItem{Question: strings.TrimSpace(single)})
+	}
+	return items
+}
+
+// workflowAnswersPrompt is what the agent reads when its ask comes back.
+func workflowAnswersPrompt(question domain.WorkflowQuestion) string {
+	var prompt strings.Builder
+	prompt.WriteString("De gebruiker heeft je vragen beantwoord:\n")
+	for index, item := range question.Items {
+		suffix := ""
+		if item.Other && len(item.Options) > 0 {
+			suffix = " (eigen antwoord, geen van de opties)"
+		}
+		fmt.Fprintf(&prompt, "%d. %s\n   → %s%s\n", index+1, item.Question, item.Answer, suffix)
+	}
+	prompt.WriteString("Ga verder met de fase op basis van deze antwoorden.")
+	return prompt.String()
 }
