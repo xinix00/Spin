@@ -47,7 +47,12 @@ func (v *hopVFS) Open(name string, flags vfs.OpenFlag) (vfs.File, vfs.OpenFlag, 
 			return nil, flags, err
 		}
 	}
-	return &hopFile{app: v.app, path: name, deleteOnClose: flags&vfs.OPEN_DELETEONCLOSE != 0}, flags, nil
+	file := &hopFile{app: v.app, path: name, deleteOnClose: flags&vfs.OPEN_DELETEONCLOSE != 0}
+	file.writes = newWriteCoalescer(applib.MaxIOChunk, func(offset int64, data []byte) error {
+		_, err := v.app.WriteAt(name, uint64(offset), data)
+		return err
+	})
+	return file, flags, nil
 }
 
 func (v *hopVFS) Delete(name string, _ bool) error {
@@ -72,23 +77,34 @@ func (v *hopVFS) Access(name string, _ vfs.AccessFlag) (bool, error) {
 
 func (*hopVFS) FullPathname(name string) (string, error) { return cleanHopPath(name) }
 
+// hopFile is one SQLite file on the HopOS volume. Page writes are coalesced
+// into runs of up to one ABI chunk and reach storage at Sync, at unlock, before
+// a read or size query that would see them, and at Close; the volume ABI moves
+// a megabyte per call at full speed, one page per call did not.
 type hopFile struct {
 	app           *applib.App
 	path          string
 	deleteOnClose bool
 	lock          vfs.LockLevel
+	writes        *writeCoalescer
 }
 
 func (f *hopFile) Close() error {
+	flushErr := f.writes.Flush()
 	if f.deleteOnClose {
-		return f.app.Remove(f.path)
+		return errors.Join(flushErr, f.app.Remove(f.path))
 	}
-	return nil
+	return flushErr
 }
 
 func (f *hopFile) ReadAt(target []byte, offset int64) (int, error) {
 	if offset < 0 {
 		return 0, errors.New("negative SQLite read offset")
+	}
+	if f.writes.Overlaps(offset, int64(len(target))) {
+		if err := f.writes.Flush(); err != nil {
+			return 0, err
+		}
 	}
 	total := 0
 	for total < len(target) {
@@ -96,13 +112,12 @@ func (f *hopFile) ReadAt(target []byte, offset int64) (int, error) {
 		if count > applib.MaxIOChunk {
 			count = applib.MaxIOChunk
 		}
-		chunk, err := f.app.ReadAt(f.path, uint64(offset)+uint64(total), count)
-		copy(target[total:], chunk)
-		total += len(chunk)
+		read, err := f.app.ReadInto(f.path, uint64(offset)+uint64(total), target[total:total+count])
+		total += read
 		if err != nil {
 			return total, err
 		}
-		if len(chunk) < count {
+		if read < count {
 			return total, io.EOF
 		}
 	}
@@ -113,34 +128,31 @@ func (f *hopFile) WriteAt(source []byte, offset int64) (int, error) {
 	if offset < 0 {
 		return 0, errors.New("negative SQLite write offset")
 	}
-	total := 0
-	for total < len(source) {
-		count := len(source) - total
-		if count > applib.MaxIOChunk {
-			count = applib.MaxIOChunk
-		}
-		written, err := f.app.WriteAt(f.path, uint64(offset)+uint64(total), source[total:total+count])
-		total += written
-		if err != nil {
-			return total, err
-		}
-		if written != count {
-			return total, io.ErrShortWrite
-		}
+	if err := f.writes.Write(offset, source); err != nil {
+		return 0, err
 	}
-	return total, nil
+	return len(source), nil
 }
 
 func (f *hopFile) Truncate(size int64) error {
 	if size < 0 {
 		return errors.New("negative SQLite truncate size")
 	}
+	f.writes.Discard(size)
+	if err := f.writes.Flush(); err != nil {
+		return err
+	}
 	return f.app.Truncate(f.path, uint64(size))
 }
 
-func (*hopFile) Sync(vfs.SyncFlag) error { return nil }
+// Sync is the durability boundary SQLite relies on: pending writes reach the
+// volume here. The ABI itself has no flush; a completed write is on the volume.
+func (f *hopFile) Sync(vfs.SyncFlag) error { return f.writes.Flush() }
 
 func (f *hopFile) Size() (int64, error) {
+	if err := f.writes.Flush(); err != nil {
+		return 0, err
+	}
 	size, err := f.app.Stat(f.path)
 	return int64(size), err
 }
@@ -150,7 +162,11 @@ func (f *hopFile) Lock(lock vfs.LockLevel) error {
 	return nil
 }
 
+// Unlock hands the file to whoever locks next; nothing may still be pending.
 func (f *hopFile) Unlock(lock vfs.LockLevel) error {
+	if err := f.writes.Flush(); err != nil {
+		return err
+	}
 	f.lock = lock
 	return nil
 }
