@@ -100,6 +100,77 @@ func TestChatKeepsThePendingDecisionOpenUntilTheAgentDecidesAgain(t *testing.T) 
 	}
 }
 
+// State written by an older build: the chat closed the gate as answered and
+// left the run running. When the agent's next turn ends, the standing outcome
+// comes back as a fresh decision instead of leaving the phase without buttons.
+func TestChatTurnRestoresADecisionAnOlderBuildClosedAsChat(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "agent", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "agent-acp"}}})
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "spin", RemoteURL: "https://example.com/spin.git"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Review", Phases: []domain.WorkflowPhase{{
+		ID: "review", Name: "Review", Instructions: "Beoordeel",
+		Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone, AskUser: true},
+		Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf, AskUser: true},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Transcripties", Objective: "Notulen", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := created.Session.ID
+	if _, err := st.MarkWorkflowPhaseRunning(session); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := st.CompleteWorkflowPhase(session, "accept", "Goal behaald")
+	if err != nil || accepted.Question == nil {
+		t.Fatalf("agent accept = %+v, error = %v", accepted, err)
+	}
+
+	// What the previous build wrote when the operator opened the chat.
+	st.mu.Lock()
+	legacy := st.state.WorkflowQuestions[accepted.Question.ID]
+	legacy.Status, legacy.Answer, legacy.AnsweredBy = "answered", "chat", "derek"
+	st.state.WorkflowQuestions[legacy.ID] = legacy
+	run := st.state.PhaseRuns[accepted.PhaseRun.ID]
+	run.Status, run.PendingReason, run.PendingOutcome = domain.PhaseRunRunning, "", ""
+	st.state.PhaseRuns[run.ID] = run
+	job := st.state.Jobs[run.JobID]
+	job.WorkflowStatus, job.PendingReason = domain.WorkflowBusy, ""
+	st.state.Jobs[job.ID] = job
+	st.mu.Unlock()
+	if open := openQuestions(st); len(open) != 0 {
+		t.Fatalf("legacy state still has an open question: %+v", open)
+	}
+
+	settled, err := st.SettleWorkflowChatTurn(session)
+	if err != nil || !settled {
+		t.Fatalf("settle legacy state: settled=%t error=%v", settled, err)
+	}
+	open := openQuestions(st)
+	if len(open) != 1 || open[0].Kind != "approval" || open[0].Outcome != "accept" || open[0].ID == legacy.ID {
+		t.Fatalf("restored decision = %+v", open)
+	}
+	if run := phaseRunByID(t, st, accepted.PhaseRun.ID); run.Status != domain.PhaseRunPending || run.PendingOutcome != "accept" {
+		t.Fatalf("run after restore = %+v", run)
+	}
+	if job := st.Snapshot().Jobs[0]; job.WorkflowStatus != domain.WorkflowPending {
+		t.Fatalf("job after restore = %+v", job)
+	}
+	// And the operator can act on it.
+	if _, err := st.AnswerWorkflowQuestion(open[0].ID, "derek", "accept", ""); err != nil {
+		t.Fatalf("accept restored decision: %v", err)
+	}
+}
+
 func questionByID(t *testing.T, st *Store, id string) domain.WorkflowQuestion {
 	t.Helper()
 	for _, question := range st.Snapshot().WorkflowQuestions {

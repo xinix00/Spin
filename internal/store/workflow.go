@@ -1237,6 +1237,12 @@ func (s *Store) ResumeWorkflowPhaseForChat(sessionID, operator string) (bool, er
 // resumed for a chat and still carries an open decision goes back to pending on
 // that decision, so the operator's ACCEPT and REJECT are clickable again. A
 // turn that produced a new decision, or a turn outside a chat, changes nothing.
+//
+// A run that is running without any open decision but with a standing agent
+// outcome is the trace of an older build, where a chat closed the decision as
+// answered. The agent has now ended its turn without deciding again, so that
+// outcome is put back in front of the operator instead of leaving the phase
+// running with nothing to click.
 func (s *Store) SettleWorkflowChatTurn(sessionID string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1250,7 +1256,7 @@ func (s *Store) SettleWorkflowChatTurn(sessionID string) (bool, error) {
 	}
 	question, found := s.openQuestionLocked(run.ID)
 	if !found {
-		return false, nil
+		return s.restoreStandingDecisionLocked(session, run)
 	}
 	job, ok := s.state.Jobs[run.JobID]
 	if !ok {
@@ -1269,6 +1275,25 @@ func (s *Store) SettleWorkflowChatTurn(sessionID string) (bool, error) {
 	job.UpdatedAt = now
 	s.state.PhaseRuns[run.ID] = run
 	s.state.Jobs[job.ID] = job
+	return true, s.saveLocked()
+}
+
+func (s *Store) restoreStandingDecisionLocked(session domain.Session, run domain.PhaseRun) (bool, error) {
+	if len(run.AgentOutcomes) == 0 {
+		return false, nil
+	}
+	job, template, run, phase, err := s.workflowLocked(session)
+	if err != nil {
+		return false, err
+	}
+	last := run.AgentOutcomes[len(run.AgentOutcomes)-1]
+	rejectionCount := 0
+	if last.Outcome == "reject" {
+		rejectionCount = s.rejectionCountLocked(job.ID, phase.ID)
+	}
+	if _, err := s.awaitWorkflowDecisionLocked(job, template, run, phase, last.Outcome, rejectionCount); err != nil {
+		return false, err
+	}
 	return true, s.saveLocked()
 }
 
