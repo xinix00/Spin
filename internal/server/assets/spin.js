@@ -44,11 +44,19 @@ const selectedValues = select => [...select.selectedOptions].map(option=>option.
 const detailOpenAttribute = (key,defaultOpen=false) => (detailStates.has(key)?detailStates.get(key):defaultOpen)?'open':'';
 function bindDetailStates(root){root.querySelectorAll('details[data-detail-state]').forEach(detail=>detail.ontoggle=()=>detailStates.set(detail.dataset.detailState,detail.open));}
 const artifactSelector = artifact => `${artifact.kind}:${artifact.name}`;
+// A version recorded with EDIT sits on its predecessor, but it is the same
+// layer: the depth counts distinct slots, and the versions are counted apart.
 const artifactLayer = (artifact,seen=new Set()) => {
   if(!artifact || seen.has(artifact.id)) return 0;
   const next=new Set(seen); next.add(artifact.id);
   const parents=(artifact.parent_artifact_ids||[]).map(id=>byID(snapshot.artifacts,id)).filter(Boolean);
-  return parents.length?1+Math.max(...parents.map(parent=>artifactLayer(parent,next))):1;
+  return parents.length?Math.max(...parents.map(parent=>(parent.slot&&parent.slot===artifact.slot?0:1)+artifactLayer(parent,next))):1;
+};
+const artifactLineage = artifact => {
+  let version=1,base=artifact;const seen=new Set();
+  while(base&&!seen.has(base.id)){seen.add(base.id);const previous=(base.parent_artifact_ids||[]).map(id=>byID(snapshot.artifacts,id)).find(parent=>parent&&parent.slot&&parent.slot===base.slot);if(!previous)break;version+=1;base=previous;}
+  const parents=(base?.parent_artifact_ids||[]).map(id=>byID(snapshot.artifacts,id)?.name||id);
+  return {version,parents};
 };
 const artifactEnables = (artifact,capability,seen=new Set()) => {
   if(!artifact||seen.has(artifact.id))return false;
@@ -447,12 +455,46 @@ function enterApp(status){
   if(!pollTimer)pollTimer=setInterval(()=>refresh(false),2500);
 }
 function showError(error){const box=document.getElementById('error');box.textContent=error.message||error;box.style.display='block';setTimeout(()=>box.style.display='none',6500);}
-function print(kind,text){
-  String(text||'').split('\n').forEach(line=>terminalLines.push([kind,line]));
+function renderTerminalLines(){
   if(terminalLines.length>500) terminalLines=terminalLines.slice(-500);
   const terminal=document.getElementById('terminal');
   terminal.innerHTML=terminalLines.map(([type,line])=>`<div class="line ${type}">${esc(line)}</div>`).join('');
   terminal.scrollTop=terminal.scrollHeight;
+}
+function print(kind,text){
+  String(text||'').split('\n').forEach(line=>terminalLines.push([kind,line]));
+  progressLineIndex=-1;renderTerminalLines();
+}
+// A progress line is rewritten in place while it is the last line, so a long
+// save reads as one live line instead of a scrolling wall.
+let progressLineIndex=-1;
+function printProgress(text){
+  if(progressLineIndex>=0&&progressLineIndex===terminalLines.length-1)terminalLines[progressLineIndex]=['system',text];
+  else{terminalLines.push(['system',text]);progressLineIndex=terminalLines.length-1;}
+  renderTerminalLines();
+}
+// sealState mirrors the END RECORD job the browser is following, for the
+// recorder panel; the console shows the same numbers as a progress line.
+let sealState=null;
+function sealProgressText(seal){
+  const stage={commit:'committen',archive:'archiveren',finish:'vastleggen',done:'klaar'}[seal.stage]||seal.stage||'opslaan';
+  const bytes=seal.total?` · ${formatBytes(seal.current||0)} / ${formatBytes(seal.total)} (${Math.floor((seal.current||0)/seal.total*100)}%)`:'';
+  return `Opslaan · ${stage}${bytes}${seal.message&&!seal.total?` · ${seal.message}`:''}`;
+}
+async function followSeal(seal){
+  sealState=seal;renderRecording();printProgress(sealProgressText(seal));
+  for(let failures=0;;){
+    await new Promise(resolve=>setTimeout(resolve,1500));
+    try{
+      const next=await api(`/api/recordings/${encodeURIComponent(seal.recording_id)}/seal`);failures=0;sealState=next;renderRecording();
+      if(next.status==='done'){sealState=null;print('system',`saved ${artifactSelector(next.artifact)}/${next.artifact.profile} as ${next.artifact.snapshot_digest}`);await refresh(true);return;}
+      if(next.status==='error'){sealState=null;print('error',next.error||'Opslaan mislukt');await refresh(true);return;}
+      printProgress(sealProgressText(next));
+    }catch(error){
+      failures+=1;if(error.status===404||failures>=8){sealState=null;print('error',`Voortgang van het opslaan is niet meer op te vragen: ${error.message||error}`);await refresh(true);return;}
+      printProgress(`Opslaan · verbinding herstellen (poging ${failures})`);
+    }
+  }
 }
 function setTab(name){
   name=({git:'connections',mcp:'connections',snapshots:'environments'}[name]||name);
@@ -524,6 +566,7 @@ async function execute(line){
   try{
     const response=await api('/api/commands',{method:'POST',body:JSON.stringify({operator:currentOperator(),line})});
     print('output',response.message);
+    if(response.seal&&response.seal.status==='running'){await refresh(true);await followSeal(response.seal);return;}
     if(response.output)print(response.exit_code==null||response.exit_code===0?'output':'error',response.output);
     else if(response.exit_code!=null)print(response.exit_code===0?'system':'error',`exit ${response.exit_code} · geen stdout/stderr ontvangen`);
     if(response.artifacts?.length)response.artifacts.forEach(artifact=>print('output',`${artifactSelector(artifact)}/${artifact.profile} · ${artifact.scope} · ${artifact.snapshot_digest.slice(0,20)}…`));
@@ -548,7 +591,10 @@ function renderRecording(){
   if(!recording){status.className='terminal-status';status.innerHTML='<span class="rec-dot"></span><span>idle</span>';root.innerHTML='<h3>Recorder</h3><div class="empty">Geen actieve opname.</div>';updateTerminalControls();return;}
   if(!terminalSessions.size){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>REC ${esc(recording.kind)}:${esc(recording.name)}</span>`;}
   const runtime=recording.runtime?.container_id?'<small>Multi-PTY · start parallelle processen met + PTY; ieder kanaal heeft eigen stdin en Ctrl-C.</small>':'<div class="warning">Deze engine heeft geen live capsule.</div>';
-  root.innerHTML=`<h3>Recorder</h3><div class="record-card"><strong>● ${esc(recording.kind)}:${esc(recording.name)}</strong><small>${esc(recording.scope)} · ${(recording.commands||[]).length} commands</small>${recording.enables?.length?`<small>ENABLES <span class="capability">${esc(enabledNames(recording.enables))}</span></small>`:''}${runtime}<div class="panel-actions" style="margin-top:9px"><button class="small-button" data-command="END RECORD">End & save</button><button class="danger" data-command="CANCEL RECORD">Cancel</button></div></div>`;
+  const sealing=sealState&&sealState.recording_id===recording.id&&sealState.status==='running'?sealState:null;
+  const actions=sealing?`<div class="seal-progress"><div class="seal-track ${sealing.total?'':'indeterminate'}"><div class="seal-fill" style="width:${sealing.total?Math.floor((sealing.current||0)/sealing.total*100):100}%"></div></div><small>${esc(sealProgressText(sealing))}</small></div>`:`<div class="panel-actions" style="margin-top:9px"><button class="small-button" data-command="END RECORD">End & save</button><button class="danger" data-command="CANCEL RECORD">Cancel</button></div>`;
+  if(sealing){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>SAVING ${esc(recording.kind)}:${esc(recording.name)}${sealing.total?` ${Math.floor((sealing.current||0)/sealing.total*100)}%`:''}</span>`;}
+  root.innerHTML=`<h3>Recorder</h3><div class="record-card"><strong>● ${esc(recording.kind)}:${esc(recording.name)}</strong><small>${esc(recording.scope)} · ${(recording.commands||[]).length} commands</small>${recording.enables?.length?`<small>ENABLES <span class="capability">${esc(enabledNames(recording.enables))}</span></small>`:''}${runtime}${actions}</div>`;
   bindCommandButtons(root);updateTerminalControls();
 }
 
@@ -575,7 +621,7 @@ function renderArtifacts(){
     const use=canUse(artifact)?`<button class="small-button" data-command="USE ${esc(artifactSelector(artifact))}">${icon('arrow_forward')}Start</button>`:'';
     const next=`<button class="small-button" data-record-from="${esc(artifactSelector(artifact))}">${icon('add')}Laag</button><button class="small-button" data-edit-artifact="${esc(artifactSelector(artifact))}" title="Neem deze laag opnieuw op met al haar instellingen en voeg toe wat ontbreekt; END RECORD vervangt de huidige versie, ook voor lagen die erop gebouwd zijn">${icon('edit')}Bewerk</button>`;
     const remove=artifact.created_by===currentOperator()?`<button class="danger" data-remove-artifact="${esc(artifact.id)}" data-artifact-label="${esc(artifactSelector(artifact))}">${icon('delete')}Verwijder</button>`:'';
-    return `<article class="artifact"><div><div class="artifact-title"><span>${esc(artifactSelector(artifact))}</span><span class="tag">L${artifactLayer(artifact)}</span><span class="tag ${esc(artifact.kind)}">${esc(artifact.kind)}</span><span class="tag">${esc(identity)}</span>${artifact.sensitivity==='secret'?'<span class="tag secret">secret</span>':''}</div><small>${esc(artifact.profile)} · ${esc(artifact.snapshot?.driver||'legacy')} · ${esc(artifact.snapshot_digest)}</small><small>parent ${(artifact.parent_artifact_ids||[]).map(id=>esc(byID(snapshot.artifacts,id)?.name||id)).join(', ')||'Alpine substrate'}</small>${artifact.enables?.length?`<small>ENABLES <span class="capability">${esc(enabledNames(artifact.enables))}</span></small>`:''}</div><div class="artifact-actions">${use}${next}${remove}</div></article>`;
+    return `<article class="artifact"><div><div class="artifact-title"><span>${esc(artifactSelector(artifact))}</span><span class="tag">L${artifactLayer(artifact)}</span>${artifactLineage(artifact).version>1?`<span class="tag capability" title="Bewerkt met EDIT; oudere versies blijven bestaan voor lagen die erop gebouwd zijn">v${artifactLineage(artifact).version}</span>`:''}<span class="tag ${esc(artifact.kind)}">${esc(artifact.kind)}</span><span class="tag">${esc(identity)}</span>${artifact.sensitivity==='secret'?'<span class="tag secret">secret</span>':''}</div><small>${esc(artifact.profile)} · ${esc(artifact.snapshot?.driver||'legacy')} · ${esc(artifact.snapshot_digest)}</small><small>parent ${artifactLineage(artifact).parents.map(esc).join(', ')||'Alpine substrate'}</small>${artifact.enables?.length?`<small>ENABLES <span class="capability">${esc(enabledNames(artifact.enables))}</span></small>`:''}</div><div class="artifact-actions">${use}${next}${remove}</div></article>`;
   }).join('');
   bindCommandButtons(root);bindArtifactRemove(root);
   root.querySelectorAll('[data-record-from]').forEach(button=>button.onclick=()=>openConsole(`RECORD <kind>:<name> --scope=user --from=${button.dataset.recordFrom}`));

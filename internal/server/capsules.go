@@ -52,31 +52,22 @@ func (s *Server) executeRecordingCommand(ctx context.Context, recordingID string
 	return recording, execution, err
 }
 
-func (s *Server) endCapsuleRecording(ctx context.Context, recordingID string, req domain.EndRecordingRequest) (domain.Artifact, error) {
-	if s.terminalBusy(recordingID) {
-		return domain.Artifact{}, fmt.Errorf("an interactive command is still running; wait for it or send Ctrl-C: %w", store.ErrConflict)
-	}
-	recording, err := s.store.Recording(recordingID)
+// endCapsuleRecording starts sealing and waits briefly. A small layer is done
+// before the wait ends and the artifact comes back as it always did; a large
+// one answers with its progress instead, and the caller follows the seal.
+func (s *Server) endCapsuleRecording(recordingID string, req domain.EndRecordingRequest) (domain.Artifact, *domain.SealStatus, error) {
+	job, err := s.startSeal(recordingID, req)
 	if err != nil {
-		return domain.Artifact{}, err
+		return domain.Artifact{}, nil, err
 	}
-	open, err := s.store.OpenRecording(req.Actor)
-	if err != nil || open.ID != recording.ID {
-		return domain.Artifact{}, store.ErrConflict
+	status, finished := s.awaitSeal(job, s.sealWait)
+	if !finished {
+		return domain.Artifact{}, &status, nil
 	}
-	snapshot, err := s.engine.Seal(ctx, recording)
-	if err != nil {
-		return domain.Artifact{}, fmt.Errorf("seal capsule recording: %w", err)
+	if status.Status == "error" {
+		return domain.Artifact{}, nil, errors.New(status.Error)
 	}
-	if err := s.archiveSealedSnapshot(ctx, snapshot); err != nil {
-		return domain.Artifact{}, fmt.Errorf("archive capsule snapshot: %w", err)
-	}
-	req.Snapshot = snapshot
-	artifact, err := s.store.EndRecording(recordingID, req)
-	if err != nil && s.snapshotArchive != nil {
-		_ = s.snapshotArchive.RemoveArchivedSnapshot(ctx, snapshot)
-	}
-	return artifact, err
+	return *status.Artifact, nil, nil
 }
 
 // archiveSealedSnapshot puts a sealed snapshot in the central archive. A
@@ -133,6 +124,9 @@ func (s *Server) archiveCapsuleSnapshot(ctx context.Context, snapshot domain.Cap
 }
 
 func (s *Server) cancelCapsuleRecording(ctx context.Context, recordingID string, req domain.CancelRecordingRequest) (domain.Recording, error) {
+	if s.sealInProgress(recordingID) {
+		return domain.Recording{}, fmt.Errorf("this recording is being saved; wait for END RECORD to finish: %w", store.ErrConflict)
+	}
 	s.stopTerminal(recordingID)
 	recording, err := s.store.Recording(recordingID)
 	if err != nil {

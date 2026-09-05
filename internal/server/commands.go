@@ -139,9 +139,15 @@ func (s *Server) runCommandContext(ctx context.Context, req domain.CommandReques
 		if err != nil {
 			return domain.CommandResponse{}, err
 		}
-		artifact, err := s.endCapsuleRecording(ctx, recording.ID, domain.EndRecordingRequest{Actor: actor})
+		artifact, seal, err := s.endCapsuleRecording(recording.ID, domain.EndRecordingRequest{Actor: actor})
 		if err != nil {
 			return domain.CommandResponse{}, err
+		}
+		if seal != nil {
+			return domain.CommandResponse{
+				Message: fmt.Sprintf("● SAVING %s:%s · %s · this can take a while for a large image; progress follows", recording.Kind, recording.Name, seal.Message),
+				Seal:    seal,
+			}, nil
 		}
 		return domain.CommandResponse{
 			Message:  fmt.Sprintf("saved %s:%s/%s as %s · driver=%s · process-state=%t", artifact.Kind, artifact.Name, artifact.Profile, artifact.SnapshotDigest, artifact.Snapshot.Driver, artifact.Snapshot.IncludesProcessState),

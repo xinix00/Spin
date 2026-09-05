@@ -96,7 +96,7 @@ func TestUploadSnapshotSendsChunksInParallelAndRetriesOnce(t *testing.T) {
 	if !strings.HasSuffix(client.base, "/api/uploads") || !strings.HasPrefix(client.base, "http://") {
 		t.Fatalf("upload base = %s", client.base)
 	}
-	result, err := uploadSnapshot(context.Background(), client, domain.CapsuleSnapshot{Ref: "spin/artifact:rec_live", Digest: "sha256:live"}, bytes.NewReader(content), int64(len(content)))
+	result, err := uploadSnapshot(context.Background(), client, domain.CapsuleSnapshot{Ref: "spin/artifact:rec_live", Digest: "sha256:live"}, bytes.NewReader(content), int64(len(content)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

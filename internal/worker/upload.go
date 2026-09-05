@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -158,11 +159,14 @@ func (c *uploadClient) abort(id string) {
 }
 
 // archiveSnapshot exports the snapshot to a temporary file and uploads it.
+// Every step is logged: the runner is the only place this work is visible, and
+// a server that loses the answer has nothing else to go on.
 func (w *Worker) archiveSnapshot(ctx context.Context, exporter capsule.SnapshotExporter, snapshot domain.CapsuleSnapshot) (archiveResult, error) {
 	client, err := newUploadClient(w.config.ServerURL, w.config.Token)
 	if err != nil {
 		return archiveResult{}, err
 	}
+	logger := w.logger.With("snapshot", snapshot.Ref, "digest", snapshot.Digest)
 	file, err := os.CreateTemp("", "spin-snapshot-*.tar")
 	if err != nil {
 		return archiveResult{}, err
@@ -171,28 +175,43 @@ func (w *Worker) archiveSnapshot(ctx context.Context, exporter capsule.SnapshotE
 		_ = file.Close()
 		_ = os.Remove(file.Name())
 	}()
+	logger.Info("archive: exporting snapshot", "file", file.Name())
+	started := time.Now()
 	if err := exporter.ExportSnapshot(ctx, snapshot, file); err != nil {
+		logger.Warn("archive: export failed", "error", err)
 		return archiveResult{}, err
 	}
 	info, err := file.Stat()
 	if err != nil {
 		return archiveResult{}, err
 	}
-	return uploadSnapshot(ctx, client, snapshot, file, info.Size())
+	logger.Info("archive: export complete", "bytes", info.Size(), "took", time.Since(started).Round(time.Millisecond))
+	started = time.Now()
+	result, err := uploadSnapshot(ctx, client, snapshot, file, info.Size(), logger)
+	if err != nil {
+		logger.Warn("archive: upload failed", "error", err, "after", time.Since(started).Round(time.Millisecond))
+		return archiveResult{}, err
+	}
+	logger.Info("archive: upload complete", "bytes", result.Size, "took", time.Since(started).Round(time.Millisecond))
+	return result, nil
 }
 
 // uploadSnapshot drives one chunked upload to completion: create, a pool of
 // workers sending chunks with retries, then complete. Any failure aborts the
 // upload server-side so no half-assembled object lingers.
-func uploadSnapshot(ctx context.Context, client *uploadClient, snapshot domain.CapsuleSnapshot, source io.ReaderAt, size int64) (archiveResult, error) {
+func uploadSnapshot(ctx context.Context, client *uploadClient, snapshot domain.CapsuleSnapshot, source io.ReaderAt, size int64, logger *slog.Logger) (archiveResult, error) {
 	if size <= 0 {
 		return archiveResult{}, errors.New("snapshot export is empty")
+	}
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	session, err := client.create(ctx, snapshot, size)
 	if err != nil {
 		return archiveResult{}, err
 	}
-	if err := uploadChunks(ctx, client, session, source, size); err != nil {
+	logger.Info("archive: upload created", "upload", session.ID, "chunk_bytes", session.ChunkSize, "parallel", session.Parallel)
+	if err := uploadChunks(ctx, client, session, source, size, logger); err != nil {
 		client.abort(session.ID)
 		return archiveResult{}, err
 	}
@@ -204,14 +223,25 @@ func uploadSnapshot(ctx context.Context, client *uploadClient, snapshot domain.C
 	return result, nil
 }
 
-func uploadChunks(ctx context.Context, client *uploadClient, session uploadSession, source io.ReaderAt, size int64) error {
+func uploadChunks(ctx context.Context, client *uploadClient, session uploadSession, source io.ReaderAt, size int64, logger *slog.Logger) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var (
 		mu       sync.Mutex
 		next     = session.Offset
+		sent     int64
+		reported time.Time
 		firstErr error
 	)
+	progress := func(end int64) {
+		mu.Lock()
+		sent += end - min(end, sent) // chunks finish out of order; count bytes, not positions
+		if time.Since(reported) > 5*time.Second || end >= size {
+			reported = time.Now()
+			logger.Info("archive: uploading", "sent_bytes", sent, "total_bytes", size)
+		}
+		mu.Unlock()
+	}
 	fail := func(err error) {
 		mu.Lock()
 		if firstErr == nil {
@@ -251,6 +281,7 @@ func uploadChunks(ctx context.Context, client *uploadClient, session uploadSessi
 					fail(err)
 					return
 				}
+				progress(end)
 			}
 		}()
 	}

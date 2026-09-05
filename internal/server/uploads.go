@@ -53,6 +53,7 @@ type chunkedUpload struct {
 	Target    uploadTarget
 	Backup    *persistence.BackupUpload
 	Snapshot  *persistence.SnapshotUpload
+	Digest    string // snapshot digest, so a seal in progress can show its upload
 }
 
 type uploadResponse struct {
@@ -140,6 +141,7 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		upload.Snapshot, upload.Target, upload.Runner = archive, archive, true
+		upload.Digest = strings.TrimSpace(request.Snapshot.Digest)
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "upload kind must be restore or snapshot"})
 		return
@@ -313,4 +315,17 @@ func (s *Server) removeUpload(upload *chunkedUpload) {
 		delete(s.uploads, upload.ID)
 	}
 	s.uploadMu.Unlock()
+}
+
+// uploadProgressForDigest reports how far the runner's archive upload for a
+// snapshot has come, for a seal that wants to show progress.
+func (s *Server) uploadProgressForDigest(digest string) (int64, int64, bool) {
+	s.uploadMu.Lock()
+	defer s.uploadMu.Unlock()
+	for _, upload := range s.uploads {
+		if upload.Kind == "snapshot" && upload.Digest == digest {
+			return upload.Target.Offset(), upload.Size, true
+		}
+	}
+	return 0, 0, false
 }

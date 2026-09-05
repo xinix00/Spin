@@ -948,6 +948,25 @@ type CommandResponse struct {
 	Artifact    *Artifact    `json:"artifact,omitempty"`
 	Composition *Composition `json:"composition,omitempty"`
 	Artifacts   []Artifact   `json:"artifacts,omitempty"`
+	// Seal is set when END RECORD is still running in the background: the
+	// browser follows it through GET /api/recordings/{id}/seal.
+	Seal *SealStatus `json:"seal,omitempty"`
+}
+
+// SealStatus reports END RECORD while it runs. Sealing commits the snapshot on
+// the runner, uploads it to the archive in chunks and records the artifact; a
+// large image takes minutes, longer than any single HTTP request may last.
+type SealStatus struct {
+	RecordingID string    `json:"recording_id"`
+	Status      string    `json:"status"` // running, done or error
+	Stage       string    `json:"stage,omitempty"`
+	Message     string    `json:"message,omitempty"`
+	Current     int64     `json:"current,omitempty"`
+	Total       int64     `json:"total,omitempty"`
+	Error       string    `json:"error,omitempty"`
+	Artifact    *Artifact `json:"artifact,omitempty"`
+	StartedAt   time.Time `json:"started_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type CreateJobRequest struct {
