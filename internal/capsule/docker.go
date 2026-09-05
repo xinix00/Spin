@@ -991,12 +991,14 @@ SPIN_CHANGED=0
 if [ "$SPIN_HEAD" != "$SPIN_BASE_COMMIT" ] || [ -n "$SPIN_DIRTY" ]; then
   SPIN_CHANGED=1
 fi
-if [ "$SPIN_CHANGED" = 1 ] && [ "$SPIN_ALLOW_CHANGES" != 1 ]; then
-  echo 'This workflow phase may not modify the repository; ACCEPT is blocked while the Session differs from its base' >&2
-  exit 42
-fi
 SPIN_COMMITTED=0
-if [ "$SPIN_CHANGED" = 1 ]; then
+SPIN_PUBLISH="$SPIN_HEAD"
+if [ "$SPIN_CHANGED" = 1 ] && [ "$SPIN_ALLOW_CHANGES" != 1 ]; then
+  # A phase without write policy never integrates. The agent may restore,
+  # build and experiment in this throwaway workspace; none of it goes along.
+  # ACCEPT confirms the untouched base and leaves the workspace as it is.
+  SPIN_PUBLISH="$SPIN_BASE_COMMIT"
+elif [ "$SPIN_CHANGED" = 1 ]; then
   # Agent-created commits and dirty files are deliberately folded into one
   # control-plane commit so ACCEPT is the only integration boundary.
   git reset --soft "$SPIN_BASE_COMMIT"
@@ -1007,22 +1009,22 @@ if [ "$SPIN_CHANGED" = 1 ]; then
   else
     git reset --mixed "$SPIN_BASE_COMMIT"
   fi
+  SPIN_PUBLISH="$(git rev-parse HEAD)"
 fi
 if git ls-remote --exit-code --heads origin "$SPIN_GIT_REF" >/dev/null 2>&1; then
   git fetch --depth=50 origin "$SPIN_GIT_REF"
-  if ! git merge-base --is-ancestor FETCH_HEAD HEAD; then
+  if ! git merge-base --is-ancestor FETCH_HEAD "$SPIN_PUBLISH"; then
     echo 'The Job branch advanced after this Session started; automatic ACCEPT cannot overwrite it' >&2
     exit 43
   fi
 fi
-git push origin "HEAD:$SPIN_GIT_REF"
-SPIN_HEAD="$(git rev-parse HEAD)"
+git push origin "$SPIN_PUBLISH:refs/heads/$SPIN_GIT_REF"
 SPIN_REMOTE_HEAD="$(git ls-remote --exit-code --heads origin "$SPIN_GIT_REF" | cut -f1)"
-if [ "$SPIN_REMOTE_HEAD" != "$SPIN_HEAD" ]; then
+if [ "$SPIN_REMOTE_HEAD" != "$SPIN_PUBLISH" ]; then
   echo 'Remote Job branch does not match the accepted Session HEAD after push' >&2
   exit 44
 fi
-printf 'SPIN_ACCEPT committed=%s head=%s\n' "$SPIN_COMMITTED" "$SPIN_HEAD"
+printf 'SPIN_ACCEPT committed=%s head=%s\n' "$SPIN_COMMITTED" "$SPIN_PUBLISH"
 unset SPIN_GIT_PASSWORD`
 
 func validGitRef(value string) bool {

@@ -588,11 +588,11 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 	if phaseAllowsChanges(phase) {
 		prompt.WriteString("\nREPOSITORYBELEID\nJe mag bestanden in de repository wijzigen. Commit of push niet zelf: bij accept maakt Spin zo nodig één resultaatcommit en publiceert die naar de Job-branch.\n")
 	} else {
-		prompt.WriteString("\nREPOSITORYBELEID\nJe mag de repository niet wijzigen. Werk uitsluitend met inspectie en vragen")
+		prompt.WriteString("\nREPOSITORYBELEID\nDeze fase levert geen codewijzigingen op. Je mag in deze wegwerp-workspace wel vrij werken: restore, build, tests en experimenten, ook als dat bestanden in de repository schrijft of aanpast. Niets daarvan gaat mee: bij accept bevestigt Spin de onveranderde Git-basis van deze Session en commit niets. Commit of push niet zelf")
 		if len(phase.Deliverables) > 0 {
-			prompt.WriteString(", en lever de hieronder gevraagde documenten op")
+			prompt.WriteString("; lever je bevindingen op in de hieronder gevraagde documenten")
 		}
-		prompt.WriteString("; accept wordt geblokkeerd wanneer deze Session van zijn Git-basis afwijkt.\n")
+		prompt.WriteString(".\n")
 	}
 	if len(phase.Deliverables) > 0 {
 		prompt.WriteString("\nOP TE LEVEREN\nMaak de onderstaande documenten volledig in Markdown en sla ieder document op met add_deliverable. Gebruik de naam exact zoals vermeld.\n")

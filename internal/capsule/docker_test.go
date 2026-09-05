@@ -79,13 +79,23 @@ func TestAcceptWorkspaceScriptCommitsAndPushesOnlyWhenPolicyAllowsChanges(t *tes
 	if err := os.WriteFile(filepath.Join(readonly, "README.md"), []byte("reviewer changed this\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A phase without write policy may experiment freely; ACCEPT confirms the
+	// base, commits nothing and leaves the reviewer's workspace untouched.
 	output, err = runAcceptanceScript(readonly, false, "jobs/readonly/main")
-	if err == nil || !strings.Contains(output, "may not modify the repository") {
-		t.Fatalf("read-only accept error=%v output=%q", err, output)
+	if err != nil {
+		t.Fatalf("read-only accept: %v\n%s", err, output)
 	}
-	command := exec.Command("git", "ls-remote", "--exit-code", "--heads", remote, "jobs/readonly/main")
-	if err := command.Run(); err == nil {
-		t.Fatal("read-only phase unexpectedly published a Job branch")
+	if !strings.Contains(output, "SPIN_ACCEPT committed=0 head="+readonlyBase) {
+		t.Fatalf("read-only accept output = %q", output)
+	}
+	if published := strings.Fields(testGit(t, readonly, "ls-remote", "origin", "refs/heads/jobs/readonly/main"))[0]; published != readonlyBase {
+		t.Fatalf("read-only phase published %s, want the base %s", published, readonlyBase)
+	}
+	if kept, err := os.ReadFile(filepath.Join(readonly, "README.md")); err != nil || string(kept) != "reviewer changed this\n" {
+		t.Fatalf("reviewer workspace was altered by ACCEPT: %q, %v", kept, err)
+	}
+	if head := strings.TrimSpace(testGit(t, readonly, "rev-parse", "HEAD")); head != readonlyBase {
+		t.Fatalf("reviewer HEAD moved to %s", head)
 	}
 }
 
@@ -340,11 +350,12 @@ printf 'reviewer mutation\n' > REVIEW.md`)
 	if err != nil {
 		t.Fatalf("verify accepted Job branch: %v\n%s", err, verification)
 	}
-	if _, err := engine.AcceptWorkspace(ctx, runtime, WorkspaceAcceptance{
+	reviewed, err := engine.AcceptWorkspace(ctx, runtime, WorkspaceAcceptance{
 		AllowChanges: false, CommitSubject: "workflow(review): accepted", CommitBody: "Spin-Session: ses-review",
 		RemoteRef: "jobs/live/main", Authentication: &GitAuthentication{AuthorName: "Spin Agent", AuthorEmail: "spin@example.invalid"},
-	}); err == nil || !strings.Contains(err.Error(), "may not modify the repository") {
-		t.Fatalf("read-only Docker ACCEPT error = %v", err)
+	})
+	if err != nil || reviewed.Committed || reviewed.Head != accepted.Head {
+		t.Fatalf("read-only Docker ACCEPT = %+v (develop head %s), error = %v", reviewed, accepted.Head, err)
 	}
 }
 
