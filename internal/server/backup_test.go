@@ -142,14 +142,14 @@ func TestSQLiteBackupRestoresStateSecretsAndAttachmentsUnderDestinationKey(t *te
 		t.Fatalf("stream completion = %+v", completed)
 	}
 
-	createBody, err := json.Marshal(map[string]any{"name": "large-spin.db", "size": backupResponse.Body.Len()})
+	createBody, err := json.Marshal(map[string]any{"kind": "restore", "name": "large-spin.db", "size": backupResponse.Body.Len()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	createRequest := httptest.NewRequest(http.MethodPost, "/api/restore-uploads", bytes.NewReader(createBody))
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/uploads", bytes.NewReader(createBody))
 	createRecorder := httptest.NewRecorder()
 	destinationServer.Handler().ServeHTTP(createRecorder, createRequest)
-	var upload restoreUploadResponse
+	var upload uploadResponse
 	if createRecorder.Code != http.StatusCreated || json.Unmarshal(createRecorder.Body.Bytes(), &upload) != nil {
 		t.Fatalf("create upload status=%d body=%s", createRecorder.Code, createRecorder.Body.String())
 	}
@@ -162,12 +162,12 @@ func TestSQLiteBackupRestoresStateSecretsAndAttachmentsUnderDestinationKey(t *te
 	data := backupResponse.Body.Bytes()
 	total := int64(len(data))
 	lastStart := (total - 1) / upload.ChunkSize * upload.ChunkSize
-	putChunk := func(offset int64, body []byte) (int, restoreUploadResponse, string) {
-		request := httptest.NewRequest(http.MethodPut, "/api/restore-uploads/"+upload.ID, bytes.NewReader(body))
+	putChunk := func(offset int64, body []byte) (int, uploadResponse, string) {
+		request := httptest.NewRequest(http.MethodPut, "/api/uploads/"+upload.ID, bytes.NewReader(body))
 		request.Header.Set("X-Spin-Upload-Offset", fmt.Sprint(offset))
 		recorder := httptest.NewRecorder()
 		destinationServer.Handler().ServeHTTP(recorder, request)
-		var current restoreUploadResponse
+		var current uploadResponse
 		_ = json.Unmarshal(recorder.Body.Bytes(), &current)
 		return recorder.Code, current, recorder.Body.String()
 	}
@@ -206,7 +206,7 @@ func TestSQLiteBackupRestoresStateSecretsAndAttachmentsUnderDestinationKey(t *te
 	}
 	completeContext, cancelComplete := context.WithCancel(context.Background())
 	cancelComplete()
-	completeRequest := httptest.NewRequest(http.MethodPost, "/api/restore-uploads/"+upload.ID+"/complete", nil).WithContext(completeContext)
+	completeRequest := httptest.NewRequest(http.MethodPost, "/api/uploads/"+upload.ID+"/complete", nil).WithContext(completeContext)
 	completeRecorder := httptest.NewRecorder()
 	destinationServer.Handler().ServeHTTP(completeRecorder, completeRequest)
 	var restoreJob restoreJobResponse

@@ -170,7 +170,7 @@ func TestSQLiteBackupUploadResumesAtCommittedOffset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer destination.Close()
-	upload, err := destination.BeginBackupUpload(int64(backup.Len()) + backupUploadWindow + 2)
+	upload, err := destination.BeginBackupUpload(int64(backup.Len()) + uploadReorderWindow + 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestSQLiteBackupUploadResumesAtCommittedOffset(t *testing.T) {
 	if committed, err := upload.WriteAt(ctx, chunk, 2*chunk, bytes.NewReader(backup.Bytes()[chunk:3*chunk])); !errors.Is(err, ErrBackupUploadOffset) || committed != 2*chunk {
 		t.Fatalf("straddling write committed=%d error=%v", committed, err)
 	}
-	if _, err := upload.WriteAt(ctx, 2*chunk+backupUploadWindow+1, 1, bytes.NewReader([]byte{1})); !errors.Is(err, ErrBackupUploadOffset) {
+	if _, err := upload.WriteAt(ctx, 2*chunk+uploadReorderWindow+1, 1, bytes.NewReader([]byte{1})); !errors.Is(err, ErrBackupUploadOffset) {
 		t.Fatalf("write beyond window error = %v", err)
 	}
 	// The remaining chunks stream concurrently in whatever order the scheduler picks.

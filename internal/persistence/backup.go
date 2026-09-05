@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"sort"
 	"strings"
-	"sync"
 
 	sqliteDriver "github.com/ncruces/go-sqlite3/driver"
 )
@@ -19,8 +17,6 @@ const (
 	backupFormat    = "spin-sqlite-backup-v1"
 )
 
-var ErrBackupUploadOffset = errors.New("backup upload offset mismatch")
-
 type StagedBackup struct {
 	Path      string
 	Database  *SQLite
@@ -28,29 +24,21 @@ type StagedBackup struct {
 	remove    func(string) error
 }
 
-// backupUploadWindow bounds how far ahead of the committed prefix a chunk may
-// land. Parallel uploaders keep a handful of chunks in flight; anything further
-// ahead is a client bug rather than reordering, and the bound keeps the sparse
-// gap in the staging file small.
-const backupUploadWindow int64 = 64 << 20
-
-// BackupUpload incrementally assembles one portable database without ever
+// BackupUpload assembles one portable database from chunks without ever
 // requiring a request body larger than the surrounding HTTP transport allows.
-// Chunks may arrive concurrently and out of order: every write lands at its own
-// offset while the upload tracks the contiguous committed prefix, the first
-// byte that did not reach physical storage yet, so an interrupted client can
-// resume there.
+// The ordering rules live in the shared chunk assembler; this type only owns
+// the staging file the chunks land in.
 type BackupUpload struct {
-	mu       sync.Mutex
-	path     string
-	vfs      string
-	maxBytes int64
-	offset   int64        // contiguous committed prefix
-	ahead    []uploadSpan // completed chunks beyond offset, sorted by start
-	pending  int          // writes in flight
+	chunks *chunkAssembler
+	path   string
+	vfs    string
 }
 
-type uploadSpan struct{ start, end int64 }
+type fileSink struct{ path string }
+
+func (f fileSink) writeChunk(ctx context.Context, offset, length int64, source io.Reader) (int64, error) {
+	return appendPhysicalFile(ctx, f.path, source, offset, length)
+}
 
 func (s *SQLite) BeginBackupUpload(maxBytes int64) (*BackupUpload, error) {
 	if maxBytes <= 0 {
@@ -60,111 +48,34 @@ func (s *SQLite) BeginBackupUpload(maxBytes int64) (*BackupUpload, error) {
 	if err := createPhysicalFile(path); err != nil {
 		return nil, err
 	}
-	return &BackupUpload{path: path, vfs: s.vfs, maxBytes: maxBytes}, nil
+	return &BackupUpload{chunks: newChunkAssembler(fileSink{path}, maxBytes), path: path, vfs: s.vfs}, nil
 }
 
 // Offset reports the committed prefix.
-func (u *BackupUpload) Offset() int64 {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	return u.offset
-}
+func (u *BackupUpload) Offset() int64 { return u.chunks.Offset() }
 
-// WriteAt stores one chunk at offset and reports the committed prefix. A chunk
-// that lies entirely inside the prefix is acknowledged without rewriting it, so
-// retries stay idempotent. A chunk that straddles the prefix boundary or lands
-// beyond the reorder window reports ErrBackupUploadOffset with the prefix. The
-// physical write runs outside the lock so several chunks can stream at once.
+// WriteAt stores one chunk; see chunkAssembler.WriteAt for the contract.
 func (u *BackupUpload) WriteAt(ctx context.Context, offset, length int64, source io.Reader) (int64, error) {
-	u.mu.Lock()
-	if u.path == "" {
-		u.mu.Unlock()
-		return u.offset, errors.New("backup upload is closed")
-	}
-	if length <= 0 {
-		u.mu.Unlock()
-		return u.offset, errors.New("backup upload chunk is empty")
-	}
-	if offset < 0 || length > u.maxBytes-offset {
-		u.mu.Unlock()
-		return u.offset, errors.New("backup exceeds upload limit")
-	}
-	if offset+length <= u.offset {
-		committed := u.offset
-		u.mu.Unlock()
-		return committed, nil
-	}
-	if offset < u.offset || offset > u.offset+backupUploadWindow {
-		committed := u.offset
-		u.mu.Unlock()
-		return committed, fmt.Errorf("%w: received %d, committed %d", ErrBackupUploadOffset, offset, committed)
-	}
-	path := u.path
-	u.pending++
-	u.mu.Unlock()
-
-	written, err := appendPhysicalFile(ctx, path, io.LimitReader(source, length), offset, length)
-	if err == nil && written != length {
-		err = io.ErrUnexpectedEOF
-	}
-
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.pending--
-	if u.path == "" {
-		return u.offset, errors.New("backup upload is closed")
-	}
-	if err != nil {
-		return u.offset, err
-	}
-	u.commit(uploadSpan{start: offset, end: offset + length})
-	return u.offset, nil
-}
-
-func (u *BackupUpload) commit(span uploadSpan) {
-	index := sort.Search(len(u.ahead), func(i int) bool { return u.ahead[i].start >= span.start })
-	u.ahead = append(u.ahead, uploadSpan{})
-	copy(u.ahead[index+1:], u.ahead[index:])
-	u.ahead[index] = span
-	consumed := 0
-	for consumed < len(u.ahead) && u.ahead[consumed].start <= u.offset {
-		if u.ahead[consumed].end > u.offset {
-			u.offset = u.ahead[consumed].end
-		}
-		consumed++
-	}
-	u.ahead = append(u.ahead[:0], u.ahead[consumed:]...)
+	return u.chunks.WriteAt(ctx, offset, length, source)
 }
 
 func (u *BackupUpload) Stage(expectedSize int64) (*StagedBackup, error) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if u.path == "" {
-		return nil, errors.New("backup upload is closed")
-	}
-	if u.pending > 0 {
-		return nil, errors.New("backup upload still has chunks in flight")
-	}
-	if u.offset != expectedSize {
-		return nil, fmt.Errorf("backup upload is incomplete: received %d of %d bytes", u.offset, expectedSize)
+	if err := u.chunks.finish(expectedSize); err != nil {
+		return nil, fmt.Errorf("backup %w", err)
 	}
 	backup, err := openStagedBackup(u.path, u.vfs)
 	if err != nil {
+		_ = removePhysicalFile(u.path)
 		return nil, err
 	}
-	u.path = ""
 	return backup, nil
 }
 
 func (u *BackupUpload) Close() error {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if u.path == "" {
+	if !u.chunks.close() {
 		return nil
 	}
-	err := removePhysicalFile(u.path)
-	u.path = ""
-	return err
+	return removePhysicalFile(u.path)
 }
 
 func (b *StagedBackup) Close() error {

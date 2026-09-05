@@ -68,7 +68,7 @@ func (s *Server) endCapsuleRecording(ctx context.Context, recordingID string, re
 	if err != nil {
 		return domain.Artifact{}, fmt.Errorf("seal capsule recording: %w", err)
 	}
-	if err := s.archiveCapsuleSnapshot(ctx, snapshot); err != nil {
+	if err := s.archiveSealedSnapshot(ctx, snapshot); err != nil {
 		return domain.Artifact{}, fmt.Errorf("archive capsule snapshot: %w", err)
 	}
 	req.Snapshot = snapshot
@@ -77,6 +77,36 @@ func (s *Server) endCapsuleRecording(ctx context.Context, recordingID string, re
 		_ = s.snapshotArchive.RemoveArchivedSnapshot(ctx, snapshot)
 	}
 	return artifact, err
+}
+
+// archiveSealedSnapshot puts a sealed snapshot in the central archive. A
+// remote engine has the runner upload it in 1 MiB chunks over HTTP, the same
+// path a browser takes to restore a backup, so nothing large streams through
+// the control plane and a dropped connection resumes instead of failing. A
+// local engine still streams directly. A snapshot the archive already holds,
+// from an attempt whose connection died after the runner finished, is kept.
+func (s *Server) archiveSealedSnapshot(ctx context.Context, snapshot domain.CapsuleSnapshot) error {
+	if !snapshot.Restorable || s.snapshotArchive == nil {
+		return nil
+	}
+	if has, err := s.snapshotArchive.HasSnapshot(ctx, snapshot); err == nil && has {
+		return nil
+	}
+	archiver, ok := s.engine.(capsule.SnapshotArchiver)
+	if !ok {
+		return s.archiveCapsuleSnapshot(ctx, snapshot)
+	}
+	if err := archiver.ArchiveSnapshot(ctx, snapshot); err != nil {
+		return err
+	}
+	has, err := s.snapshotArchive.HasSnapshot(ctx, snapshot)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return errors.New("the runner reported the snapshot archived, but the archive does not hold it")
+	}
+	return nil
 }
 
 func (s *Server) archiveCapsuleSnapshot(ctx context.Context, snapshot domain.CapsuleSnapshot) error {

@@ -159,6 +159,12 @@ type SnapshotExporter interface {
 	ExportSnapshot(context.Context, domain.CapsuleSnapshot, io.Writer) error
 }
 
+// SnapshotArchiver delivers a sealed snapshot to the central archive itself,
+// as separate acknowledged chunks, instead of streaming it through the caller.
+type SnapshotArchiver interface {
+	ArchiveSnapshot(context.Context, domain.CapsuleSnapshot) error
+}
+
 type SnapshotImporter interface {
 	ImportSnapshot(context.Context, domain.CapsuleSnapshot, io.Reader) error
 }

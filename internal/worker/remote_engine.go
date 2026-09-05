@@ -147,6 +147,15 @@ func (e *RemoteEngine) materialize(ctx context.Context, composition domain.Compo
 	return runtime, nil
 }
 
+// ArchiveSnapshot asks the runner that holds the snapshot to upload it to the
+// central archive in chunks. The call itself is small; the bytes travel over
+// HTTP beside the runner socket instead of through it.
+func (e *RemoteEngine) ArchiveSnapshot(ctx context.Context, snapshot domain.CapsuleSnapshot) error {
+	var result archiveResult
+	_, err := e.broker.call(ctx, snapshot.ClientID, methodArchiveSnapshot, snapshotPayload{Snapshot: snapshot}, &result)
+	return err
+}
+
 func (e *RemoteEngine) ExportSnapshot(ctx context.Context, snapshot domain.CapsuleSnapshot, destination io.Writer) error {
 	process, err := e.broker.openStream(ctx, snapshot.ClientID, methodExportSnapshot, snapshotPayload{Snapshot: snapshot})
 	if err != nil {
