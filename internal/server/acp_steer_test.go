@@ -22,6 +22,8 @@ func TestSteeringQueuesAMessageWrittenDuringATurnAndSendsItNext(t *testing.T) {
 		permissions: map[string]bool{}, subscribers: map[chan acpBrowserEvent]struct{}{}, history: []acpBrowserEvent{},
 	}
 	defer active.close()
+	idle := make(chan struct{}, 4)
+	active.onIdle = func() { idle <- struct{}{} }
 	go active.readLoop(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	type turn struct {
@@ -107,6 +109,12 @@ func TestSteeringQueuesAMessageWrittenDuringATurnAndSendsItNext(t *testing.T) {
 	if event := await("turn_end"); event.Queued != 1 {
 		t.Fatalf("turn_end did not report the waiting message: %+v", event)
 	}
+	// The session is not idle between two turns the operator queued.
+	select {
+	case <-idle:
+		t.Fatal("session settled as idle while a queued message was still waiting")
+	default:
+	}
 	if event := await("user"); event.Text != "doe het in dark mode" {
 		t.Fatalf("queued message was not sent next: %+v", event)
 	}
@@ -124,5 +132,10 @@ func TestSteeringQueuesAMessageWrittenDuringATurnAndSendsItNext(t *testing.T) {
 	}
 	if active.isBusy() || active.queuedCount() != 0 {
 		t.Fatalf("session stayed busy=%t queued=%d after draining", active.isBusy(), active.queuedCount())
+	}
+	select {
+	case <-idle:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session never settled as idle after the queue drained")
 	}
 }

@@ -707,12 +707,8 @@ func (s *Store) AskWorkflowQuestions(sessionID string, items []domain.WorkflowQu
 	if run.Status != domain.PhaseRunRunning {
 		return domain.WorkflowQuestion{}, fmt.Errorf("phase is %s: %w", run.Status, ErrConflict)
 	}
-	for _, existing := range s.state.WorkflowQuestions {
-		if existing.PhaseRunID == run.ID && existing.Status == "open" {
-			return domain.WorkflowQuestion{}, fmt.Errorf("this phase already has an open question: %w", ErrConflict)
-		}
-	}
 	now := time.Now().UTC()
+	s.supersedeOpenQuestionsLocked(run.ID, now)
 	created := domain.WorkflowQuestion{
 		ID: newID("ask"), JobID: job.ID, PhaseRunID: run.ID, SessionID: session.ID,
 		Kind: "agent", Question: question, Items: cleaned, Outcome: "ask",
@@ -781,6 +777,7 @@ func (s *Store) CompleteWorkflowPhase(sessionID, outcome, detail string) (domain
 		}
 	}
 	now := time.Now().UTC()
+	s.supersedeOpenQuestionsLocked(run.ID, now)
 	run.AgentOutcomes = append(run.AgentOutcomes, domain.WorkflowAgentOutcome{
 		ID: newID("out"), Outcome: outcome, Detail: detail, CreatedAt: now,
 	})
@@ -980,11 +977,6 @@ func humanWorkflowTarget(template domain.WorkflowTemplate, phaseID, rawTarget, f
 }
 
 func (s *Store) awaitWorkflowDecisionLocked(job domain.Job, template domain.WorkflowTemplate, run domain.PhaseRun, phase domain.WorkflowPhase, outcome string, rejectionCount int) (domain.WorkflowAdvance, error) {
-	for _, existing := range s.state.WorkflowQuestions {
-		if existing.PhaseRunID == run.ID && existing.Status == "open" {
-			return domain.WorkflowAdvance{}, fmt.Errorf("this phase already has an open decision: %w", ErrConflict)
-		}
-	}
 	now := time.Now().UTC()
 	questionText := fmt.Sprintf("AI accepted %s.", phase.Name)
 	if run.Summary != "" {
@@ -1201,9 +1193,12 @@ func (s *Store) AnswerWorkflowQuestions(questionID, operator string, answers []d
 	return question, s.saveLocked()
 }
 
-// ResumeWorkflowPhaseForChat keeps CHAT separate from ACCEPT/REJECT. Opening
-// the chat is read-only; the first message closes the pending decision and lets
-// the same ACP Session work again.
+// ResumeWorkflowPhaseForChat lets the same ACP Session work again while the
+// pending decision stays open. A chat is a way to ask the agent something, not
+// a verdict on the phase: the operator may still ACCEPT or REJECT the standing
+// outcome afterwards, and only a new accept or reject from the agent replaces
+// it. While the agent works the run is running, which keeps the human buttons
+// closed; SettleWorkflowChatTurn reopens them when the turn ends.
 func (s *Store) ResumeWorkflowPhaseForChat(sessionID, operator string) (bool, error) {
 	operator = normalizeSubject(operator)
 	s.mu.Lock()
@@ -1219,15 +1214,7 @@ func (s *Store) ResumeWorkflowPhaseForChat(sessionID, operator string) (bool, er
 	if !ok || run.Status != domain.PhaseRunPending {
 		return false, nil
 	}
-	var question domain.WorkflowQuestion
-	found := false
-	for _, candidate := range s.state.WorkflowQuestions {
-		if candidate.PhaseRunID == run.ID && candidate.Status == "open" {
-			question, found = candidate, true
-			break
-		}
-	}
-	if !found {
+	if _, found := s.openQuestionLocked(run.ID); !found {
 		return false, nil
 	}
 	job, ok := s.state.Jobs[run.JobID]
@@ -1235,21 +1222,77 @@ func (s *Store) ResumeWorkflowPhaseForChat(sessionID, operator string) (bool, er
 		return false, ErrNotFound
 	}
 	now := time.Now().UTC()
-	question.Answer = "chat"
-	question.AnsweredBy = operator
-	question.Status = "answered"
-	question.AnsweredAt = &now
 	run.Status = domain.PhaseRunRunning
 	run.PendingReason = ""
-	run.PendingOutcome = ""
 	run.CompletedAt = nil
 	job.WorkflowStatus = domain.WorkflowBusy
 	job.PendingReason = ""
 	job.UpdatedAt = now
-	s.state.WorkflowQuestions[question.ID] = question
 	s.state.PhaseRuns[run.ID] = run
 	s.state.Jobs[job.ID] = job
 	return true, s.saveLocked()
+}
+
+// SettleWorkflowChatTurn runs when the agent ends a turn. A phase that was
+// resumed for a chat and still carries an open decision goes back to pending on
+// that decision, so the operator's ACCEPT and REJECT are clickable again. A
+// turn that produced a new decision, or a turn outside a chat, changes nothing.
+func (s *Store) SettleWorkflowChatTurn(sessionID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.state.Sessions[sessionID]
+	if !ok || session.PhaseRunID == "" {
+		return false, nil
+	}
+	run, ok := s.state.PhaseRuns[session.PhaseRunID]
+	if !ok || run.Status != domain.PhaseRunRunning {
+		return false, nil
+	}
+	question, found := s.openQuestionLocked(run.ID)
+	if !found {
+		return false, nil
+	}
+	job, ok := s.state.Jobs[run.JobID]
+	if !ok {
+		return false, ErrNotFound
+	}
+	reason := "user"
+	if question.Kind == "agent" {
+		reason = "ask"
+	}
+	now := time.Now().UTC()
+	run.Status = domain.PhaseRunPending
+	run.PendingReason = reason
+	run.PendingOutcome = question.Outcome
+	job.WorkflowStatus = domain.WorkflowPending
+	job.PendingReason = reason
+	job.UpdatedAt = now
+	s.state.PhaseRuns[run.ID] = run
+	s.state.Jobs[job.ID] = job
+	return true, s.saveLocked()
+}
+
+func (s *Store) openQuestionLocked(runID string) (domain.WorkflowQuestion, bool) {
+	for _, candidate := range s.state.WorkflowQuestions {
+		if candidate.PhaseRunID == runID && candidate.Status == "open" {
+			return candidate, true
+		}
+	}
+	return domain.WorkflowQuestion{}, false
+}
+
+// supersedeOpenQuestionsLocked closes the standing decision when the agent
+// takes a new one during a chat. Nobody answered it, so it is neither open nor
+// answered; the agent outcome it belonged to stays in the run's history.
+func (s *Store) supersedeOpenQuestionsLocked(runID string, now time.Time) {
+	for id, candidate := range s.state.WorkflowQuestions {
+		if candidate.PhaseRunID != runID || candidate.Status != "open" {
+			continue
+		}
+		candidate.Status = "superseded"
+		candidate.AnsweredAt = &now
+		s.state.WorkflowQuestions[id] = candidate
+	}
 }
 
 func (s *Store) newWorkflowSessionLocked(job *domain.Job, template domain.WorkflowTemplate, phase domain.WorkflowPhase, parentSessionID string) (domain.Session, domain.PhaseRun) {

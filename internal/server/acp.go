@@ -108,6 +108,7 @@ type activeACP struct {
 	busy            bool
 	queued          []queuedPrompt
 	failure         error
+	onIdle          func() // runs when a turn ends with nothing queued behind it
 }
 
 // queuedPrompt is a message the operator wrote while the agent was still
@@ -431,6 +432,11 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 	if active.protocolVersion == 0 {
 		active.protocolVersion = 1
 	}
+	active.onIdle = func() {
+		if _, err := s.store.SettleWorkflowChatTurn(session.ID); err != nil {
+			s.logger.Warn("settle workflow phase after ACP turn", "session", session.ID, "error", err)
+		}
+	}
 	go active.readLoop(s.logger)
 	initializeContext, initializeCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer initializeCancel()
@@ -743,12 +749,18 @@ func (a *activeACP) runPrompts(first queuedPrompt) {
 					message += fmt.Sprintf(" · %d wachtende bericht(en) verwijderd", remaining)
 				}
 				a.broadcast(acpBrowserEvent{Type: "error", Error: message}, true)
+				a.settleIdle()
 				return
 			}
 			var completed struct {
 				StopReason string `json:"stopReason"`
 			}
 			_ = json.Unmarshal(result, &completed)
+			if !more {
+				// Settle before the browser hears the turn ended, so its next
+				// refresh already shows the decision as pending again.
+				a.settleIdle()
+			}
 			a.broadcast(acpBrowserEvent{Type: "turn_end", StopReason: completed.StopReason, Queued: remaining}, true)
 			if !more {
 				return
@@ -756,6 +768,15 @@ func (a *activeACP) runPrompts(first queuedPrompt) {
 			current, stillWaiting = next, remaining-1
 		}
 	}()
+}
+
+func (a *activeACP) settleIdle() {
+	a.mu.Lock()
+	onIdle := a.onIdle
+	a.mu.Unlock()
+	if onIdle != nil {
+		onIdle()
+	}
 }
 
 func (a *activeACP) buildPrompt(message queuedPrompt) ([]map[string]any, []string) {

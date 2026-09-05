@@ -319,7 +319,9 @@ func TestWorkflowKeepsAgentOutcomeHistoryWhenChatResumesSamePhaseRun(t *testing.
 	if run.AgentOutcomes[0].ID != rejected.Question.AgentOutcomeID || run.AgentOutcomes[1].Detail != "implementatie is nu klaar" {
 		t.Fatalf("agent outcome audit = %+v / question %+v", run.AgentOutcomes, rejected.Question)
 	}
-	if len(snapshot.WorkflowQuestions) != 1 || snapshot.WorkflowQuestions[0].Answer != "chat" || snapshot.WorkflowQuestions[0].AnsweredBy != "derek" {
+	// The chat decided nothing; the agent's new accept replaced the standing
+	// reject decision, which nobody ever answered.
+	if len(snapshot.WorkflowQuestions) != 1 || snapshot.WorkflowQuestions[0].Status != "superseded" || snapshot.WorkflowQuestions[0].Answer != "" || snapshot.WorkflowQuestions[0].AnsweredBy != "" {
 		t.Fatalf("CHAT audit = %+v", snapshot.WorkflowQuestions)
 	}
 }
