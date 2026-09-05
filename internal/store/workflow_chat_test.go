@@ -151,9 +151,17 @@ func TestChatTurnRestoresADecisionAnOlderBuildClosedAsChat(t *testing.T) {
 		t.Fatalf("legacy state still has an open question: %+v", open)
 	}
 
-	settled, err := st.SettleWorkflowChatTurn(session)
-	if err != nil || !settled {
-		t.Fatalf("settle legacy state: settled=%t error=%v", settled, err)
+	// The server repairs this on start, before any agent could be working.
+	restored, err := st.RepairStandingDecisions()
+	if err != nil || restored != 1 {
+		t.Fatalf("repair on start: restored=%d error=%v", restored, err)
+	}
+	if again, err := st.RepairStandingDecisions(); err != nil || again != 0 {
+		t.Fatalf("repair is not idempotent: restored=%d error=%v", again, err)
+	}
+	// A turn ending on the same run changes nothing further.
+	if settled, err := st.SettleWorkflowChatTurn(session); err != nil || settled {
+		t.Fatalf("settle after repair: settled=%t error=%v", settled, err)
 	}
 	open := openQuestions(st)
 	if len(open) != 1 || open[0].Kind != "approval" || open[0].Outcome != "accept" || open[0].ID == legacy.ID {

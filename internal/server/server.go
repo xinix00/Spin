@@ -104,6 +104,11 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 		loginLimiter: loginLimiter{attempts: map[string]loginAttempt{}}, csrfTokens: csrfTokenCache{values: map[string]string{}},
 		terminals: map[string]map[*activeTerminal]struct{}{}, acpSessions: map[string]*activeACP{}, workflowTokens: map[string]string{}, jobLaunching: map[string]*backgroundJobLaunch{}, backupTickets: map[string]backupTicket{}, uploads: map[string]*chunkedUpload{}, restoreJobs: map[string]*restoreJob{},
 	}
+	if restored, err := st.RepairStandingDecisions(); err != nil {
+		logger.Warn("repair standing workflow decisions", "error", err)
+	} else if restored > 0 {
+		logger.Info("restored workflow decisions that a chat had closed", "count", restored)
+	}
 	s.gitOAuth = newGitOAuthManager(options, st)
 	s.routes()
 	if s.runnerBroker != nil {

@@ -1278,6 +1278,36 @@ func (s *Store) SettleWorkflowChatTurn(sessionID string) (bool, error) {
 	return true, s.saveLocked()
 }
 
+// RepairStandingDecisions puts back every decision that a chat under an older
+// build closed while the phase kept running. It runs when the server starts:
+// that is the one moment no agent is working on anything, so a running run
+// with a standing outcome and no open decision can only be that leftover.
+func (s *Store) RepairStandingDecisions() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	restored := 0
+	for _, session := range s.state.Sessions {
+		if session.PhaseRunID == "" {
+			continue
+		}
+		run, ok := s.state.PhaseRuns[session.PhaseRunID]
+		if !ok || run.Status != domain.PhaseRunRunning || len(run.AgentOutcomes) == 0 {
+			continue
+		}
+		if _, open := s.openQuestionLocked(run.ID); open {
+			continue
+		}
+		done, err := s.restoreStandingDecisionLocked(session, run)
+		if err != nil {
+			return restored, err
+		}
+		if done {
+			restored++
+		}
+	}
+	return restored, nil
+}
+
 func (s *Store) restoreStandingDecisionLocked(session domain.Session, run domain.PhaseRun) (bool, error) {
 	if len(run.AgentOutcomes) == 0 {
 		return false, nil
