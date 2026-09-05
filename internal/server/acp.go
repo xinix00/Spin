@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
 	"easyacp/internal/store"
@@ -120,6 +122,10 @@ type queuedPrompt struct {
 // queue stops being steering and starts being a script written blind.
 const maxQueuedPrompts = 16
 
+// acpKeepaliveInterval stays well under the 100 s after which Cloudflare drops
+// an idle WebSocket.
+const acpKeepaliveInterval = 25 * time.Second
+
 func (s *Server) probeACPHandler(w http.ResponseWriter, r *http.Request) {
 	var req acpProbeRequest
 	if !decodeJSON(w, r, &req) {
@@ -176,8 +182,17 @@ func (s *Server) sessionACP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	// A turn can be silent for minutes while the agent thinks or runs a tool.
+	// Intermediaries close a WebSocket that carries nothing for that long, and
+	// every reconnect replays the conversation. Pings keep the socket busy.
+	keepalive := time.NewTicker(acpKeepaliveInterval)
+	defer keepalive.Stop()
 	for {
 		select {
+		case <-keepalive.C:
+			if connection.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)) != nil {
+				return
+			}
 		case event, ok := <-events:
 			if !ok || connection.WriteJSON(event) != nil {
 				return

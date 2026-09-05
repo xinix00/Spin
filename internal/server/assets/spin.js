@@ -109,10 +109,17 @@ async function renderMermaid(root){
   const nodes=[...(root?.matches?.('.mermaid[data-mermaid-pending]')?[root]:[]),...(root?.querySelectorAll?.('.mermaid[data-mermaid-pending]')||[])];if(!nodes.length)return;nodes.forEach(node=>node.dataset.mermaidPending='rendering');try{const engine=await loadMermaid();for(const node of nodes){if(!node.isConnected)continue;const source=node.textContent||'';try{await engine.run({nodes:[node],suppressErrors:true});if(!node.querySelector('svg'))throw new Error('ongeldige Mermaid-syntax');node.classList.remove('mermaid-loading');node.removeAttribute('data-mermaid-pending');}catch(error){node.className='mermaid-error';node.removeAttribute('data-mermaid-pending');node.textContent=`Diagram kon niet worden gerenderd: ${error.message||error}\n\n${source}`;}}}catch(error){nodes.forEach(node=>{if(!node.isConnected)return;node.className='mermaid-error';node.removeAttribute('data-mermaid-pending');node.textContent=error.message||String(error);});}
 }
 function setMarkdown(root,value){root.innerHTML=markdown(value);return renderMermaid(root);}
-function resetChatView(){
-  chatState.messageNodes.clear();chatState.toolNodes.clear();chatState.thoughtNodes.clear();chatState.metaNodes.clear();chatState.planNode=null;chatState.busy=false;chatState.followTail=true;closeDiff();
+// The server replays the whole conversation on every connect, including the
+// reconnect after a dropped socket. The feed is rebuilt from that replay, so it
+// is emptied first; appending onto what was already there showed every message
+// a second time.
+function resetChatFeed(){
+  chatState.messageNodes.clear();chatState.toolNodes.clear();chatState.thoughtNodes.clear();chatState.metaNodes.clear();chatState.planNode=null;chatState.followTail=true;
   const usage=document.getElementById('chat-usage');usage.hidden=true;usage.textContent='';
   document.getElementById('chat-feed-inner').innerHTML='<div class="chat-welcome"><strong>ACP Session</strong>De verbinding en agent-context worden opgebouwd…</div>';
+}
+function resetChatView(){
+  resetChatFeed();chatState.busy=false;closeDiff();
   renderChatBusy();renderChanges({branch:'workspace laden…',added:0,deleted:0,files:[]});
 }
 function chatAtTail(feed=document.getElementById('chat-feed')){return feed.scrollHeight-feed.scrollTop-feed.clientHeight<=8;}
@@ -212,7 +219,7 @@ function renderUsage(update){
   const badge=document.getElementById('chat-usage');badge.textContent=parts.join(' · ');badge.hidden=!parts.length;
 }
 function handleACPEvent(event){
-  if(event.type==='ready'){chatState.busy=!!event.busy;chatState.queued=event.queued||0;document.getElementById('chat-status').innerHTML=`<span class="dot"></span><span>${esc(event.agent_name||'ACP')} · <span class="chat-live-label">ready</span></span>`;document.getElementById('chat-context').dataset.agentSession=event.agent_session_id||'';renderChatBusy();scheduleChatChanges(true);return;}
+  if(event.type==='ready'){resetChatFeed();renderChatQuestion(chatState.sessionID);chatState.busy=!!event.busy;chatState.queued=event.queued||0;document.getElementById('chat-status').innerHTML=`<span class="dot"></span><span>${esc(event.agent_name||'ACP')} · <span class="chat-live-label">ready</span></span>`;document.getElementById('chat-context').dataset.agentSession=event.agent_session_id||'';renderChatBusy();scheduleChatChanges(true);return;}
   if(event.type==='user'){chatMessage('user',event.text||'');chatState.messageNodes.delete('agent:current');chatState.thoughtNodes.delete('thought:current');chatState.busy=true;chatState.queued=event.queued||0;renderChatBusy();return;}
   if(event.type==='update'){const update=event.update||{};switch(update.sessionUpdate){case'user_message_chunk':appendContent('user',update);break;case'agent_message_chunk':appendContent('agent',update);break;case'agent_thought_chunk':appendThought(update);break;case'tool_call':case'tool_call_update':upsertTool(update);break;case'plan':renderPlan(update);break;case'current_mode_update':upsertMeta('mode','Mode',update.currentModeId||update.modeId||update);break;case'available_commands_update':upsertMeta('commands','Available commands',update.availableCommands||update.commands||update);break;case'config_option_update':upsertMeta('config','Session options',update.configOptions||update.options||update);break;case'session_info_update':upsertMeta('session-info','Session info',update);break;case'usage_update':renderUsage(update);break;default:upsertMeta(`update:${update.sessionUpdate||'unknown'}`,update.sessionUpdate||'ACP update',update);}return;}
   if(event.type==='permission'){renderPermission(event);return;}
