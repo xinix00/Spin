@@ -616,11 +616,21 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 			fmt.Fprintf(&prompt, "- %s bij:\n  > %s\n  %s\n", comment.Author, quote, body)
 		}
 	}
+	// A recorded decision is a question that was put to a person and answered.
+	// Only the agent's own ask does that. An approval gate carries no question
+	// of its own: its text is generated from the reviewer's rejection, which
+	// belongs under the feedback heading, and chatting, retrying or closing a
+	// Job resolves a gate without anyone deciding anything.
 	answered := make([]domain.WorkflowQuestion, 0)
 	for _, question := range questions {
-		if question.Status == "answered" {
-			answered = append(answered, question)
+		if question.Kind != "agent" || question.Status != "answered" {
+			continue
 		}
+		switch question.Answer {
+		case "chat", "retry", "closed", "":
+			continue
+		}
+		answered = append(answered, question)
 	}
 	if len(answered) > 0 {
 		prompt.WriteString("\nVASTGELEGDE BESLUITEN\n")
@@ -632,17 +642,47 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 			fmt.Fprintf(&prompt, "- %s → %s\n", question.Question, decision)
 		}
 	}
+	// Every rejection, in the order they were given. One attempt can be
+	// rejected more than once, because a chat resumes that same attempt and the
+	// reviewer decides again without a new run. RejectReason only keeps the
+	// last of those, and a rejection by the user overwrites it, so the agent
+	// outcomes are the only complete record of what the reviewer said.
 	history := snapshot.PhaseRuns
 	feedbackWritten := false
-	for _, previous := range history {
-		if previous.JobID != job.ID || previous.ID == run.ID || previous.RejectReason == "" {
-			continue
-		}
+	writeFeedbackHeader := func() {
 		if !feedbackWritten {
-			prompt.WriteString("\nFEEDBACK UIT EERDERE POGINGEN\n")
+			prompt.WriteString("\nGEGEVEN FEEDBACK\n")
 			feedbackWritten = true
 		}
-		fmt.Fprintf(&prompt, "- %s, poging %d: %s\n", previous.PhaseName, previous.Attempt, previous.RejectReason)
+	}
+	rejection := 0
+	for _, previous := range history {
+		if previous.JobID != job.ID || previous.ID == run.ID {
+			continue
+		}
+		lastReviewed := ""
+		for _, outcome := range previous.AgentOutcomes {
+			detail := strings.TrimSpace(outcome.Detail)
+			if outcome.Outcome != "reject" || detail == "" {
+				continue
+			}
+			lastReviewed = detail
+			rejection++
+			writeFeedbackHeader()
+			fmt.Fprintf(&prompt, "- %s, poging %d, afwijzing %d: %s\n", previous.PhaseName, previous.Attempt, rejection, detail)
+		}
+		own := strings.TrimSpace(previous.RejectReason)
+		switch {
+		case own == "" || own == lastReviewed:
+			// The user kept the reviewer's wording; saying it twice adds nothing.
+		case lastReviewed == "":
+			rejection++
+			writeFeedbackHeader()
+			fmt.Fprintf(&prompt, "- %s, poging %d, afwijzing %d: %s\n", previous.PhaseName, previous.Attempt, rejection, own)
+		default:
+			writeFeedbackHeader()
+			fmt.Fprintf(&prompt, "- %s, poging %d, afwijzing door de gebruiker: %s\n", previous.PhaseName, previous.Attempt, own)
+		}
 	}
 	codeFeedbackWritten := false
 	for _, previous := range history {
