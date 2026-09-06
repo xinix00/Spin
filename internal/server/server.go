@@ -54,6 +54,9 @@ type Server struct {
 	sealMu          sync.Mutex
 	seals           map[string]*sealJob
 	sealWait        time.Duration // how long END RECORD waits before answering with progress
+	startMu         sync.Mutex
+	starts          map[string]*startJob
+	startWait       time.Duration // how long RECORD and EDIT wait before answering with progress
 	restoreJobMu    sync.Mutex
 	restoreJobs     map[string]*restoreJob
 }
@@ -105,7 +108,7 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 		internalURL:  strings.TrimRight(strings.TrimSpace(options.InternalURL), "/"),
 		attachments:  attachmentStorage, snapshotArchive: options.SnapshotArchive, database: options.Database,
 		loginLimiter: loginLimiter{attempts: map[string]loginAttempt{}}, csrfTokens: csrfTokenCache{values: map[string]string{}},
-		terminals: map[string]map[*activeTerminal]struct{}{}, acpSessions: map[string]*activeACP{}, workflowTokens: map[string]string{}, jobLaunching: map[string]*backgroundJobLaunch{}, backupTickets: map[string]backupTicket{}, uploads: map[string]*chunkedUpload{}, seals: map[string]*sealJob{}, sealWait: sealAnswerWait, restoreJobs: map[string]*restoreJob{},
+		terminals: map[string]map[*activeTerminal]struct{}{}, acpSessions: map[string]*activeACP{}, workflowTokens: map[string]string{}, jobLaunching: map[string]*backgroundJobLaunch{}, backupTickets: map[string]backupTicket{}, uploads: map[string]*chunkedUpload{}, seals: map[string]*sealJob{}, sealWait: sealAnswerWait, starts: map[string]*startJob{}, startWait: startAnswerWait, restoreJobs: map[string]*restoreJob{},
 	}
 	if restored, err := st.RepairStandingDecisions(); err != nil {
 		logger.Warn("repair standing workflow decisions", "error", err)
@@ -336,6 +339,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/recordings/{recordingID}/parents", s.attachRecordingParent)
 	s.mux.HandleFunc("POST /api/recordings/{recordingID}/end", s.endRecording)
 	s.mux.HandleFunc("GET /api/recordings/{recordingID}/seal", s.getSeal)
+	s.mux.HandleFunc("GET /api/recordings/{recordingID}/start", s.getStart)
 	s.mux.HandleFunc("POST /api/recordings/{recordingID}/cancel", s.cancelRecording)
 	s.mux.HandleFunc("POST /api/use", s.useArtifacts)
 	s.mux.HandleFunc("POST /api/compositions/{compositionID}/acp/probe", s.probeACPHandler)
@@ -501,9 +505,14 @@ func (s *Server) createRecording(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Actor = s.requestOperator(r, req.Actor)
-	recording, err := s.createCapsuleRecording(r.Context(), req)
+	recording, start, err := s.createCapsuleRecording(req)
 	if err != nil {
 		writeError(w, err)
+		return
+	}
+	if start != nil {
+		w.Header().Set("Location", "/api/recordings/"+recording.ID+"/start")
+		writeJSON(w, http.StatusAccepted, start)
 		return
 	}
 	writeJSON(w, http.StatusCreated, recording)

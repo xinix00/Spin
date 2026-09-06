@@ -473,6 +473,29 @@ function printProgress(text){
   else{terminalLines.push(['system',text]);progressLineIndex=terminalLines.length-1;}
   renderTerminalLines();
 }
+// startState mirrors the RECORD/EDIT job the browser is following: the base
+// image travelling to the runner, then the capsule coming up.
+let startState=null;
+function startProgressText(start){
+  const stage={prepare:'voorbereiden',parents:'basisimage naar runner',start:'capsule starten',done:'klaar'}[start.stage]||start.stage||'starten';
+  const bytes=start.total?` · ${formatBytes(start.current||0)} / ${formatBytes(start.total)} (${Math.floor((start.current||0)/start.total*100)}%)`:'';
+  return `Starten · ${stage}${bytes}${start.message&&!start.total?` · ${start.message}`:''}`;
+}
+async function followStart(start){
+  startState=start;renderRecording();printProgress(startProgressText(start));
+  for(let failures=0;;){
+    await new Promise(resolve=>setTimeout(resolve,1500));
+    try{
+      const next=await api(`/api/recordings/${encodeURIComponent(start.recording_id)}/start`);failures=0;startState=next;renderRecording();
+      if(next.status==='done'){startState=null;const recording=next.recording||{};print('output',`● RECORDING ${recording.kind}:${recording.name} · scope=${recording.scope} · base=${recording.runtime?.base_ref||'?'} · type commands, then END RECORD`);await refresh(true);return;}
+      if(next.status==='error'){startState=null;print('error',next.error||'Starten mislukt');await refresh(true);return;}
+      printProgress(startProgressText(next));
+    }catch(error){
+      failures+=1;if(error.status===404||failures>=8){startState=null;print('error',`Voortgang van het starten is niet meer op te vragen: ${error.message||error}`);await refresh(true);return;}
+      printProgress(`Starten · verbinding herstellen (poging ${failures})`);
+    }
+  }
+}
 // sealState mirrors the END RECORD job the browser is following, for the
 // recorder panel; the console shows the same numbers as a progress line.
 let sealState=null;
@@ -561,12 +584,16 @@ function interruptTerminal(){const session=activeTerminal();if(session?.socket.r
 async function execute(line){
   line=String(line||'').trim(); if(!line)return;
   const recording=activeRecording();
-  if(recording&&!isSpinCommand(line)){startTerminalCommand(recording,line);return;}
+  if(recording&&!isSpinCommand(line)){
+    if(!recording.runtime?.container_id){print('command',line);print('error',`De opname ${recording.kind}:${recording.name} start nog; wacht tot de capsule er is voordat je commando's typt.`);return;}
+    startTerminalCommand(recording,line);return;
+  }
   print('command',line);
   try{
     const response=await api('/api/commands',{method:'POST',body:JSON.stringify({operator:currentOperator(),line})});
     print('output',response.message);
     if(response.seal&&response.seal.status==='running'){await refresh(true);await followSeal(response.seal);return;}
+    if(response.start&&response.start.status==='running'){await refresh(true);await followStart(response.start);return;}
     if(response.output)print(response.exit_code==null||response.exit_code===0?'output':'error',response.output);
     else if(response.exit_code!=null)print(response.exit_code===0?'system':'error',`exit ${response.exit_code} · geen stdout/stderr ontvangen`);
     if(response.artifacts?.length)response.artifacts.forEach(artifact=>print('output',`${artifactSelector(artifact)}/${artifact.profile} · ${artifact.scope} · ${artifact.snapshot_digest.slice(0,20)}…`));
@@ -590,9 +617,11 @@ function renderRecording(){
   const recording=activeRecording(),status=document.getElementById('terminal-status'),root=document.getElementById('recording-section');
   if(!recording){status.className='terminal-status';status.innerHTML='<span class="rec-dot"></span><span>idle</span>';root.innerHTML='<h3>Recorder</h3><div class="empty">Geen actieve opname.</div>';updateTerminalControls();return;}
   if(!terminalSessions.size){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>REC ${esc(recording.kind)}:${esc(recording.name)}</span>`;}
-  const runtime=recording.runtime?.container_id?'<small>Multi-PTY · start parallelle processen met + PTY; ieder kanaal heeft eigen stdin en Ctrl-C.</small>':'<div class="warning">Deze engine heeft geen live capsule.</div>';
+  const starting=startState&&startState.recording_id===recording.id&&startState.status==='running'?startState:(recording.runtime?.container_id?null:{stage:'prepare',message:'Capsule komt op'});
+  const runtime=recording.runtime?.container_id?'<small>Multi-PTY · start parallelle processen met + PTY; ieder kanaal heeft eigen stdin en Ctrl-C.</small>':`<div class="seal-progress"><div class="seal-track ${starting?.total?'':'indeterminate'}"><div class="seal-fill" style="width:${starting?.total?Math.floor((starting.current||0)/starting.total*100):100}%"></div></div><small>${esc(startProgressText(starting||{}))}</small></div>`;
+  if(!recording.runtime?.container_id){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>STARTING ${esc(recording.kind)}:${esc(recording.name)}${starting?.total?` ${Math.floor((starting.current||0)/starting.total*100)}%`:''}</span>`;}
   const sealing=sealState&&sealState.recording_id===recording.id&&sealState.status==='running'?sealState:null;
-  const actions=sealing?`<div class="seal-progress"><div class="seal-track ${sealing.total?'':'indeterminate'}"><div class="seal-fill" style="width:${sealing.total?Math.floor((sealing.current||0)/sealing.total*100):100}%"></div></div><small>${esc(sealProgressText(sealing))}</small></div>`:`<div class="panel-actions" style="margin-top:9px"><button class="small-button" data-command="END RECORD">End & save</button><button class="danger" data-command="CANCEL RECORD">Cancel</button></div>`;
+  const actions=sealing||!recording.runtime?.container_id?`<div class="seal-progress"><div class="seal-track ${sealing.total?'':'indeterminate'}"><div class="seal-fill" style="width:${sealing.total?Math.floor((sealing.current||0)/sealing.total*100):100}%"></div></div><small>${esc(sealing?sealProgressText(sealing):'')}</small></div>`:`<div class="panel-actions" style="margin-top:9px"><button class="small-button" data-command="END RECORD">End & save</button><button class="danger" data-command="CANCEL RECORD">Cancel</button></div>`;
   if(sealing){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>SAVING ${esc(recording.kind)}:${esc(recording.name)}${sealing.total?` ${Math.floor((sealing.current||0)/sealing.total*100)}%`:''}</span>`;}
   root.innerHTML=`<h3>Recorder</h3><div class="record-card"><strong>● ${esc(recording.kind)}:${esc(recording.name)}</strong><small>${esc(recording.scope)} · ${(recording.commands||[]).length} commands</small>${recording.enables?.length?`<small>ENABLES <span class="capability">${esc(enabledNames(recording.enables))}</span></small>`:''}${runtime}${actions}</div>`;
   bindCommandButtons(root);updateTerminalControls();

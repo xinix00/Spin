@@ -76,13 +76,19 @@ func (s *Server) runCommandContext(ctx context.Context, req domain.CommandReques
 		if err != nil {
 			return domain.CommandResponse{}, err
 		}
-		recording, err := s.createCapsuleRecording(ctx, domain.CreateRecordingRequest{
+		recording, start, err := s.createCapsuleRecording(domain.CreateRecordingRequest{
 			Actor: actor, Kind: kind, Name: name,
 			Scope: scope, Subject: flags["subject"], Profile: flags["profile"],
 			ParentArtifactIDs: parentIDs, CompatibilityFingerprint: flags["compatibility"], Enables: enables,
 		})
 		if err != nil {
 			return domain.CommandResponse{}, err
+		}
+		if start != nil {
+			return domain.CommandResponse{
+				Message:   fmt.Sprintf("● STARTING %s:%s · %s · progress follows; the capsule is ready when RECORDING appears", recording.Kind, recording.Name, start.Message),
+				Recording: &recording, Start: start,
+			}, nil
 		}
 		message := fmt.Sprintf("● RECORDING %s:%s · scope=%s · base=%s · type commands, then END RECORD", recording.Kind, recording.Name, recording.Scope, recording.Runtime.BaseRef)
 		if len(recording.Enables) > 0 {
@@ -115,7 +121,7 @@ func (s *Server) runCommandContext(ctx context.Context, req domain.CommandReques
 		if err != nil {
 			return domain.CommandResponse{}, fmt.Errorf("EDIT %s:%s: %w", kind, name, err)
 		}
-		recording, err := s.createCapsuleRecording(ctx, domain.CreateRecordingRequest{
+		recording, start, err := s.createCapsuleRecording(domain.CreateRecordingRequest{
 			Actor: actor, Kind: current.Kind, Name: current.Name,
 			Scope: current.Scope, Subject: current.Subject, Profile: current.Profile,
 			Provides: current.Provides, Requires: current.Requires, Enables: current.Enables, Slot: current.Slot,
@@ -124,6 +130,12 @@ func (s *Server) runCommandContext(ctx context.Context, req domain.CommandReques
 		})
 		if err != nil {
 			return domain.CommandResponse{}, err
+		}
+		if start != nil {
+			return domain.CommandResponse{
+				Message:   fmt.Sprintf("● STARTING EDIT %s:%s · %s · progress follows; type your additions once EDITING appears", recording.Kind, recording.Name, start.Message),
+				Recording: &recording, Start: start,
+			}, nil
 		}
 		message := fmt.Sprintf("● EDITING %s:%s · scope=%s · from current version %s · type what you want to add, then END RECORD replaces the current version", recording.Kind, recording.Name, recording.Scope, current.SnapshotDigest)
 		if len(recording.Enables) > 0 {

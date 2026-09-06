@@ -12,29 +12,6 @@ import (
 	"easyacp/internal/store"
 )
 
-func (s *Server) createCapsuleRecording(ctx context.Context, req domain.CreateRecordingRequest) (domain.Recording, error) {
-	recording, err := s.store.CreateRecording(req)
-	if err != nil {
-		return domain.Recording{}, err
-	}
-	parents, err := s.recordingParents(recording)
-	if err != nil {
-		_, _ = s.store.CancelRecording(recording.ID, domain.CancelRecordingRequest{Actor: recording.Actor})
-		return domain.Recording{}, err
-	}
-	runtime, err := s.engine.StartRecording(ctx, recording, parents)
-	if err != nil {
-		_, _ = s.store.CancelRecording(recording.ID, domain.CancelRecordingRequest{Actor: recording.Actor})
-		return domain.Recording{}, fmt.Errorf("start capsule recording: %w", err)
-	}
-	recording, err = s.store.SetRecordingRuntime(recording.ID, recording.Actor, runtime)
-	if err != nil {
-		_ = s.engine.Cancel(ctx, recording)
-		return domain.Recording{}, err
-	}
-	return recording, nil
-}
-
 func (s *Server) executeRecordingCommand(ctx context.Context, recordingID string, req domain.ExecuteRecordingCommandRequest) (domain.Recording, capsule.Execution, error) {
 	recording, err := s.store.Recording(recordingID)
 	if err != nil {
@@ -124,6 +101,9 @@ func (s *Server) archiveCapsuleSnapshot(ctx context.Context, snapshot domain.Cap
 }
 
 func (s *Server) cancelCapsuleRecording(ctx context.Context, recordingID string, req domain.CancelRecordingRequest) (domain.Recording, error) {
+	if s.startInProgress(recordingID) {
+		return domain.Recording{}, fmt.Errorf("this recording is still starting; wait for the capsule: %w", store.ErrConflict)
+	}
 	if s.sealInProgress(recordingID) {
 		return domain.Recording{}, fmt.Errorf("this recording is being saved; wait for END RECORD to finish: %w", store.ErrConflict)
 	}

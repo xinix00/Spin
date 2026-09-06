@@ -951,6 +951,25 @@ type CommandResponse struct {
 	// Seal is set when END RECORD is still running in the background: the
 	// browser follows it through GET /api/recordings/{id}/seal.
 	Seal *SealStatus `json:"seal,omitempty"`
+	// Start is set when RECORD or EDIT is still bringing the capsule up: the
+	// browser follows it through GET /api/recordings/{id}/start.
+	Start *StartStatus `json:"start,omitempty"`
+}
+
+// StartStatus reports RECORD or EDIT while the capsule comes up. Providing the
+// base image to a runner that lacks it can take minutes; the container itself
+// starts in seconds.
+type StartStatus struct {
+	RecordingID string     `json:"recording_id"`
+	Status      string     `json:"status"` // running, done or error
+	Stage       string     `json:"stage,omitempty"`
+	Message     string     `json:"message,omitempty"`
+	Current     int64      `json:"current,omitempty"`
+	Total       int64      `json:"total,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	Recording   *Recording `json:"recording,omitempty"`
+	StartedAt   time.Time  `json:"started_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 // SealStatus reports END RECORD while it runs. Sealing commits the snapshot on
