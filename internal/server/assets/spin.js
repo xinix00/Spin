@@ -253,7 +253,11 @@ function workflowSessionIsActive(sessionID){const session=byID(snapshot.sessions
 function openACPChat(sessionID){
   const session=byID(snapshot.sessions,sessionID),job=byID(snapshot.jobs,session?.job_id),repository=byID(snapshot.git_repositories,session?.git_repository_id);if(!session)return;if(!workflowSessionIsActive(sessionID)){showError(new Error('Alleen de actieve workflowstap heeft een live Chat.'));return;}
   chatState.manualClose=true;if(chatState.socket)chatState.socket.close();clearTimeout(chatState.reconnectTimer);chatState.sessionID=sessionID;resetChatView();
-  document.getElementById('chat-title').textContent=job?.title||'Session';document.getElementById('chat-role').textContent=session.role||'worker';document.getElementById('chat-context').textContent=`${repository?.name||'Git'} · ${session.git_ref} · ${session.environment_selector||'tool:'+session.tool}`;renderChatDeliverables(sessionID);renderChatQuestion(sessionID);openDialog('chat-dialog');connectACPChat(sessionID);requestAnimationFrame(()=>document.getElementById('chat-input').focus());
+  document.getElementById('chat-title').textContent=job?.title||'Session';document.getElementById('chat-role').textContent=session.role||'worker';document.getElementById('chat-context').textContent=`${repository?.name||'Git'} · ${session.git_ref} · ${session.environment_selector||'tool:'+session.tool}`;
+  // The same Retry as on the Job card, for a step that went wrong while the
+  // chat is open (an agent that will not start, say).
+  const retry=document.getElementById('chat-retry');retry.hidden=!(session.executor!=='action'&&job?.owner===currentOperator());retry.disabled=false;retry.innerHTML=`${icon('replay')}Retry`;retry.dataset.retrySession=sessionID;retry.onclick=async()=>{await retrySession(retry);if(!retry.disabled)return;closeDialog('chat-dialog');};
+  renderChatDeliverables(sessionID);renderChatQuestion(sessionID);openDialog('chat-dialog');connectACPChat(sessionID);requestAnimationFrame(()=>document.getElementById('chat-input').focus());
 }
 function closeACPChat(){chatState.manualClose=true;clearTimeout(chatState.reconnectTimer);clearTimeout(chatState.changeTimer);if(chatState.socket)chatState.socket.close();chatState.socket=null;chatState.busy=false;closeDiff();}
 function bindACPButtons(root=document){root.querySelectorAll('[data-open-acp]').forEach(button=>button.onclick=()=>openACPChat(button.dataset.openAcp));}
