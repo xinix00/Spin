@@ -100,24 +100,37 @@ func (s *Server) archiveCapsuleSnapshot(ctx context.Context, snapshot domain.Cap
 	return errors.Join(storeErr, exportErr)
 }
 
+// cancelCapsuleRecording ends a recording without saving it. A start still
+// under way is stopped first and cancels the recording itself; a recording
+// that never got a capsule needs no runner to go away.
 func (s *Server) cancelCapsuleRecording(ctx context.Context, recordingID string, req domain.CancelRecordingRequest) (domain.Recording, error) {
-	if s.startInProgress(recordingID) {
-		return domain.Recording{}, fmt.Errorf("this recording is still starting; wait for the capsule: %w", store.ErrConflict)
-	}
 	if s.sealInProgress(recordingID) {
 		return domain.Recording{}, fmt.Errorf("this recording is being saved; wait for END RECORD to finish: %w", store.ErrConflict)
 	}
-	s.stopTerminal(recordingID)
 	recording, err := s.store.Recording(recordingID)
 	if err != nil {
 		return domain.Recording{}, err
 	}
+	if normalizeOperator(req.Actor) != normalizeOperator(recording.Actor) {
+		return domain.Recording{}, store.ErrConflict
+	}
+	if s.cancelStart(recordingID) {
+		if recording, err = s.store.Recording(recordingID); err != nil {
+			return domain.Recording{}, err
+		}
+		if recording.Status == domain.RecordingCancelled {
+			return recording, nil
+		}
+	}
+	s.stopTerminal(recordingID)
 	open, err := s.store.OpenRecording(req.Actor)
 	if err != nil || open.ID != recording.ID {
 		return domain.Recording{}, store.ErrConflict
 	}
-	if err := s.engine.Cancel(ctx, recording); err != nil {
-		return domain.Recording{}, fmt.Errorf("remove capsule recording: %w", err)
+	if recording.Runtime != nil && recording.Runtime.ContainerID != "" {
+		if err := s.engine.Cancel(ctx, recording); err != nil {
+			return domain.Recording{}, fmt.Errorf("remove capsule recording: %w", err)
+		}
 	}
 	return s.store.CancelRecording(recordingID, req)
 }

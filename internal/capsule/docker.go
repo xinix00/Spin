@@ -78,6 +78,23 @@ func (d *Docker) StartRecording(ctx context.Context, recording domain.Recording,
 		base = parent.Snapshot.Ref
 	}
 	name := runtimeName("spin-rec", recording.ID)
+	// The control plane may ask again for a capsule this runner already made:
+	// its own request timed out, or it restarted before it could note the
+	// runtime. The recording's capsule is the one named after it, so hand
+	// that back rather than failing on the name.
+	if id, err := d.containerID(ctx, name); err == nil && id != "" {
+		if _, err := d.control(ctx, "start", id); err != nil {
+			return domain.CapsuleRuntime{}, fmt.Errorf("resume capsule %s: %w", name, err)
+		}
+		return domain.CapsuleRuntime{
+			Driver:        "docker",
+			ContainerID:   id,
+			ContainerName: name,
+			BaseRef:       base,
+			AttachCommand: "docker exec -it " + id + " sh",
+			Status:        "recording",
+		}, nil
+	}
 	_, err := d.control(ctx,
 		"run", "-d", "--pull=missing", "--init", "--name", name,
 		"--label", "spin.managed=true",
@@ -240,11 +257,14 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 	}, nil
 }
 
+// Cancel removes the recording's capsule. Without a known container ID it
+// removes the container named after the recording, so a capsule whose start
+// the control plane abandoned does not linger.
 func (d *Docker) Cancel(ctx context.Context, recording domain.Recording) error {
-	if recording.Runtime == nil || recording.Runtime.ContainerID == "" {
-		return nil
+	if recording.Runtime != nil && recording.Runtime.ContainerID != "" {
+		return d.removeContainer(ctx, recording.Runtime.ContainerID)
 	}
-	return d.removeContainer(ctx, recording.Runtime.ContainerID)
+	return d.removeContainer(ctx, runtimeName("spin-rec", recording.ID))
 }
 
 func (d *Docker) Materialize(ctx context.Context, composition domain.Composition, artifacts []domain.Artifact) (domain.CapsuleRuntime, error) {

@@ -20,6 +20,7 @@ import (
 )
 
 type testEngine struct {
+	cancelled      int
 	started        int
 	executed       int
 	sealed         int
@@ -112,7 +113,7 @@ func (e *testEngine) Seal(_ context.Context, recording domain.Recording) (domain
 	return domain.CapsuleSnapshot{Driver: "test", Ref: "image:" + recording.ID, Digest: "sha256:test", Restorable: true}, nil
 }
 
-func (e *testEngine) Cancel(_ context.Context, _ domain.Recording) error { return nil }
+func (e *testEngine) Cancel(_ context.Context, _ domain.Recording) error { e.cancelled++; return nil }
 
 func (e *testEngine) Materialize(_ context.Context, composition domain.Composition, _ []domain.Artifact) (domain.CapsuleRuntime, error) {
 	e.materialized++

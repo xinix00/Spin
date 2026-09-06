@@ -586,6 +586,21 @@ func (s *Store) OpenRecording(actor string) (domain.Recording, error) {
 	return domain.Recording{}, ErrNotFound
 }
 
+// StartingRecordings lists the open recordings whose capsule has not come up
+// yet, so a server that comes back can resume bringing them up.
+func (s *Store) StartingRecordings() []domain.Recording {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var starting []domain.Recording
+	for _, recording := range s.state.Recordings {
+		if recording.Status == domain.RecordingOpen && (recording.Runtime == nil || recording.Runtime.ContainerID == "") {
+			starting = append(starting, recording)
+		}
+	}
+	slices.SortFunc(starting, func(a, b domain.Recording) int { return a.StartedAt.Compare(b.StartedAt) })
+	return starting
+}
+
 func (s *Store) Recording(recordingID string) (domain.Recording, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

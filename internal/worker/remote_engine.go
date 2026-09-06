@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
@@ -79,6 +80,15 @@ func (e *RemoteEngine) StartRecording(ctx context.Context, recording domain.Reco
 	var runtime domain.CapsuleRuntime
 	peer, err := e.broker.call(ctx, target.id, methodStartRecording, startRecordingPayload{Recording: recording, Parents: parents}, &runtime)
 	if err != nil {
+		if ctx.Err() != nil {
+			// The start was abandoned while the runner may have been creating
+			// the capsule; have it take the capsule down again.
+			go func() {
+				cleanup, cancel := context.WithTimeout(context.Background(), time.Minute)
+				defer cancel()
+				_, _ = e.broker.call(cleanup, target.id, methodCancelRecording, recordingPayload{Recording: recording}, nil)
+			}()
+		}
 		return domain.CapsuleRuntime{}, err
 	}
 	runtime.ClientID = peer.id
@@ -105,8 +115,14 @@ func (e *RemoteEngine) Seal(ctx context.Context, recording domain.Recording) (do
 	return snapshot, nil
 }
 
+// Cancel removes the recording's capsule on the runner that holds it. A
+// recording that never reached a runner has nothing to remove anywhere, and
+// must not wait for a runner to say so.
 func (e *RemoteEngine) Cancel(ctx context.Context, recording domain.Recording) error {
 	affinity := recordingAffinity(recording)
+	if affinity == "" {
+		return nil
+	}
 	peer, err := e.broker.call(ctx, affinity, methodCancelRecording, recordingPayload{Recording: recording}, nil)
 	if err == nil {
 		peer.addWorkload(-1)

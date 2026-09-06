@@ -481,20 +481,31 @@ function startProgressText(start){
   const bytes=start.total?` · ${formatBytes(start.current||0)} / ${formatBytes(start.total)} (${Math.floor((start.current||0)/start.total*100)}%)`:'';
   return `Starten · ${stage}${bytes}${start.message&&!start.total?` · ${start.message}`:''}`;
 }
+// followingStartID guards the poller: one per recording, whether the browser
+// issued the command or found the recording starting after a reload.
+let followingStartID='';
 async function followStart(start){
+  if(followingStartID===start.recording_id)return;
+  followingStartID=start.recording_id;
   startState=start;renderRecording();printProgress(startProgressText(start));
+  try{
   for(let failures=0;;){
     await new Promise(resolve=>setTimeout(resolve,1500));
     try{
       const next=await api(`/api/recordings/${encodeURIComponent(start.recording_id)}/start`);failures=0;startState=next;renderRecording();
       if(next.status==='done'){startState=null;const recording=next.recording||{};print('output',`● RECORDING ${recording.kind}:${recording.name} · scope=${recording.scope} · base=${recording.runtime?.base_ref||'?'} · type commands, then END RECORD`);await refresh(true);return;}
+      if(next.status==='cancelled'){startState=null;printProgress('Starten afgebroken · opname geannuleerd');await refresh(true);return;}
       if(next.status==='error'){startState=null;print('error',next.error||'Starten mislukt');await refresh(true);return;}
       printProgress(startProgressText(next));
     }catch(error){
-      failures+=1;if(error.status===404||failures>=8){startState=null;print('error',`Voortgang van het starten is niet meer op te vragen: ${error.message||error}`);await refresh(true);return;}
+      failures+=1;
+      // 404: the server holds no job for this recording (an older server, or
+      // the recording just ended); refresh so the card follows the truth.
+      if(error.status===404||failures>=8){startState=null;print('error',`Voortgang van het starten is niet meer op te vragen: ${error.message||error}. Gebruik CANCEL RECORD om de opname op te ruimen.`);await refresh(true);return;}
       printProgress(`Starten · verbinding herstellen (poging ${failures})`);
     }
   }
+  }finally{followingStartID='';}
 }
 // sealState mirrors the END RECORD job the browser is following, for the
 // recorder panel; the console shows the same numbers as a progress line.
@@ -617,13 +628,17 @@ function renderRecording(){
   const recording=activeRecording(),status=document.getElementById('terminal-status'),root=document.getElementById('recording-section');
   if(!recording){status.className='terminal-status';status.innerHTML='<span class="rec-dot"></span><span>idle</span>';root.innerHTML='<h3>Recorder</h3><div class="empty">Geen actieve opname.</div>';updateTerminalControls();return;}
   if(!terminalSessions.size){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>REC ${esc(recording.kind)}:${esc(recording.name)}</span>`;}
-  const starting=startState&&startState.recording_id===recording.id&&startState.status==='running'?startState:(recording.runtime?.container_id?null:{stage:'prepare',message:'Capsule komt op'});
+  // A recording without a capsule is being started by a job on the server;
+  // attach to that job when this browser is not following it yet (after a
+  // reload, or when another tab gave the command).
+  const starting=startState&&startState.recording_id===recording.id&&startState.status==='running'?startState:(recording.runtime?.container_id?null:{stage:'prepare',message:'Voortgang ophalen'});
+  if(!recording.runtime?.container_id&&followingStartID!==recording.id)followStart({recording_id:recording.id,status:'running',stage:'prepare',message:'Voortgang ophalen'});
   const runtime=recording.runtime?.container_id?'<small>Multi-PTY · start parallelle processen met + PTY; ieder kanaal heeft eigen stdin en Ctrl-C.</small>':`<div class="seal-progress"><div class="seal-track ${starting?.total?'':'indeterminate'}"><div class="seal-fill" style="width:${starting?.total?Math.floor((starting.current||0)/starting.total*100):100}%"></div></div><small>${esc(startProgressText(starting||{}))}</small></div>`;
   if(!recording.runtime?.container_id){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>STARTING ${esc(recording.kind)}:${esc(recording.name)}${starting?.total?` ${Math.floor((starting.current||0)/starting.total*100)}%`:''}</span>`;}
   const sealing=sealState&&sealState.recording_id===recording.id&&sealState.status==='running'?sealState:null;
   // While the capsule is still starting the runtime block already carries the
-  // progress bar and there is nothing to end or cancel yet.
-  const actions=sealing?`<div class="seal-progress"><div class="seal-track ${sealing.total?'':'indeterminate'}"><div class="seal-fill" style="width:${sealing.total?Math.floor((sealing.current||0)/sealing.total*100):100}%"></div></div><small>${esc(sealProgressText(sealing))}</small></div>`:(recording.runtime?.container_id?`<div class="panel-actions" style="margin-top:9px"><button class="small-button" data-command="END RECORD">End & save</button><button class="danger" data-command="CANCEL RECORD">Cancel</button></div>`:'');
+  // progress bar; there is nothing to end yet, but the start can be cancelled.
+  const actions=sealing?`<div class="seal-progress"><div class="seal-track ${sealing.total?'':'indeterminate'}"><div class="seal-fill" style="width:${sealing.total?Math.floor((sealing.current||0)/sealing.total*100):100}%"></div></div><small>${esc(sealProgressText(sealing))}</small></div>`:(recording.runtime?.container_id?`<div class="panel-actions" style="margin-top:9px"><button class="small-button" data-command="END RECORD">End & save</button><button class="danger" data-command="CANCEL RECORD">Cancel</button></div>`:`<div class="panel-actions" style="margin-top:9px"><button class="danger" data-command="CANCEL RECORD">Cancel start</button></div>`);
   if(sealing){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>SAVING ${esc(recording.kind)}:${esc(recording.name)}${sealing.total?` ${Math.floor((sealing.current||0)/sealing.total*100)}%`:''}</span>`;}
   root.innerHTML=`<h3>Recorder</h3><div class="record-card"><strong>● ${esc(recording.kind)}:${esc(recording.name)}</strong><small>${esc(recording.scope)} · ${(recording.commands||[]).length} commands</small>${recording.enables?.length?`<small>ENABLES <span class="capability">${esc(enabledNames(recording.enables))}</span></small>`:''}${runtime}${actions}</div>`;
   bindCommandButtons(root);updateTerminalControls();

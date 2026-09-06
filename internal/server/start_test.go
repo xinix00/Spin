@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,8 +54,8 @@ func TestRecordAnswersWithProgressWhenStartingTakesLong(t *testing.T) {
 		t.Fatalf("slow RECORD = %+v", started)
 	}
 	recordingID := started.Recording.ID
-	if _, err := run("CANCEL RECORD"); err == nil {
-		t.Fatal("cancelled a recording whose capsule is still starting")
+	if _, err := run("RECORD tool:node --scope=global"); err == nil || !strings.Contains(err.Error(), "still starting") {
+		t.Fatalf("second RECORD while one starts = %v", err)
 	}
 	status := func() domain.StartStatus {
 		t.Helper()
@@ -99,5 +100,96 @@ func TestRecordAnswersWithProgressWhenStartingTakesLong(t *testing.T) {
 	}
 	if _, err := st.OpenRecording("derek"); err == nil {
 		t.Fatal("a failed start left the recording open")
+	}
+}
+
+// CANCEL RECORD during a start stops the job and cancels the recording; the
+// operator is free to record again at once.
+func TestCancelStopsARunningStart(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &slowStartEngine{testEngine: &testEngine{}, release: make(chan struct{})}
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
+	srv.startWait = 50 * time.Millisecond
+	run := func(line string) (domain.CommandResponse, error) {
+		return srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line})
+	}
+	started, err := run("RECORD tool:codex --scope=global")
+	if err != nil || started.Start == nil {
+		t.Fatalf("slow RECORD = %+v, %v", started, err)
+	}
+	recordingID := started.Recording.ID
+	// The engine ignores the context; the server must still stop waiting.
+	srv.startCancelWait = 100 * time.Millisecond
+	cancelled, err := run("CANCEL RECORD")
+	if err != nil || cancelled.Recording == nil || cancelled.Recording.Status != domain.RecordingCancelled {
+		t.Fatalf("CANCEL during start = %+v, %v", cancelled, err)
+	}
+	if _, err := st.OpenRecording("derek"); err == nil {
+		t.Fatal("cancelled start left the recording open")
+	}
+	close(engine.release)
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.startInProgress(recordingID) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if srv.startInProgress(recordingID) {
+		t.Fatal("start job kept running after the recording was cancelled")
+	}
+	if engine.testEngine.cancelled != 1 {
+		t.Fatalf("capsule that came up after the cancel was not removed: cancelled=%d", engine.testEngine.cancelled)
+	}
+	if again, err := run("RECORD tool:codex --scope=global"); err != nil || again.Recording == nil || again.Recording.Runtime == nil {
+		t.Fatalf("RECORD after a cancelled start = %+v, %v", again, err)
+	}
+}
+
+// A server that comes back while a capsule was starting resumes the start:
+// the recording is durable and the job is not, and nothing else could finish
+// it. The browser finds the job under the same URL.
+func TestServerResumesStartsAfterRestart(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stuck := &slowStartEngine{testEngine: &testEngine{}, release: make(chan struct{})}
+	first := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), stuck, ServerOptions{DisableAuthentication: true})
+	first.startWait = 50 * time.Millisecond
+	started, err := first.runCommand(domain.CommandRequest{Operator: "derek", Line: "RECORD tool:codex --scope=global"})
+	if err != nil || started.Start == nil {
+		t.Fatalf("slow RECORD = %+v, %v", started, err)
+	}
+	recordingID := started.Recording.ID
+	// "Restart": a new server over the same state, with a runner that answers.
+	second := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), &testEngine{}, ServerOptions{DisableAuthentication: true})
+	status := func() domain.StartStatus {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		second.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/recordings/"+recordingID+"/start", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("start status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		var start domain.StartStatus
+		if err := json.Unmarshal(recorder.Body.Bytes(), &start); err != nil {
+			t.Fatal(err)
+		}
+		return start
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var start domain.StartStatus
+	for start = status(); start.Status == "running" && time.Now().Before(deadline); start = status() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if start.Status != "done" || start.Recording == nil || start.Recording.Runtime == nil {
+		t.Fatalf("resumed start = %+v", start)
+	}
+	open, err := st.OpenRecording("derek")
+	if err != nil || open.ID != recordingID || open.Runtime == nil || open.Runtime.ContainerID == "" {
+		t.Fatalf("open recording after the resumed start = %+v, %v", open, err)
+	}
+	if ended, err := second.runCommand(domain.CommandRequest{Operator: "derek", Line: "END RECORD"}); err != nil || ended.Artifact == nil {
+		t.Fatalf("END after a resumed start = %+v, %v", ended, err)
 	}
 }
