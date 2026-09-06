@@ -156,11 +156,13 @@ func TestFailedLaunchIsReportedAndSweptAgain(t *testing.T) {
 		t.Fatalf("preparation after a failed launch = %+v", got)
 	}
 
-	// The runner recovered; the sweep launches again and the failure is gone.
+	// The runner recovered; the sweep launches again and the old failure is
+	// gone. The test engine has no ACP, so the phase now fails one step
+	// later, and that is the failure on the card.
 	engine.materializeErr = nil
 	launchAndWait()
-	if got := preparation(); got != nil && got.Failure != nil {
-		t.Fatalf("failure survived a successful launch: %+v", got)
+	if got := preparation(); got == nil || got.Failure == nil || strings.Contains(got.Failure.Error, "no disk left") || !strings.Contains(got.Failure.Error, "start workflow ACP") {
+		t.Fatalf("failure after the second launch = %+v", got)
 	}
 	// The failed attempt counted too: exactly one more materialization.
 	if engine.materialized != 2 {

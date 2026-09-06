@@ -449,6 +449,30 @@ func workflowPhaseEnvironment(phase domain.WorkflowPhase, fallbackSelector strin
 	return selector, uniqueStrings(with)
 }
 
+// RequeueWorkflowPhase puts a running phase back in the queue when its agent
+// could not be started after all; the launch sweep offers it again and the
+// Job shows why instead of a "running" step with nothing behind it.
+func (s *Store) RequeueWorkflowPhase(sessionID string) (domain.PhaseRun, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.state.Sessions[sessionID]
+	if !ok || session.PhaseRunID == "" {
+		return domain.PhaseRun{}, ErrNotFound
+	}
+	run, ok := s.state.PhaseRuns[session.PhaseRunID]
+	if !ok {
+		return domain.PhaseRun{}, ErrNotFound
+	}
+	if run.Status == domain.PhaseRunRunning {
+		run.Status = domain.PhaseRunQueued
+		s.state.PhaseRuns[run.ID] = run
+		if err := s.saveLocked(); err != nil {
+			return domain.PhaseRun{}, err
+		}
+	}
+	return run, nil
+}
+
 func (s *Store) MarkWorkflowPhaseRunning(sessionID string) (domain.PhaseRun, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

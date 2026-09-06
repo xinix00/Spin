@@ -473,18 +473,28 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 		s.logger.Warn("mark workflow phase running", "session", session.ID, "error", err)
 		return
 	}
+	// From here the phase is "running"; if the agent cannot be started after
+	// all, the phase goes back to the queue with the reason on the card and
+	// the sweep tries again, rather than a running step with nothing behind it.
+	requeue := func(what string, err error) {
+		s.logger.Warn(what, "session", session.ID, "error", err)
+		s.recordLaunchFailure(session.ID, fmt.Errorf("%s: %w", what, err))
+		if _, requeueErr := s.store.RequeueWorkflowPhase(session.ID); requeueErr != nil {
+			s.logger.Warn("requeue workflow phase", "session", session.ID, "error", requeueErr)
+		}
+	}
 	active, err := s.getOrStartACP(session.ID, operator)
 	if err != nil {
-		s.logger.Warn("start workflow ACP", "session", session.ID, "error", err)
+		requeue("start workflow ACP", err)
 		return
 	}
 	prompt, err := s.workflowPromptForACP(session.ID, active.promptCapabilities())
 	if err != nil {
-		s.logger.Warn("build workflow prompt", "session", session.ID, "error", err)
+		requeue("build workflow prompt", err)
 		return
 	}
 	if err := s.startACPPrompt(active, prompt); err != nil {
-		s.logger.Warn("start workflow prompt", "session", session.ID, "error", err)
+		requeue("start workflow prompt", err)
 		return
 	}
 	s.retireWorkflowCompositions(session.JobID, session.ID)

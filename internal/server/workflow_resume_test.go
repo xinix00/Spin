@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,21 +79,38 @@ func TestQueuedWorkflowPhaseResumesWhenARunnerConnects(t *testing.T) {
 
 	srv.resumeQueuedWorkflowPhases()
 
+	// The launch materializes the workspace; the test engine then fails to
+	// start ACP, so the phase goes back to the queue with that reason
+	// instead of staying "running" with nothing behind it.
+	launchFailure := func() *launchFailure {
+		for _, item := range srv.sessionPreparations() {
+			if item.SessionID == created.Session.ID && item.Failure != nil {
+				return item.Failure
+			}
+		}
+		return nil
+	}
 	deadline := time.Now().Add(10 * time.Second)
-	for phaseStatus() != domain.PhaseRunRunning {
+	for launchFailure() == nil {
 		if time.Now().After(deadline) {
-			t.Fatalf("phase status after a runner connected = %q, want running", phaseStatus())
+			t.Fatalf("no launch failure after a runner connected; phase status = %q", phaseStatus())
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	if failure := launchFailure(); !strings.Contains(failure.Error, "start workflow ACP") {
+		t.Fatalf("launch failure = %q, want the ACP start", failure.Error)
+	}
+	if status := phaseStatus(); status != domain.PhaseRunQueued {
+		t.Fatalf("phase status after the agent failed to start = %q, want queued", status)
 	}
 	if engine.materialized != 1 {
 		t.Fatalf("materialized %d compositions, want 1", engine.materialized)
 	}
 
-	// A phase that is no longer queued is left alone.
+	// The next attempt reuses the workspace that is already there.
 	srv.resumeQueuedWorkflowPhases()
 	time.Sleep(50 * time.Millisecond)
 	if engine.materialized != 1 {
-		t.Fatalf("re-resumed a running phase: materialized %d", engine.materialized)
+		t.Fatalf("re-materialized an existing workspace: materialized %d", engine.materialized)
 	}
 }
