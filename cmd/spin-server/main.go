@@ -48,6 +48,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer database.Close()
+	for _, line := range database.Migrations() {
+		logger.Info("database", "migration", line)
+	}
 	if imported, err := database.ImportFileIfMissing("state", *legacyStatePath); err != nil {
 		logger.Error("import legacy JSON state", "error", err)
 		os.Exit(1)

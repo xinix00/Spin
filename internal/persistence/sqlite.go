@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"easyacp/internal/domain"
 
@@ -33,6 +34,8 @@ type SQLite struct {
 	vfs    string
 	fsPath string
 	nextID atomic.Uint64
+
+	migrations []string
 }
 
 type OpenOptions struct {
@@ -73,24 +76,75 @@ func Open(path string, options OpenOptions) (*SQLite, error) {
 	return store, nil
 }
 
+// sqliteDSN builds the connection string. On HopOS the order of the pragmas
+// matters and url.Values would sort them, so the query is written out by hand.
+//
+// locking_mode comes first, and it is the setting that matters most. This
+// process is the only one that can reach the file, which is what a slot is, so
+// holding the lock costs nothing and lets SQLite keep its page cache between
+// statements instead of dropping it every time it releases the lock. It also
+// has to be the first pragma: anything before it touches the database and the
+// mode can no longer be raised. cache_size and synchronous follow because
+// neither is stored in the file, so a second connection would silently fall
+// back to a 2 MiB cache and to whatever durability the build defaults to.
 func sqliteDSN(path, vfsName string) string {
-	query := url.Values{}
-	query.Set("_pragma", "foreign_keys(1)")
-	if vfsName != "" {
-		query.Set("vfs", vfsName)
-		query.Set("nolock", "1")
+	dsn := "file:" + filepath.ToSlash(path)
+	if vfsName == "" {
+		return dsn + "?_pragma=foreign_keys(1)"
 	}
-	return "file:" + filepath.ToSlash(path) + "?" + query.Encode()
+	return dsn + "?vfs=" + url.QueryEscape(vfsName) +
+		"&_pragma=locking_mode(exclusive)" +
+		"&_pragma=cache_size(-65536)" +
+		"&_pragma=synchronous(full)" +
+		"&_pragma=foreign_keys(1)"
 }
 
-func (s *SQLite) initialize(ctx context.Context) error {
-	statements := []string{
-		`PRAGMA journal_mode=DELETE`,
-		`PRAGMA synchronous=FULL`,
-		`CREATE TABLE IF NOT EXISTS spin_kv (
+// The two tables that carry large rows are rowid tables on purpose. In a
+// WITHOUT ROWID table the whole row is the b-tree key, so every descent
+// compares against neighbouring rows and SQLite fetches their complete
+// records, overflow pages included: on HopOS that was ~10 MiB of volume reads
+// for every 1 MiB chunk inserted, and it grew with the table. With the blob in
+// the row and only (object_id, sequence) in the index, an insert reads nothing.
+const (
+	createKV = `CREATE TABLE IF NOT EXISTS spin_kv (
 			key TEXT PRIMARY KEY,
 			value BLOB NOT NULL
-		) WITHOUT ROWID`,
+		)`
+	createChunks = `CREATE TABLE IF NOT EXISTS spin_object_chunks (
+			id INTEGER PRIMARY KEY,
+			object_id INTEGER NOT NULL REFERENCES spin_objects(id) ON DELETE CASCADE,
+			sequence INTEGER NOT NULL,
+			data BLOB NOT NULL,
+			UNIQUE(object_id, sequence)
+		)`
+)
+
+func (s *SQLite) initialize(ctx context.Context) error {
+	pragmas := []string{
+		// 64 KiB pages: a 1 MiB chunk is 17 pages instead of 257, so a cold
+		// read or a cascade delete costs 17 volume calls per MiB. Only a new
+		// database picks this up; an existing file keeps its page size.
+		`PRAGMA page_size=65536`,
+		// A rollback journal, not WAL. The win everyone reaches for in WAL is
+		// really the exclusive lock (see sqliteDSN): a connection that keeps
+		// its lock keeps its page cache between statements, and that is what
+		// takes point lookups from 8423 to 68222 per second on a HopOS slot.
+		// WAL adds nothing on top of that here and costs bulk: every byte of a
+		// megabyte chunk reaches the database a second time at checkpoint, so
+		// uploads dropped from 429 to 190 MB/s with stalls of 200 ms. Measured
+		// 05-09; `vitals` test `sqlite` prints all four variants side by side.
+		`PRAGMA journal_mode=DELETE`,
+	}
+	for _, statement := range pragmas {
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("initialize SQLite: %w", err)
+		}
+	}
+	if err := s.rebuildWithoutRowid(ctx); err != nil {
+		return fmt.Errorf("initialize SQLite: %w", err)
+	}
+	statements := []string{
+		createKV,
 		`CREATE TABLE IF NOT EXISTS spin_objects (
 			id INTEGER PRIMARY KEY,
 			digest TEXT,
@@ -100,12 +154,7 @@ func (s *SQLite) initialize(ctx context.Context) error {
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS spin_objects_digest
 			ON spin_objects(digest) WHERE complete = 1`,
-		`CREATE TABLE IF NOT EXISTS spin_object_chunks (
-			object_id INTEGER NOT NULL REFERENCES spin_objects(id) ON DELETE CASCADE,
-			sequence INTEGER NOT NULL,
-			data BLOB NOT NULL,
-			PRIMARY KEY(object_id, sequence)
-		) WITHOUT ROWID`,
+		createChunks,
 		`CREATE TABLE IF NOT EXISTS spin_object_refs (
 			ref TEXT PRIMARY KEY,
 			object_id INTEGER NOT NULL REFERENCES spin_objects(id),
@@ -120,6 +169,71 @@ func (s *SQLite) initialize(ctx context.Context) error {
 	}
 	return nil
 }
+
+// rebuildWithoutRowid converts spin_kv and spin_object_chunks from the earlier
+// WITHOUT ROWID form to rowid tables, in place and in one transaction per
+// table. Foreign-key bookkeeping is off for the duration: DROP TABLE would
+// otherwise run an implicit DELETE that walks every row first.
+func (s *SQLite) rebuildWithoutRowid(ctx context.Context) error {
+	rebuilds := []struct{ table, create, columns string }{
+		{"spin_kv", createKV, "key, value"},
+		{"spin_object_chunks", createChunks, "object_id, sequence, data"},
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	for _, r := range rebuilds {
+		var definition string
+		err := conn.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, r.table).Scan(&definition)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(strings.ToUpper(definition), "WITHOUT ROWID") {
+			continue
+		}
+		started := time.Now()
+		if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+			return err
+		}
+		err = func() error {
+			tx, err := conn.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			scratch := r.table + "_rowid"
+			steps := []string{
+				strings.Replace(r.create, "IF NOT EXISTS "+r.table, scratch, 1),
+				fmt.Sprintf(`INSERT INTO %s(%s) SELECT %s FROM %s ORDER BY %s`, scratch, r.columns, r.columns, r.table, r.columns),
+				`DROP TABLE ` + r.table,
+				fmt.Sprintf(`ALTER TABLE %s RENAME TO %s`, scratch, r.table),
+			}
+			for _, step := range steps {
+				if _, err := tx.ExecContext(ctx, step); err != nil {
+					return fmt.Errorf("%s: %w", r.table, err)
+				}
+			}
+			return tx.Commit()
+		}()
+		if _, fkErr := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err == nil {
+			err = fkErr
+		}
+		if err != nil {
+			return fmt.Errorf("rebuild %s as rowid table: %w", r.table, err)
+		}
+		s.migrations = append(s.migrations, fmt.Sprintf("rebuilt %s as a rowid table in %s", r.table, time.Since(started).Round(time.Millisecond)))
+	}
+	return nil
+}
+
+// Migrations reports what Open changed about an existing database, for the
+// startup log.
+func (s *SQLite) Migrations() []string { return s.migrations }
 
 func (s *SQLite) Close() error { return s.db.Close() }
 

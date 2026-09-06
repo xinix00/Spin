@@ -64,6 +64,9 @@ func main() {
 		app.Exit(1)
 	}
 	defer database.Close()
+	for _, line := range database.Migrations() {
+		app.Logf("spin-server: database: %s", line)
+	}
 	if _, err := database.ReadFile("state"); errors.Is(err, fs.ErrNotExist) {
 		if legacy, legacyErr := app.ReadFile("/data/spin-state.json"); legacyErr == nil {
 			if err := database.WriteFile("state", legacy); err != nil {
