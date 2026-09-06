@@ -3,13 +3,16 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"easyacp/internal/domain"
 	"easyacp/internal/store"
 	"easyacp/internal/worker"
 )
@@ -81,5 +84,86 @@ func TestStateReportsSessionPreparationUntilTheLaunchFinishes(t *testing.T) {
 			t.Fatalf("preparing after the launch finished = %+v", preparing())
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A launch that fails leaves its reason for the browser and the phase queued;
+// the next sweep launches again and clears the failure once it starts.
+func TestFailedLaunchIsReportedAndSweptAgain(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &acpTestEngine{}
+	engine.materializeErr = errors.New("runner has no disk left")
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
+	for _, line := range []string{
+		"RECORD tool:git --scope=global --enable=git", "install git", "END RECORD",
+		"RECORD tool:agent --scope=global --from=tool:git --enable=acp --command=agent-acp", "install agent", "END RECORD",
+	} {
+		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
+			t.Fatalf("%s: %v", line, err)
+		}
+	}
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "easyacp", RemoteURL: "https://github.com/derek/easyacp.git", DefaultRef: "main", CredentialScope: domain.CredentialScopeUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateGitAccount(domain.CreateGitAccountRequest{Operator: "derek", Provider: "github", Host: "github.com", Login: "derek", AccessToken: "github-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Code", Phases: []domain.WorkflowPhase{{
+		ID: "develop", Name: "Ontwikkelen", Instructions: "Bouw het", AllowChanges: true,
+		Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Feature", Objective: "Werkend", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparation := func() *sessionPreparation {
+		t.Helper()
+		for _, item := range srv.sessionPreparations() {
+			if item.SessionID == created.Session.ID {
+				return &item
+			}
+		}
+		return nil
+	}
+	launchAndWait := func() {
+		t.Helper()
+		srv.launchQueuedWorkflowPhases("test")
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			srv.jobLaunchMu.Lock()
+			_, running := srv.jobLaunching[created.Session.ID]
+			srv.jobLaunchMu.Unlock()
+			if !running {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("launch did not finish")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	launchAndWait()
+	got := preparation()
+	if got == nil || got.Failure == nil || got.Failure.Error == "" || !strings.Contains(got.Failure.Error, "no disk left") {
+		t.Fatalf("preparation after a failed launch = %+v", got)
+	}
+
+	// The runner recovered; the sweep launches again and the failure is gone.
+	engine.materializeErr = nil
+	launchAndWait()
+	if got := preparation(); got != nil && got.Failure != nil {
+		t.Fatalf("failure survived a successful launch: %+v", got)
+	}
+	// The failed attempt counted too: exactly one more materialization.
+	if engine.materialized != 2 {
+		t.Fatalf("materialized %d times after the sweep, want 2", engine.materialized)
 	}
 }

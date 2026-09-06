@@ -155,6 +155,7 @@ func (e *RemoteEngine) materialize(ctx context.Context, composition domain.Compo
 		}
 		artifact.Snapshot.ReplicaClientIDs = append(artifact.Snapshot.ReplicaClientIDs, target.id)
 	}
+	capsule.ReportProgress(ctx, "start", "Workspace en capsule starten op runner "+target.name, 0, 0)
 	var runtime domain.CapsuleRuntime
 	peer, err := e.broker.call(ctx, target.id, methodMaterialize, materializePayload{Composition: composition, Artifacts: artifacts, Authentication: authentication}, &runtime)
 	if err != nil {

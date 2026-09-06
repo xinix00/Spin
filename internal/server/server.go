@@ -46,6 +46,8 @@ type Server struct {
 	workflowTokens  map[string]string
 	jobLaunchMu     sync.Mutex
 	jobLaunching    map[string]*backgroundJobLaunch
+	launchFailures  map[string]launchFailure // why the last launch of a queued Session gave up
+	launchSweep     time.Duration            // cadence at which queued phases are offered a launch again
 	backupMu        sync.Mutex
 	backupTicketMu  sync.Mutex
 	backupTickets   map[string]backupTicket
@@ -67,17 +69,49 @@ type backgroundJobLaunch struct {
 	done      chan struct{}
 	startedAt time.Time
 	clientID  string // set once the engine reports which runner took the work
+	progress  launchProgress
+}
+
+// launchProgress is the last thing a launch reported: the base image on its
+// way to the runner, the capsule coming up. It doubles as the liveness signal
+// that keeps a slow launch from being cut off.
+type launchProgress struct {
+	Stage     string    `json:"stage,omitempty"`
+	Message   string    `json:"message,omitempty"`
+	Current   int64     `json:"current,omitempty"`
+	Total     int64     `json:"total,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// launchFailure is why the last launch of a queued Session gave up; the sweep
+// tries again and the browser shows the reason meanwhile.
+type launchFailure struct {
+	Error string    `json:"error"`
+	At    time.Time `json:"at"`
 }
 
 // sessionPreparation tells the browser that a Session is being started right
-// now, and on which runner once one has been chosen. It is deliberately
+// now, on which runner once one has been chosen and how far it is, or why the
+// last attempt failed while the next one is due. It is deliberately
 // transient: it lives in the launch bookkeeping, never in durable state, so a
 // failed attempt leaves nothing behind to clean up or to pin a Session with.
 type sessionPreparation struct {
-	SessionID string    `json:"session_id"`
-	ClientID  string    `json:"client_id,omitempty"`
-	StartedAt time.Time `json:"started_at"`
+	SessionID string          `json:"session_id"`
+	ClientID  string          `json:"client_id,omitempty"`
+	StartedAt time.Time       `json:"started_at"`
+	Progress  *launchProgress `json:"progress,omitempty"`
+	Failure   *launchFailure  `json:"failure,omitempty"`
 }
+
+// launchSweepInterval is how often queued phases are offered a launch again.
+// Runners connect, free capacity and fail transiently; a sweep covers all of
+// that without a listener for each.
+const launchSweepInterval = 30 * time.Second
+
+// launchStallTimeout cuts off a launch that has reported nothing for this
+// long. Shipping a gigabyte reports every chunk, so only a hung launch trips
+// it; there is no cap on the total.
+const launchStallTimeout = 3 * time.Minute
 
 func New(st *store.Store, logger *slog.Logger) *Server {
 	return NewWithEngine(st, logger, capsule.Journal{})
@@ -109,7 +143,7 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 		internalURL:  strings.TrimRight(strings.TrimSpace(options.InternalURL), "/"),
 		attachments:  attachmentStorage, snapshotArchive: options.SnapshotArchive, database: options.Database,
 		loginLimiter: loginLimiter{attempts: map[string]loginAttempt{}}, csrfTokens: csrfTokenCache{values: map[string]string{}},
-		terminals: map[string]map[*activeTerminal]struct{}{}, acpSessions: map[string]*activeACP{}, workflowTokens: map[string]string{}, jobLaunching: map[string]*backgroundJobLaunch{}, backupTickets: map[string]backupTicket{}, uploads: map[string]*chunkedUpload{}, seals: map[string]*sealJob{}, sealWait: sealAnswerWait, starts: map[string]*startJob{}, startWait: startAnswerWait, startCancelWait: startCancelWait, restoreJobs: map[string]*restoreJob{},
+		terminals: map[string]map[*activeTerminal]struct{}{}, acpSessions: map[string]*activeACP{}, workflowTokens: map[string]string{}, jobLaunching: map[string]*backgroundJobLaunch{}, launchFailures: map[string]launchFailure{}, launchSweep: launchSweepInterval, backupTickets: map[string]backupTicket{}, uploads: map[string]*chunkedUpload{}, seals: map[string]*sealJob{}, sealWait: sealAnswerWait, starts: map[string]*startJob{}, startWait: startAnswerWait, startCancelWait: startCancelWait, restoreJobs: map[string]*restoreJob{},
 	}
 	if restored, err := st.RepairStandingDecisions(); err != nil {
 		logger.Warn("repair standing workflow decisions", "error", err)
@@ -126,7 +160,56 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 	}
 	go s.resumeQueuedWorkflowActions()
 	s.resumeStartingRecordings()
+	go s.sweepQueuedWorkflowPhases()
 	return s
+}
+
+// sweepQueuedWorkflowPhases offers every queued phase a launch again at a
+// fixed cadence. A launch that failed (no runner in time, a transfer that
+// stalled, a transient error) leaves its phase queued; nothing else looks at
+// it again, and a Job must not sit on "waiting for a runner" for that.
+func (s *Server) sweepQueuedWorkflowPhases() {
+	ticker := time.NewTicker(s.launchSweep)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.launchQueuedWorkflowPhases("sweep")
+	}
+}
+
+// launchContext bounds a launch by silence rather than by a clock: progress
+// reports reach the browser and reset the stall timer, so a long transfer
+// survives and a hung one does not.
+func (s *Server) launchContext(ctx context.Context, sessionID string) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	var mu sync.Mutex
+	timer := time.AfterFunc(launchStallTimeout, cancel)
+	ctx = capsule.WithProgress(ctx, func(stage, message string, current, total int64) {
+		mu.Lock()
+		timer.Reset(launchStallTimeout)
+		mu.Unlock()
+		s.recordLaunchProgress(sessionID, launchProgress{Stage: stage, Message: message, Current: current, Total: total, UpdatedAt: time.Now().UTC()})
+	})
+	return ctx, func() { timer.Stop(); cancel() }
+}
+
+func (s *Server) recordLaunchProgress(sessionID string, progress launchProgress) {
+	s.jobLaunchMu.Lock()
+	if launch := s.jobLaunching[sessionID]; launch != nil {
+		launch.progress = progress
+	}
+	s.jobLaunchMu.Unlock()
+}
+
+// recordLaunchFailure keeps why a launch gave up until the next attempt
+// starts; a nil error clears it.
+func (s *Server) recordLaunchFailure(sessionID string, err error) {
+	s.jobLaunchMu.Lock()
+	if err == nil {
+		delete(s.launchFailures, sessionID)
+	} else {
+		s.launchFailures[sessionID] = launchFailure{Error: err.Error(), At: time.Now().UTC()}
+	}
+	s.jobLaunchMu.Unlock()
 }
 
 // queuedWorkflowSessions returns the Sessions whose Job is parked on their own
@@ -167,9 +250,13 @@ func (s *Server) resumeQueuedWorkflowActions() {
 // patience leaves its phase queued with nothing left to look at it again, so
 // the Job kept reporting "waiting for a runner" long after one came back.
 func (s *Server) resumeQueuedWorkflowPhases() {
+	s.launchQueuedWorkflowPhases("runner connected")
+}
+
+func (s *Server) launchQueuedWorkflowPhases(reason string) {
 	for _, session := range s.queuedWorkflowSessions() {
 		if s.startQueuedWorkflowLaunch(session) {
-			s.logger.Info("runner connected; resuming queued workflow phase",
+			s.logger.Info(reason+"; launching queued workflow phase",
 				"session", session.ID, "job", session.JobID, "phase_run", session.PhaseRunID)
 		}
 	}
@@ -202,7 +289,19 @@ func (s *Server) sessionPreparations() []sessionPreparation {
 	s.jobLaunchMu.Lock()
 	preparations := make([]sessionPreparation, 0, len(s.jobLaunching))
 	for sessionID, launch := range s.jobLaunching {
-		preparations = append(preparations, sessionPreparation{SessionID: sessionID, ClientID: launch.clientID, StartedAt: launch.startedAt})
+		preparation := sessionPreparation{SessionID: sessionID, ClientID: launch.clientID, StartedAt: launch.startedAt}
+		if launch.progress.Stage != "" {
+			progress := launch.progress
+			preparation.Progress = &progress
+		}
+		preparations = append(preparations, preparation)
+	}
+	for sessionID, failure := range s.launchFailures {
+		if s.jobLaunching[sessionID] != nil {
+			continue
+		}
+		failure := failure
+		preparations = append(preparations, sessionPreparation{SessionID: sessionID, StartedAt: failure.At, Failure: &failure})
 	}
 	s.jobLaunchMu.Unlock()
 	slices.SortFunc(preparations, func(a, b sessionPreparation) int { return strings.Compare(a.SessionID, b.SessionID) })
@@ -226,6 +325,7 @@ func (s *Server) beginTrackedLaunch(sessionID string, guard func() bool, body fu
 	launchContext, cancel := context.WithCancel(context.Background())
 	launch := &backgroundJobLaunch{cancel: cancel, done: make(chan struct{}), startedAt: time.Now().UTC()}
 	s.jobLaunching[sessionID] = launch
+	delete(s.launchFailures, sessionID)
 	s.jobLaunchMu.Unlock()
 	go func() {
 		defer func() {
@@ -735,10 +835,11 @@ func (s *Server) scheduleJobLaunch(created domain.CreateJobResponse, requestedOp
 				s.launchWorkflowSessionContext(ctx, sessionID, operator)
 				return
 			}
-			materializeContext, materializeCancel := context.WithTimeout(ctx, 2*time.Minute)
+			materializeContext, materializeCancel := s.launchContext(ctx, sessionID)
 			defer materializeCancel()
 			if _, err := s.useCapsule(materializeContext, domain.UseRequest{Selector: "session:" + sessionID, Operator: operator}); err != nil && !errors.Is(err, context.Canceled) {
 				s.logger.Warn("start queued Job Session", "session", sessionID, "error", err)
+				s.recordLaunchFailure(sessionID, err)
 			}
 		})
 }
@@ -764,6 +865,7 @@ func (s *Server) scheduleWorkflowRetry(created domain.CreateJobResponse, request
 	launchContext, cancel := context.WithCancel(context.Background())
 	launch := &backgroundJobLaunch{cancel: cancel, done: make(chan struct{}), startedAt: time.Now().UTC()}
 	s.jobLaunching[sessionID] = launch
+	delete(s.launchFailures, sessionID)
 	s.jobLaunchMu.Unlock()
 
 	go func() {

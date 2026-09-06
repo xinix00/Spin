@@ -709,7 +709,11 @@ function jobTemplate(job){return job.template_snapshot||byID(snapshot.workflow_t
 function sessionPreparation(session){return session?(snapshot.preparing||[]).find(item=>item.session_id===session.id):null;}
 function sessionPresenceHTML(session){if(!session)return '';
   const preparing=sessionPreparation(session);
-  if(preparing){const client=byID(snapshot.clients,preparing.client_id||session.client_id),since=preparing.started_at?elapsedSince(preparing.started_at):'';return `<small class="session-presence preparing">${icon('progress_activity')}${client?`Voorbereiden op ${esc(client.name)}`:'Runner zoeken'}${since?` · ${esc(since)}`:''}</small>`;}
+  if(preparing?.failure){const since=preparing.failure.at?elapsedSince(preparing.failure.at):'';return `<small class="session-presence offline" title="${esc(preparing.failure.error)}">${icon('replay')}Starten mislukt${since?` · ${esc(since)} geleden`:''} · probeert opnieuw · ${esc(preparing.failure.error)}</small>`;}
+  if(preparing){const client=byID(snapshot.clients,preparing.client_id||session.client_id),since=preparing.started_at?elapsedSince(preparing.started_at):'',progress=preparing.progress;
+    const stage=progress?({parents:'basisimage naar runner',start:'capsule starten',prepare:'voorbereiden'}[progress.stage]||progress.stage):'',bytes=progress?.total?` ${formatBytes(progress.current||0)} / ${formatBytes(progress.total)} (${Math.floor((progress.current||0)/progress.total*100)}%)`:'';
+    const doing=progress?` · ${stage}${bytes||(progress.message?` · ${progress.message}`:'')}`:'';
+    return `<small class="session-presence preparing">${icon('progress_activity')}${client?`Voorbereiden op ${esc(client.name)}`:'Runner zoeken'}${esc(doing)}${since?` · ${esc(since)}`:''}</small>`;}
   if(!session.client_id)return `<small class="session-presence">${session.status==='queued'?'Wacht op runner':'Nog geen runner gekoppeld'}</small>`;const client=byID(snapshot.clients,session.client_id);if(client&&['online','draining'].includes(client.status))return `<small class="session-presence">Runner ${esc(client.name)} · ${esc(client.draining?'draining':'online')}</small>`;const name=client?.name||session.client_id,lastSeen=client?.last_seen_at;return `<small class="session-presence offline">${icon('cloud_off')} Geen actieve client · ${esc(name)}${lastSeen?` · ${esc(elapsedSince(lastSeen))} offline`:''}</small>`;}
 
 function renderJobs(){

@@ -451,12 +451,16 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 		needsMaterialization = compositionIndex < 0 || snapshot.Compositions[compositionIndex].Runtime == nil || snapshot.Compositions[compositionIndex].Runtime.Status == "stopped"
 	}
 	if needsMaterialization {
-		materializeContext, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		materializeContext, cancel := s.launchContext(ctx, session.ID)
 		_, materializeErr := s.useCapsule(materializeContext, domain.UseRequest{Selector: "session:" + session.ID, Operator: operator})
 		cancel()
 		if materializeErr != nil {
-			if !errors.Is(materializeErr, context.Canceled) {
+			if ctx.Err() == nil {
+				if materializeContext.Err() != nil {
+					materializeErr = fmt.Errorf("launch stalled: nothing happened for %s: %w", launchStallTimeout, materializeErr)
+				}
 				s.logger.Warn("materialize workflow phase", "session", session.ID, "error", materializeErr)
+				s.recordLaunchFailure(session.ID, materializeErr)
 			}
 			return
 		}
