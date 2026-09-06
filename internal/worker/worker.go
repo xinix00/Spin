@@ -683,16 +683,117 @@ func newSnapshotExportProcess(ctx context.Context, exporter capsule.SnapshotExpo
 	return process
 }
 
-func newSnapshotImportProcess(ctx context.Context, importer capsule.SnapshotImporter, snapshot domain.CapsuleSnapshot) *snapshotTransferProcess {
+// snapshotImportProcess takes an image off the control-plane stream and loads
+// it. The bytes go to a spool file first: the runner's read loop writes them
+// and must never block, because the same loop answers the server's pings and
+// a stall there is a lost connection. Docker reads the whole spool once the
+// stream closes, at whatever pace it likes.
+type snapshotImportProcess struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	importer capsule.SnapshotImporter
+	snapshot domain.CapsuleSnapshot
+	spool    *os.File
+	closed   bool
+	done     chan struct{}
+
+	mu        sync.Mutex
+	execution capsule.Execution
+	err       error
+}
+
+func newSnapshotImportProcess(ctx context.Context, importer capsule.SnapshotImporter, snapshot domain.CapsuleSnapshot) *snapshotImportProcess {
 	processCtx, cancel := context.WithCancel(ctx)
-	reader, writer := io.Pipe()
-	process := &snapshotTransferProcess{writer: writer, cancel: cancel, done: make(chan struct{})}
+	process := &snapshotImportProcess{ctx: processCtx, cancel: cancel, importer: importer, snapshot: snapshot, done: make(chan struct{})}
+	spool, err := os.CreateTemp("", "spin-import-*.tar")
+	if err != nil {
+		process.finish(fmt.Errorf("spool snapshot import: %w", err))
+		return process
+	}
+	process.spool = spool
 	go func() {
-		err := importer.ImportSnapshot(processCtx, snapshot, reader)
-		_ = reader.CloseWithError(err)
-		process.finish(err)
+		<-processCtx.Done()
+		process.mu.Lock()
+		closed := process.closed
+		process.mu.Unlock()
+		if !closed {
+			// Abandoned before the stream closed: nothing will load it.
+			process.finish(processCtx.Err())
+		}
 	}()
 	return process
+}
+
+func (p *snapshotImportProcess) finish(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	select {
+	case <-p.done:
+		return
+	default:
+	}
+	p.err = err
+	if err != nil {
+		p.execution.ExitCode = 1
+		if p.execution.Output == "" {
+			p.execution.Output = err.Error()
+		}
+	}
+	if p.spool != nil {
+		_ = p.spool.Close()
+		_ = os.Remove(p.spool.Name())
+	}
+	close(p.done)
+}
+
+func (p *snapshotImportProcess) Read(target []byte) (int, error) {
+	<-p.done
+	return 0, io.EOF
+}
+
+func (p *snapshotImportProcess) Write(data []byte) (int, error) {
+	p.mu.Lock()
+	spool, closed := p.spool, p.closed
+	p.mu.Unlock()
+	if spool == nil || closed {
+		return 0, io.ErrClosedPipe
+	}
+	return spool.Write(data)
+}
+
+// Close ends the stream: everything has arrived, the load can begin.
+func (p *snapshotImportProcess) Close() error {
+	p.mu.Lock()
+	if p.closed || p.spool == nil {
+		p.mu.Unlock()
+		return nil
+	}
+	p.closed = true
+	spool := p.spool
+	p.mu.Unlock()
+	go func() {
+		err := p.load(spool)
+		p.finish(err)
+	}()
+	return nil
+}
+
+func (p *snapshotImportProcess) load(spool *os.File) error {
+	if err := spool.Sync(); err != nil {
+		return err
+	}
+	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	return p.importer.ImportSnapshot(p.ctx, p.snapshot, spool)
+}
+
+func (p *snapshotImportProcess) Wait() (capsule.Execution, error) {
+	<-p.done
+	p.cancel()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.execution, p.err
 }
 
 func (p *snapshotTransferProcess) finish(err error) {

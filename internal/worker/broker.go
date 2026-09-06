@@ -98,6 +98,23 @@ func (p *runnerPeer) detach(generation uint64) bool {
 	return true
 }
 
+// failBulkStreams ends every one-shot transfer on a peer whose connection
+// dropped; their bytes cannot be replayed, so waiting on is pointless.
+func (p *runnerPeer) failBulkStreams(reason string) {
+	p.mu.Lock()
+	var failed []*remoteProcess
+	for id, stream := range p.streams {
+		if stream.bulk {
+			failed = append(failed, stream)
+			delete(p.streams, id)
+		}
+	}
+	p.mu.Unlock()
+	for _, stream := range failed {
+		stream.finish(nil, reason)
+	}
+}
+
 func (p *runnerPeer) enqueue(message wireMessage) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -264,6 +281,7 @@ func (b *Broker) Handler(w http.ResponseWriter, r *http.Request) {
 	if peer.detach(generation) {
 		_, _ = b.store.SetClientStatus(client.ID, "offline")
 		b.logger.Info("runner disconnected; affinity retained", "client_id", client.ID, "error", readErr)
+		peer.failBulkStreams("runner connection lost during the transfer")
 	}
 }
 

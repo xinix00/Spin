@@ -280,10 +280,16 @@ func (e *RemoteEngine) replicateSnapshot(ctx context.Context, artifact domain.Ar
 		return nil
 	}
 	importProcess, err := e.broker.openStream(ctx, targetID, methodImportSnapshot, snapshotPayload{Snapshot: artifact.Snapshot})
+	if err == nil {
+		importProcess.bulk = true
+	}
 	if err != nil {
 		return err
 	}
 	exportProcess, err := e.broker.openStream(ctx, sourceID, methodExportSnapshot, snapshotPayload{Snapshot: artifact.Snapshot})
+	if err == nil {
+		exportProcess.bulk = true
+	}
 	if err != nil {
 		_ = importProcess.Close()
 		_, _ = importProcess.Wait()
@@ -383,9 +389,13 @@ func (e *RemoteEngine) ensureSnapshotOn(ctx context.Context, artifact domain.Art
 			total = info.Size
 		}
 	}
+	process.bulk = true
 	capsule.ReportProgress(ctx, "parents", "Basisimage uit het archief naar de runner", 0, total)
 	restoreErr := e.archive.RestoreSnapshot(ctx, artifact.Snapshot, &progressWriter{Writer: process, total: total, ctx: ctx})
 	closeErr := process.Close()
+	if restoreErr == nil && closeErr == nil {
+		capsule.ReportProgress(ctx, "load", "Runner laadt de image in Docker", 0, 0)
+	}
 	execution, waitErr := process.Wait()
 	if err := errors.Join(restoreErr, closeErr, waitErr, executionError("snapshot import", execution)); err != nil {
 		return errors.Join(replicaErr, err)
@@ -516,6 +526,11 @@ type remoteProcess struct {
 	data     chan []byte
 	done     chan struct{}
 	doneOnce sync.Once
+	// bulk marks a one-shot transfer (an image on its way to a runner). Its
+	// stream messages are not replayed, so a lost connection means lost
+	// bytes: the transfer fails at once rather than waiting for an end that
+	// cannot come. A PTY stream, by contrast, survives the reconnect.
+	bulk bool
 
 	readMu sync.Mutex
 	buffer bytes.Buffer
