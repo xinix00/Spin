@@ -264,6 +264,9 @@ type oauthToken struct {
 	TokenType    string `json:"token_type"`
 	Scope        string `json:"scope"`
 	ExpiresIn    int64  `json:"expires_in"`
+	// GitHub answers a rejected grant with HTTP 200 and these two fields.
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
 }
 
 func (m *gitOAuthManager) exchange(ctx context.Context, providerID, code string, attempt gitOAuthAttempt, grant string) (oauthToken, error) {
@@ -300,6 +303,13 @@ func (m *gitOAuthManager) exchange(ctx context.Context, providerID, code string,
 	var token oauthToken
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&token); err != nil {
 		return oauthToken{}, err
+	}
+	if token.Error != "" {
+		reason := token.Error
+		if token.ErrorDescription != "" {
+			reason += ": " + token.ErrorDescription
+		}
+		return oauthToken{}, fmt.Errorf("OAuth provider rejected the %s grant (%s)", grant, reason)
 	}
 	if strings.TrimSpace(token.AccessToken) == "" {
 		return oauthToken{}, errors.New("OAuth provider returned no access token")
@@ -411,7 +421,7 @@ func (s *Server) gitAccountForCheckout(ctx context.Context, accountID, operator 
 	}
 	token, err := s.gitOAuth.exchange(ctx, account.Provider, account.RefreshToken, gitOAuthAttempt{}, "refresh_token")
 	if err != nil {
-		return domain.GitAccount{}, fmt.Errorf("refresh Git OAuth token: %w", err)
+		return domain.GitAccount{}, fmt.Errorf("refresh Git OAuth token for %s:%s: %w; reconnect the account under Connections", account.Provider, account.Login, err)
 	}
 	account.AccessToken = token.AccessToken
 	if token.RefreshToken != "" {

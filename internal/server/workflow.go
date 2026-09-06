@@ -453,10 +453,11 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 	if needsMaterialization {
 		materializeContext, cancel := s.launchContext(ctx, session.ID)
 		_, materializeErr := s.useCapsule(materializeContext, domain.UseRequest{Selector: "session:" + session.ID, Operator: operator})
+		stalled := materializeContext.Err() != nil
 		cancel()
 		if materializeErr != nil {
 			if ctx.Err() == nil {
-				if materializeContext.Err() != nil {
+				if stalled {
 					materializeErr = fmt.Errorf("launch stalled: nothing happened for %s: %w", launchStallTimeout, materializeErr)
 				}
 				s.logger.Warn("materialize workflow phase", "session", session.ID, "error", materializeErr)
