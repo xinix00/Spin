@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -210,14 +212,27 @@ type Broker struct {
 	cursor    int
 	available chan struct{}
 	listeners []func()
-	nextID    atomic.Uint64
+	// instance makes every request ID unique to this server incarnation. A
+	// runner answers a repeated ID from its cache of earlier responses, which
+	// is what makes replay after a reconnect safe; a restarted server that
+	// counted from one again would be handed answers to somebody else's
+	// questions.
+	instance string
+	nextID   atomic.Uint64
 }
 
 func NewBroker(st *store.Store, logger *slog.Logger) *Broker {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Broker{store: st, logger: logger, peers: map[string]*runnerPeer{}, available: make(chan struct{}, 1)}
+	instance := make([]byte, 6)
+	_, _ = rand.Read(instance)
+	return &Broker{store: st, logger: logger, peers: map[string]*runnerPeer{}, available: make(chan struct{}, 1), instance: hex.EncodeToString(instance)}
+}
+
+// requestID returns an ID no other server incarnation has used.
+func (b *Broker) requestID(prefix string) string {
+	return fmt.Sprintf("%s_%s_%x", prefix, b.instance, b.nextID.Add(1))
 }
 
 func (b *Broker) Handler(w http.ResponseWriter, r *http.Request) {
@@ -494,7 +509,7 @@ func (b *Broker) call(ctx context.Context, affinity, method string, request, res
 	if err != nil {
 		return nil, err
 	}
-	id := fmt.Sprintf("rpc_%x", b.nextID.Add(1))
+	id := b.requestID("rpc")
 	message := wireMessage{Version: ProtocolVersion, Type: messageRequest, ID: id, Method: method, Payload: payload}
 	result := make(chan wireMessage, 1)
 	peer.mu.Lock()

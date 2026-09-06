@@ -100,3 +100,23 @@ func TestBulkStreamsFailWhenThePeerDisconnects(t *testing.T) {
 }
 
 func osStat(name string) (os.FileInfo, error) { return os.Stat(name) }
+
+// Request IDs must never repeat across server incarnations: a runner answers
+// a repeated ID from its cache of earlier responses, so a restarted server
+// counting from one again would receive answers to other requests.
+func TestBrokerRequestIDsAreUniquePerIncarnation(t *testing.T) {
+	first, second := NewBroker(nil, nil), NewBroker(nil, nil)
+	seen := map[string]bool{}
+	for _, broker := range []*Broker{first, second} {
+		for range 3 {
+			id := broker.requestID("rpc")
+			if seen[id] {
+				t.Fatalf("request ID %s repeated across brokers", id)
+			}
+			seen[id] = true
+		}
+	}
+	if first.requestID("str") == second.requestID("str") {
+		t.Fatal("two server incarnations produced the same stream ID")
+	}
+}

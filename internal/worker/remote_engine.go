@@ -486,7 +486,7 @@ func (b *Broker) openStream(ctx context.Context, affinity, method string, reques
 	if err != nil {
 		return nil, err
 	}
-	id := fmt.Sprintf("str_%x", b.nextID.Add(1))
+	id := b.requestID("str")
 	process := newRemoteProcess(peer, id)
 	message := wireMessage{Version: ProtocolVersion, Type: messageRequest, ID: id, Method: method, Payload: payload}
 	result := make(chan wireMessage, 1)
