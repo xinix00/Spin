@@ -28,7 +28,7 @@ import (
 // created for that recording), CANCEL RECORD stops a running start instead of
 // being refused, and a start that fails cancels its recording.
 
-const startAnswerWait = 15 * time.Second
+const startAnswerWait = 3 * time.Second
 
 const startResultLifetime = 15 * time.Minute
 

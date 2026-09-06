@@ -600,16 +600,23 @@ async function execute(line){
     startTerminalCommand(recording,line);return;
   }
   print('command',line);
+  // Show that the work is under way the moment the command leaves, not once
+  // the server answers: END RECORD and RECORD/EDIT are jobs that may take a
+  // few seconds before their first status comes back.
+  const verb=line.split(/\s+/,1)[0].toUpperCase();
+  if(recording&&verb==='END'){sealState={recording_id:recording.id,status:'running',stage:'commit',message:'Capsule wordt gecommit op de runner'};renderRecording();printProgress(sealProgressText(sealState));}
+  else if(verb==='RECORD'||verb==='EDIT'){const target=(line.split(/\s+/)[1]||'').toLowerCase();printProgress(`Starten · ${target||'opname'} · opname aanmaken en runner kiezen`);const status=document.getElementById('terminal-status');status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>STARTING ${esc(target)}</span>`;}
   try{
     const response=await api('/api/commands',{method:'POST',body:JSON.stringify({operator:currentOperator(),line})});
     print('output',response.message);
     if(response.seal&&response.seal.status==='running'){await refresh(true);await followSeal(response.seal);return;}
     if(response.start&&response.start.status==='running'){await refresh(true);await followStart(response.start);return;}
+    sealState=null;
     if(response.output)print(response.exit_code==null||response.exit_code===0?'output':'error',response.output);
     else if(response.exit_code!=null)print(response.exit_code===0?'system':'error',`exit ${response.exit_code} · geen stdout/stderr ontvangen`);
     if(response.artifacts?.length)response.artifacts.forEach(artifact=>print('output',`${artifactSelector(artifact)}/${artifact.profile} · ${artifact.scope} · ${artifact.snapshot_digest.slice(0,20)}…`));
     await refresh(true);
-  }catch(error){print('error',error.message||error);showError(error);}
+  }catch(error){sealState=null;print('error',error.message||error);showError(error);await refresh(true).catch(()=>{});}
 }
 
 function render(){

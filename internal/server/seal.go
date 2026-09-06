@@ -18,8 +18,9 @@ import (
 // the work runs detached, the command answers with the artifact when it is
 // quick and with progress when it is not, and the browser follows the rest.
 
-// sealAnswerWait is how long END RECORD waits before answering with progress.
-const sealAnswerWait = 15 * time.Second
+// sealAnswerWait is how long END RECORD waits before answering with progress;
+// short, so the browser shows real progress within seconds.
+const sealAnswerWait = 3 * time.Second
 
 // sealResultLifetime keeps a finished seal's status around for late pollers.
 const sealResultLifetime = 15 * time.Minute
