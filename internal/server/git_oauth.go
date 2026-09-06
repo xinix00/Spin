@@ -243,6 +243,10 @@ func (s *Server) finishGitOAuth(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/?git_oauth=failed#git", http.StatusFound)
 		return
 	}
+	s.logger.Info("Git account connected", "provider", providerID, "login", account.Login, "credential_scope", account.CredentialScope, "operator", attempt.Operator)
+	// A phase that was waiting on exactly this credential gets its launch now
+	// rather than at the next sweep.
+	go s.launchQueuedWorkflowPhases("git account connected")
 	http.Redirect(w, r, "/?git_oauth=connected#git", http.StatusFound)
 }
 
@@ -421,7 +425,7 @@ func (s *Server) gitAccountForCheckout(ctx context.Context, accountID, operator 
 	}
 	token, err := s.gitOAuth.exchange(ctx, account.Provider, account.RefreshToken, gitOAuthAttempt{}, "refresh_token")
 	if err != nil {
-		return domain.GitAccount{}, fmt.Errorf("refresh Git OAuth token for %s:%s: %w; reconnect the account under Connections", account.Provider, account.Login, err)
+		return domain.GitAccount{}, fmt.Errorf("refresh Git OAuth token for %s:%s (%s scope, connected %s): %w; reconnect that account under Connections with the same scope", account.Provider, account.Login, account.CredentialScope, account.UpdatedAt.Format("2006-01-02 15:04 MST"), err)
 	}
 	account.AccessToken = token.AccessToken
 	if token.RefreshToken != "" {

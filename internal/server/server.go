@@ -1045,6 +1045,9 @@ func (s *Server) createGitAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	account, err := s.store.CreateGitAccount(req)
+	if err == nil {
+		go s.launchQueuedWorkflowPhases("git account added")
+	}
 	if err != nil {
 		writeError(w, err)
 		return
