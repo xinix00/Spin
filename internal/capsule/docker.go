@@ -436,6 +436,22 @@ func (d *Docker) ExportSnapshot(ctx context.Context, snapshot domain.CapsuleSnap
 	return nil
 }
 
+// HasSnapshot reports whether this daemon holds the image the snapshot names,
+// with the digest it was sealed with.
+func (d *Docker) HasSnapshot(ctx context.Context, snapshot domain.CapsuleSnapshot) (bool, error) {
+	if snapshot.Driver != "docker" || strings.TrimSpace(snapshot.Ref) == "" {
+		return false, nil
+	}
+	id, _, err := d.run(ctx, "image", "inspect", "--format", "{{.Id}}", snapshot.Ref)
+	if err != nil || strings.TrimSpace(id) == "" {
+		return false, nil
+	}
+	if expected := strings.TrimSpace(snapshot.Digest); expected != "" && strings.TrimSpace(id) != expected {
+		return false, nil
+	}
+	return true, nil
+}
+
 func (d *Docker) ImportSnapshot(ctx context.Context, snapshot domain.CapsuleSnapshot, source io.Reader) error {
 	if snapshot.Driver != "docker" || strings.TrimSpace(snapshot.Ref) == "" {
 		return errors.New("snapshot is not an importable Docker image")

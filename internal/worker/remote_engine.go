@@ -14,6 +14,7 @@ import (
 
 	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
+	"easyacp/internal/persistence"
 )
 
 // RemoteEngine preserves the existing capsule.Engine boundary while moving
@@ -74,6 +75,7 @@ func (e *RemoteEngine) StartRecording(ctx context.Context, recording domain.Reco
 		}
 		parent.Snapshot.ReplicaClientIDs = append(parent.Snapshot.ReplicaClientIDs, target.id)
 	}
+	capsule.ReportProgress(ctx, "start", "Capsule starten op runner "+target.name, 0, 0)
 	var runtime domain.CapsuleRuntime
 	peer, err := e.broker.call(ctx, target.id, methodStartRecording, startRecordingPayload{Recording: recording, Parents: parents}, &runtime)
 	if err != nil {
@@ -292,7 +294,42 @@ func (e *RemoteEngine) replicateSnapshot(ctx context.Context, artifact domain.Ar
 	return err
 }
 
+// runnerHasSnapshot asks the target whether it already holds the image. The
+// durable placement may be stale, after a restore for instance, and asking is
+// far cheaper than shipping a gigabyte that is already there.
+func (e *RemoteEngine) runnerHasSnapshot(ctx context.Context, snapshot domain.CapsuleSnapshot, targetID string) bool {
+	var presence presenceResult
+	if _, err := e.broker.call(ctx, targetID, methodHasSnapshot, snapshotPayload{Snapshot: snapshot}, &presence); err != nil {
+		return false
+	}
+	return presence.Present
+}
+
+// snapshotSizer is what an archive offers beyond the capsule interface: the
+// size of a snapshot, so a restore can report how far it is.
+type snapshotSizer interface {
+	SnapshotInfo(context.Context, domain.CapsuleSnapshot) (persistence.BlobInfo, error)
+}
+
+type progressWriter struct {
+	io.Writer
+	written int64
+	total   int64
+	ctx     context.Context
+}
+
+func (w *progressWriter) Write(p []byte) (int, error) {
+	n, err := w.Writer.Write(p)
+	w.written += int64(n)
+	capsule.ReportProgress(w.ctx, "parents", "Basisimage uit het archief naar de runner", w.written, w.total)
+	return n, err
+}
+
 func (e *RemoteEngine) ensureSnapshotOn(ctx context.Context, artifact domain.Artifact, targetID string) error {
+	if e.runnerHasSnapshot(ctx, artifact.Snapshot, targetID) {
+		_, err := e.broker.store.AddSnapshotReplica(artifact.ID, targetID)
+		return err
+	}
 	var replicaErr error
 	connectedSource := e.broker.connectedSnapshotSource(artifact.Snapshot, targetID)
 	if e.archive == nil || connectedSource != "" {
@@ -323,7 +360,14 @@ func (e *RemoteEngine) ensureSnapshotOn(ctx context.Context, artifact domain.Art
 	if err != nil {
 		return errors.Join(replicaErr, err)
 	}
-	restoreErr := e.archive.RestoreSnapshot(ctx, artifact.Snapshot, process)
+	var total int64
+	if sizer, ok := e.archive.(snapshotSizer); ok {
+		if info, err := sizer.SnapshotInfo(ctx, artifact.Snapshot); err == nil {
+			total = info.Size
+		}
+	}
+	capsule.ReportProgress(ctx, "parents", "Basisimage uit het archief naar de runner", 0, total)
+	restoreErr := e.archive.RestoreSnapshot(ctx, artifact.Snapshot, &progressWriter{Writer: process, total: total, ctx: ctx})
 	closeErr := process.Close()
 	execution, waitErr := process.Wait()
 	if err := errors.Join(restoreErr, closeErr, waitErr, executionError("snapshot import", execution)); err != nil {

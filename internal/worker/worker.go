@@ -484,6 +484,17 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 			return nil, false, errors.New("runner engine cannot remove snapshots")
 		}
 		return nil, false, remover.RemoveSnapshot(ctx, payload.Snapshot)
+	case methodHasSnapshot:
+		var payload snapshotPayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		checker, ok := w.engine.(capsule.SnapshotChecker)
+		if !ok {
+			return presenceResult{}, false, nil
+		}
+		present, err := checker.HasSnapshot(ctx, payload.Snapshot)
+		return presenceResult{Present: present}, false, err
 	case methodArchiveSnapshot:
 		var payload snapshotPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {

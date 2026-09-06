@@ -173,3 +173,8 @@ func (u *SnapshotUpload) Close() error {
 	_, err := u.database.db.ExecContext(context.Background(), `DELETE FROM spin_objects WHERE id = ?`, u.objectID)
 	return err
 }
+
+// SnapshotInfo describes an archived snapshot: its size and content digest.
+func (s *SQLite) SnapshotInfo(ctx context.Context, snapshot domain.CapsuleSnapshot) (BlobInfo, error) {
+	return s.BlobInfo(ctx, snapshotRef(snapshot))
+}

@@ -20,10 +20,18 @@ import (
 )
 
 type fakeRunnerEngine struct {
-	name   string
-	mu     sync.Mutex
-	calls  []string
-	images map[string][]byte
+	name    string
+	mu      sync.Mutex
+	calls   []string
+	images  map[string][]byte
+	imports int
+}
+
+// HasSnapshot answers the way a Docker daemon would: the image is there or not.
+func (e *fakeRunnerEngine) HasSnapshot(_ context.Context, snapshot domain.CapsuleSnapshot) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.images[snapshot.Ref]) > 0, nil
 }
 
 func (e *fakeRunnerEngine) Info() domain.CapsuleEngineInfo {
@@ -98,6 +106,7 @@ func (e *fakeRunnerEngine) ImportSnapshot(_ context.Context, snapshot domain.Cap
 		return err
 	}
 	e.mu.Lock()
+	e.imports++
 	if e.images == nil {
 		e.images = map[string][]byte{}
 	}
@@ -360,4 +369,67 @@ func clientStatus(st *store.Store, id string) string {
 		}
 	}
 	return fmt.Sprintf("missing:%s", id)
+}
+
+// After a restore the placement on a snapshot names runners that no longer
+// exist. The runner that holds the image is asked before anything is shipped,
+// so a stale record costs one question, not a gigabyte.
+func TestRemoteEngineAsksTheRunnerBeforeShippingAnImageItAlreadyHolds(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := persistence.Open(t.TempDir()+"/spin.db", persistence.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	broker := worker.NewBroker(st, logger)
+	remote := worker.NewRemoteEngine(broker, database)
+	const token = "runner-test-token-with-enough-entropy"
+	handler := spinserver.NewWithOptions(st, logger, remote, spinserver.ServerOptions{
+		DisableAuthentication: true, WorkerToken: token, RunnerBroker: broker,
+	}).Handler()
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	target := &fakeRunnerEngine{name: "same-laptop", images: map[string][]byte{"fake:parent": []byte("already here")}}
+	runnerCtx, cancelRunner := context.WithCancel(context.Background())
+	defer cancelRunner()
+	runWorker(t, runnerCtx, worker.Config{ServerURL: server.URL, InstanceID: "laptop", Name: "Laptop", Token: token, Engine: target})
+	waitFor(t, func() bool { return onlineClients(st) == 1 })
+
+	recording, err := st.CreateRecording(domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "parent", Scope: domain.ScopeGlobal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := domain.CapsuleSnapshot{Driver: "fake", ClientID: "cli_from_before_the_restore", Ref: "fake:parent", Digest: "sha256:parent", Restorable: true}
+	parent, err := st.EndRecording(recording.ID, domain.EndRecordingRequest{Actor: "derek", Snapshot: snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StoreSnapshot(context.Background(), snapshot, bytes.NewReader([]byte("archived copy"))); err != nil {
+		t.Fatal(err)
+	}
+
+	callCtx, cancelCall := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCall()
+	runtime, err := remote.StartRecording(callCtx, domain.Recording{ID: "derived"}, []domain.Artifact{parent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target.mu.Lock()
+	imports, kept := target.imports, string(target.images["fake:parent"])
+	target.mu.Unlock()
+	if imports != 0 || kept != "already here" {
+		t.Fatalf("image was shipped anyway: imports=%d image=%q", imports, kept)
+	}
+	stored, err := st.Artifact(parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Snapshot.ReplicaClientIDs) != 1 || stored.Snapshot.ReplicaClientIDs[0] != runtime.ClientID {
+		t.Fatalf("replica after asking = %+v, want %s", stored.Snapshot.ReplicaClientIDs, runtime.ClientID)
+	}
 }

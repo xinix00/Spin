@@ -41,6 +41,7 @@ const (
 	methodExportSnapshot    = "snapshot.export"
 	methodImportSnapshot    = "snapshot.import"
 	methodArchiveSnapshot   = "snapshot.archive"
+	methodHasSnapshot       = "snapshot.has"
 )
 
 // wireMessage is the single versioned control and stream envelope used in
@@ -123,6 +124,11 @@ type acceptWorkspacePayload struct {
 
 type snapshotPayload struct {
 	Snapshot domain.CapsuleSnapshot `json:"snapshot"`
+}
+
+// presenceResult answers snapshot.has.
+type presenceResult struct {
+	Present bool `json:"present"`
 }
 
 // archiveResult reports what the runner put in the central archive.

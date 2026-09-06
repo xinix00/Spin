@@ -169,6 +169,32 @@ type SnapshotImporter interface {
 	ImportSnapshot(context.Context, domain.CapsuleSnapshot, io.Reader) error
 }
 
+// SnapshotChecker reports whether a runner already holds a snapshot locally.
+// Durable placement records can go stale, after a restore for instance, and
+// asking is far cheaper than shipping a gigabyte that is already there.
+type SnapshotChecker interface {
+	HasSnapshot(context.Context, domain.CapsuleSnapshot) (bool, error)
+}
+
+// Progress receives stage updates from slow engine work, so a caller that
+// answered early can show what the runner is doing. Current and total are
+// bytes when known and zero otherwise.
+type Progress func(stage, message string, current, total int64)
+
+type progressKey struct{}
+
+// WithProgress attaches a progress reporter to ctx.
+func WithProgress(ctx context.Context, report Progress) context.Context {
+	return context.WithValue(ctx, progressKey{}, report)
+}
+
+// ReportProgress calls the reporter attached to ctx, if any.
+func ReportProgress(ctx context.Context, stage, message string, current, total int64) {
+	if report, ok := ctx.Value(progressKey{}).(Progress); ok && report != nil {
+		report(stage, message, current, total)
+	}
+}
+
 // SnapshotArchive is the server-owned source of truth for immutable Capsule
 // snapshots. Docker daemons are caches: a runner may disappear without taking
 // an Artifact with it.
