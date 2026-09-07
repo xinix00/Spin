@@ -113,6 +113,8 @@ De Job Goal wordt altijd geïnjecteerd. Een fase ontvangt daarnaast uitsluitend 
 
 Per fase kies je optioneel een **model** en een **reasoning-niveau**. Spin zet die vóór de eerste prompt op de ACP-sessie van de agent (`session/set_config_option` met `model` en `reasoning_effort`), zodat een routinestap een klein model kan draaien en een ontwerpstap een groot, zonder aparte lagen per model. Welke waarden een agent aanbiedt, staat op zijn laag: **Opties ophalen** op een ACP-laag onder Environments start de agent één keer in een wegwerp-capsule, leest de `configOptions` van `session/new` en bewaart ze; iedere gestarte Session ververst ze gratis. De Template-editor biedt die waarden aan. Een waarde die de agent weigert, houdt de fase in de wachtrij met de reden op de kaart.
 
+De capsule is de sandbox: een wegwerpcontainer zonder host en zonder Git-credentials, waarvan alles verdwijnt wat ACCEPT niet tot een commit vouwt. Spin zet de ACP-sessie daarom in de full-access-modus van de agent zodra die er een aanbiedt (`session/set_mode`, bij codex-acp `agent-full-access`); een tweede sandbox binnen de container zou alleen netwerk, `/tmp` en parallelle builds kosten. `CODEX_CONFIG` of `config.toml` zijn daarvoor niet meer nodig.
+
 Een bericht dat je in de chat stuurt terwijl de agent werkt, gaat bij een agent die dat aanbiedt (codex-acp: `_session/steering`) direct de lopende beurt in; anders wacht het als volgende beurt.
 
 ### Test-app: de app draaien op de workspace van een stap

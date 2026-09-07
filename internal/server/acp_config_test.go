@@ -156,3 +156,29 @@ func TestAgentOptionsFoldSessionConfigOptions(t *testing.T) {
 		t.Fatalf("folded options = %+v", folded)
 	}
 }
+
+// Spin runs the agent in its full-access mode when it offers one: the
+// capsule is the sandbox.
+func TestFullAccessModeIsChosenWhenOffered(t *testing.T) {
+	modes := &acpSessionModes{CurrentModeID: "agent"}
+	for _, id := range []string{"read-only", "agent", "agent-full-access"} {
+		modes.AvailableModes = append(modes.AvailableModes, struct {
+			ID string `json:"id"`
+		}{ID: id})
+	}
+	if mode, ok := fullAccessMode(modes, nil); !ok || mode != "agent-full-access" {
+		t.Fatalf("fullAccessMode = %q, %v", mode, ok)
+	}
+	modes.CurrentModeID = "agent-full-access"
+	if _, ok := fullAccessMode(modes, nil); ok {
+		t.Fatal("switching was requested although the mode is already full access")
+	}
+	var options []acpConfigOption
+	_ = json.Unmarshal([]byte(`[{"id":"mode","currentValue":"agent","options":[{"value":"read-only"},{"value":"agent-full-access"}]}]`), &options)
+	if mode, ok := fullAccessMode(nil, options); !ok || mode != "agent-full-access" {
+		t.Fatalf("fullAccessMode from config options = %q, %v", mode, ok)
+	}
+	if _, ok := fullAccessMode(nil, nil); ok {
+		t.Fatal("an agent without modes was switched")
+	}
+}

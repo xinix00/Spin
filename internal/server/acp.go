@@ -555,6 +555,7 @@ func (s *Server) openACP(composition domain.Composition, operator string, mcpSer
 	var newSession struct {
 		SessionID     string            `json:"sessionId"`
 		ConfigOptions []acpConfigOption `json:"configOptions"`
+		Modes         *acpSessionModes  `json:"modes"`
 	}
 	if err := json.Unmarshal(created, &newSession); err != nil || strings.TrimSpace(newSession.SessionID) == "" {
 		active.close()
@@ -567,7 +568,60 @@ func (s *Server) openACP(composition domain.Composition, operator string, mcpSer
 	active.agentSessionID = newSession.SessionID
 	active.configOptions = newSession.ConfigOptions
 	active.mu.Unlock()
+	// The capsule is the sandbox: a throwaway container without the host,
+	// without Git credentials, and with everything the agent does discarded
+	// unless ACCEPT folds it into a commit. A second sandbox inside it
+	// (codex-acp starts in "agent", workspace-write without network) only
+	// takes away network, /tmp and parallel builds, so the session runs in
+	// the agent's full-access mode when it offers one.
+	if modeID, ok := fullAccessMode(newSession.Modes, newSession.ConfigOptions); ok {
+		modeContext, modeCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		_, err := active.request(modeContext, "session/set_mode", map[string]any{"sessionId": newSession.SessionID, "modeId": modeID})
+		modeCancel()
+		if err != nil {
+			s.logger.Warn("set ACP session mode", "mode", modeID, "error", err)
+		}
+	}
 	return active, nil
+}
+
+// acpSessionModes is the mode state an agent reports at session/new.
+type acpSessionModes struct {
+	CurrentModeID  string `json:"currentModeId"`
+	AvailableModes []struct {
+		ID string `json:"id"`
+	} `json:"availableModes"`
+}
+
+// fullAccessMode finds the agent's full-access mode, from the session mode
+// state or the "mode" config option, and reports whether switching to it is
+// needed.
+func fullAccessMode(modes *acpSessionModes, options []acpConfigOption) (string, bool) {
+	current, available := "", []string{}
+	if modes != nil {
+		current = modes.CurrentModeID
+		for _, mode := range modes.AvailableModes {
+			available = append(available, mode.ID)
+		}
+	}
+	for _, option := range options {
+		if option.ID != "mode" {
+			continue
+		}
+		var value string
+		if json.Unmarshal(option.CurrentValue, &value) == nil && current == "" {
+			current = value
+		}
+		for _, candidate := range option.Options {
+			available = append(available, candidate.Value)
+		}
+	}
+	for _, id := range available {
+		if strings.Contains(id, "full-access") || strings.Contains(id, "full_access") {
+			return id, id != current
+		}
+	}
+	return "", false
 }
 
 // agentOptions folds the agent's config options into what a layer keeps.
