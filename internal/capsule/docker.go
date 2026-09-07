@@ -470,23 +470,33 @@ if ! git ls-remote --exit-code --heads origin "$SPIN_GIT_TARGET" >/dev/null 2>&1
     git ls-remote --exit-code --heads origin "$SPIN_GIT_TARGET" >/dev/null
   fi
 fi
-# The agent must be able to see what the Job did before this phase and
-# where the Job will land: the base branch as a remote ref, and the Job
-# branch with its history since that base (falling back to a bounded depth
-# when the remote cannot exclude by ref). Both are shallow; nothing older
-# than the Job is pulled in.
-git fetch -q --depth=1 origin "+refs/heads/${SPIN_GIT_BOOTSTRAP}:refs/remotes/origin/${SPIN_GIT_BOOTSTRAP}" || true
-git fetch -q --shallow-exclude="$SPIN_GIT_BOOTSTRAP" origin "+refs/heads/${SPIN_GIT_BASE}:refs/remotes/origin/${SPIN_GIT_BASE}" 2>/dev/null \
-  || git fetch -q --depth=100 origin "+refs/heads/${SPIN_GIT_BASE}:refs/remotes/origin/${SPIN_GIT_BASE}"
-# Branches given as context (the Job this one continues) come along as
-# remote refs, with their commits since the base, read-only.
-for SPIN_CONTEXT_REF in ${SPIN_GIT_CONTEXT:-}; do
-  git fetch -q --shallow-exclude="$SPIN_GIT_BOOTSTRAP" origin "+refs/heads/${SPIN_CONTEXT_REF}:refs/remotes/origin/${SPIN_CONTEXT_REF}" 2>/dev/null \
-    || git fetch -q --depth=100 origin "+refs/heads/${SPIN_CONTEXT_REF}:refs/remotes/origin/${SPIN_CONTEXT_REF}" || true
-done
+# A workspace whose Session branch exists is complete: reuse it as it is.
+# Shallow fetches must not be repeated into an existing shallow clone (git
+# refuses with "shallow file has changed"), so a half-made workspace, from
+# a launch that failed before the branch existed, starts over instead.
 if git show-ref --verify --quiet "refs/heads/$SPIN_GIT_HEAD"; then
   git checkout -q "$SPIN_GIT_HEAD"
 else
+  if [ -e .git/shallow ] || [ -n "$(git for-each-ref refs/remotes 2>/dev/null)" ]; then
+    # Nothing of value exists yet: the Session branch was never made.
+    find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    git init -q
+    git remote add origin "$SPIN_GIT_REMOTE"
+  fi
+  # The agent must be able to see what the Job did before this phase and
+  # where the Job will land: the base branch as a remote ref, and the Job
+  # branch with its history since that base (falling back to a bounded
+  # depth when the remote cannot exclude by ref). Both are shallow; nothing
+  # older than the Job is pulled in.
+  git fetch -q --depth=1 origin "+refs/heads/${SPIN_GIT_BOOTSTRAP}:refs/remotes/origin/${SPIN_GIT_BOOTSTRAP}" || true
+  git fetch -q --shallow-exclude="$SPIN_GIT_BOOTSTRAP" origin "+refs/heads/${SPIN_GIT_BASE}:refs/remotes/origin/${SPIN_GIT_BASE}" 2>/dev/null \
+    || git fetch -q --depth=100 origin "+refs/heads/${SPIN_GIT_BASE}:refs/remotes/origin/${SPIN_GIT_BASE}"
+  # Branches given as context (the Job this one continues) come along as
+  # remote refs, with their commits since the base, read-only.
+  for SPIN_CONTEXT_REF in ${SPIN_GIT_CONTEXT:-}; do
+    git fetch -q --shallow-exclude="$SPIN_GIT_BOOTSTRAP" origin "+refs/heads/${SPIN_CONTEXT_REF}:refs/remotes/origin/${SPIN_CONTEXT_REF}" 2>/dev/null \
+      || git fetch -q --depth=100 origin "+refs/heads/${SPIN_CONTEXT_REF}:refs/remotes/origin/${SPIN_CONTEXT_REF}" || true
+  done
   git checkout -q -B "$SPIN_GIT_HEAD" "refs/remotes/origin/${SPIN_GIT_BASE}"
 fi
 git config spin.targetRef "$SPIN_GIT_TARGET"
