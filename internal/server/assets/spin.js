@@ -233,9 +233,10 @@ function upsertMeta(key,title,value){
 }
 function renderUsage(update){
   const used=update.used??update.tokensUsed,size=update.size??update.contextWindow,cost=update.cost;const parts=[];
-  if(used!=null&&size!=null)parts.push(`${Number(used).toLocaleString()} / ${Number(size).toLocaleString()}`);else if(used!=null)parts.push(`${Number(used).toLocaleString()} tokens`);
+  const compact=value=>{const n=Number(value);return n>=1e6?`${(n/1e6).toFixed(1)}M`:n>=1e3?`${Math.round(n/1e3)}k`:String(n);};
+  if(used!=null&&size!=null)parts.push(`${compact(used)} / ${compact(size)}`);else if(used!=null)parts.push(`${compact(used)} tokens`);
   if(cost?.amount!=null)parts.push(`${cost.amount} ${cost.currency||''}`.trim());else if(typeof cost==='number')parts.push(String(cost));
-  const badge=document.getElementById('chat-usage');badge.textContent=parts.join(' · ');badge.hidden=!parts.length;
+  const badge=document.getElementById('chat-usage');badge.textContent=parts.join(' · ');badge.title=used!=null&&size!=null?`${Number(used).toLocaleString()} van ${Number(size).toLocaleString()} tokens gebruikt`:'';badge.hidden=!parts.length;
 }
 function handleACPEvent(event){
   chatEventAt=event.at||new Date().toISOString();if(event.type!=='ready')chatState.lastActivity=chatEventAt;
@@ -253,7 +254,7 @@ function renderChatBusy(){const ready=chatState.socket?.readyState===WebSocket.O
   const status=document.getElementById('chat-status'),label=status?.querySelector('.chat-live-label');if(status)status.className=`chat-live ${chatState.busy?'busy':'ready'}`;
   // While the agent works, say how long ago it last did anything: a turn
   // can be silent for minutes, and silence for much longer is worth seeing.
-  const activity=()=>{if(!label)return;if(!chatState.busy){label.textContent='ready';return;}const since=chatState.lastActivity?Math.max(0,Math.round((Date.now()-new Date(chatState.lastActivity).getTime())/1000)):null,ago=since==null?'':since<60?` · laatste activiteit ${since}s geleden`:` · laatste activiteit ${Math.floor(since/60)}m ${since%60}s geleden`;label.textContent=`${chatState.queued?`working · ${chatState.queued} in wachtrij`:'working'}${ago}`;label.classList.toggle('stale',since!=null&&since>180);};
+  const activity=()=>{if(!label)return;if(!chatState.busy){label.textContent='ready';label.title='';return;}const since=chatState.lastActivity?Math.max(0,Math.round((Date.now()-new Date(chatState.lastActivity).getTime())/1000)):null,short=since==null?'':since<60?`${since}s`:`${Math.floor(since/60)}m${String(since%60).padStart(2,'0')}s`;label.textContent=`${chatState.queued?`working +${chatState.queued}`:'working'}${short?` · ${short}`:''}`;label.title=`${chatState.queued?`${chatState.queued} bericht(en) in wachtrij · `:''}laatste activiteit ${short||'onbekend'} geleden`;label.classList.toggle('stale',since!=null&&since>180);};
   activity();clearInterval(chatState.activityTimer);if(chatState.busy)chatState.activityTimer=setInterval(activity,1000);
   document.getElementById('chat-input').placeholder=chatState.busy?'Stuur een bericht · het gaat in de wachtrij voor de volgende turn':'Bericht aan de agent';}
 function sendChat(message){if(chatState.socket?.readyState===WebSocket.OPEN)chatState.socket.send(JSON.stringify(message));}
