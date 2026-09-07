@@ -232,7 +232,11 @@ func openStagedBackup(path, vfs string) (*StagedBackup, error) {
 	}
 	format, err := backup.ReadFile(backupFormatKey)
 	if err != nil || string(format) != backupFormat {
+		_, stateErr := backup.ReadFile("state")
 		_ = backup.Close()
+		if stateErr == nil {
+			return nil, errors.New("this is the database out of a backup zip; upload the zip itself, it carries the master key")
+		}
 		return nil, errors.New("not a supported Spin database backup")
 	}
 	key, err := backup.ReadFile(backupKeyKey)
