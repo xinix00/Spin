@@ -13,11 +13,6 @@ let activeTerminalID = null, terminalSequence = 0;
 const deliverableView = {id:'',selection:null,ranges:new Map()};
 const chatState = {sessionID:'',socket:null,busy:false,manualClose:false,followTail:true,messageNodes:new Map(),toolNodes:new Map(),thoughtNodes:new Map(),metaNodes:new Map(),planNode:null,changeTimer:null,reconnectTimer:null,changes:{branch:'',added:0,deleted:0,files:[]},selectedDiffPath:''};
 const jobChangesState = {jobID:'',sessionID:'',changes:{branch:'',added:0,deleted:0,files:[]},selectedPath:'',bundle:null,selection:null};
-let terminalLines = [
-  ['system','Spin recorder ready.'],
-  ['output','Start een opname met het formulier hierboven en werk in de shell van de capsule; End & save maakt er een laag van.'],
-  ['output','Eerste keten: tool:git (ENABLES git) → tool:node → tool:codex (ENABLES acp, codex-acp) → credential:codex (user, codex login --device-auth).']
-];
 
 const esc = value => String(value ?? '').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const icon = name => `<span class="material-symbols-outlined" aria-hidden="true">${esc(name)}</span>`;
@@ -93,7 +88,7 @@ function recordRequestFromForm(){const form=document.getElementById('record-form
 function openConsole(preset=null){
   openDialog('capsule-dialog');
   if(preset)fillRecordForm(preset);
-  requestAnimationFrame(()=>{const terminal=document.getElementById('terminal');terminal.scrollTop=terminal.scrollHeight;ensureShell();if(preset&&!activeRecording())document.getElementById('record-form').elements.name.focus();else focusTerminal();});
+  requestAnimationFrame(()=>{ensureShell();if(preset&&!activeRecording())document.getElementById('record-form').elements.name.focus();else focusTerminal();});
 }
 function syntaxLanguage(hint=''){
   const aliases={js:'javascript',mjs:'javascript',cjs:'javascript',jsx:'javascript',javascript:'javascript',ts:'typescript',tsx:'typescript',typescript:'typescript',go:'go',cs:'csharp','c#':'csharp',csharp:'csharp',java:'java',c:'c',h:'c',cc:'cpp',cpp:'cpp',cxx:'cpp',hpp:'cpp',rs:'rust',rust:'rust',swift:'swift',kt:'kotlin',kts:'kotlin',kotlin:'kotlin',php:'php',py:'python',python:'python',rb:'ruby',ruby:'ruby',sh:'shell',bash:'shell',zsh:'shell',shell:'shell',json:'json',jsonc:'json',yaml:'yaml',yml:'yaml',toml:'toml',html:'markup',htm:'markup',xml:'markup',svg:'markup',vue:'markup',svelte:'markup',razor:'markup',cshtml:'markup',markup:'markup',css:'css',scss:'css',sass:'css',less:'css',sql:'sql',md:'markdown',markdown:'markdown',mmd:'mermaid',mermaid:'mermaid',dockerfile:'docker',docker:'docker'};
@@ -376,7 +371,7 @@ function workflowDecisionHistory(run,approvals,job){const history=workflowAgentO
 function rerenderChatQuestion(){document.querySelectorAll('[data-chat-question]').forEach(node=>node.remove());if(chatState.sessionID)renderChatQuestion(chatState.sessionID);}
 function renderChatQuestion(sessionID){const question=snapshot.workflow_questions.find(item=>item.session_id===sessionID&&item.status==='open');if(!question)return;const session=byID(snapshot.sessions,sessionID),job=byID(snapshot.jobs,session?.job_id),run=byID(snapshot.phase_runs,question.phase_run_id),template=job?jobTemplate(job):null,approvals=snapshot.workflow_questions.filter(item=>item.phase_run_id===run?.id&&item.kind==='approval'),node=document.createElement('section');node.className='question-card';node.dataset.chatQuestion=question.id;const form=question.kind==='agent'&&question.items?.length;node.innerHTML=`<strong>${workflowDecisionTitle(question)}</strong>${question.kind==='approval'&&run?workflowDecisionHistory(run,approvals,job):agentQuestionFormHTML(question)}${workflowDecisionRoutes(question,template)}<small class="question-hint" data-question-busy hidden>${icon('progress_activity')}De agent is bezig · beslissen kan zodra de beurt eindigt</small><div class="panel-actions">${form?`<button class="primary" data-answer-question="${esc(question.id)}">BEANTWOORD</button>`:''}${acceptButtons(question,form?'small-button':'primary','')}<button class="${form?'small-button':'danger'}" data-reject-question="${esc(question.id)}">REJECT</button></div>`;chatAppend(node);bindDetailStates(node);bindQuestionButtons(node);renderChatBusy();}
 function markQuestionBusy(id,action){document.querySelectorAll(`[data-chat-question="${CSS.escape(id)}"],[data-workflow-question="${CSS.escape(id)}"]`).forEach(node=>{node.querySelectorAll('button').forEach(button=>button.disabled=true);const actions=node.querySelector('.panel-actions');if(actions)actions.innerHTML=`<span class="tag status-busy">${esc(action.toUpperCase())} wordt verwerkt…</span>`;});}
-async function decideQuestion(id,action,reason=''){const question=byID(snapshot.workflow_questions,id);markQuestionBusy(id,action);closeDialog('reject-dialog');if(document.getElementById('job-changes-dialog').open&&jobChangesState.bundle?.revision?.context_phase_run_id===question?.phase_run_id)closeDialog('job-changes-dialog');pendingRejectQuestionID='';try{const advance=await api(`/api/workflow/questions/${encodeURIComponent(id)}/answer`,{method:'POST',body:JSON.stringify({action,reason})});if(document.getElementById('chat-dialog').open&&chatState.sessionID===question?.session_id)closeDialog('chat-dialog');await refresh(true);if(advance.next_session)print('system',`${advance.next_session.role||'Volgende fase'} staat queued en start op de achtergrond.`);}catch(error){showError(error);await refresh(true);}}
+async function decideQuestion(id,action,reason=''){const question=byID(snapshot.workflow_questions,id);markQuestionBusy(id,action);closeDialog('reject-dialog');if(document.getElementById('job-changes-dialog').open&&jobChangesState.bundle?.revision?.context_phase_run_id===question?.phase_run_id)closeDialog('job-changes-dialog');pendingRejectQuestionID='';try{const advance=await api(`/api/workflow/questions/${encodeURIComponent(id)}/answer`,{method:'POST',body:JSON.stringify({action,reason})});if(document.getElementById('chat-dialog').open&&chatState.sessionID===question?.session_id)closeDialog('chat-dialog');await refresh(true);if(advance.next_session)showNotice(`${advance.next_session.role||'Volgende fase'} staat queued en start op de achtergrond.`);}catch(error){showError(error);await refresh(true);}}
 function openRejectDecision(id){pendingRejectQuestionID=id;document.getElementById('reject-form').reset();openDialog('reject-dialog');requestAnimationFrame(()=>document.getElementById('reject-reason').focus());}
 // The Template decides what ACCEPT means, including how the Job lands;
 // a person only accepts or rejects.
@@ -493,28 +488,9 @@ function enterApp(status){
   document.getElementById('job-owner').readOnly=true;
   connectStateStream();
 }
-function showError(error){const box=document.getElementById('error');box.textContent=error.message||error;box.style.display='block';setTimeout(()=>box.style.display='none',6500);}
-function renderTerminalLines(){
-  if(terminalLines.length>500) terminalLines=terminalLines.slice(-500);
-  const terminal=document.getElementById('terminal');
-  terminal.innerHTML=terminalLines.map(([type,line])=>`<div class="line ${type}">${esc(line)}</div>`).join('');
-  terminal.scrollTop=terminal.scrollHeight;
-}
-function print(kind,text){
-  String(text||'').split('\n').forEach(line=>terminalLines.push([kind,line]));
-  progressLineIndex=-1;renderTerminalLines();
-}
-// A progress line is rewritten in place while it is the last line, so a long
-// save reads as one live line instead of a scrolling wall.
-let progressLineIndex=-1;
-function printProgress(text){
-  if(progressLineIndex>=0&&progressLineIndex===terminalLines.length-1)terminalLines[progressLineIndex]=['system',text];
-  else{terminalLines.push(['system',text]);progressLineIndex=terminalLines.length-1;}
-  renderTerminalLines();
-}
-// startState mirrors the RECORD/EDIT job the browser is following: the base
-// image travelling to the runner, then the capsule coming up.
-let startState=null;
+function showBanner(text,kind){const box=document.getElementById('error');box.textContent=text;box.classList.toggle('notice',kind==='notice');box.style.display='block';clearTimeout(box._hide);box._hide=setTimeout(()=>box.style.display='none',kind==='notice'?4500:6500);}
+function showError(error){showBanner(error.message||error,'error');}
+function showNotice(text){showBanner(text,'notice');}
 function startProgressText(start){
   const stage={prepare:'voorbereiden',parents:'basisimage naar runner',load:'image laden op de runner',start:'capsule starten',done:'klaar'}[start.stage]||start.stage||'starten';
   const bytes=start.total?` · ${formatBytes(start.current||0)} / ${formatBytes(start.total)} (${Math.floor((start.current||0)/start.total*100)}%)`:'';
@@ -526,22 +502,20 @@ let followingStartID='';
 async function followStart(start){
   if(followingStartID===start.recording_id)return;
   followingStartID=start.recording_id;
-  startState=start;renderRecording();printProgress(startProgressText(start));
+  startState=start;renderRecording();
   try{
   for(let failures=0;;){
     await new Promise(resolve=>setTimeout(resolve,1500));
     try{
       const next=await api(`/api/recordings/${encodeURIComponent(start.recording_id)}/start`);failures=0;startState=next;renderRecording();
-      if(next.status==='done'){startState=null;const recording=next.recording||{};print('output',`● RECORDING ${recording.kind}:${recording.name} · scope=${recording.scope} · base=${recording.runtime?.base_ref||'?'} · werk in de shell en klik End & save`);await refresh(true);return;}
-      if(next.status==='cancelled'){startState=null;printProgress('Starten afgebroken · opname geannuleerd');await refresh(true);return;}
-      if(next.status==='error'){startState=null;print('error',next.error||'Starten mislukt');await refresh(true);return;}
-      printProgress(startProgressText(next));
+      if(next.status==='done'){startState=null;await refresh(true);return;}
+      if(next.status==='cancelled'){startState=null;await refresh(true);return;}
+      if(next.status==='error'){startState=null;showError(new Error(next.error||'Starten mislukt'));await refresh(true);return;}
     }catch(error){
       failures+=1;
       // 404: the server holds no job for this recording (an older server, or
       // the recording just ended); refresh so the card follows the truth.
-      if(error.status===404||failures>=8){startState=null;print('error',`Voortgang van het starten is niet meer op te vragen: ${error.message||error}. Gebruik Cancel om de opname op te ruimen.`);await refresh(true);return;}
-      printProgress(`Starten · verbinding herstellen (poging ${failures})`);
+      if(error.status===404||failures>=8){startState=null;showError(new Error(`Voortgang van het starten is niet meer op te vragen: ${error.message||error}. Gebruik Cancel om de opname op te ruimen.`));await refresh(true);return;}
     }
   }
   }finally{followingStartID='';}
@@ -555,17 +529,15 @@ function sealProgressText(seal){
   return `Opslaan · ${stage}${bytes}${seal.message&&!seal.total?` · ${seal.message}`:''}`;
 }
 async function followSeal(seal){
-  sealState=seal;renderRecording();printProgress(sealProgressText(seal));
+  sealState=seal;renderRecording();
   for(let failures=0;;){
     await new Promise(resolve=>setTimeout(resolve,1500));
     try{
       const next=await api(`/api/recordings/${encodeURIComponent(seal.recording_id)}/seal`);failures=0;sealState=next;renderRecording();
-      if(next.status==='done'){sealState=null;print('system',`saved ${artifactSelector(next.artifact)}/${next.artifact.profile} as ${next.artifact.snapshot_digest}`);await refresh(true);return;}
-      if(next.status==='error'){sealState=null;print('error',next.error||'Opslaan mislukt');await refresh(true);return;}
-      printProgress(sealProgressText(next));
+      if(next.status==='done'){sealState=null;await refresh(true);return;}
+      if(next.status==='error'){sealState=null;showError(new Error(next.error||'Opslaan mislukt'));await refresh(true);return;}
     }catch(error){
-      failures+=1;if(error.status===404||failures>=8){sealState=null;print('error',`Voortgang van het opslaan is niet meer op te vragen: ${error.message||error}`);await refresh(true);return;}
-      printProgress(`Opslaan · verbinding herstellen (poging ${failures})`);
+      failures+=1;if(error.status===404||failures>=8){sealState=null;showError(new Error(`Voortgang van het opslaan is niet meer op te vragen: ${error.message||error}`));await refresh(true);return;}
     }
   }
 }
@@ -593,24 +565,24 @@ function activeRecording(){return snapshot.recordings.find(recording=>recording.
 const terminalTheme={background:'#050806',foreground:'#dfe7e2',cursor:'#7be4ad',cursorAccent:'#050806',selectionBackground:'#2a4a38',black:'#0b0f0c',brightBlack:'#56635c',green:'#7be4ad',brightGreen:'#9ff0c4',blue:'#8fb8e8',brightBlue:'#a9c3df',yellow:'#e8c77b',brightYellow:'#f0d69b',red:'#f08a8a',brightRed:'#f5a0a0'};
 function activeTerminal(){return activeTerminalID?terminalSessions.get(activeTerminalID):null;}
 function liveTerminals(){return [...terminalSessions.values()].filter(session=>!session.exited);}
-function printTerminal(session,kind,value){String(value||'').split('\n').forEach(line=>print(kind,`[${session.label}] ${line}`));}
 function ptyStage(){return document.getElementById('pty-stage');}
 function fitTerminal(session){if(!session?.term||session.pane.hidden||ptyStage().hidden)return;try{session.fit.fit();}catch(_){}}
-function showTerminalPane(session){const stage=ptyStage();stage.hidden=false;document.getElementById('terminal').classList.add('compact');stage.querySelectorAll('.pty-pane').forEach(pane=>pane.hidden=pane!==session.pane);requestAnimationFrame(()=>{fitTerminal(session);session.term.focus();});}
-function updateStage(){const any=terminalSessions.size>0;ptyStage().hidden=!any;document.getElementById('terminal').classList.toggle('compact',any);}
+function showTerminalPane(session){const stage=ptyStage();stage.querySelectorAll('.pty-pane').forEach(pane=>pane.hidden=pane!==session.pane);updateStage();requestAnimationFrame(()=>{fitTerminal(session);session.term.focus();});}
+function updateStage(){const any=terminalSessions.size>0,empty=document.getElementById('pty-empty');empty.hidden=any;if(!any)empty.textContent=terminalTarget()?'Shell wordt geopend…':(activeRecording()?'De capsule van je opname start; de shell volgt zodra hij er is.':'Geen draaiende capsule. Start een opname, of Start een laag onder Environments.');}
 function chooseTerminal(id){const session=terminalSessions.get(id);if(!session)return;activeTerminalID=id;updateTerminalControls();showTerminalPane(session);}
 function closeTerminalPane(id){const session=terminalSessions.get(id);if(!session)return;if(!session.exited){session.exited=true;try{session.socket.close();}catch(_){}}terminalSessions.delete(id);try{session.term.dispose();}catch(_){}session.pane.remove();if(activeTerminalID===id)activeTerminalID=[...terminalSessions.keys()].at(-1)||null;updateStage();updateTerminalControls();const next=activeTerminal();if(next)showTerminalPane(next);}
 function updateTerminalControls(){
+  updateStage();
   const selected=activeTerminal(),live=liveTerminals().length,channels=document.getElementById('terminal-channels'),recording=activeRecording(),composition=activeComposition(),target=recording||composition;
   document.getElementById('terminal-interrupt').hidden=!selected||selected.exited;
-  channels.innerHTML=[...terminalSessions.values()].map(session=>`<button class="channel ${session.id===activeTerminalID?'active':''} ${session.exited?'exited':''}" data-terminal-id="${esc(session.id)}">${esc(session.label)} · ${esc(session.title.slice(0,28))}${session.exited?` · exit ${esc(String(session.exitCode??'?'))}`:''}<span class="channel-close" data-close-terminal="${esc(session.id)}" title="Sluiten">✕</span></button>`).join('')+(target?'<button class="channel" id="new-terminal">+ shell</button>':'<span class="hint">Geen draaiende capsule · start een opname of USE een laag</span>');
+  channels.innerHTML=[...terminalSessions.values()].map(session=>`<button class="channel ${session.id===activeTerminalID?'active':''} ${session.exited?'exited':''}" data-terminal-id="${esc(session.id)}">${esc(session.label)} · ${esc(session.title.slice(0,28))}${session.exited?` · exit ${esc(String(session.exitCode??'?'))}`:''}<span class="channel-close" data-close-terminal="${esc(session.id)}" title="Sluiten">✕</span></button>`).join('')+(target?'<button class="channel" id="new-terminal">+ shell</button>':'');
   channels.querySelectorAll('[data-terminal-id]').forEach(button=>button.onclick=()=>chooseTerminal(button.dataset.terminalId));
   channels.querySelectorAll('[data-close-terminal]').forEach(button=>button.onclick=event=>{event.stopPropagation();closeTerminalPane(button.dataset.closeTerminal);});
   const add=channels.querySelector('#new-terminal');if(add)add.onclick=()=>{const target=terminalTarget();if(target)startTerminalCommand(target,shellCommand,{title:'shell'});};
   const status=document.getElementById('terminal-status');
-  if(live){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>${live} LIVE PTY</span>`;}
+  if(live){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>${live} shell${live===1?'':'s'}</span>`;}
   else if(recording){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>REC ${esc(recording.kind)}:${esc(recording.name)}</span>`;}
-  else if(composition){status.className='terminal-status';status.innerHTML=`<span class="rec-dot"></span><span>USE ${esc(composition.selector)}</span>`;}
+  else if(composition){status.className='terminal-status';status.innerHTML=`<span class="rec-dot"></span><span>${esc(composition.selector)} draait</span>`;}
 }
 function finishTerminal(session,exitCode,refreshState=true){
   if(!terminalSessions.has(session.id)||session.exited)return;
@@ -635,7 +607,7 @@ function focusTerminal(){const session=activeTerminal();if(session&&!session.exi
 // startTerminalCommand opens a PTY on the given target: the open recording
 // (recorded into the layer) or the operator's USE composition (not recorded).
 function startTerminalCommand(target,line,options={}){
-  if(liveTerminals().length>=8){print('error','Deze Capsule heeft al 8 live PTY-processen.');return;}
+  if(liveTerminals().length>=8){showError(new Error('Deze capsule heeft al acht shells.'));return;}
   const id=`terminal-${++terminalSequence}`,label=`T${terminalSequence}`,title=options.title||line,path=target.kind==='composition'?`/api/compositions/${encodeURIComponent(target.id)}/terminal`:`/api/recordings/${encodeURIComponent(target.id)}/terminal`;
   const protocol=location.protocol==='https:'?'wss:':'ws:',socket=new WebSocket(`${protocol}//${location.host}${path}`);
   const pane=document.createElement('div');pane.className='pty-pane';ptyStage().appendChild(pane);
@@ -643,67 +615,58 @@ function startTerminalCommand(target,line,options={}){
   const term=new Terminal({cursorBlink:true,fontFamily:mono,fontSize:12.5,lineHeight:1.15,scrollback:5000,theme:terminalTheme,convertEol:false});
   const fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open(pane);
   const session={id,label,socket,targetID:target.id,line,title,exited:false,exitCode:null,pane,term,fit,ready:false};
-  terminalSessions.set(id,session);activeTerminalID=id;printTerminal(session,'command',title==='shell'?`shell in ${target.kind==='composition'?'USE '+target.selector:'opname '+target.kind+':'+target.name}`:line);updateTerminalControls();showTerminalPane(session);
+  terminalSessions.set(id,session);activeTerminalID=id;updateTerminalControls();showTerminalPane(session);
   const send=message=>{if(socket.readyState===WebSocket.OPEN&&!session.exited)socket.send(JSON.stringify(message));};
   term.onData(data=>send({type:'input',data}));
   term.onResize(({rows,cols})=>{if(session.ready)send({type:'resize',rows,cols});});
   socket.onopen=()=>{fitTerminal(session);socket.send(JSON.stringify({type:'start',command:line,rows:term.rows,cols:term.cols}));};
-  socket.onmessage=event=>{let message;try{message=JSON.parse(event.data);}catch(_){print('error','Ongeldig terminalframe ontvangen.');return;}
+  socket.onmessage=event=>{let message;try{message=JSON.parse(event.data);}catch(_){return;}
     if(message.type==='ready'){session.ready=true;term.focus();if(options.initial)send({type:'input',data:String(options.initial)+'\r'});return;}
     if(message.type==='output'){term.write(message.data);return;}
-    if(message.type==='error'){term.write(`\r\n\x1b[31m${message.error||'Interactieve terminalfout'}\x1b[0m\r\n`);printTerminal(session,'error',message.error||'Interactieve terminalfout');finishTerminal(session,null);return;}
-    if(message.type==='exit'){term.write(`\r\n\x1b[2m[exit ${message.exit_code}]\x1b[0m\r\n`);printTerminal(session,message.exit_code===0?'system':'error',`exit ${message.exit_code}`);finishTerminal(session,message.exit_code);}
+    if(message.type==='error'){term.write(`\r\n\x1b[31m${message.error||'Interactieve terminalfout'}\x1b[0m\r\n`);finishTerminal(session,null);return;}
+    if(message.type==='exit'){term.write(`\r\n\x1b[2m[exit ${message.exit_code}]\x1b[0m\r\n`);finishTerminal(session,message.exit_code);}
   };
-  socket.onerror=()=>{if(!session.exited)printTerminal(session,'error','Kon de Capsule-PTY niet openen.');};
-  socket.onclose=()=>{if(!session.exited){printTerminal(session,'error','PTY-verbinding gesloten.');finishTerminal(session,null);}};
+  socket.onerror=()=>{if(!session.exited)term.write('\r\n\x1b[31mKon de shell niet openen.\x1b[0m\r\n');};
+  socket.onclose=()=>{if(!session.exited){term.write('\r\n\x1b[2m[verbinding gesloten]\x1b[0m\r\n');finishTerminal(session,null);}};
 }
 function interruptTerminal(){const session=activeTerminal();if(session&&!session.exited&&session.socket.readyState===WebSocket.OPEN)session.socket.send(JSON.stringify({type:'interrupt'}));}
 // activeComposition is the operator's own USE composition with a running
 // capsule: a place to look around without recording.
 function activeComposition(){const composition=snapshot.compositions.find(item=>item.operator===currentOperator()&&!item.session_id&&item.runtime?.status==='ready');return composition?{...composition,kind:'composition'}:null;}
 
-// Actions on layers and capsules go straight to the API. The log shows what
-// was done in plain words; the runner's progress follows as before.
-function markStarting(label){printProgress(`Starten · ${label} · opname aanmaken en runner kiezen`);const status=document.getElementById('terminal-status');status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>STARTING ${esc(label)}</span>`;}
-async function runAction(label,request,onDone){
-  print('command',label);
+// Actions on layers and capsules go straight to the API; the cards show the
+// result and the runner's progress, errors are toasts.
+function markStarting(label){const status=document.getElementById('terminal-status');status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>start ${esc(label)}</span>`;}
+async function runAction(request,onDone){
   try{const response=await request();if(onDone)await onDone(response);await refresh(true);}
-  catch(error){sealState=null;startState=null;print('error',error.message||error);showError(error);await refresh(true).catch(()=>{});}
+  catch(error){sealState=null;startState=null;showError(error);await refresh(true).catch(()=>{});}
 }
 // A recording answers with the recording when the capsule is up, or with the
 // start job to follow when it takes a moment.
 async function recordingStarted(response){
   if(response.recording_id&&response.status){await refresh(true);await followStart(response);return;}
-  startState=null;print('output',`● RECORDING ${response.kind}:${response.name} · scope=${response.scope} · base=${response.runtime?.base_ref||'?'}`);
+  startState=null;
 }
 function startLayerRecording(payload){
   const label=`${payload.kind}:${payload.name}`;markStarting(label);
-  return runAction(`Opname ${label} starten`,()=>api('/api/recordings',{method:'POST',body:JSON.stringify({...payload,actor:currentOperator()})}),recordingStarted);
+  return runAction(()=>api('/api/recordings',{method:'POST',body:JSON.stringify({...payload,actor:currentOperator()})}),recordingStarted);
 }
 function editLayer(artifact){
   const label=artifactSelector(artifact);markStarting(`EDIT ${label}`);
-  return runAction(`${label} bewerken (EDIT)`,()=>api(`/api/artifacts/${encodeURIComponent(artifact.id)}/edit`,{method:'POST',body:JSON.stringify({operator:currentOperator()})}),recordingStarted);
+  return runAction(()=>api(`/api/artifacts/${encodeURIComponent(artifact.id)}/edit`,{method:'POST',body:JSON.stringify({operator:currentOperator()})}),recordingStarted);
 }
 function endRecording(recording){
-  sealState={recording_id:recording.id,status:'running',stage:'commit',message:'Capsule wordt gecommit op de runner'};renderRecording();printProgress(sealProgressText(sealState));
-  return runAction(`Opname ${recording.kind}:${recording.name} opslaan`,()=>api(`/api/recordings/${encodeURIComponent(recording.id)}/end`,{method:'POST',body:JSON.stringify({actor:currentOperator()})}),async response=>{
+  sealState={recording_id:recording.id,status:'running',stage:'commit',message:'Capsule wordt gecommit op de runner'};renderRecording();
+  return runAction(()=>api(`/api/recordings/${encodeURIComponent(recording.id)}/end`,{method:'POST',body:JSON.stringify({actor:currentOperator()})}),async response=>{
     if(response.recording_id&&response.status){await refresh(true);await followSeal(response);return;}
-    sealState=null;print('system',`saved ${artifactSelector(response)}/${response.profile} as ${response.snapshot_digest}`);
+    sealState=null;
   });
 }
-function cancelRecording(recording){return runAction(`Opname ${recording.kind}:${recording.name} annuleren`,()=>api(`/api/recordings/${encodeURIComponent(recording.id)}/cancel`,{method:'POST',body:JSON.stringify({actor:currentOperator()})}),()=>{sealState=null;startState=null;print('output','opname geannuleerd');});}
-function useLayers(selector,withSelectors=[]){
-  return runAction(`USE ${selector}${withSelectors.map(value=>` WITH ${value}`).join('')}`,()=>api('/api/use',{method:'POST',body:JSON.stringify({operator:currentOperator(),selector,with_selectors:withSelectors,profile:'default'})}),composition=>{
-    let message=`composition ${composition.id} · ${composition.selector} · entry=${composition.entry_artifact_id}`;
-    if(composition.enabled?.length)message+=` · ENABLED=${enabledNames(composition.enabled)}`;
-    if(composition.warnings?.length)message+=`\nwarning: ${composition.warnings.join('; ')}`;
-    if(composition.runtime?.attach_command)message+=`\nready: ${composition.runtime.attach_command}`;
-    print('output',message);
-  });
-}
-function useSession(sessionID){return runAction(`USE session:${sessionID}`,()=>api('/api/use',{method:'POST',body:JSON.stringify({operator:currentOperator(),session_id:sessionID})}),composition=>print('output',`composition ${composition.id} · ${composition.runtime?.attach_command||composition.runtime?.status||'gestart'}`));}
-function stopComposition(id){return runAction(`Compositie ${short(id)} stoppen`,()=>api(`/api/compositions/${encodeURIComponent(id)}/stop`,{method:'POST',body:JSON.stringify({operator:currentOperator()})}),composition=>print('output',`stopped composition ${composition.id}`));}
-function probeACP(id){return runAction(`ACP probe op ${short(id)}`,()=>api(`/api/compositions/${encodeURIComponent(id)}/acp/probe`,{method:'POST',body:JSON.stringify({operator:currentOperator()})}),probe=>{print('output',`ACP v1 handshake geslaagd · ${probe.enablement?.command||''}`);print('output',JSON.stringify(probe.handshake,null,2));});}
+function cancelRecording(recording){return runAction(()=>api(`/api/recordings/${encodeURIComponent(recording.id)}/cancel`,{method:'POST',body:JSON.stringify({actor:currentOperator()})}),()=>{sealState=null;startState=null;});}
+function useLayers(selector,withSelectors=[]){return runAction(()=>api('/api/use',{method:'POST',body:JSON.stringify({operator:currentOperator(),selector,with_selectors:withSelectors,profile:'default'})}),composition=>{if(composition.warnings?.length)showError(new Error(composition.warnings.join('; ')));});}
+function useSession(sessionID){return runAction(()=>api('/api/use',{method:'POST',body:JSON.stringify({operator:currentOperator(),session_id:sessionID})}));}
+function stopComposition(id){return runAction(()=>api(`/api/compositions/${encodeURIComponent(id)}/stop`,{method:'POST',body:JSON.stringify({operator:currentOperator()})}));}
+function probeACP(id){return runAction(()=>api(`/api/compositions/${encodeURIComponent(id)}/acp/probe`,{method:'POST',body:JSON.stringify({operator:currentOperator()})}),probe=>alert(`ACP v1 handshake geslaagd · ${probe.enablement?.command||''}\n\n${JSON.stringify(probe.handshake,null,2)}`));}
 // bindActionButtons wires data-action buttons to these actions.
 function bindActionButtons(root=document){root.querySelectorAll('[data-action]').forEach(button=>button.onclick=()=>{
   const {action,id,selector}=button.dataset,recording=activeRecording();
@@ -771,7 +734,7 @@ function renderRecording(){
   // reload, or when another tab gave the command).
   const starting=startState&&startState.recording_id===recording.id&&startState.status==='running'?startState:(recording.runtime?.container_id?null:{stage:'prepare',message:'Voortgang ophalen'});
   if(!recording.runtime?.container_id&&followingStartID!==recording.id)followStart({recording_id:recording.id,status:'running',stage:'prepare',message:'Voortgang ophalen'});
-  const runtime=recording.runtime?.container_id?'<small>Multi-PTY · start parallelle processen met + PTY; ieder kanaal heeft eigen stdin en Ctrl-C.</small>':`<div class="seal-progress"><div class="seal-track ${starting?.total?'':'indeterminate'}"><div class="seal-fill" style="width:${starting?.total?Math.floor((starting.current||0)/starting.total*100):100}%"></div></div><small>${esc(startProgressText(starting||{}))}</small></div>`;
+  const runtime=recording.runtime?.container_id?'<small>Werk in de shell hieronder; + shell opent een tweede in dezelfde capsule.</small>':`<div class="seal-progress"><div class="seal-track ${starting?.total?'':'indeterminate'}"><div class="seal-fill" style="width:${starting?.total?Math.floor((starting.current||0)/starting.total*100):100}%"></div></div><small>${esc(startProgressText(starting||{}))}</small></div>`;
   if(!recording.runtime?.container_id){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>STARTING ${esc(recording.kind)}:${esc(recording.name)}${starting?.total?` ${Math.floor((starting.current||0)/starting.total*100)}%`:''}</span>`;}
   const sealing=sealState&&sealState.recording_id===recording.id&&sealState.status==='running'?sealState:null;
   // While the capsule is still starting the runtime block already carries the
@@ -1069,7 +1032,7 @@ function renderAccess(){
   root.querySelectorAll('[data-password-user]').forEach(button=>button.onclick=()=>{passwordUserID=button.dataset.passwordUser;document.getElementById('password-form').reset();document.getElementById('password-dialog-copy').textContent=`Nieuw tijdelijk wachtwoord voor ${button.dataset.userLabel}; alle sessies van deze gebruiker worden beëindigd.`;openDialog('password-dialog');requestAnimationFrame(()=>document.getElementById('password-new').focus());});
 }
 let passwordUserID='';
-document.getElementById('password-form').onsubmit=async event=>{event.preventDefault();const form=new FormData(event.target);try{await api(`/api/auth/users/${encodeURIComponent(passwordUserID)}/password`,{method:'POST',body:JSON.stringify({password:form.get('password')})});closeDialog('password-dialog');print('system',`Wachtwoord opnieuw ingesteld.${passwordUserID===authState.user?.id?' Je bent uitgelogd; log opnieuw in.':''}`);if(passwordUserID===authState.user?.id){stopStateStream();authState.authenticated=false;csrfToken='';showAuthGate('Je wachtwoord is gewijzigd. Log opnieuw in.');}else await refresh(true);}catch(error){showError(error);}};
+document.getElementById('password-form').onsubmit=async event=>{event.preventDefault();const form=new FormData(event.target);try{await api(`/api/auth/users/${encodeURIComponent(passwordUserID)}/password`,{method:'POST',body:JSON.stringify({password:form.get('password')})});closeDialog('password-dialog');showNotice(`Wachtwoord opnieuw ingesteld.${passwordUserID===authState.user?.id?' Je bent uitgelogd; log opnieuw in.':''}`);if(passwordUserID===authState.user?.id){stopStateStream();authState.authenticated=false;csrfToken='';showAuthGate('Je wachtwoord is gewijzigd. Log opnieuw in.');}else await refresh(true);}catch(error){showError(error);}};
 
 async function backupResponse(path,options={}){
   const headers={...(options.headers||{})};if(csrfToken)headers['X-Spin-CSRF']=csrfToken;
@@ -1079,7 +1042,7 @@ async function backupResponse(path,options={}){
 }
 async function downloadPortableBackup(){
   const button=document.getElementById('download-backup'),label=button.innerHTML;button.disabled=true;button.innerHTML=`${icon('progress_activity')}Backup maken…`;
-  try{const response=await backupResponse('/api/backup-ticket',{method:'POST'}),result=await response.json(),link=document.createElement('a');link.href=result.url;link.download='';document.body.appendChild(link);link.click();link.remove();print('system','SQLite-backup gestart · de server streamt state, secrets, bijlagen en opgenomen Docker-lagen rechtstreeks naar schijf.');}catch(error){showError(error);}finally{button.disabled=false;button.innerHTML=label;}
+  try{const response=await backupResponse('/api/backup-ticket',{method:'POST'}),result=await response.json(),link=document.createElement('a');link.href=result.url;link.download='';document.body.appendChild(link);link.click();link.remove();showNotice('SQLite-backup gestart · de server streamt state, secrets, bijlagen en opgenomen Docker-lagen rechtstreeks naar schijf.');}catch(error){showError(error);}finally{button.disabled=false;button.innerHTML=label;}
 }
 function updateRestoreProgress(label,detail='',percentage=null,error=false){
   const root=document.getElementById('restore-progress'),track=document.getElementById('restore-progress-track'),fill=document.getElementById('restore-progress-fill');root.hidden=false;root.classList.toggle('error',error);document.getElementById('restore-progress-label').textContent=label;document.getElementById('restore-progress-detail').textContent=detail;track.classList.toggle('indeterminate',percentage==null);if(percentage!=null)fill.style.width=`${Math.max(0,Math.min(100,percentage))}%`;
@@ -1178,7 +1141,7 @@ function bindSpawnForms(root){root.querySelectorAll('.spawn-form').forEach(form=
 });}
 function bindResultButtons(root){root.querySelectorAll('[data-select-result]').forEach(button=>button.onclick=async()=>{try{await api(`/api/jobs/${encodeURIComponent(button.dataset.jobId)}/select-result`,{method:'POST',body:JSON.stringify({result_id:button.dataset.selectResult})});await refresh(true);}catch(error){showError(error);}});}
 
-async function removeArtifact(id,label){if(!confirm(`Remove ${label}? Dit verwijdert ook de immutable snapshot en kan niet ongedaan worden gemaakt.`))return;try{await api(`/api/artifacts/${encodeURIComponent(id)}`,{method:'DELETE'});print('system',`Removed ${label}`);await refresh(true);}catch(error){showError(error);}}
+async function removeArtifact(id,label){if(!confirm(`Remove ${label}? Dit verwijdert ook de immutable snapshot en kan niet ongedaan worden gemaakt.`))return;try{await api(`/api/artifacts/${encodeURIComponent(id)}`,{method:'DELETE'});showNotice(`Removed ${label}`);await refresh(true);}catch(error){showError(error);}}
 async function removeMCP(id){if(!confirm('Remove deze persoonlijke MCP-configuratie?'))return;try{await api(`/api/mcp-servers/${encodeURIComponent(id)}`,{method:'DELETE'});await refresh(true);}catch(error){showError(error);}}
 async function removeGitAccount(id){if(!confirm('Deze Git identity ontkoppelen? Repositories lossen daarna automatisch een andere identity voor dezelfde host en scope op, of wachten op een nieuwe koppeling.'))return;try{await api(`/api/git/accounts/${encodeURIComponent(id)}`,{method:'DELETE'});await refresh(true);}catch(error){showError(error);}}
 async function removeGit(id){if(!confirm('Remove deze Git repositoryconfiguratie? Bestaande Jobs blokkeren dit.'))return;try{await api(`/api/git/repositories/${encodeURIComponent(id)}`,{method:'DELETE'});await refresh(true);}catch(error){showError(error);}}
@@ -1230,13 +1193,13 @@ function validateJobAttachmentFiles(files){const total=files.reduce((sum,file)=>
 function renderJobAttachmentSelection(){const files=selectedJobAttachmentFiles(),root=document.getElementById('job-attachment-selection');try{validateJobAttachmentFiles(files);root.innerHTML=files.map(file=>`<span class="attachment-chip">${icon(file.type==='application/pdf'?'picture_as_pdf':'image')}<span class="attachment-chip-name">${esc(file.name)}</span><span class="attachment-size">${esc(formatBytes(file.size))}</span></span>`).join('');}catch(error){root.innerHTML=`<span class="warning">${esc(error.message)}</span>`;}}
 async function uploadAttachment(file,path){const body=new FormData();body.append('file',file,file.name);return api(path,{method:'POST',body});}
 function chooseJobAttachments(jobID){attachmentTargetJobID=jobID;const input=document.getElementById('add-job-attachment-input');input.value='';input.click();}
-async function addAttachmentsToJob(files){if(!attachmentTargetJobID||!files.length)return;try{validateJobAttachmentFiles(files);for(let index=0;index<files.length;index++){print('system',`Bijlage ${index+1}/${files.length} uploaden naar Job…`);await uploadAttachment(files[index],`/api/jobs/${encodeURIComponent(attachmentTargetJobID)}/attachments`);}print('system',`${files.length} bijlage${files.length===1?'':'n'} toegevoegd.`);await refresh(true);}catch(error){showError(error);await refresh(true);}finally{attachmentTargetJobID='';}}
+async function addAttachmentsToJob(files){if(!attachmentTargetJobID||!files.length)return;try{validateJobAttachmentFiles(files);for(let index=0;index<files.length;index++){showNotice(`Bijlage ${index+1}/${files.length} uploaden naar Job…`);await uploadAttachment(files[index],`/api/jobs/${encodeURIComponent(attachmentTargetJobID)}/attachments`);}showNotice(`${files.length} bijlage${files.length===1?'':'n'} toegevoegd.`);await refresh(true);}catch(error){showError(error);await refresh(true);}finally{attachmentTargetJobID='';}}
 
 function handleOAuthStatus(){
   const oauthStatus=new URLSearchParams(location.search).get('git_oauth');
   if(!oauthStatus)return false;
   setTab('connections');setConnection('git');
-  oauthStatus==='connected'?print('system','Git OAuth account connected.'):showError(new Error(`Git OAuth: ${oauthStatus}`));
+  if(oauthStatus!=='connected')showError(new Error(`Git OAuth: ${oauthStatus}`));
   history.replaceState({},'',location.pathname+'#connections');return true;
 }
 
@@ -1253,7 +1216,6 @@ async function bootstrap(){
     if(!status.authenticated){showAuthGate('Log in om jouw Snapshots, credentials en Git-identiteit te gebruiken.');return;}
     enterApp(status);
     setTab(localStorage.getItem('spin-tab')||'jobs');setWorkView(localStorage.getItem('spin-work-view')||'jobs');setJobState(jobStateFilter);setConnection(localStorage.getItem('spin-connection')||'git');handleOAuthStatus();
-    print('output',`Current operator: ${currentOperator()} · Jobs → Sessions → isolated branches → review into Job branch`);
     await refresh(true);if(restoreError)showError(restoreError);
   }catch(error){showAuthGate(`Server niet bereikbaar: ${error.message||error}`);}
 }
@@ -1307,13 +1269,13 @@ document.getElementById('chat-input').addEventListener('input',event=>{event.tar
 document.getElementById('use-form').onsubmit=event=>{event.preventDefault();const selector=document.getElementById('use-selector').value,withSelectors=selectedValues(document.getElementById('use-with'));if(!selector)return;openConsole();useLayers(selector,withSelectors);};
 document.getElementById('mcp-transport').onchange=event=>{const http=event.target.value==='http';document.getElementById('mcp-command-field').hidden=http;document.getElementById('mcp-url-field').hidden=!http;};
 document.getElementById('git-provider').onchange=event=>{const hosts={github:'github.com',gitlab:'gitlab.com'};if(hosts[event.target.value])document.getElementById('git-host').value=hosts[event.target.value];};
-document.getElementById('job-form').onsubmit=async event=>{event.preventDefault();if(jobSubmitting)return;const form=new FormData(event.target),files=selectedJobAttachmentFiles(),source=byID(snapshot.jobs,forkingJobID),payload={title:form.get('title'),reference:String(form.get('reference')||'').trim(),objective:form.get('objective'),owner:form.get('owner'),operator:currentOperator(),template_id:form.get('template_id'),git_repository_id:source?.git_repository_id||form.get('git_repository_id'),base_ref:source?.branch||form.get('base_ref'),environment_selector:form.get('environment_selector'),mcp_server_ids:selectedValues(document.getElementById('job-mcp')),forked_from_job_id:source?.id||'',run:true},fileFingerprint=files.map(file=>[file.name,file.size,file.type,file.lastModified]),fingerprint=JSON.stringify([payload,fileFingerprint]);setJobSubmitting(true);try{validateJobAttachmentFiles(files);if(!pendingJobSubmission||pendingJobSubmission.fingerprint!==fingerprint){if(pendingJobSubmission?.attachmentIds?.length)await Promise.allSettled(pendingJobSubmission.attachmentIds.map(id=>api(`/api/job-attachments/${encodeURIComponent(id)}`,{method:'DELETE'})));pendingJobSubmission={fingerprint,key:newIdempotencyKey(),attachmentIds:[]};}for(let index=pendingJobSubmission.attachmentIds.length;index<files.length;index++){setJobSubmitting(true,`Bijlage ${index+1}/${files.length} uploaden…`);const attachment=await uploadAttachment(files[index],'/api/job-attachments');pendingJobSubmission.attachmentIds.push(attachment.id);}payload.attachment_ids=[...pendingJobSubmission.attachmentIds];payload.idempotency_key=pendingJobSubmission.key;setJobSubmitting(true,'Job inschieten…');await api('/api/jobs',{method:'POST',body:JSON.stringify(payload)});pendingJobSubmission=null;resetJobForm();closeDialog('job-dialog');setJobState('open');print('system',`${source?'Vervolg-Job':'Job'} ingeschoten${files.length?` met ${files.length} bijlage${files.length===1?'':'n'}`:''}; de eerste Session start op de achtergrond.`);await refresh(true);}catch(error){showError(error);}finally{setJobSubmitting(false);}};
+document.getElementById('job-form').onsubmit=async event=>{event.preventDefault();if(jobSubmitting)return;const form=new FormData(event.target),files=selectedJobAttachmentFiles(),source=byID(snapshot.jobs,forkingJobID),payload={title:form.get('title'),reference:String(form.get('reference')||'').trim(),objective:form.get('objective'),owner:form.get('owner'),operator:currentOperator(),template_id:form.get('template_id'),git_repository_id:source?.git_repository_id||form.get('git_repository_id'),base_ref:source?.branch||form.get('base_ref'),environment_selector:form.get('environment_selector'),mcp_server_ids:selectedValues(document.getElementById('job-mcp')),forked_from_job_id:source?.id||'',run:true},fileFingerprint=files.map(file=>[file.name,file.size,file.type,file.lastModified]),fingerprint=JSON.stringify([payload,fileFingerprint]);setJobSubmitting(true);try{validateJobAttachmentFiles(files);if(!pendingJobSubmission||pendingJobSubmission.fingerprint!==fingerprint){if(pendingJobSubmission?.attachmentIds?.length)await Promise.allSettled(pendingJobSubmission.attachmentIds.map(id=>api(`/api/job-attachments/${encodeURIComponent(id)}`,{method:'DELETE'})));pendingJobSubmission={fingerprint,key:newIdempotencyKey(),attachmentIds:[]};}for(let index=pendingJobSubmission.attachmentIds.length;index<files.length;index++){setJobSubmitting(true,`Bijlage ${index+1}/${files.length} uploaden…`);const attachment=await uploadAttachment(files[index],'/api/job-attachments');pendingJobSubmission.attachmentIds.push(attachment.id);}payload.attachment_ids=[...pendingJobSubmission.attachmentIds];payload.idempotency_key=pendingJobSubmission.key;setJobSubmitting(true,'Job inschieten…');await api('/api/jobs',{method:'POST',body:JSON.stringify(payload)});pendingJobSubmission=null;resetJobForm();closeDialog('job-dialog');setJobState('open');showNotice(`${source?'Vervolg-Job':'Job'} ingeschoten${files.length?` met ${files.length} bijlage${files.length===1?'':'n'}`:''}; de eerste Session start op de achtergrond.`);await refresh(true);}catch(error){showError(error);}finally{setJobSubmitting(false);}};
 document.getElementById('template-form').onsubmit=async event=>{event.preventDefault();const form=new FormData(event.target),phases=collectTemplatePhases();if(!phases.length){showError(new Error('Voeg minimaal één stap toe.'));return;}const templateID=editingTemplateID,path=templateID?`/api/workflow-templates/${encodeURIComponent(templateID)}`:'/api/workflow-templates';try{await api(path,{method:templateID?'PUT':'POST',body:JSON.stringify({operator:currentOperator(),name:form.get('name'),description:form.get('description'),git_selector:form.get('git_selector'),finalize:form.get('finalize'),phases})});resetTemplateForm();closeDialog('template-dialog');setWorkView('templates');await refresh(true);}catch(error){showError(error);}};
 document.getElementById('git-account-form').onsubmit=async event=>{event.preventDefault();const form=new FormData(event.target);try{await api('/api/git/accounts',{method:'POST',body:JSON.stringify({operator:currentOperator(),provider:form.get('provider'),host:form.get('host'),login:form.get('login'),name:form.get('name'),email:form.get('email'),access_token:form.get('access_token'),credential_scope:form.get('credential_scope')||'user'})});event.target.reset();document.getElementById('git-provider').value='github';document.getElementById('git-host').value='github.com';document.getElementById('git-credential-scope').value='user';await refresh(true);}catch(error){showError(error);}};
 document.getElementById('git-form').onsubmit=async event=>{event.preventDefault();const form=new FormData(event.target),repositoryID=editingGitRepositoryID,payload={operator:currentOperator(),name:form.get('name'),remote_url:form.get('remote_url'),default_ref:form.get('default_ref'),credential_scope:form.get('credential_scope'),layer_selectors:selectedValues(document.getElementById('git-layers')),services:collectServices(),service_hosts:String(form.get('service_hosts')||'').split('\n').map(line=>line.trim()).filter(Boolean)};try{await api(repositoryID?`/api/git/repositories/${encodeURIComponent(repositoryID)}`:'/api/git/repositories',{method:repositoryID?'PUT':'POST',body:JSON.stringify(payload)});resetGitForm();closeDialog('git-dialog');await refresh(true);}catch(error){showError(error);}};
 document.getElementById('mcp-form').onsubmit=async event=>{event.preventDefault();const form=new FormData(event.target),transport=form.get('transport'),secretName=String(form.get('secret_name')||'').trim(),secretValue=String(form.get('secret_value')||'');const secret=secretName?[{name:secretName,value:secretValue}]:[];try{await api('/api/mcp-servers',{method:'POST',body:JSON.stringify({operator:currentOperator(),name:form.get('name'),transport,command:form.get('command'),args:String(form.get('args')||'').trim().split(/\s+/).filter(Boolean),url:form.get('url'),env:transport==='stdio'?secret:[],headers:transport==='http'?secret:[]})});event.target.reset();document.getElementById('mcp-command-field').hidden=false;document.getElementById('mcp-url-field').hidden=true;closeDialog('mcp-dialog');await refresh(true);}catch(error){showError(error);}};
 document.getElementById('user-form').onsubmit=async event=>{event.preventDefault();const form=new FormData(event.target);try{await api('/api/auth/users',{method:'POST',body:JSON.stringify({username:form.get('username'),display_name:form.get('display_name'),role:form.get('role'),password:form.get('password')})});event.target.reset();document.getElementById('user-role').value='member';closeDialog('user-dialog');await refresh(true);}catch(error){showError(error);}};
-document.getElementById('setup-form').onsubmit=async event=>{event.preventDefault();const form=new FormData(event.target);try{const status=await api('/api/auth/setup',{method:'POST',body:JSON.stringify({username:form.get('username'),display_name:form.get('display_name'),password:form.get('password')})});enterApp(status);setTab('connections');setConnection('git');print('system','Owner created. Configureer nu Git OAuth of voeg een token-account toe.');await refresh(true);}catch(error){document.getElementById('auth-copy').textContent=error.message||error;}};
+document.getElementById('setup-form').onsubmit=async event=>{event.preventDefault();const form=new FormData(event.target);try{const status=await api('/api/auth/setup',{method:'POST',body:JSON.stringify({username:form.get('username'),display_name:form.get('display_name'),password:form.get('password')})});enterApp(status);setTab('connections');setConnection('git');showNotice('Owner created. Configureer nu Git OAuth of voeg een token-account toe.');await refresh(true);}catch(error){document.getElementById('auth-copy').textContent=error.message||error;}};
 document.getElementById('login-form').onsubmit=async event=>{event.preventDefault();const form=new FormData(event.target);try{const status=await api('/api/auth/login',{method:'POST',body:JSON.stringify({username:form.get('username'),password:form.get('password')})});event.target.reset();enterApp(status);setTab(localStorage.getItem('spin-tab')||'jobs');setWorkView(localStorage.getItem('spin-work-view')||'jobs');setJobState(jobStateFilter);setConnection(localStorage.getItem('spin-connection')||'git');handleOAuthStatus();await refresh(true);}catch(error){document.getElementById('auth-copy').textContent=error.message||error;}};
 document.getElementById('logout').onclick=async()=>{try{await api('/api/auth/logout',{method:'POST'});}catch(_){}closeACPChat();terminalSessions.forEach(session=>session.socket.close());terminalSessions.clear();stopStateStream();authState={configured:true,authenticated:false,user:null};csrfToken='';showAuthGate('Je bent uitgelogd.');};
 
