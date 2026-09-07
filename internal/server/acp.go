@@ -115,6 +115,23 @@ type activeACP struct {
 	// configOptions is what the agent offered at session/new: models,
 	// reasoning efforts, modes.
 	configOptions []acpConfigOption
+	// primed is set once this agent session has read the phase's full
+	// prompt. An agent session is not durable (a deploy or runner restart
+	// makes a new one), and a resumed one must not act on a bare answer or
+	// chat line without the instructions and rules the phase was given.
+	primed bool
+}
+
+func (a *activeACP) isPrimed() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.primed
+}
+
+func (a *activeACP) markPrimed() {
+	a.mu.Lock()
+	a.primed = true
+	a.mu.Unlock()
 }
 
 // acpConfigOption is one session config option as an ACP agent reports it.

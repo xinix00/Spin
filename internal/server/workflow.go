@@ -501,6 +501,8 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 		requeue("build workflow prompt", err)
 		return
 	}
+	// The launch prompt is the phase prompt itself.
+	active.markPrimed()
 	if err := s.startACPPrompt(active, prompt); err != nil {
 		requeue("start workflow prompt", err)
 		return

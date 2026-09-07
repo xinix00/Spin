@@ -175,7 +175,36 @@ func (s *Server) startACPPrompt(active *activeACP, text string) error {
 	if err != nil {
 		return fmt.Errorf("prepare ACP attachments: %w", err)
 	}
+	text, err = s.primedPrompt(active, text)
+	if err != nil {
+		return err
+	}
 	return active.startPromptWithAttachments(text, attachments)
+}
+
+// primedPrompt makes sure an agent session of a workflow phase has the
+// phase's full prompt before anything else: the first message into a fresh
+// agent session carries the instructions, rules and context in front of it.
+// The launch sends that prompt itself and marks the session primed; an
+// answer or chat line that reaches a new agent session (after a deploy or a
+// runner restart) gets the same prompt prepended, so the agent never works
+// from a bare "go on" without the rules it was given.
+func (s *Server) primedPrompt(active *activeACP, text string) (string, error) {
+	if active.isPrimed() {
+		return text, nil
+	}
+	defer active.markPrimed()
+	if active.sessionID == "" {
+		return text, nil
+	}
+	if _, _, _, _, _, _, err := s.store.WorkflowForSession(active.sessionID); err != nil {
+		return text, nil // not a workflow Session: nothing to prime with
+	}
+	base, err := s.workflowPromptForACP(active.sessionID, active.promptCapabilities())
+	if err != nil {
+		return "", fmt.Errorf("rebuild workflow prompt for a resumed agent session: %w", err)
+	}
+	return "Deze agentsessie is opnieuw gestart. Hieronder staan eerst de volledige instructies, regels en context van de fase; daarna het bericht dat je nu oppakt. Werk niet verder zonder deze regels.\n\n" + base + "\n\n---\n\nHET BERICHT VAN NU\n" + text, nil
 }
 
 func (s *Server) acpPromptAttachments(sessionID string, capabilities acpPromptCapabilities, alreadySent map[string]bool) ([]acpPromptAttachment, error) {
