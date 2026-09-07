@@ -2,12 +2,14 @@ package server
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -113,16 +115,10 @@ type activeACP struct {
 	// steering is set when the agent accepts _session/steering: a message
 	// written during a turn is injected into that turn instead of queued.
 	steering bool
-	// configOptions is what the agent offered at session/new: models,
-	// reasoning efforts, modes.
-	configOptions []acpConfigOption
-	// modes is the session mode state of session/new, for agents that
-	// report modes there instead of as a config option (Claude Code).
-	modes *acpSessionModes
-	// models is the session model state of session/new, for agents that
-	// report models there and switch them with session/set_model (Claude
-	// Code) instead of a "model" config option.
-	models *acpSessionModels
+	// settings is what the agent lets a session choose (mode, model,
+	// thought level), normalized from however its ACP version reported it
+	// at session/new.
+	settings []acpSetting
 	// primed is set once this agent session has read the phase's full
 	// prompt. An agent session is not durable (a deploy or runner restart
 	// makes a new one), and a resumed one must not act on a bare answer or
@@ -575,9 +571,7 @@ func (s *Server) openACP(composition domain.Composition, operator string, mcpSer
 	}
 	active.mu.Lock()
 	active.agentSessionID = newSession.SessionID
-	active.configOptions = newSession.ConfigOptions
-	active.modes = newSession.Modes
-	active.models = newSession.Models
+	active.settings = acpSettingsOf(newSession.ConfigOptions, newSession.Modes, newSession.Models)
 	active.mu.Unlock()
 	// The capsule is the sandbox: a throwaway container without the host,
 	// without Git credentials, and with everything the agent does discarded
@@ -586,17 +580,18 @@ func (s *Server) openACP(composition domain.Composition, operator string, mcpSer
 	// takes away network, /tmp and parallel builds, so the session runs in
 	// the agent's full-access mode when it offers one.
 	settings := s.agentSettingsFor(composition)
-	modeID, ok := fullAccessMode(newSession.Modes, newSession.ConfigOptions)
-	if settings.Mode != "" {
-		modeID, ok = settings.Mode, settings.Mode != currentMode(newSession.Modes, newSession.ConfigOptions)
-	}
-	if ok {
-		modeContext, modeCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		_, err := active.request(modeContext, "session/set_mode", map[string]any{"sessionId": newSession.SessionID, "modeId": modeID})
-		modeCancel()
-		if err != nil {
-			s.logger.Warn("set ACP session mode", "mode", modeID, "error", err)
+	if mode, ok := active.setting(acpCategoryMode); ok {
+		modeID, wanted := fullAccessMode(mode)
+		if settings.Mode != "" {
+			modeID, wanted = settings.Mode, settings.Mode != mode.Current
 		}
+		if wanted {
+			if err := active.apply(mode, modeID); err != nil {
+				s.logger.Warn("set ACP session mode", "mode", modeID, "error", err)
+			}
+		}
+	} else if settings.Mode != "" {
+		s.logger.Warn("layer chose an agent mode but the agent offers none", "mode", settings.Mode)
 	}
 	// The layer's chosen model and reasoning effort are the defaults for
 	// every Session on it; a Template phase may override them afterwards.
@@ -619,21 +614,6 @@ func (s *Server) agentSettingsFor(composition domain.Composition) domain.AgentSe
 		return domain.AgentSettings{}
 	}
 	return *artifact.AgentSettings
-}
-
-// currentMode is the mode an agent reports a new session in.
-func currentMode(modes *acpSessionModes, options []acpConfigOption) string {
-	if modes != nil && modes.CurrentModeID != "" {
-		return modes.CurrentModeID
-	}
-	for _, option := range options {
-		if option.ID == "mode" {
-			var value string
-			_ = json.Unmarshal(option.CurrentValue, &value)
-			return value
-		}
-	}
-	return ""
 }
 
 // setEnablementCommandHandler sets the entrypoint of a capability a layer
@@ -684,124 +664,182 @@ type acpSessionModes struct {
 	} `json:"availableModes"`
 }
 
-// acpSessionModels is the session model state some agents report at
-// session/new instead of a "model" config option.
+// acpSessionModels is the model state an agent reports at session/new. The
+// spec names a model modelId/name; Gemini CLI sends value/title, so both
+// are read.
 type acpSessionModels struct {
 	CurrentModelID  string `json:"currentModelId"`
 	AvailableModels []struct {
 		ID          string `json:"modelId"`
+		Value       string `json:"value"`
 		Name        string `json:"name"`
+		Title       string `json:"title"`
 		Description string `json:"description"`
 	} `json:"availableModels"`
 }
 
-// fullAccessMode finds the agent's full-access mode, from the session mode
-// state or the "mode" config option, and reports whether switching to it is
-// needed.
-func fullAccessMode(modes *acpSessionModes, options []acpConfigOption) (string, bool) {
-	current, available := "", []string{}
-	if modes != nil {
-		current = modes.CurrentModeID
+// ACP lets an agent offer session settings three ways, because the protocol
+// grew: mode state (session/set_mode), model state (session/set_model) and
+// the generic config options (session/set_config_option) that supersede
+// both. Spin folds all three into acpSetting, keyed by the category the
+// spec defines, so any agent that follows the spec works without code for
+// it: Codex reports config options, Claude Code modes and models.
+
+// Categories of a session setting, as the ACP spec names them.
+const (
+	acpCategoryMode         = "mode"
+	acpCategoryModel        = "model"
+	acpCategoryThoughtLevel = "thought_level"
+)
+
+// acpSetting is one thing a session lets you choose, with the method that
+// sets it.
+type acpSetting struct {
+	ID       string
+	Name     string
+	Category string
+	Current  string
+	Values   []domain.AgentOption
+	Method   string // session/set_mode, session/set_model or session/set_config_option
+}
+
+// params builds the request that sets this setting to value.
+func (setting acpSetting) params(sessionID, value string) map[string]any {
+	switch setting.Method {
+	case "session/set_mode":
+		return map[string]any{"sessionId": sessionID, "modeId": value}
+	case "session/set_model":
+		return map[string]any{"sessionId": sessionID, "modelId": value}
+	default:
+		return map[string]any{"sessionId": sessionID, "configId": setting.ID, "value": value}
+	}
+}
+
+// acpSettingsOf normalizes what session/new reported. Dedicated mode and
+// model state win over a config option of the same category, because those
+// are the calls the agent certainly answers.
+func acpSettingsOf(options []acpConfigOption, modes *acpSessionModes, models *acpSessionModels) []acpSetting {
+	var settings []acpSetting
+	if modes != nil && len(modes.AvailableModes) > 0 {
+		setting := acpSetting{ID: "mode", Name: "Mode", Category: acpCategoryMode, Current: modes.CurrentModeID, Method: "session/set_mode"}
 		for _, mode := range modes.AvailableModes {
-			available = append(available, mode.ID)
+			setting.Values = append(setting.Values, domain.AgentOption{Value: mode.ID, Name: mode.Name, Description: mode.Description})
 		}
+		settings = append(settings, setting)
+	}
+	if models != nil && len(models.AvailableModels) > 0 {
+		setting := acpSetting{ID: "model", Name: "Model", Category: acpCategoryModel, Current: models.CurrentModelID, Method: "session/set_model"}
+		for _, model := range models.AvailableModels {
+			setting.Values = append(setting.Values, domain.AgentOption{Value: cmp.Or(model.ID, model.Value), Name: cmp.Or(model.Name, model.Title), Description: model.Description})
+		}
+		settings = append(settings, setting)
 	}
 	for _, option := range options {
-		if option.ID != "mode" {
+		category := acpOptionCategory(option)
+		if slices.ContainsFunc(settings, func(existing acpSetting) bool { return existing.Category == category }) {
 			continue
 		}
-		var value string
-		if json.Unmarshal(option.CurrentValue, &value) == nil && current == "" {
-			current = value
+		setting := acpSetting{ID: option.ID, Name: option.Name, Category: category, Method: "session/set_config_option"}
+		_ = json.Unmarshal(option.CurrentValue, &setting.Current)
+		for _, value := range option.Options {
+			setting.Values = append(setting.Values, domain.AgentOption{Value: value.Value, Name: value.Name, Description: value.Description})
 		}
-		for _, candidate := range option.Options {
-			available = append(available, candidate.Value)
+		settings = append(settings, setting)
+	}
+	return settings
+}
+
+// acpOptionCategory is the spec category of a config option, guessed from
+// its id for an agent that leaves the category out.
+func acpOptionCategory(option acpConfigOption) string {
+	if option.Category != "" {
+		return option.Category
+	}
+	id := strings.ToLower(option.ID)
+	switch {
+	case strings.Contains(id, "model"):
+		return acpCategoryModel
+	case strings.Contains(id, "reason"), strings.Contains(id, "effort"), strings.Contains(id, "thought"), strings.Contains(id, "think"):
+		return acpCategoryThoughtLevel
+	case strings.Contains(id, "mode"):
+		return acpCategoryMode
+	}
+	return option.ID
+}
+
+// setting returns the agent's setting of a category.
+func (a *activeACP) setting(category string) (acpSetting, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, setting := range a.settings {
+		if setting.Category == category {
+			return setting, true
 		}
 	}
-	// Agents name it differently: codex-acp "agent-full-access", the Claude
-	// Code adapter "bypassPermissions".
-	for _, id := range available {
-		lower := strings.ToLower(id)
-		if strings.Contains(lower, "full-access") || strings.Contains(lower, "full_access") || strings.Contains(lower, "bypass") {
-			return id, id != current
+	return acpSetting{}, false
+}
+
+// fullAccessMode finds the agent's full-access mode and reports whether
+// switching to it is needed. Agents name it differently: codex-acp
+// "agent-full-access", the Claude Code adapter "bypassPermissions", Gemini
+// CLI "yolo". OpenCode has no such mode; its permissions are configuration.
+func fullAccessMode(mode acpSetting) (string, bool) {
+	for _, value := range mode.Values {
+		lower := strings.ToLower(value.Value)
+		if strings.Contains(lower, "full-access") || strings.Contains(lower, "full_access") || strings.Contains(lower, "bypass") || lower == "yolo" {
+			return value.Value, value.Value != mode.Current
 		}
 	}
 	return "", false
 }
 
-// agentOptions folds the agent's config options into what a layer keeps.
+// agentOptions folds the agent's settings into what a layer keeps.
 func (a *activeACP) agentOptions() domain.AgentOptions {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	options := domain.AgentOptions{AgentName: a.agentName, FetchedAt: time.Now().UTC()}
-	for _, option := range a.configOptions {
-		values := make([]domain.AgentOption, 0, len(option.Options))
-		for _, value := range option.Options {
-			values = append(values, domain.AgentOption{Value: value.Value, Name: value.Name, Description: value.Description})
-		}
-		switch option.ID {
-		case "model":
-			options.Models = values
-		case "reasoning_effort":
-			options.ReasoningEfforts = values
-		case "mode":
-			options.Modes = values
-		}
-	}
-	if len(options.Modes) == 0 && a.modes != nil {
-		for _, mode := range a.modes.AvailableModes {
-			options.Modes = append(options.Modes, domain.AgentOption{Value: mode.ID, Name: mode.Name, Description: mode.Description})
-		}
-	}
-	if len(options.Models) == 0 && a.models != nil {
-		for _, model := range a.models.AvailableModels {
-			options.Models = append(options.Models, domain.AgentOption{Value: model.ID, Name: model.Name, Description: model.Description})
+	for _, setting := range a.settings {
+		switch setting.Category {
+		case acpCategoryModel:
+			options.Models = setting.Values
+		case acpCategoryThoughtLevel:
+			options.ReasoningEfforts = setting.Values
+		case acpCategoryMode:
+			options.Modes = setting.Values
 		}
 	}
 	return options
 }
 
-// hasConfigOption reports whether the agent offered a config option with id.
-func (a *activeACP) hasConfigOption(id string) bool {
-	for _, option := range a.configOptions {
-		if option.ID == id {
-			return true
-		}
+// apply sets one setting on the agent's session.
+func (a *activeACP) apply(setting acpSetting, value string) error {
+	a.mu.Lock()
+	sessionID := a.agentSessionID
+	a.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := a.request(ctx, setting.Method, setting.params(sessionID, value)); err != nil {
+		return fmt.Errorf("agent refused %s %q: %w", setting.Category, value, err)
 	}
-	return false
+	return nil
 }
 
-// applyConfig sets the phase's model and reasoning effort on the agent's
-// session. Empty values keep the agent's own default. The model goes the
-// way the agent offered it: a "model" config option, or session/set_model
-// for an agent that reported its models as session state. A reasoning
-// effort is only sent when the agent offered one, or nothing at all is
-// known about what it offers.
+// applyConfig sets the phase's model and thought level on the agent's
+// session, each the way the agent offered it. Empty values keep the agent's
+// own default; a value for a setting the agent does not offer is skipped.
 func (a *activeACP) applyConfig(model, reasoningEffort string) error {
-	a.mu.Lock()
-	sessionID, models, advertised := a.agentSessionID, a.models, len(a.configOptions) > 0 || a.models != nil
-	a.mu.Unlock()
-	set := func(method string, params map[string]any, what, value string) error {
-		params["sessionId"] = sessionID
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_, err := a.request(ctx, method, params)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("agent refused %s %q: %w", what, value, err)
+	for _, choice := range []struct{ category, value string }{{acpCategoryModel, model}, {acpCategoryThoughtLevel, reasoningEffort}} {
+		value := strings.TrimSpace(choice.value)
+		if value == "" {
+			continue
 		}
-		return nil
-	}
-	if model = strings.TrimSpace(model); model != "" {
-		if !a.hasConfigOption("model") && models != nil {
-			if err := set("session/set_model", map[string]any{"modelId": model}, "model", model); err != nil {
-				return err
-			}
-		} else if err := set("session/set_config_option", map[string]any{"configId": "model", "value": model}, "model", model); err != nil {
+		setting, ok := a.setting(choice.category)
+		if !ok {
+			continue
+		}
+		if err := a.apply(setting, value); err != nil {
 			return err
 		}
-	}
-	if reasoningEffort = strings.TrimSpace(reasoningEffort); reasoningEffort != "" && (a.hasConfigOption("reasoning_effort") || !advertised) {
-		return set("session/set_config_option", map[string]any{"configId": "reasoning_effort", "value": reasoningEffort}, "reasoning_effort", reasoningEffort)
 	}
 	return nil
 }

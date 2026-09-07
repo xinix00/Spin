@@ -110,6 +110,7 @@ func TestSteeringInjectsIntoTheRunningTurnWhenTheAgentOffersIt(t *testing.T) {
 func TestApplyConfigSetsModelAndReasoningEffort(t *testing.T) {
 	process := newScriptedACPProcess()
 	active := newTestActiveACP(process)
+	active.settings = acpSettingsOf(codexConfigOptions(t), nil, nil)
 	defer active.close()
 	requests := acpRequests(t, process)
 	done := make(chan error, 1)
@@ -140,72 +141,96 @@ func TestApplyConfigSetsModelAndReasoningEffort(t *testing.T) {
 	}
 }
 
-// What session/new offered folds into the layer's stored options.
-func TestAgentOptionsFoldSessionConfigOptions(t *testing.T) {
+// codexConfigOptions is what codex-acp reports at session/new.
+func codexConfigOptions(t *testing.T) []acpConfigOption {
+	t.Helper()
 	var options []acpConfigOption
 	if err := json.Unmarshal([]byte(`[
-		{"id":"mode","name":"Mode","category":"mode","type":"select","currentValue":"agent","options":[{"value":"read-only","name":"Read only"},{"value":"agent","name":"Agent"}]},
+		{"id":"mode","name":"Mode","category":"mode","type":"select","currentValue":"agent","options":[{"value":"read-only","name":"Read only"},{"value":"agent","name":"Agent"},{"value":"agent-full-access","name":"Full access"}]},
 		{"id":"model","name":"Model","category":"model","type":"select","currentValue":"gpt-5.3-codex","options":[{"value":"gpt-5.3-codex","name":"GPT-5.3 Codex","description":"Default"},{"value":"gpt-5.1-codex-mini","name":"Mini"}]},
 		{"id":"reasoning_effort","name":"Reasoning effort","category":"thought_level","type":"select","currentValue":"medium","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}
 	]`), &options); err != nil {
 		t.Fatal(err)
 	}
-	active := &activeACP{agentName: "Codex", configOptions: options}
-	folded := active.agentOptions()
-	// An agent that reports modes only as session mode state (Claude Code)
-	// still ends up with them on the layer.
-	claudeModes := &acpSessionModes{CurrentModeID: "default"}
-	for _, id := range []string{"default", "bypassPermissions"} {
-		claudeModes.AvailableModes = append(claudeModes.AvailableModes, struct {
+	return options
+}
+
+func sessionModes(current string, ids ...string) *acpSessionModes {
+	modes := &acpSessionModes{CurrentModeID: current}
+	for _, id := range ids {
+		modes.AvailableModes = append(modes.AvailableModes, struct {
 			ID          string `json:"id"`
 			Name        string `json:"name"`
 			Description string `json:"description"`
 		}{ID: id, Name: id})
 	}
-	if modesOnly := (&activeACP{agentName: "Claude Code", modes: claudeModes}).agentOptions(); len(modesOnly.Modes) != 2 || modesOnly.Modes[1].Value != "bypassPermissions" {
-		t.Fatalf("modes from session state = %+v", modesOnly.Modes)
-	}
-	if folded.AgentName != "Codex" || len(folded.Models) != 2 || folded.Models[1].Value != "gpt-5.1-codex-mini" || len(folded.ReasoningEfforts) != 2 || folded.ReasoningEfforts[0].Name != "Low" || len(folded.Modes) != 2 {
-		t.Fatalf("folded options = %+v", folded)
-	}
+	return modes
 }
 
-// Spin runs the agent in its full-access mode when it offers one: the
-// capsule is the sandbox.
-func TestFullAccessModeIsChosenWhenOffered(t *testing.T) {
-	modes := &acpSessionModes{CurrentModeID: "agent"}
-	for _, id := range []string{"read-only", "agent", "agent-full-access"} {
-		modes.AvailableModes = append(modes.AvailableModes, struct {
-			ID          string `json:"id"`
-			Name        string `json:"name"`
-			Description string `json:"description"`
-		}{ID: id})
+// The four agents report their settings three ways; all fold into the same
+// layer options and the same full-access decision without code per agent.
+func TestAgentSettingsNormalizeAcrossAgents(t *testing.T) {
+	// Codex: config options with categories.
+	codex := (&activeACP{agentName: "Codex", settings: acpSettingsOf(codexConfigOptions(t), nil, nil)}).agentOptions()
+	if codex.AgentName != "Codex" || len(codex.Models) != 2 || codex.Models[1].Value != "gpt-5.1-codex-mini" || len(codex.ReasoningEfforts) != 2 || codex.ReasoningEfforts[0].Name != "Low" || len(codex.Modes) != 3 {
+		t.Fatalf("codex options = %+v", codex)
 	}
-	if mode, ok := fullAccessMode(modes, nil); !ok || mode != "agent-full-access" {
-		t.Fatalf("fullAccessMode = %q, %v", mode, ok)
+	if mode, ok := (&activeACP{settings: acpSettingsOf(codexConfigOptions(t), nil, nil)}).setting(acpCategoryMode); !ok || mode.Method != "session/set_config_option" || mode.Current != "agent" {
+		t.Fatalf("codex mode setting = %+v", mode)
+	} else if full, wanted := fullAccessMode(mode); full != "agent-full-access" || !wanted {
+		t.Fatalf("codex full access = %q %v", full, wanted)
 	}
-	modes.CurrentModeID = "agent-full-access"
-	if _, ok := fullAccessMode(modes, nil); ok {
+	// Claude Code: modes and models as session state, spec-shaped models.
+	var claudeModels acpSessionModels
+	_ = json.Unmarshal([]byte(`{"currentModelId":"claude-sonnet-5","availableModels":[{"modelId":"claude-sonnet-5","name":"Sonnet 5"},{"modelId":"claude-opus-5","name":"Opus 5","description":"Most capable"}]}`), &claudeModels)
+	claudeSettings := acpSettingsOf(nil, sessionModes("default", "default", "acceptEdits", "bypassPermissions", "plan"), &claudeModels)
+	claude := (&activeACP{agentName: "Claude Code", settings: claudeSettings}).agentOptions()
+	if len(claude.Models) != 2 || claude.Models[1].Value != "claude-opus-5" || claude.Models[1].Description != "Most capable" || len(claude.Modes) != 4 || len(claude.ReasoningEfforts) != 0 {
+		t.Fatalf("claude options = %+v", claude)
+	}
+	if mode, _ := (&activeACP{settings: claudeSettings}).setting(acpCategoryMode); mode.Method != "session/set_mode" {
+		t.Fatalf("claude mode setting = %+v", mode)
+	} else if full, wanted := fullAccessMode(mode); full != "bypassPermissions" || !wanted {
+		t.Fatalf("claude full access = %q %v", full, wanted)
+	}
+	// Gemini CLI: modes and models as session state, models as value/title.
+	var geminiModels acpSessionModels
+	_ = json.Unmarshal([]byte(`{"currentModelId":"auto","availableModels":[{"value":"auto","title":"Auto","description":"Let Gemini CLI decide"},{"value":"gemini-2.5-pro","title":"Gemini 2.5 Pro"}]}`), &geminiModels)
+	geminiSettings := acpSettingsOf(nil, sessionModes("default", "default", "autoEdit", "yolo"), &geminiModels)
+	gemini := (&activeACP{agentName: "Gemini", settings: geminiSettings}).agentOptions()
+	if len(gemini.Models) != 2 || gemini.Models[1].Value != "gemini-2.5-pro" || gemini.Models[1].Name != "Gemini 2.5 Pro" || len(gemini.Modes) != 3 {
+		t.Fatalf("gemini options = %+v", gemini)
+	}
+	if mode, _ := (&activeACP{settings: geminiSettings}).setting(acpCategoryMode); mode.Current != "default" {
+		t.Fatalf("gemini mode setting = %+v", mode)
+	} else if full, wanted := fullAccessMode(mode); full != "yolo" || !wanted {
+		t.Fatalf("gemini full access = %q %v", full, wanted)
+	}
+	// OpenCode: config options for model and mode, no full-access mode.
+	var opencode []acpConfigOption
+	_ = json.Unmarshal([]byte(`[{"id":"model","name":"Model","category":"model","type":"select","currentValue":"opencode/big-pickle","options":[{"value":"opencode/big-pickle","name":"OpenCode Zen/Big Pickle"},{"value":"minimax/MiniMax-M3","name":"MiniMax-M3"}]},{"id":"mode","name":"Session Mode","category":"mode","type":"select","currentValue":"build","options":[{"value":"build","name":"build"},{"value":"plan","name":"plan"}]}]`), &opencode)
+	opencodeSettings := acpSettingsOf(opencode, nil, nil)
+	if folded := (&activeACP{settings: opencodeSettings}).agentOptions(); len(folded.Models) != 2 || len(folded.Modes) != 2 || len(folded.ReasoningEfforts) != 0 {
+		t.Fatalf("opencode options = %+v", folded)
+	}
+	if mode, _ := (&activeACP{settings: opencodeSettings}).setting(acpCategoryMode); mode.Current != "build" {
+		t.Fatalf("opencode mode setting = %+v", mode)
+	} else if _, wanted := fullAccessMode(mode); wanted {
+		t.Fatal("opencode was switched to a full-access mode it does not have")
+	}
+	// Mode state wins over a mode config option of the same category, and
+	// an already full-access session is not switched.
+	both := acpSettingsOf(codexConfigOptions(t), sessionModes("agent-full-access", "agent", "agent-full-access"), nil)
+	if mode, _ := (&activeACP{settings: both}).setting(acpCategoryMode); mode.Method != "session/set_mode" {
+		t.Fatalf("mode with both shapes = %+v", mode)
+	} else if _, wanted := fullAccessMode(mode); wanted {
 		t.Fatal("switching was requested although the mode is already full access")
 	}
-	var options []acpConfigOption
-	_ = json.Unmarshal([]byte(`[{"id":"mode","currentValue":"agent","options":[{"value":"read-only"},{"value":"agent-full-access"}]}]`), &options)
-	if mode, ok := fullAccessMode(nil, options); !ok || mode != "agent-full-access" {
-		t.Fatalf("fullAccessMode from config options = %q, %v", mode, ok)
-	}
-	if _, ok := fullAccessMode(nil, nil); ok {
-		t.Fatal("an agent without modes was switched")
-	}
-	claude := &acpSessionModes{CurrentModeID: "default"}
-	for _, id := range []string{"default", "acceptEdits", "bypassPermissions", "plan"} {
-		claude.AvailableModes = append(claude.AvailableModes, struct {
-			ID          string `json:"id"`
-			Name        string `json:"name"`
-			Description string `json:"description"`
-		}{ID: id})
-	}
-	if mode, ok := fullAccessMode(claude, nil); !ok || mode != "bypassPermissions" {
-		t.Fatalf("Claude Code full access = %q, %v", mode, ok)
+	// A config option without a category is placed by its id.
+	var bare []acpConfigOption
+	_ = json.Unmarshal([]byte(`[{"id":"thinking_level","options":[{"value":"low"}]},{"id":"llm","options":[{"value":"x"}]}]`), &bare)
+	if settings := acpSettingsOf(bare, nil, nil); settings[0].Category != acpCategoryThoughtLevel || settings[1].Category != "llm" {
+		t.Fatalf("categories from ids = %+v", settings)
 	}
 }
 
@@ -216,12 +241,9 @@ func TestApplyConfigUsesSetModelForSessionModels(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"currentModelId":"claude-sonnet-5","availableModels":[{"modelId":"claude-sonnet-5","name":"Sonnet 5"},{"modelId":"claude-opus-5","name":"Opus 5","description":"Most capable"}]}`), &models); err != nil {
 		t.Fatal(err)
 	}
-	if folded := (&activeACP{agentName: "Claude Code", models: &models}).agentOptions(); len(folded.Models) != 2 || folded.Models[1].Value != "claude-opus-5" || folded.Models[1].Description != "Most capable" {
-		t.Fatalf("models from session state = %+v", folded.Models)
-	}
 	process := newScriptedACPProcess()
 	active := newTestActiveACP(process)
-	active.models = &models
+	active.settings = acpSettingsOf(nil, nil, &models)
 	defer active.close()
 	requests := acpRequests(t, process)
 	done := make(chan error, 1)
