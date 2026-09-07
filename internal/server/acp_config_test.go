@@ -218,11 +218,20 @@ func TestAgentSettingsNormalizeAcrossAgents(t *testing.T) {
 	} else if _, wanted := fullAccessMode(mode); wanted {
 		t.Fatal("opencode was switched to a full-access mode it does not have")
 	}
-	// Mode state wins over a mode config option of the same category, and
-	// an already full-access session is not switched.
-	both := acpSettingsOf(codexConfigOptions(t), sessionModes("agent-full-access", "agent", "agent-full-access"), nil)
-	if mode, _ := (&activeACP{settings: both}).setting(acpCategoryMode); mode.Method != "session/set_mode" {
+	// A newer codex-acp reports models state next to its config options;
+	// the config option wins, because its set_model wants "model[effort]".
+	var codexModels acpSessionModels
+	_ = json.Unmarshal([]byte(`{"currentModelId":"gpt-5.3-codex[medium]","availableModels":[{"modelId":"gpt-5.3-codex[medium]","name":"GPT-5.3 Codex"}]}`), &codexModels)
+	both := acpSettingsOf(codexConfigOptions(t), sessionModes("agent-full-access", "agent", "agent-full-access"), &codexModels)
+	if model, _ := (&activeACP{settings: both}).setting(acpCategoryModel); model.Method != "session/set_config_option" || model.ID != "model" || len(model.Values) != 2 {
+		t.Fatalf("model with both shapes = %+v", model)
+	}
+	if mode, _ := (&activeACP{settings: both}).setting(acpCategoryMode); mode.Method != "session/set_config_option" {
 		t.Fatalf("mode with both shapes = %+v", mode)
+	}
+	// An already full-access session is not switched.
+	if mode, _ := (&activeACP{settings: acpSettingsOf(nil, sessionModes("agent-full-access", "agent", "agent-full-access"), nil)}).setting(acpCategoryMode); mode.Method != "session/set_mode" {
+		t.Fatalf("mode from state = %+v", mode)
 	} else if _, wanted := fullAccessMode(mode); wanted {
 		t.Fatal("switching was requested although the mode is already full access")
 	}

@@ -732,34 +732,35 @@ func (setting acpSetting) params(sessionID, value string) map[string]any {
 	}
 }
 
-// acpSettingsOf normalizes what session/new reported. Dedicated mode and
-// model state win over a config option of the same category, because those
-// are the calls the agent certainly answers.
+// acpSettingsOf normalizes what session/new reported. Config options win
+// over dedicated mode and model state of the same category: they are the
+// spec's generic form and their values are what set_config_option takes.
+// An agent that reports both may expect something else on the dedicated
+// call (codex-acp encodes the effort into set_model's id: "model[effort]").
 func acpSettingsOf(options []acpConfigOption, modes *acpSessionModes, models *acpSessionModels) []acpSetting {
 	var settings []acpSetting
-	if modes != nil && len(modes.AvailableModes) > 0 {
+	for _, option := range options {
+		setting := acpSetting{ID: option.ID, Name: option.Name, Category: acpOptionCategory(option), Method: "session/set_config_option"}
+		_ = json.Unmarshal(option.CurrentValue, &setting.Current)
+		for _, value := range option.Options {
+			setting.Values = append(setting.Values, domain.AgentOption{Value: value.Value, Name: value.Name, Description: value.Description})
+		}
+		settings = append(settings, setting)
+	}
+	has := func(category string) bool {
+		return slices.ContainsFunc(settings, func(existing acpSetting) bool { return existing.Category == category })
+	}
+	if modes != nil && len(modes.AvailableModes) > 0 && !has(acpCategoryMode) {
 		setting := acpSetting{ID: "mode", Name: "Mode", Category: acpCategoryMode, Current: modes.CurrentModeID, Method: "session/set_mode"}
 		for _, mode := range modes.AvailableModes {
 			setting.Values = append(setting.Values, domain.AgentOption{Value: mode.ID, Name: mode.Name, Description: mode.Description})
 		}
 		settings = append(settings, setting)
 	}
-	if models != nil && len(models.AvailableModels) > 0 {
+	if models != nil && len(models.AvailableModels) > 0 && !has(acpCategoryModel) {
 		setting := acpSetting{ID: "model", Name: "Model", Category: acpCategoryModel, Current: models.CurrentModelID, Method: "session/set_model"}
 		for _, model := range models.AvailableModels {
 			setting.Values = append(setting.Values, domain.AgentOption{Value: cmp.Or(model.ID, model.Value), Name: cmp.Or(model.Name, model.Title), Description: model.Description})
-		}
-		settings = append(settings, setting)
-	}
-	for _, option := range options {
-		category := acpOptionCategory(option)
-		if slices.ContainsFunc(settings, func(existing acpSetting) bool { return existing.Category == category }) {
-			continue
-		}
-		setting := acpSetting{ID: option.ID, Name: option.Name, Category: category, Method: "session/set_config_option"}
-		_ = json.Unmarshal(option.CurrentValue, &setting.Current)
-		for _, value := range option.Options {
-			setting.Values = append(setting.Values, domain.AgentOption{Value: value.Value, Name: value.Name, Description: value.Description})
 		}
 		settings = append(settings, setting)
 	}
