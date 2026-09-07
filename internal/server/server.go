@@ -490,6 +490,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/code-reviews/{revisionID}", s.getCodeReview)
 	s.mux.HandleFunc("POST /api/code-reviews/{revisionID}/comments", s.createCodeReviewComment)
 	s.mux.HandleFunc("POST /api/jobs/{jobID}/close", s.closeJob)
+	s.mux.HandleFunc("PUT /api/jobs/{jobID}/assignee", s.assignJob)
 	s.mux.HandleFunc("DELETE /api/jobs/{jobID}", s.deleteJob)
 	s.mux.HandleFunc("POST /api/deliverables/{deliverableID}/comments", s.createDeliverableComment)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/retry", s.retryWorkflowSession)
@@ -794,6 +795,19 @@ func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 	}
 	s.workflowMu.Unlock()
 	writeJSON(w, http.StatusOK, deleted)
+}
+
+func (s *Server) assignJob(w http.ResponseWriter, r *http.Request) {
+	var req domain.AssignJobRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	job, err := s.store.AssignJob(r.PathValue("jobID"), s.requestOperator(r, ""), req.Assignee)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
 }
 
 func (s *Server) closeJob(w http.ResponseWriter, r *http.Request) {

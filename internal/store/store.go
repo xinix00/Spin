@@ -1908,6 +1908,7 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 		Objective:           strings.TrimSpace(req.Objective),
 		AcceptanceCriteria:  append([]string(nil), req.AcceptanceCriteria...),
 		Owner:               owner,
+		Assignee:            owner,
 		GitRepositoryID:     repository.ID,
 		GitRepositoryName:   repository.Name,
 		GitRemoteURL:        repository.RemoteURL,
@@ -2011,6 +2012,36 @@ func (s *Store) PrepareJobDeletion(jobID, operator string) (domain.Job, []domain
 // CloseJob preserves the complete Job history while making the Job
 // non-runnable. Any active workflow decision is closed as part of the same
 // persisted state transition so a browser refresh can never show it as live.
+// AssignJob hands a Job to a user: any signed-in colleague may do it, so a
+// Job can be put with someone "to have a look" and back again.
+func (s *Store) AssignJob(jobID, operator, assignee string) (domain.Job, error) {
+	operator = normalizeSubject(operator)
+	assignee = normalizeSubject(assignee)
+	if operator == "" || assignee == "" {
+		return domain.Job{}, fmt.Errorf("operator and assignee are required: %w", ErrConflict)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.state.Jobs[strings.TrimSpace(jobID)]
+	if !ok {
+		return domain.Job{}, ErrNotFound
+	}
+	known := false
+	for _, user := range s.state.Users {
+		if normalizeSubject(user.Username) == assignee && user.ArchivedAt == nil {
+			known = true
+			break
+		}
+	}
+	if !known && assignee != job.Owner {
+		return domain.Job{}, fmt.Errorf("user %s is unknown or archived: %w", assignee, ErrNotFound)
+	}
+	job.Assignee = assignee
+	job.UpdatedAt = time.Now().UTC()
+	s.state.Jobs[job.ID] = job
+	return job, s.saveLocked()
+}
+
 func (s *Store) CloseJob(jobID, operator string) (domain.Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

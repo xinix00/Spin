@@ -95,6 +95,8 @@ Iedere Templateflow eindigt verplicht met een door Spin toegevoegde `Pull reques
 
 Een Template is een tabel van fasen, geen ingebouwd type zoals “ontwikkeling” of “bugfix”. Het Template kiest tevens de generieke Git-enablement. Per fase leg je de opdracht, eventuele Markdown-deliverables, expliciet te injecteren eerdere deliverables, `mag repository wijzigen`, de `ACCEPT`-route, de `REJECT`-route en een rejectlimiet vast. De ACCEPT- en REJECT-route hebben ieder een eigen optionele `ASK USER`-gate. Een Job combineert zo'n Template met alleen een naam, goal, repository en ACP-environment. Spin maakt per fase een nieuwe geïsoleerde Session en start de ACP-agent automatisch.
 
+Een Job ligt bij iemand: bij aanmaken bij de eigenaar, daarna bij wie hem toegewezen krijgt. Op de Job-kaart staat bij wie hij ligt en iedere ingelogde collega kan hem doorzetten ("zet hem even op John, dan kijkt die ernaar"). De Jobs-pagina toont **Mijn** (wat bij jou ligt), **Alle** (alle open Jobs van het team) en **Gesloten**.
+
 `Job inschieten` bewaart de Job en eerste queued Session direct en retourneert vóór Git, Docker en ACP worden gestart. De browser blokkeert dubbel submitten; een duurzame, user-gebonden idempotency-key zorgt daarnaast dat retries of een klikburst server-side dezelfde Job teruggeven. De zware start gebeurt daarna op de achtergrond.
 
 Het kruisje op een Job annuleert een eventuele achtergrondstart, stopt zijn lokale Session-capsules en verwijdert alle bijbehorende lokale workflowstate. De Git-repository en remote Job/Session-branches blijven bewust bestaan.

@@ -129,3 +129,43 @@ func TestAgentSettingsFollowAnEdit(t *testing.T) {
 		t.Fatalf("clearing settings = %+v, %v", cleared.AgentSettings, err)
 	}
 }
+
+// A Job lies with its owner until a colleague hands it on; only known,
+// active users can hold it.
+func TestAssignJobHandsItToAKnownUser(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "agent", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "agent-acp"}}})
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "shop", RemoteURL: "https://github.com/derek/shop.git", DefaultRef: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Code", Phases: []domain.WorkflowPhase{{ID: "dev", Name: "Dev", Instructions: "Bouw", AllowChanges: true, Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: "SELF"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Objective: "Werkend", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Job.Assignee != "derek" {
+		t.Fatalf("new job assignee = %q, want the owner", created.Job.Assignee)
+	}
+	if _, err := st.AssignJob(created.Job.ID, "derek", "john"); err == nil {
+		t.Fatal("assigned to an unknown user")
+	}
+	st.mu.Lock()
+	st.state.Users["usr_john"] = domain.User{ID: "usr_john", Username: "john", DisplayName: "John", Role: domain.UserMember}
+	st.mu.Unlock()
+	assigned, err := st.AssignJob(created.Job.ID, "derek", "John")
+	if err != nil || assigned.Assignee != "john" {
+		t.Fatalf("assign = %+v, %v", assigned, err)
+	}
+	back, err := st.AssignJob(created.Job.ID, "john", "derek")
+	if err != nil || back.Assignee != "derek" {
+		t.Fatalf("assign back = %+v, %v", back, err)
+	}
+}
