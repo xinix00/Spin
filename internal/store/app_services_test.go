@@ -209,3 +209,47 @@ func TestSetJobFinalizeSwapsTheFinalizerOfTheJob(t *testing.T) {
 		}
 	}
 }
+
+// A step whose accept ends the Job says how it lands, so an agent that
+// accepts on its own does not need a person to choose.
+func TestStepTargetCarriesTheLanding(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "agent", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "agent-acp"}}})
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "shop", RemoteURL: "https://github.com/derek/shop.git", DefaultRef: "develop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Code", Phases: []domain.WorkflowPhase{{ID: "dev", Name: "Dev", Instructions: "Bouw", AllowChanges: true, Accept: domain.WorkflowTransition{Target: "DONE:merge"}, Reject: domain.WorkflowTransition{Target: "SELF"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev := template.Phases[0]; dev.Accept.Target != domain.WorkflowPullRequestPhaseID || dev.Accept.Landing != "merge" {
+		t.Fatalf("accept transition = %+v", dev.Accept)
+	}
+	if _, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Fout", Phases: []domain.WorkflowPhase{{ID: "dev", Name: "Dev", Instructions: "Bouw", Accept: domain.WorkflowTransition{Target: "DONE:fax"}, Reject: domain.WorkflowTransition{Target: "SELF"}}}}); err == nil {
+		t.Fatal("an unknown landing was accepted")
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Objective: "Werkend", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkWorkflowPhaseRunning(created.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	// The agent accepts by itself: the next phase is the merge, not a PR.
+	advance, err := st.CompleteWorkflowPhase(created.Session.ID, "accept", "klaar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if advance.NextSession == nil {
+		t.Fatalf("no finalizer session: %+v", advance)
+	}
+	_, _, _, next, _, _, err := st.WorkflowForSession(advance.NextSession.ID)
+	if err != nil || next.Action == nil || next.Action.Type != domain.WorkflowActionGitMerge {
+		t.Fatalf("finalizer phase = %+v, %v", next, err)
+	}
+}

@@ -82,6 +82,24 @@ func normalizeWorkflowTemplateRequest(req domain.CreateWorkflowTemplateRequest) 
 			phase.Reject.AskUser = true
 			phase.AskUser = false
 		}
+		for _, transition := range []*domain.WorkflowTransition{&phase.Accept, &phase.Reject} {
+			// "DONE:merge" and "DONE:pull_request" end the Job with that
+			// landing; plain DONE takes the Template's default.
+			if target, landing, ok := strings.Cut(strings.TrimSpace(transition.Target), ":"); ok && strings.EqualFold(target, domain.WorkflowTargetDone) {
+				normalized, err := normalizeWorkflowFinalize(landing)
+				if err != nil {
+					return "", "", "", nil, fmt.Errorf("phase %s: %w", phase.Name, err)
+				}
+				transition.Target, transition.Landing = domain.WorkflowTargetDone, normalized
+			}
+			if target, landing, ok := strings.Cut(strings.TrimSpace(transition.Exhausted), ":"); ok && strings.EqualFold(target, domain.WorkflowTargetDone) {
+				normalized, err := normalizeWorkflowFinalize(landing)
+				if err != nil {
+					return "", "", "", nil, fmt.Errorf("phase %s: %w", phase.Name, err)
+				}
+				transition.Exhausted, transition.Landing = domain.WorkflowTargetDone, normalized
+			}
+		}
 		phase.Name = strings.TrimSpace(phase.Name)
 		phase.Instructions = strings.TrimSpace(phase.Instructions)
 		phase.ID = normalizeName(phase.ID)
@@ -470,19 +488,36 @@ func (s *Store) SetJobFinalize(jobID, finalize string) (domain.Job, error) {
 	if !ok {
 		return domain.Job{}, fmt.Errorf("Job has no workflow Template: %w", ErrNotFound)
 	}
-	for index := range template.Phases {
-		phase := &template.Phases[index]
-		if phase.Executor == domain.WorkflowExecutorAction && phase.Action != nil && isWorkflowFinalizerAction(phase.Action.Type) {
-			chosen := workflowFinalizerPhase(finalize)
-			phase.Name, phase.Action = chosen.Name, chosen.Action
-		}
-	}
-	template.Finalize = finalize
+	template = templateWithFinalizer(template, finalize)
 	job.TemplateSnapshot = &template
 	job.Finalize = finalize
 	job.UpdatedAt = time.Now().UTC()
 	s.state.Jobs[job.ID] = job
 	return job, s.saveLocked()
+}
+
+// workflowLandingFor is the landing the phase's transition for this
+// outcome asks for, if any.
+func workflowLandingFor(phase domain.WorkflowPhase, outcome string) string {
+	if outcome == "reject" {
+		return phase.Reject.Landing
+	}
+	return phase.Accept.Landing
+}
+
+// templateWithFinalizer returns the Template with its finalizer phase set
+// to the given landing.
+func templateWithFinalizer(template domain.WorkflowTemplate, landing string) domain.WorkflowTemplate {
+	template = cloneWorkflowTemplate(template)
+	for index := range template.Phases {
+		phase := &template.Phases[index]
+		if phase.Executor == domain.WorkflowExecutorAction && phase.Action != nil && isWorkflowFinalizerAction(phase.Action.Type) {
+			chosen := workflowFinalizerPhase(landing)
+			phase.Name, phase.Action = chosen.Name, chosen.Action
+		}
+	}
+	template.Finalize = landing
+	return template
 }
 
 func (s *Store) workflowTemplateForJobLocked(job domain.Job) (domain.WorkflowTemplate, bool) {
@@ -1061,6 +1096,14 @@ func (s *Store) advanceWorkflowLocked(job domain.Job, template domain.WorkflowTe
 		s.state.Jobs[job.ID] = job
 		advance.Job = job
 		return advance, nil
+	}
+	// A transition that ends the Job may say how: the Job's own Template copy
+	// then carries that finalizer, so the phase that runs next is the chosen
+	// one, also when nobody is asked.
+	if landing := workflowLandingFor(phase, outcome); landing != "" && target == domain.WorkflowPullRequestPhaseID {
+		template = templateWithFinalizer(template, landing)
+		job.TemplateSnapshot = &template
+		job.Finalize = landing
 	}
 	nextPhase, ok := workflowPhase(template, target)
 	if !ok {

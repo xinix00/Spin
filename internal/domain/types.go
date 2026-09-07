@@ -67,6 +67,10 @@ type WorkflowTransition struct {
 	AskUser   bool   `json:"ask_user,omitempty"`
 	Max       int    `json:"max,omitempty"`
 	Exhausted string `json:"exhausted,omitempty"`
+	// Landing says how the Job lands when this transition ends it:
+	// "pull_request" or "merge". Empty means the Template's default. A step
+	// the agent may accept on its own needs this, since nobody is asked.
+	Landing string `json:"landing,omitempty"`
 }
 
 type DeliverableDefinition struct {
