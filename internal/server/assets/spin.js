@@ -502,6 +502,8 @@ function startProgressText(start){
 // followingStartID guards the poller: one per recording, whether the browser
 // issued the command or found the recording starting after a reload.
 let followingStartID='';
+// startState mirrors the start job the browser is following, for the recorder card.
+let startState=null;
 async function followStart(start){
   if(followingStartID===start.recording_id)return;
   followingStartID=start.recording_id;
