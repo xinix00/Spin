@@ -466,11 +466,11 @@ if [ ! -d .git ]; then
 else
   test "$(git config --get remote.origin.url)" = "$SPIN_GIT_REMOTE"
 fi
-if ! git ls-remote --exit-code --heads origin "$SPIN_GIT_TARGET" >/dev/null 2>&1; then
+if ! git ls-remote --exit-code origin "refs/heads/$SPIN_GIT_TARGET" >/dev/null 2>&1; then
   git fetch --depth=1 origin "$SPIN_GIT_BOOTSTRAP"
   SPIN_BOOTSTRAP_HEAD="$(git rev-parse FETCH_HEAD)"
   if ! git push origin "$SPIN_BOOTSTRAP_HEAD:refs/heads/$SPIN_GIT_TARGET"; then
-    git ls-remote --exit-code --heads origin "$SPIN_GIT_TARGET" >/dev/null
+    git ls-remote --exit-code origin "refs/heads/$SPIN_GIT_TARGET" >/dev/null
   fi
 fi
 # A workspace whose Session branch exists is complete: reuse it as it is.
@@ -1150,7 +1150,7 @@ elif [ "$SPIN_CHANGED" = 1 ]; then
   fi
   SPIN_PUBLISH="$(git rev-parse HEAD)"
 fi
-if git ls-remote --exit-code --heads origin "$SPIN_GIT_REF" >/dev/null 2>&1; then
+if git ls-remote --exit-code origin "refs/heads/$SPIN_GIT_REF" >/dev/null 2>&1; then
   git fetch --depth=50 origin "$SPIN_GIT_REF"
   if ! git merge-base --is-ancestor FETCH_HEAD "$SPIN_PUBLISH"; then
     echo 'The Job branch advanced after this Session started; automatic ACCEPT cannot overwrite it' >&2
@@ -1158,7 +1158,7 @@ if git ls-remote --exit-code --heads origin "$SPIN_GIT_REF" >/dev/null 2>&1; the
   fi
 fi
 git push origin "$SPIN_PUBLISH:refs/heads/$SPIN_GIT_REF"
-SPIN_REMOTE_HEAD="$(git ls-remote --exit-code --heads origin "$SPIN_GIT_REF" | cut -f1)"
+SPIN_REMOTE_HEAD="$(git ls-remote --exit-code origin "refs/heads/$SPIN_GIT_REF" | cut -f1)"
 if [ "$SPIN_REMOTE_HEAD" != "$SPIN_PUBLISH" ]; then
   echo 'Remote Job branch does not match the accepted Session HEAD after push' >&2
   exit 44
@@ -1248,7 +1248,9 @@ else
 fi
 SPIN_HEAD="$(git rev-parse HEAD)"
 git push origin "$SPIN_HEAD:refs/heads/${SPIN_MERGE_TARGET}"
-SPIN_REMOTE_HEAD="$(git ls-remote --exit-code --heads origin "${SPIN_MERGE_TARGET}" | cut -f1)"
+# ls-remote matches a bare name against the tail of every ref: "main" would
+# also list jobs/<ticket>/main. The full ref name is exact.
+SPIN_REMOTE_HEAD="$(git ls-remote --exit-code origin "refs/heads/${SPIN_MERGE_TARGET}" | cut -f1)"
 if [ "$SPIN_REMOTE_HEAD" != "$SPIN_HEAD" ]; then
   echo "Remote ${SPIN_MERGE_TARGET} does not match the merged HEAD after push" >&2
   exit 46
