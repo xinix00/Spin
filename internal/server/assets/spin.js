@@ -1,7 +1,7 @@
 const spinAssetBase = new URL('.', document.currentScript.src).href.replace(/\/$/, '');
 let snapshot = {artifacts:[],recordings:[],compositions:[],jobs:[],job_attachments:[],workflow_templates:[],phase_runs:[],deliverables:[],deliverable_comments:[],code_review_revisions:[],code_review_comments:[],workflow_questions:[],sessions:[],activations:[],turns:[],checkpoints:[],results:[],clients:[],mcp_servers:[],git_repositories:[],git_accounts:[],git_oauth_providers:[],users:[],recommendations:[]};
 let authState = {configured:false,authenticated:false,user:null};
-let csrfToken = '', pollTimer = null;
+let csrfToken = '';
 const spawnDrafts = new Map();
 let templateStepSequence = 0, editingTemplateID = '', editingGitRepositoryID = '';
 let jobSubmitting = false, pendingJobSubmission = null, attachmentTargetJobID = '', forkingJobID = '';
@@ -468,7 +468,7 @@ function enterApp(status){
   document.getElementById('current-user').textContent=`${status.user.display_name||status.user.username} · ${status.user.role}`;
   document.getElementById('job-owner').value=status.user.username;
   document.getElementById('job-owner').readOnly=true;
-  if(!pollTimer)pollTimer=setInterval(()=>refresh(false),2500);
+  connectStateStream();
 }
 function showError(error){const box=document.getElementById('error');box.textContent=error.message||error;box.style.display='block';setTimeout(()=>box.style.display='none',6500);}
 function renderTerminalLines(){
@@ -636,6 +636,37 @@ async function execute(line){
   }catch(error){sealState=null;print('error',error.message||error);showError(error);await refresh(true).catch(()=>{});}
 }
 
+// Rendering is idempotent and full, but the DOM is only touched where the
+// HTML differs, and never where the user is: a region holding the focused
+// control (an open dropdown, a field being typed in) keeps its DOM until
+// focus leaves, then gets what it missed.
+function regionBusy(root){const active=document.activeElement;return Boolean(active&&active!==document.body&&root.contains(active)&&active.matches('select,input,textarea,[contenteditable="true"]'));}
+function deferRegion(root,apply){root._pendingRender=apply;if(root._pendingBound)return;root._pendingBound=true;root.addEventListener('focusout',()=>setTimeout(()=>{if(root._pendingRender&&!regionBusy(root)){const apply=root._pendingRender;root._pendingRender=null;apply();}},0));}
+// patchRegion writes a region's HTML only when it changed, and not while the
+// user is in it; a deferred write lands on focusout and is followed by a
+// full render so handlers are bound again.
+const innerHTMLDescriptor=Object.getOwnPropertyDescriptor(Element.prototype,'innerHTML');
+function patchRegion(root,html){
+  if(root._renderedHTML===html)return false;
+  const write=()=>{innerHTMLDescriptor.set.call(root,html);root._renderedHTML=html;};
+  if(regionBusy(root)){deferRegion(root,()=>{if(root._renderedHTML!==html){write();render();}});return false;}
+  write();return true;
+}
+// region returns a container whose innerHTML assignments go through
+// patchRegion: renderers keep writing full HTML, the DOM only moves when the
+// HTML does. Handlers are (re)bound after every render; that is idempotent.
+function region(id){const root=document.getElementById(id);if(root&&!root._region){root._region=true;Object.defineProperty(root,'innerHTML',{get(){return innerHTMLDescriptor.get.call(root);},set(value){patchRegion(root,String(value));}});}return root;}
+// patchKeyed keeps every child whose HTML is unchanged, replaces the ones
+// that changed, and reorders/removes/adds by key; a child the user is in
+// waits for focus to leave. Returns whether anything changed.
+function patchKeyed(root,entries){
+  const current=new Map([...root.children].filter(node=>node.dataset.key).map(node=>[node.dataset.key,node]));let changed=false;
+  const nodes=entries.map(({key,html})=>{const existing=current.get(key);if(existing&&existing._renderedHTML===html)return existing;
+    if(existing&&regionBusy(existing)){deferRegion(existing,()=>{if(existing._renderedHTML!==html){const fresh=document.createElement('template');fresh.innerHTML=html;const node=fresh.content.firstElementChild;node.dataset.key=key;node._renderedHTML=html;existing.replaceWith(node);root._afterPatch?.();}});return existing;}
+    const template=document.createElement('template');template.innerHTML=html;const node=template.content.firstElementChild;node.dataset.key=key;node._renderedHTML=html;changed=true;return node;});
+  if(!changed&&nodes.length===root.children.length&&nodes.every((node,index)=>root.children[index]===node))return false;
+  root.replaceChildren(...nodes);return true;
+}
 function render(){
   if(chatState.sessionID&&document.getElementById('chat-dialog').open&&!workflowSessionIsActive(chatState.sessionID))closeDialog('chat-dialog');
   const onlineClients=snapshot.clients.filter(client=>client.status==='online').length,connections=snapshot.git_repositories.length+snapshot.git_accounts.length+myMCP().length+onlineClients;
@@ -649,7 +680,7 @@ function render(){
 }
 
 function renderRecording(){
-  const recording=activeRecording(),status=document.getElementById('terminal-status'),root=document.getElementById('recording-section');
+  const recording=activeRecording(),status=region('terminal-status'),root=document.getElementById('recording-section');
   if(!recording){status.className='terminal-status';status.innerHTML='<span class="rec-dot"></span><span>idle</span>';root.innerHTML='<h3>Recorder</h3><div class="empty">Geen actieve opname.</div>';updateTerminalControls();return;}
   if(!terminalSessions.size){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>REC ${esc(recording.kind)}:${esc(recording.name)}</span>`;}
   // A recording without a capsule is being started by a job on the server;
@@ -669,7 +700,7 @@ function renderRecording(){
 }
 
 function renderComposition(){
-  const composition=snapshot.compositions.find(item=>item.operator===currentOperator()),root=document.getElementById('composition');
+  const composition=snapshot.compositions.find(item=>item.operator===currentOperator()),root=region('composition');
   if(!composition){root.innerHTML='<div class="empty">Nog geen draaiende Composition.</div>';return;}
   const bindings=Object.entries(composition.slot_bindings||{}).map(([slot,id])=>{const artifact=byID(snapshot.artifacts,id);return `<div class="binding"><span>${esc(slot)}</span><span>${esc(artifact?artifactSelector(artifact):id)}</span></div>`;}).join('');
   const enabled=composition.enabled?.length?`<div class="binding"><span>ENABLED</span><span>${esc(enabledNames(composition.enabled))}</span></div>`:'';
@@ -685,7 +716,7 @@ function renderComposition(){
 
 function acpLayerOf(artifact,seen=new Set()){if(!artifact||seen.has(artifact.id))return null;seen.add(artifact.id);if((artifact.enables||[]).some(item=>item.name==='acp'))return artifact;for(const parentID of artifact.parent_artifact_ids||[]){const found=acpLayerOf(byID(snapshot.artifacts,parentID),seen);if(found)return found;}return null;}
 function renderArtifacts(){
-  const root=document.getElementById('artifacts'),artifacts=snapshot.artifacts.filter(canUse);
+  const root=region('artifacts'),artifacts=snapshot.artifacts.filter(canUse);
   if(!artifacts.length){root.innerHTML='<div class="empty">Nog geen environments. Open de recorder om <code>tool:git</code> als eerste laag te maken.</div>';return;}
   root.innerHTML=artifacts.map(artifact=>{
     const identity=artifact.subject?`${artifact.scope}:${artifact.subject}`:artifact.scope;
@@ -753,7 +784,7 @@ function renderJobs(){
   const root=document.getElementById('jobs'),open=snapshot.jobs.filter(job=>!jobIsClosed(job)),closed=snapshot.jobs.filter(jobIsClosed),mine=open.filter(job=>jobAssignee(job)===currentOperator()),jobs=jobStateFilter==='closed'?closed:jobStateFilter==='all'?open:mine;
   document.getElementById('job-count-mine').textContent=mine.length;document.getElementById('job-count-all').textContent=open.length;document.getElementById('job-count-closed').textContent=closed.length;
   if(!jobs.length){root.innerHTML=`<div class="empty">${jobStateFilter==='closed'?'Nog geen afgeronde of gesloten Jobs.':jobStateFilter==='mine'?'Niets ligt bij jou. Kijk onder Alle, of start een nieuwe Job.':'Geen open Jobs. Start een nieuwe Job zodra er werk klaarstaat.'}</div>`;return;}
-  root.innerHTML=jobs.map(job=>{
+  const cards=jobs.map(job=>{
     const sessions=snapshot.sessions.filter(session=>session.job_id===job.id),repository=byID(snapshot.git_repositories,job.git_repository_id),template=jobTemplate(job),runs=snapshot.phase_runs.filter(run=>run.job_id===job.id),hasComparisonWorkspace=sessions.some(session=>Boolean(byID(snapshot.compositions,session.prepared_composition_id)?.runtime));
     const workflowStatus=job.status==='cancelled'?'GESLOTEN':job.workflow_status==='pending'?`PENDING · ${job.pending_reason==='ask'?'ASK':'USER'}`:job.workflow_status==='busy'?'BEZIG':job.workflow_status==='done'?'KLAAR':String(job.status||'').toUpperCase();
     const statusClass=job.workflow_status==='pending'?'status-pending':job.workflow_status==='busy'?'status-busy':'';
@@ -774,10 +805,11 @@ function renderJobs(){
     const legacySessions=!template?sessions.map(session=>{const composition=byID(snapshot.compositions,session.prepared_composition_id),ready=composition?.runtime&&composition.runtime.status!=='stopped',acp=(composition?.enabled||[]).some(item=>item.name==='acp');return `<div class="session"><div><strong>${esc(session.role||'worker')}</strong><small>${esc(session.git_ref)}</small>${sessionPresenceHTML(session)}</div><div class="session-actions"><span class="tag">${ready?'capsule ready':esc(session.status)}</span>${ready&&acp?`<button class="primary" data-open-acp="${esc(session.id)}">Open chat</button>`:`<button class="small-button" data-command="USE session:${esc(session.id)}">Run</button>`}</div></div>`;}).join(''):'';
     const detailKey=`job:${job.id}`,createdAt=formatDateTime(job.created_at);
     const referenced=snapshot.jobs.some(candidate=>candidate.forked_from_job_id===job.id),isOwner=job.owner===currentOperator(),changeAction=`<button class="small-button" type="button" data-job-changes="${esc(job.id)}" ${hasComparisonWorkspace?'':'disabled'} title="${hasComparisonWorkspace?'Bekijk alle Job changes sinds de basisbranch':'De eerste Git-workspace is nog niet gereed'}">${icon('difference')}Changes</button>`,ownerActions=jobIsClosed(job)?`<button class="small-button" type="button" data-fork-job="${esc(job.id)}">${icon('fork_right')}Fork</button>${isOwner?`<button class="icon-button danger" type="button" data-remove-job="${esc(job.id)}" ${referenced?'disabled':''} title="${referenced?'Deze Job levert context aan een vervolg-Job':'Job definitief verwijderen'}" aria-label="Job definitief verwijderen">${icon('delete')}</button>`:''}`:(isOwner?`<button class="small-button" type="button" data-add-job-attachment="${esc(job.id)}" title="PDF of afbeelding toevoegen">${icon('attach_file')}Bijlage</button><button class="small-button" type="button" data-close-job="${esc(job.id)}">${icon('archive')}Sluiten</button>`:'');
-    const source=byID(snapshot.jobs,job.forked_from_job_id);return `<article class="job ${jobIsClosed(job)?'closed':''}"><div class="job-head"><div><div class="job-title-row"><h3>${esc(job.title)}</h3>${createdAt?`<span class="job-created" title="Aangemaakt ${esc(createdAt)}">${icon('calendar_today')}${esc(createdAt)}</span>`:''}</div><div class="job-objective md">${markdown(job.objective)}</div><div class="meta"><span class="tag ${statusClass}">${esc(workflowStatus)}</span>${jobIsClosed(job)?`<span class="tag">${icon('person')} ${esc(jobAssignee(job))}</span>`:`<label class="tag assignee-tag" title="Bij wie ligt deze Job">${icon('person')}<select data-assign-job="${esc(job.id)}">${assigneeOptions(job)}</select></label>`}${source?`<span class="tag capability">${icon('fork_right')} ${esc(source.title)}</span>`:''}${template?`<span class="tag">${esc(template.name)} · r${template.revision||1}</span>`:''}<span class="tag branch">${esc(job.branch)}</span><span class="tag">${esc(repository?.name||'Git ontbreekt')}@${esc(job.base_ref)}</span></div>${attachmentChips?`<div class="attachment-selection">${attachmentChips}</div>`:''}${deliverableChips?`<div class="deliverable-chips">${deliverableChips}</div>`:''}</div><div class="job-head-actions">${changeAction}${ownerActions}</div></div><details class="job-detail" data-job-detail="${esc(job.id)}" data-detail-state="${esc(detailKey)}" ${detailOpenAttribute(detailKey,job.workflow_status==='busy')}><summary>${runs.length||sessions.length} stap${(runs.length||sessions.length)===1?'':'pen'} · workflow en Sessions</summary><div class="job-detail-body">${template?runHTML:`<div class="sessions">${legacySessions}</div>`}</div></details></article>`;
-  }).join('');
-  bindDetailStates(root);bindCommandButtons(root);bindACPButtons(root);bindDeliverables(root);bindQuestionButtons(root);bindResultButtons(root);bindAppPanels(root);
-  root.querySelectorAll('[data-assign-job]').forEach(select=>select.onchange=async()=>{try{await api(`/api/jobs/${encodeURIComponent(select.dataset.assignJob)}/assignee`,{method:'PUT',body:JSON.stringify({assignee:select.value})});await refresh(true);}catch(error){showError(error);await refresh(true);}});root.querySelectorAll('[data-job-changes]').forEach(button=>button.onclick=()=>openJobChanges(button));root.querySelectorAll('[data-add-job-attachment]').forEach(button=>button.onclick=()=>chooseJobAttachments(button.dataset.addJobAttachment));root.querySelectorAll('[data-close-job]').forEach(button=>button.onclick=()=>closeJob(button));root.querySelectorAll('[data-fork-job]').forEach(button=>button.onclick=()=>openJobFork(button.dataset.forkJob));root.querySelectorAll('[data-remove-job]').forEach(button=>button.onclick=()=>removeJob(button.dataset.removeJob));root.querySelectorAll('[data-retry-session]').forEach(button=>button.onclick=()=>retrySession(button));
+    const source=byID(snapshot.jobs,job.forked_from_job_id);return {key:job.id,html:`<article class="job ${jobIsClosed(job)?'closed':''}"><div class="job-head"><div><div class="job-title-row"><h3>${esc(job.title)}</h3>${createdAt?`<span class="job-created" title="Aangemaakt ${esc(createdAt)}">${icon('calendar_today')}${esc(createdAt)}</span>`:''}</div><div class="job-objective md">${markdown(job.objective)}</div><div class="meta"><span class="tag ${statusClass}">${esc(workflowStatus)}</span>${jobIsClosed(job)?`<span class="tag">${icon('person')} ${esc(jobAssignee(job))}</span>`:`<label class="tag assignee-tag" title="Bij wie ligt deze Job">${icon('person')}<select data-assign-job="${esc(job.id)}">${assigneeOptions(job)}</select></label>`}${source?`<span class="tag capability">${icon('fork_right')} ${esc(source.title)}</span>`:''}${template?`<span class="tag">${esc(template.name)} · r${template.revision||1}</span>`:''}<span class="tag branch">${esc(job.branch)}</span><span class="tag">${esc(repository?.name||'Git ontbreekt')}@${esc(job.base_ref)}</span></div>${attachmentChips?`<div class="attachment-selection">${attachmentChips}</div>`:''}${deliverableChips?`<div class="deliverable-chips">${deliverableChips}</div>`:''}</div><div class="job-head-actions">${changeAction}${ownerActions}</div></div><details class="job-detail" data-job-detail="${esc(job.id)}" data-detail-state="${esc(detailKey)}" ${detailOpenAttribute(detailKey,job.workflow_status==='busy')}><summary>${runs.length||sessions.length} stap${(runs.length||sessions.length)===1?'':'pen'} · workflow en Sessions</summary><div class="job-detail-body">${template?runHTML:`<div class="sessions">${legacySessions}</div>`}</div></details></article>`};
+  });
+  const bind=()=>{bindDetailStates(root);bindCommandButtons(root);bindACPButtons(root);bindDeliverables(root);bindQuestionButtons(root);bindResultButtons(root);bindAppPanels(root);
+  root.querySelectorAll('[data-assign-job]').forEach(select=>select.onchange=async()=>{try{await api(`/api/jobs/${encodeURIComponent(select.dataset.assignJob)}/assignee`,{method:'PUT',body:JSON.stringify({assignee:select.value})});await refresh(true);}catch(error){showError(error);await refresh(true);}});};
+  root._afterPatch=bind;if(patchKeyed(root,cards))bind();root.querySelectorAll('[data-job-changes]').forEach(button=>button.onclick=()=>openJobChanges(button));root.querySelectorAll('[data-add-job-attachment]').forEach(button=>button.onclick=()=>chooseJobAttachments(button.dataset.addJobAttachment));root.querySelectorAll('[data-close-job]').forEach(button=>button.onclick=()=>closeJob(button));root.querySelectorAll('[data-fork-job]').forEach(button=>button.onclick=()=>openJobFork(button.dataset.forkJob));root.querySelectorAll('[data-remove-job]').forEach(button=>button.onclick=()=>removeJob(button.dataset.removeJob));root.querySelectorAll('[data-retry-session]').forEach(button=>button.onclick=()=>retrySession(button));
 }
 
 // The test-app panel reads live status from the runner while it is open
@@ -813,7 +845,7 @@ function openAppLogs(sessionID,service){
   const load=async()=>{if(!document.getElementById('app-logs-dialog').open){clearInterval(appLogsTimer);return;}try{const logs=await api(`/api/sessions/${encodeURIComponent(sessionID)}/app/${encodeURIComponent(service)}/logs?tail=300`);const atBottom=output.scrollTop+output.clientHeight>=output.scrollHeight-20;output.textContent=logs.output||'(nog geen output)';if(atBottom)output.scrollTop=output.scrollHeight;}catch(error){output.textContent=error.message||String(error);}};
   clearInterval(appLogsTimer);load();appLogsTimer=setInterval(load,3000);
 }
-function renderTemplates(){const root=document.getElementById('templates');if(!snapshot.workflow_templates.length){root.innerHTML='<div class="empty">Nog geen Templates. Maak bijvoorbeeld Ontwikkeling met Ontwerp → Ontwikkelen → Review.</div>';return;}root.innerHTML=snapshot.workflow_templates.map(template=>`<article class="template-card"><div class="job-head"><div><h3>${esc(template.name)} <span class="tag">r${template.revision||1}</span>${template.git_selector?` <span class="tag capability">GIT · ${esc(template.git_selector)}</span>`:''}</h3><p>${esc(template.description||'Eigen workflow')}</p></div>${template.created_by===currentOperator()?`<div class="panel-actions"><button class="small-button" data-edit-template="${esc(template.id)}">${icon('edit')}Nieuwe revisie</button><button class="danger" data-remove-template="${esc(template.id)}">${icon('delete')}Verwijder</button></div>`:''}</div><div class="template-flow">${template.phases.map((phase,index)=>`${index?'<span class="phase-arrow">→</span>':''}<span class="phase-pill">${index+1}. ${esc(phase.name)}${phase.executor==='action'?' · ACTION':phase.environment_selector?' · '+esc(phase.environment_selector):' · JOB DEFAULT'}${phase.allow_changes||phase.allow_commit?' · WRITE':''}${(phase.inject||[]).length?' · IN '+esc(phase.inject.join('+')):''}${phase.accept?.ask_user?' · A:USER':''}${phase.reject?.ask_user?' · R:USER':''}</span>`).join('')}</div></article>`).join('');root.querySelectorAll('[data-edit-template]').forEach(button=>button.onclick=()=>openTemplateEditor(button.dataset.editTemplate));root.querySelectorAll('[data-remove-template]').forEach(button=>button.onclick=()=>removeTemplate(button.dataset.removeTemplate));}
+function renderTemplates(){const root=region('templates');if(!snapshot.workflow_templates.length){root.innerHTML='<div class="empty">Nog geen Templates. Maak bijvoorbeeld Ontwikkeling met Ontwerp → Ontwikkelen → Review.</div>';return;}root.innerHTML=snapshot.workflow_templates.map(template=>`<article class="template-card"><div class="job-head"><div><h3>${esc(template.name)} <span class="tag">r${template.revision||1}</span>${template.git_selector?` <span class="tag capability">GIT · ${esc(template.git_selector)}</span>`:''}</h3><p>${esc(template.description||'Eigen workflow')}</p></div>${template.created_by===currentOperator()?`<div class="panel-actions"><button class="small-button" data-edit-template="${esc(template.id)}">${icon('edit')}Nieuwe revisie</button><button class="danger" data-remove-template="${esc(template.id)}">${icon('delete')}Verwijder</button></div>`:''}</div><div class="template-flow">${template.phases.map((phase,index)=>`${index?'<span class="phase-arrow">→</span>':''}<span class="phase-pill">${index+1}. ${esc(phase.name)}${phase.executor==='action'?' · ACTION':phase.environment_selector?' · '+esc(phase.environment_selector):' · JOB DEFAULT'}${phase.allow_changes||phase.allow_commit?' · WRITE':''}${(phase.inject||[]).length?' · IN '+esc(phase.inject.join('+')):''}${phase.accept?.ask_user?' · A:USER':''}${phase.reject?.ask_user?' · R:USER':''}</span>`).join('')}</div></article>`).join('');root.querySelectorAll('[data-edit-template]').forEach(button=>button.onclick=()=>openTemplateEditor(button.dataset.editTemplate));root.querySelectorAll('[data-remove-template]').forEach(button=>button.onclick=()=>removeTemplate(button.dataset.removeTemplate));}
 
 function templateTargetOptions(selected='',includeSelf=true){const steps=[...document.querySelectorAll('[data-template-step]')],options=[['NEXT','Volgende stap']];if(includeSelf)options.push(['SELF','Dezelfde stap']);steps.forEach((step,index)=>options.push([step.dataset.stepId,`${index+1}. ${step.querySelector('[name=phase_name]').value||'Naamloze stap'}`]));options.push(['DONE','Pull request maken / Job afronden']);return options.map(([value,label])=>`<option value="${esc(value)}" ${value===selected?'selected':''}>${esc(label)}</option>`).join('');}
 function refreshTemplateTargets(){document.querySelectorAll('[data-transition-target]').forEach(select=>{const current=select.value,includeSelf=select.dataset.transitionTarget==='reject';select.innerHTML=templateTargetOptions(current,includeSelf);if([...select.options].some(option=>option.value===current))select.value=current;});}
@@ -865,7 +897,7 @@ function resetGitForm(repository=null){
 function openGitEditor(id){const repository=byID(snapshot.git_repositories,id);if(!repository)return;resetGitForm(repository);openDialog('git-dialog');}
 
 function renderGit(){
-  const root=document.getElementById('git-list');
+  const root=region('git-list');
   if(!snapshot.git_repositories.length){root.innerHTML='<div class="empty">Nog geen Git repositories. Maak eerst tool:git en voeg daarna een remote toe.</div>';return;}
   root.innerHTML=snapshot.git_repositories.map(repository=>{
     const scope=gitCredentialScope(repository.credential_scope,'public'),account=gitAccountForRepository(repository);
@@ -898,7 +930,7 @@ function renderGitAccounts(){
   }).join('');
   configurations.querySelectorAll('.oauth-config-form').forEach(form=>form.onsubmit=async event=>{event.preventDefault();const data=new FormData(form);try{await api(`/api/git/oauth/${encodeURIComponent(form.dataset.provider)}/configuration`,{method:'PUT',body:JSON.stringify({client_id:data.get('client_id'),client_secret:data.get('client_secret')})});form.reset();await refresh(true);}catch(error){showError(error);}});
   configurations.querySelectorAll('[data-remove-oauth]').forEach(button=>button.onclick=async()=>{if(!confirm('Deze OAuth application-configuratie verwijderen? Bestaande tokens blijven bestaan, maar kunnen mogelijk niet meer refreshen.'))return;try{await api(`/api/git/oauth/${encodeURIComponent(button.dataset.removeOauth)}/configuration`,{method:'DELETE'});await refresh(true);}catch(error){showError(error);}});
-  const root=document.getElementById('git-account-list');
+  const root=region('git-account-list');
   root.innerHTML=accounts.length?accounts.map(account=>{
     const scope=gitCredentialScope(account.credential_scope),expired=account.expires_at&&new Date(account.expires_at).getTime()<Date.now(),oauth=snapshot.git_oauth_providers.find(provider=>provider.id===account.provider&&provider.configured);
     // An expired OAuth token is refreshed on use; when that refresh is refused
@@ -912,7 +944,7 @@ function renderGitAccounts(){
 }
 
 function renderMCP(){
-  const root=document.getElementById('mcp-list'),servers=myMCP();
+  const root=region('mcp-list'),servers=myMCP();
   if(!servers.length){root.innerHTML='<div class="empty">Nog geen persoonlijke MCP-configuraties.</div>';return;}
   root.innerHTML=servers.map(server=>`<article class="mcp-card"><div><div class="artifact-title"><span>${esc(server.name)}</span><span class="tag">${esc(server.transport)}</span><span class="tag secret">user:${esc(server.operator)}</span></div><small>${server.transport==='stdio'?esc(server.command)+' '+(server.args||[]).map(esc).join(' '):esc(server.url)}</small><small>${(server.env||[]).length} env credentials · ${(server.headers||[]).length} header credentials · values redacted</small></div><button class="danger" data-remove-mcp="${esc(server.id)}">Remove</button></article>`).join('');
   root.querySelectorAll('[data-remove-mcp]').forEach(button=>button.onclick=()=>removeMCP(button.dataset.removeMcp));
@@ -921,7 +953,7 @@ function renderMCP(){
 // The runner is a single binary per platform, taken from the release this
 // server runs, so a downloaded client always matches the server.
 function renderRunnerDownloads(){
-  const root=document.getElementById('runner-downloads');if(!root)return;
+  const root=region('runner-downloads');if(!root)return;
   const version=authState.version&&authState.version!=='dev'?authState.version:'',base=version?`https://github.com/xinix00/Spin/releases/download/${encodeURIComponent(version)}`:'https://github.com/xinix00/Spin/releases/latest/download';
   const builds=[['spin-client-darwin-arm64','macOS · Apple Silicon','laptop_mac'],['spin-client-linux-arm64','Linux · arm64','memory'],['spin-client-linux-amd64','Linux · amd64','memory']];
   root.innerHTML=`<div class="runner-download-row">${builds.map(([asset,label,glyph])=>`<a class="small-button" href="${base}/${asset}" download="${asset}">${icon(glyph)}${esc(label)}</a>`).join('')}<small>${version?`versie ${esc(version)}`:'laatste release'} · Docker Desktop of Docker Engine vereist</small></div><details class="runner-howto"><summary>Zo start je de runner</summary><pre>chmod +x spin-client-*
@@ -930,7 +962,7 @@ mkdir -p var && printf '%s' '&lt;worker-token&gt;' &gt; var/spin-worker.token
 }
 function renderRunners(){
   renderRunnerDownloads();
-  const root=document.getElementById('runner-list');
+  const root=region('runner-list');
   if(!snapshot.clients.length){root.innerHTML='<div class="empty">Nog geen runner aangemeld. Start spin-client met de server-URL en het worker-token.</div>';return;}
   root.innerHTML=snapshot.clients.map(client=>{
     const engine=client.capabilities?.engine||{},pinned=snapshot.sessions.filter(session=>session.client_id===client.id),active=pinned.filter(session=>!['completed','cancelled'].includes(session.status));
@@ -942,7 +974,7 @@ function renderRunners(){
 }
 
 function renderAccess(){
-  const admin=authState.user?.role==='admin',form=document.getElementById('user-form'),button=document.getElementById('open-user-dialog'),root=document.getElementById('user-list');
+  const admin=authState.user?.role==='admin',form=region('user-form'),button=document.getElementById('open-user-dialog'),root=document.getElementById('user-list');
   form.hidden=!admin;button.hidden=!admin;document.getElementById('backup-panel').hidden=!admin;
   root.innerHTML=snapshot.users.length?snapshot.users.map(user=>{const archived=Boolean(user.archived_at),self=user.id===authState.user?.id,action=admin&&!self?(archived?`<button class="small-button" data-restore-user="${esc(user.id)}">${icon('restore')}Herstel</button>`:`<button class="danger" data-archive-user="${esc(user.id)}">${icon('archive')}Archiveer</button>`):'';return `<article class="mcp-card ${archived?'archived':''}"><div><div class="artifact-title"><strong>${esc(user.display_name||user.username)}</strong><span class="tag ${user.role==='admin'?'secret':''}">${esc(user.role)}</span>${self?'<span class="tag capability">you</span>':''}${archived?'<span class="tag warning">gearchiveerd</span>':''}</div><small>@${esc(user.username)} · created ${esc(new Date(user.created_at).toLocaleDateString())}${archived?` · archived ${esc(formatDateTime(user.archived_at))}`:''}</small></div><div class="panel-actions">${action}</div></article>`;}).join(''):'<div class="empty">Nog geen gebruikers.</div>';
   root.querySelectorAll('[data-archive-user]').forEach(button=>button.onclick=()=>setUserArchived(button.dataset.archiveUser,true));
@@ -1023,7 +1055,7 @@ async function pollRestoreJob(initial){
   }
 }
 async function completeRestoreUpload(uploadID){
-  const response=await backupResponse(`/api/uploads/${encodeURIComponent(uploadID)}/complete`,{method:'POST'}),job=await response.json();if(!job.id)throw new Error('Spin gaf geen restore-status-ID terug');rememberRestoreJob(job.id);if(pollTimer){clearInterval(pollTimer);pollTimer=null;}return pollRestoreJob(job);
+  const response=await backupResponse(`/api/uploads/${encodeURIComponent(uploadID)}/complete`,{method:'POST'}),job=await response.json();if(!job.id)throw new Error('Spin gaf geen restore-status-ID terug');rememberRestoreJob(job.id);stopStateStream();return pollRestoreJob(job);
 }
 function announceRestoreComplete(result){alert(`Restore compleet: ${result.jobs} Jobs, ${result.templates} Templates, ${result.deliverables} deliverables, ${result.attachments} bijlagen en ${result.snapshots} Docker-snapshots. Log opnieuw in.`);location.reload();}
 async function uploadRestoreDatabase(file){
@@ -1043,7 +1075,7 @@ async function uploadRestoreDatabase(file){
 async function restorePortableBackup(file){
   if(!file)return;if(!confirm(`Restore “${file.name}”?\n\nDe huidige server-state wordt vervangen. Actieve browser-sessions worden afgesloten; lopende runtime-handles worden niet meegenomen.`)){document.getElementById('restore-backup-input').value='';return;}
   const button=document.getElementById('choose-restore'),backupButton=document.getElementById('download-backup'),label=button.innerHTML;let restored=false;button.disabled=true;backupButton.disabled=true;button.innerHTML=`${icon('progress_activity')}Restore bezig…`;updateRestoreProgress('Upload starten',formatBytes(file.size),0);
-  try{const result=await uploadRestoreDatabase(file);restored=true;announceRestoreComplete(result);}catch(error){updateRestoreProgress('Restore mislukt',error.message||String(error),100,true);showError(error);}finally{if(!restored&&!rememberedRestoreJob()&&authState.authenticated&&!pollTimer)pollTimer=setInterval(()=>refresh(false),2500);button.disabled=false;backupButton.disabled=false;button.innerHTML=label;document.getElementById('restore-backup-input').value='';}
+  try{const result=await uploadRestoreDatabase(file);restored=true;announceRestoreComplete(result);}catch(error){updateRestoreProgress('Restore mislukt',error.message||String(error),100,true);showError(error);}finally{if(!restored&&!rememberedRestoreJob()&&authState.authenticated&&stateStream.stopped)connectStateStream();button.disabled=false;backupButton.disabled=false;button.innerHTML=label;document.getElementById('restore-backup-input').value='';}
 }
 
 function bindCommandButtons(root=document){root.querySelectorAll('[data-command]').forEach(button=>button.onclick=()=>{setTab('environments');openConsole();execute(button.dataset.command);});}
@@ -1068,10 +1100,21 @@ async function closeJob(button){const id=button.dataset.closeJob,job=byID(snapsh
 async function removeJob(id){const job=byID(snapshot.jobs,id);if(!job||!confirm(`Job “${job.title}” definitief verwijderen? Sessions en lokale containers verdwijnen; de remote Git-branches blijven bestaan.`))return;try{await api(`/api/jobs/${encodeURIComponent(id)}`,{method:'DELETE'});await refresh(true);}catch(error){showError(error);}}
 async function retrySession(button){const id=button.dataset.retrySession;if(!id||!confirm('Deze Session opnieuw starten? Niet-gecommit werk in de huidige capsule wordt opgeruimd.'))return;const label=button.textContent;button.disabled=true;button.textContent='Retrying…';try{await api(`/api/sessions/${encodeURIComponent(id)}/retry`,{method:'POST'});await refresh(true);}catch(error){button.disabled=false;button.textContent=label;showError(error);}}
 
-async function refresh(force=false){
-  try{
-    const next=await api('/api/state');
+// The server pushes the state over one WebSocket: whole on connect, again
+// on every change, and every few seconds while something moves in memory.
+// refresh() stays for the moment right after an action; nothing polls.
+const stateStream={socket:null,timer:null,stopped:true,failures:0};
+function connectStateStream(){
+  stateStream.stopped=false;clearTimeout(stateStream.timer);if(stateStream.socket&&[WebSocket.OPEN,WebSocket.CONNECTING].includes(stateStream.socket.readyState))return;
+  const socket=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/state/ws`);stateStream.socket=socket;
+  socket.onmessage=event=>{let next;try{next=JSON.parse(event.data);}catch(_){return;}stateStream.failures=0;applyState(next,false);};
+  socket.onclose=()=>{if(stateStream.socket===socket)stateStream.socket=null;if(stateStream.stopped)return;document.getElementById('server-status').textContent='verbinding herstellen…';const delay=Math.min(15000,500*2**Math.min(stateStream.failures++,5));stateStream.timer=setTimeout(async()=>{if(stateStream.stopped)return;try{await api('/api/auth/status');connectStateStream();}catch(error){if(error.status===401){stopStateStream();authState.authenticated=false;csrfToken='';showAuthGate('Je sessie is verlopen. Log opnieuw in.');return;}connectStateStream();}},delay);};
+  socket.onerror=()=>socket.close();
+}
+function stopStateStream(){stateStream.stopped=true;clearTimeout(stateStream.timer);if(stateStream.socket){const socket=stateStream.socket;stateStream.socket=null;socket.close();}}
+function applyState(next,force){
     ['artifacts','recordings','compositions','jobs','job_attachments','workflow_templates','phase_runs','deliverables','deliverable_comments','workflow_questions','sessions','activations','turns','checkpoints','results','clients','mcp_servers','git_repositories','git_accounts','git_oauth_providers','users'].forEach(key=>{if(!Array.isArray(next[key]))next[key]=[];});
+    if(!force&&next.version&&snapshot.version&&next.version<snapshot.version)return;
     snapshot=next;
     if(next.current_user){authState.user=next.current_user;document.getElementById('current-user').textContent=`${next.current_user.display_name||next.current_user.username} · ${next.current_user.role}`;}
     // Background polling must not erase a half-written form.
@@ -1079,7 +1122,10 @@ async function refresh(force=false){
     if(force||!editing)render();
     const engine=snapshot.engine||{},onlineClients=snapshot.clients.filter(client=>['online','draining'].includes(client.status)).length,totalClients=snapshot.clients.length,drainingClients=snapshot.clients.filter(client=>client.draining).length,clientLabel=`${onlineClients}/${totalClients} client${totalClients===1?'':'s'} connected${drainingClients?` · ${drainingClients} draining`:''}`;
     document.getElementById('server-status').textContent=engine.driver?`${clientLabel} · ${engine.driver}`:clientLabel;
-  }catch(error){document.getElementById('server-status').textContent='verbinding verbroken';if(error.status===401){if(pollTimer){clearInterval(pollTimer);pollTimer=null;}authState.authenticated=false;csrfToken='';showAuthGate('Je sessie is verlopen. Log opnieuw in.');}else showError(error);}
+}
+async function refresh(force=false){
+  try{applyState(await api('/api/state'),force);}
+  catch(error){document.getElementById('server-status').textContent='verbinding verbroken';if(error.status===401){stopStateStream();authState.authenticated=false;csrfToken='';showAuthGate('Je sessie is verlopen. Log opnieuw in.');}else showError(error);}
 }
 
 function setJobStep(step){
@@ -1177,6 +1223,6 @@ document.getElementById('mcp-form').onsubmit=async event=>{event.preventDefault(
 document.getElementById('user-form').onsubmit=async event=>{event.preventDefault();const form=new FormData(event.target);try{await api('/api/auth/users',{method:'POST',body:JSON.stringify({username:form.get('username'),display_name:form.get('display_name'),role:form.get('role'),password:form.get('password')})});event.target.reset();document.getElementById('user-role').value='member';closeDialog('user-dialog');await refresh(true);}catch(error){showError(error);}};
 document.getElementById('setup-form').onsubmit=async event=>{event.preventDefault();const form=new FormData(event.target);try{const status=await api('/api/auth/setup',{method:'POST',body:JSON.stringify({username:form.get('username'),display_name:form.get('display_name'),password:form.get('password')})});enterApp(status);setTab('connections');setConnection('git');print('system','Owner created. Configureer nu Git OAuth of voeg een token-account toe.');await refresh(true);}catch(error){document.getElementById('auth-copy').textContent=error.message||error;}};
 document.getElementById('login-form').onsubmit=async event=>{event.preventDefault();const form=new FormData(event.target);try{const status=await api('/api/auth/login',{method:'POST',body:JSON.stringify({username:form.get('username'),password:form.get('password')})});event.target.reset();enterApp(status);setTab(localStorage.getItem('spin-tab')||'jobs');setWorkView(localStorage.getItem('spin-work-view')||'jobs');setJobState(jobStateFilter);setConnection(localStorage.getItem('spin-connection')||'git');handleOAuthStatus();await refresh(true);}catch(error){document.getElementById('auth-copy').textContent=error.message||error;}};
-document.getElementById('logout').onclick=async()=>{try{await api('/api/auth/logout',{method:'POST'});}catch(_){}closeACPChat();terminalSessions.forEach(session=>session.socket.close());terminalSessions.clear();if(pollTimer){clearInterval(pollTimer);pollTimer=null;}authState={configured:true,authenticated:false,user:null};csrfToken='';showAuthGate('Je bent uitgelogd.');};
+document.getElementById('logout').onclick=async()=>{try{await api('/api/auth/logout',{method:'POST'});}catch(_){}closeACPChat();terminalSessions.forEach(session=>session.socket.close());terminalSessions.clear();stopStateStream();authState={configured:true,authenticated:false,user:null};csrfToken='';showAuthGate('Je bent uitgelogd.');};
 
 bindCommandButtons();bootstrap();

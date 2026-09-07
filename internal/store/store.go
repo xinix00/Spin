@@ -69,6 +69,44 @@ type Store struct {
 	leaseTTL time.Duration
 	secrets  *secretCipher
 	state    persistedState
+	// version counts saves; watchers learn of every one, so a browser can
+	// be pushed the state instead of asking for it.
+	version  uint64
+	watchers map[chan struct{}]struct{}
+}
+
+// Version is the number of saves so far; it changes with every mutation.
+func (s *Store) Version() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.version
+}
+
+// Watch delivers a tick after every save until stop is called. Ticks
+// coalesce: a slow reader sees one tick for many saves.
+func (s *Store) Watch() (ticks <-chan struct{}, stop func()) {
+	channel := make(chan struct{}, 1)
+	s.mu.Lock()
+	if s.watchers == nil {
+		s.watchers = map[chan struct{}]struct{}{}
+	}
+	s.watchers[channel] = struct{}{}
+	s.mu.Unlock()
+	return channel, func() {
+		s.mu.Lock()
+		delete(s.watchers, channel)
+		s.mu.Unlock()
+	}
+}
+
+func (s *Store) notifyLocked() {
+	s.version++
+	for watcher := range s.watchers {
+		select {
+		case watcher <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func Open(path string) (*Store, error) {
@@ -2996,6 +3034,7 @@ func (s *Store) activeLocked(sessionID, activationID string, epoch int64) (domai
 }
 
 func (s *Store) saveLocked() error {
+	s.notifyLocked()
 	if s.path == "" {
 		return nil
 	}
