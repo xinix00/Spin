@@ -25,8 +25,8 @@ import (
 // the Session's own image on the Session's workspace volume; a service with
 // Image is a ready-made dependency. Secrets come from env files on this
 // host (EnvDir/<name>.env) and never pass through the control plane. The
-// host's /etc/hosts entries and host.docker.internal are added so whatever
-// this machine can reach by name, the app can too.
+// repository's own host entries and host.docker.internal are added so a
+// database the app reaches by name resolves inside the container.
 
 const appEnvSuffix = ".env"
 
@@ -38,7 +38,7 @@ func appContainerName(sessionID, service string) string {
 // StartAppServices (re)starts every service of the recipe. An existing
 // container of the same service is replaced, so a restart after a rejected
 // attempt picks up the new workspace.
-func (d *Docker) StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService) ([]domain.AppServiceRuntime, error) {
+func (d *Docker) StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService, hosts []string) ([]domain.AppServiceRuntime, error) {
 	if runtime.Driver != "docker" || runtime.BaseRef == "" {
 		return nil, errors.New("session has no Docker capsule to run the app in")
 	}
@@ -51,7 +51,6 @@ func (d *Docker) StartAppServices(ctx context.Context, runtime domain.CapsuleRun
 			return nil, fmt.Errorf("create app network: %w", err)
 		}
 	}
-	hosts := hostEntries(d.hostsFile)
 	results := make([]domain.AppServiceRuntime, 0, len(services))
 	for _, service := range services {
 		result := d.startAppService(ctx, runtime, sessionID, network, service, hosts)
@@ -265,43 +264,6 @@ func (d *Docker) awaitPort(ctx context.Context, result domain.AppServiceRuntime,
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-}
-
-// hostEntries reads the host's hosts file into --add-host arguments, so a
-// database this machine reaches by a name from that file is reachable from
-// the app too. Loopback and IPv6 special names are left out.
-func hostEntries(path string) []string {
-	if path == "" {
-		return nil
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer file.Close()
-	var entries []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if comment := strings.IndexByte(line, '#'); comment >= 0 {
-			line = strings.TrimSpace(line[:comment])
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		ip := net.ParseIP(fields[0])
-		if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() {
-			continue
-		}
-		for _, name := range fields[1:] {
-			if name == "localhost" || strings.HasSuffix(name, ".localdomain") || name == "broadcasthost" {
-				continue
-			}
-			entries = append(entries, name+":"+ip.String())
-		}
-	}
-	return entries
 }
 
 // AdvertiseHost is the address people use to reach published ports: the

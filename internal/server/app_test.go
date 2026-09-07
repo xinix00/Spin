@@ -24,7 +24,7 @@ type appTestEngine struct {
 	sessions map[string]bool
 }
 
-func (e *appTestEngine) StartAppServices(_ context.Context, _ domain.CapsuleRuntime, sessionID string, services []domain.AppService) ([]domain.AppServiceRuntime, error) {
+func (e *appTestEngine) StartAppServices(_ context.Context, _ domain.CapsuleRuntime, sessionID string, services []domain.AppService, _ []string) ([]domain.AppServiceRuntime, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.sessions == nil {

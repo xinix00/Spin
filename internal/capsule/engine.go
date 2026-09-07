@@ -152,7 +152,7 @@ type WorkspaceAcceptor interface {
 // capsule: same image, same workspace volume, an own network per Session,
 // host env files and published ports, so a person can test the app.
 type AppServiceHost interface {
-	StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService) ([]domain.AppServiceRuntime, error)
+	StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService, hosts []string) ([]domain.AppServiceRuntime, error)
 	StopAppServices(ctx context.Context, sessionID string) error
 	AppServiceStatus(ctx context.Context, sessionID string) ([]domain.AppServiceRuntime, error)
 	AppServiceLogs(ctx context.Context, sessionID, service string, tail int) (string, error)

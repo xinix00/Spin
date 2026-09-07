@@ -23,7 +23,7 @@ import (
 
 // appServiceRunner is what the remote engine offers for app services.
 type appServiceRunner interface {
-	StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService) ([]domain.AppServiceRuntime, error)
+	StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService, hosts []string) ([]domain.AppServiceRuntime, error)
 	StopAppServicesOn(ctx context.Context, clientID, sessionID string) error
 	AppServiceStatusOn(ctx context.Context, clientID, sessionID string) ([]domain.AppServiceRuntime, error)
 	AppServiceLogsOn(ctx context.Context, clientID, sessionID, service string, tail int) (string, error)
@@ -94,7 +94,7 @@ func (s *Server) startAppServices(sessionID, operator string) (*appStart, error)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		results, err := runner.StartAppServices(ctx, *composition.Runtime, session.ID, repository.Services)
+		results, err := runner.StartAppServices(ctx, *composition.Runtime, session.ID, repository.Services, repository.ServiceHosts)
 		if err == nil {
 			var failed []string
 			for _, result := range results {

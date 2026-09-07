@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -1308,6 +1309,10 @@ func (s *Store) CreateGitRepository(req domain.CreateGitRepositoryRequest) (doma
 	if err != nil {
 		return domain.CreateGitRepositoryResponse{}, err
 	}
+	serviceHosts, err := normalizeServiceHosts(req.ServiceHosts)
+	if err != nil {
+		return domain.CreateGitRepositoryResponse{}, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1322,7 +1327,7 @@ func (s *Store) CreateGitRepository(req domain.CreateGitRepositoryRequest) (doma
 	now := time.Now().UTC()
 	repository := domain.GitRepository{
 		ID: newID("git"), Name: name, RemoteURL: remoteURL, DefaultRef: defaultRef,
-		Provider: provider, CredentialScope: credentialScope, LayerSelectors: layerSelectors, Services: services,
+		Provider: provider, CredentialScope: credentialScope, LayerSelectors: layerSelectors, Services: services, ServiceHosts: serviceHosts,
 		CreatedBy: operator, CreatedAt: now, UpdatedAt: now,
 	}
 	s.state.GitRepositories[repository.ID] = repository
@@ -1343,6 +1348,10 @@ func (s *Store) UpdateGitRepository(repositoryID string, req domain.UpdateGitRep
 		return domain.GitRepository{}, fmt.Errorf("repository layers: %w", err)
 	}
 	services, err := normalizeAppServices(req.Services)
+	if err != nil {
+		return domain.GitRepository{}, err
+	}
+	serviceHosts, err := normalizeServiceHosts(req.ServiceHosts)
 	if err != nil {
 		return domain.GitRepository{}, err
 	}
@@ -1381,6 +1390,7 @@ func (s *Store) UpdateGitRepository(repositoryID string, req domain.UpdateGitRep
 	repository.Provider, _ = gitRemoteIdentity(remoteURL)
 	repository.LayerSelectors = append([]string(nil), layerSelectors...)
 	repository.Services = services
+	repository.ServiceHosts = serviceHosts
 	if credentialScope != "" {
 		repository.CredentialScope = credentialScope
 	}
@@ -1437,6 +1447,36 @@ func normalizeAppServices(services []domain.AppService) ([]domain.AppService, er
 	}
 	if len(out) == 0 {
 		return nil, nil
+	}
+	return out, nil
+}
+
+// normalizeServiceHosts accepts "name:ip" or "name ip" per entry and keeps
+// them as name:ip, the form docker --add-host takes.
+func normalizeServiceHosts(entries []string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		fields := strings.FieldsFunc(entry, func(r rune) bool { return r == ':' || r == ' ' || r == '\t' || r == '=' })
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("host entry %q must be name:ip: %w", entry, ErrConflict)
+		}
+		name, address := strings.ToLower(fields[0]), fields[1]
+		if net.ParseIP(address) == nil {
+			return nil, fmt.Errorf("host entry %q has no valid IP address: %w", entry, ErrConflict)
+		}
+		if strings.ContainsAny(name, "/@?#\r\n\t ") {
+			return nil, fmt.Errorf("host entry %q has an invalid name: %w", entry, ErrConflict)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("host %s is listed twice: %w", name, ErrConflict)
+		}
+		seen[name] = true
+		out = append(out, name+":"+address)
 	}
 	return out, nil
 }

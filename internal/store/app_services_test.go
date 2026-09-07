@@ -44,6 +44,17 @@ func TestRepositoryServicesAreValidated(t *testing.T) {
 	if len(updated.Services) != 1 || len(updated.Services[0].Prepare) != 1 || updated.Services[0].Prepare[0] != "dotnet restore" || len(updated.Services[0].Ports) != 1 {
 		t.Fatalf("updated services = %+v", updated.Services)
 	}
+	// Host entries are a repository setting: "name ip" or "name:ip", kept as name:ip.
+	hosted, err := st.UpdateGitRepository(updated.ID, domain.UpdateGitRepositoryRequest{Operator: "derek", Name: updated.Name, RemoteURL: updated.RemoteURL, DefaultRef: "main", ServiceHosts: []string{"SQLServer.easyflor.local 192.168.1.40", "cache:10.0.0.7", ""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosted.ServiceHosts) != 2 || hosted.ServiceHosts[0] != "sqlserver.easyflor.local:192.168.1.40" || hosted.ServiceHosts[1] != "cache:10.0.0.7" {
+		t.Fatalf("service hosts = %v", hosted.ServiceHosts)
+	}
+	if _, err := st.UpdateGitRepository(updated.ID, domain.UpdateGitRepositoryRequest{Operator: "derek", Name: updated.Name, RemoteURL: updated.RemoteURL, DefaultRef: "main", ServiceHosts: []string{"db not-an-ip"}}); err == nil {
+		t.Fatal("host entry without an IP was accepted")
+	}
 }
 
 // An expose phase needs no instructions and always waits for a person.

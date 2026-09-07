@@ -125,7 +125,7 @@ api   prepare: dotnet restore    run: dotnet run --project src/Api   ports: 5000
 db    image: postgres:16                                              env: easyflor-db
 ```
 
-Geheimen blijven op de runner-host. `env` noemt een bestand `var/env/<naam>.env` naast de runner (flag `-env-dir`), dat je bijvoorbeeld met 1Password vult (`op inject -i easyflor.env.tpl -o var/env/easyflor.env`). De runner geeft het met `--env-file` aan de container; de control plane, de backup en de agent-capsule zien de inhoud nooit. `host.docker.internal` wijst naar de host, en de regels uit het hosts-bestand van de runner (`-hosts-file`, standaard `/etc/hosts`) gaan als `--add-host` mee, zodat een database die de host op naam bereikt ook vanuit de app bereikbaar is. De link die de UI toont gebruikt het netwerkadres van de runner (`-advertise-host` om het te kiezen) en werkt binnen dat LAN.
+Geheimen blijven op de runner-host. `env` noemt een bestand `var/env/<naam>.env` naast de runner (flag `-env-dir`), dat je bijvoorbeeld met 1Password vult (`op inject -i easyflor.env.tpl -o var/env/easyflor.env`). De runner geeft het met `--env-file` aan de container; de control plane, de backup en de agent-capsule zien de inhoud nooit. `host.docker.internal` wijst naar de runner-host. Een database die de app op naam aanspreekt zet je bij de repository onder **Hosts voor de test-app** (`naam ip` per regel); die regels gaan als `--add-host` mee naar iedere service. Dat is bewust een instelling en geen kopie van het hosts-bestand van de runner. De link die de UI toont gebruikt het netwerkadres van de runner (`-advertise-host` om het te kiezen) en werkt binnen dat LAN.
 
 Op iedere actieve stap met een workspace staat het paneel **Test-app**: per service de status, de link en de logs, met Start/Herstart en Stop. Een Template-stap van het soort **Test-app** doet dit automatisch: de workspace komt op vanaf de Job-branch, de services starten en de stap wacht met de links op jouw `ACCEPT` of `REJECT` met reden. Bij een besluit gaat de app samen met de workspace weg.
 
@@ -136,6 +136,10 @@ Deliverables staan als bijlagen bij zowel de fase als de chat en openen als voll
 Code review volgt hetzelfde immutable model. De algemene `Changes`-knop op een Job opent altijd de volledige boom vanaf de basisbranch; de knop bij een fase opent uitsluitend de laatste diff van die poging. Het openen van deze grote reviewweergave legt precies één dedupliceerde revisie vast. Selecteer tekst of klik een coderegel om een permanente comment met bestand, zijde en regelbereik te plaatsen. Oudere diffrevisies blijven via de revisiebalk terugleesbaar maar kunnen niet achteraf worden aangepast. Wanneer de bijbehorende workflowpoging wordt gereject, injecteert Spin zowel de rejectreden als alle codecomments in de volgende Session; diens fasediff begint opnieuw klein terwijl de volledige Job-boom bovenin beschikbaar blijft.
 
 De Job toont `BEZIG`, `PENDING · ASK`, `PENDING · USER` of `KLAAR`, plus alle pogingen. Zo blijft de flow generiek terwijl Templateconfiguratie bepaalt waar iedere beslissing heen gaat.
+
+### Runner installeren
+
+Onder Connections → Runners staan downloadknoppen voor `spin-client` (macOS Apple Silicon, Linux arm64 en amd64) van precies de release die de server draait, met de startopdracht erbij. De runner heeft Docker nodig, verbindt uitgaand naar de server-URL en meldt zich met het worker-token.
 
 ## Het model
 

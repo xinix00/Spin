@@ -60,6 +60,11 @@ for arch in amd64 arm64; do
 	done
 done
 
+echo ">> darwin/arm64 (client)"
+asset="$OUTDIR/spin-client-darwin-arm64"
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o "$asset" ./cmd/spin-client
+ASSETS+=("$asset")
+
 tmpdir="$(mktemp -d)"
 cleanup() { rm -rf "$tmpdir"; }
 trap cleanup EXIT INT TERM
@@ -98,7 +103,7 @@ Spin $VERSION ($SHORT_COMMIT), built $BUILT_AT.
 
 Artifacts:
 - spin-server-linux-amd64 / arm64: cloud control plane and web frontend
-- spin-client-linux-amd64 / arm64: native Docker runner (it needs Docker CLI + socket)
+- spin-client-linux-amd64 / arm64, spin-client-darwin-arm64: native Docker runner (it needs Docker CLI + socket)
 - spin-server-arm64-tamago.elf: native HopOS arm64 slot image
 - spin-server-riscv64-tamago.elf: native HopOS riscv64 slot image
 

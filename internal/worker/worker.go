@@ -530,7 +530,7 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		}
 		switch request.Method {
 		case methodStartApp:
-			services, err := host.StartAppServices(ctx, payload.Runtime, payload.SessionID, payload.Services)
+			services, err := host.StartAppServices(ctx, payload.Runtime, payload.SessionID, payload.Services, payload.Hosts)
 			return appStatusResult{Services: services}, false, err
 		case methodStopApp:
 			return nil, false, host.StopAppServices(ctx, payload.SessionID)

@@ -133,9 +133,9 @@ func (e *RemoteEngine) Cancel(ctx context.Context, recording domain.Recording) e
 
 // App services live on the runner that holds the Session's capsule; the
 // runtime's ClientID is the affinity for all four calls.
-func (e *RemoteEngine) StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService) ([]domain.AppServiceRuntime, error) {
+func (e *RemoteEngine) StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService, hosts []string) ([]domain.AppServiceRuntime, error) {
 	var result appStatusResult
-	_, err := e.broker.call(ctx, runtime.ClientID, methodStartApp, appPayload{Runtime: runtime, SessionID: sessionID, Services: services}, &result)
+	_, err := e.broker.call(ctx, runtime.ClientID, methodStartApp, appPayload{Runtime: runtime, SessionID: sessionID, Services: services, Hosts: hosts}, &result)
 	return result.Services, err
 }
 

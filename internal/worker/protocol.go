@@ -97,6 +97,7 @@ type appPayload struct {
 	Runtime   domain.CapsuleRuntime `json:"runtime,omitempty"`
 	SessionID string                `json:"session_id"`
 	Services  []domain.AppService   `json:"services,omitempty"`
+	Hosts     []string              `json:"hosts,omitempty"`
 	Service   string                `json:"service,omitempty"`
 	Tail      int                   `json:"tail,omitempty"`
 }

@@ -801,10 +801,14 @@ type GitRepository struct {
 	LayerSelectors  []string        `json:"layer_selectors,omitempty"`
 	// Services is the repository's own recipe for running the app so a
 	// person can test it: one container per service on a Session's workspace.
-	Services  []AppService `json:"services,omitempty"`
-	CreatedBy string       `json:"created_by"`
-	CreatedAt time.Time    `json:"created_at"`
-	UpdatedAt time.Time    `json:"updated_at"`
+	Services []AppService `json:"services,omitempty"`
+	// ServiceHosts are extra name→address entries the app containers get
+	// (--add-host), for a database the app reaches by a name the runner
+	// host knows; set here on purpose rather than copied from the host.
+	ServiceHosts []string  `json:"service_hosts,omitempty"`
+	CreatedBy    string    `json:"created_by"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // AppService is one runnable part of a repository's app. A service with Run
@@ -1180,6 +1184,7 @@ type CreateGitRepositoryRequest struct {
 	LayerSelectors  []string        `json:"layer_selectors,omitempty"`
 	CredentialScope CredentialScope `json:"credential_scope,omitempty"`
 	Services        []AppService    `json:"services,omitempty"`
+	ServiceHosts    []string        `json:"service_hosts,omitempty"`
 }
 
 type UpdateGitRepositoryRequest struct {
@@ -1190,6 +1195,7 @@ type UpdateGitRepositoryRequest struct {
 	LayerSelectors  []string        `json:"layer_selectors"`
 	CredentialScope CredentialScope `json:"credential_scope,omitempty"`
 	Services        []AppService    `json:"services"`
+	ServiceHosts    []string        `json:"service_hosts"`
 }
 
 type CreateGitRepositoryResponse struct {
