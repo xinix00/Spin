@@ -174,3 +174,64 @@ func TestCapsuleAllowsEightParallelTerminals(t *testing.T) {
 		t.Fatal("recording remained busy after every terminal exited")
 	}
 }
+
+// A USE composition gets the same PTY as a recording, without recording
+// anything: a place to look around or log in.
+func TestCompositionTerminalOpensPTYWithoutRecording(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &interactiveTestEngine{}
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
+	for _, line := range []string{"RECORD tool:codex --scope=global", "install codex", "END RECORD"} {
+		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
+			t.Fatalf("%s: %v", line, err)
+		}
+	}
+	used, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: "USE tool:codex"})
+	if err != nil || used.Composition == nil || used.Composition.Runtime == nil || used.Composition.Runtime.Status != "ready" {
+		t.Fatalf("USE = %+v, error = %v", used, err)
+	}
+	dial := func(operator string) (*websocket.Conn, *http.Response, error) {
+		clientConn, serverConn := net.Pipe()
+		go func() { _ = (&http.Server{Handler: srv.Handler()}).Serve(&singleConnListener{conn: serverConn}) }()
+		dialer := websocket.Dialer{NetDial: func(_, _ string) (net.Conn, error) { return clientConn, nil }}
+		return dialer.Dial("ws://spin.test/api/compositions/"+used.Composition.ID+"/terminal?operator="+operator, nil)
+	}
+	if _, response, err := dial("mallory"); err == nil || response == nil || response.StatusCode != http.StatusConflict {
+		t.Fatalf("another operator opened the terminal: err=%v response=%+v", err, response)
+	}
+	connection, _, err := dial("derek")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := connection.WriteJSON(terminalMessage{Type: "start", Command: "codex login", Rows: 24, Cols: 100}); err != nil {
+		t.Fatal(err)
+	}
+	sawExit := false
+	for !sawExit {
+		var message terminalMessage
+		if err := connection.ReadJSON(&message); err != nil {
+			t.Fatal(err)
+		}
+		switch message.Type {
+		case "output":
+			if strings.Contains(message.Data, "device code?") {
+				if err := connection.WriteJSON(terminalMessage{Type: "input", Data: "1234\r"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		case "error":
+			t.Fatalf("terminal error: %s", message.Error)
+		case "exit":
+			sawExit = message.ExitCode != nil && *message.ExitCode == 0
+		}
+	}
+	for _, recording := range st.Snapshot().Recordings {
+		if len(recording.Commands) != 1 {
+			t.Fatalf("the composition terminal was recorded: %+v", recording.Commands)
+		}
+	}
+}

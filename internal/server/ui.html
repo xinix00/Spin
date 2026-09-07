@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Spin</title>
   <link href="/assets/v__SPIN_UI_VERSION__/vendor/material-symbols-outlined.css" rel="stylesheet">
+  <link href="/assets/v__SPIN_UI_VERSION__/vendor/xterm-5.5.0.css" rel="stylesheet">
   <link href="/assets/v__SPIN_UI_VERSION__/spin.css" rel="stylesheet">
 </head>
 <body>
@@ -235,7 +236,7 @@
 
       <dialog class="fullscreen-dialog" id="capsule-dialog">
         <div class="console-layout">
-          <div class="dialog-head"><div><h2>Capsule recorder</h2><p>Spin-commando's sturen de recorder; overige regels draaien interactief in Docker.</p></div><div class="panel-actions"><div id="terminal-status" class="terminal-status"><span class="rec-dot"></span><span>idle</span></div><button class="icon-button" type="button" data-close-dialog="capsule-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div></div>
+          <div class="dialog-head"><div><h2>Capsule recorder</h2><p>Spin-commando's sturen de recorder; overige regels draaien als echte terminal in de capsule van je opname of je USE-compositie.</p></div><div class="panel-actions"><div id="terminal-status" class="terminal-status"><span class="rec-dot"></span><span>idle</span></div><button class="icon-button" type="button" data-close-dialog="capsule-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div></div>
           <div class="console-context"><div class="recipe-bar">
             <button class="quick" data-prefill="RECORD tool:git --scope=global --enable=git">tool:git</button>
             <button class="quick" data-prefill="RECORD tool:node --scope=global --from=tool:git">tool:node</button>
@@ -245,6 +246,7 @@
           </div><div class="recorder-context" id="recording-section"></div></div>
           <section class="terminal-panel">
             <div class="terminal" id="terminal" aria-live="polite"></div>
+            <div class="pty-stage" id="pty-stage" hidden></div>
             <div class="terminal-channels" id="terminal-channels" hidden></div>
             <form class="console-form" id="console-form"><span class="prompt" id="prompt">derek@spin ›</span><input id="command" autocomplete="off" spellcheck="false" aria-label="Spin command" placeholder="RECORD tool:name"><button class="danger" id="terminal-interrupt" type="button" hidden>Ctrl-C</button><button class="small-button" id="terminal-submit" type="submit">Run</button></form>
           </section>
@@ -317,6 +319,8 @@
 
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/marked-18.0.11.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/dompurify-3.4.14.min.js"></script>
+  <script src="/assets/v__SPIN_UI_VERSION__/vendor/xterm-5.5.0.js"></script>
+  <script src="/assets/v__SPIN_UI_VERSION__/vendor/xterm-addon-fit-0.10.0.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/spin.js"></script>
 </body>
 </html>

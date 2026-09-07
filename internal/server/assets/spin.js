@@ -574,57 +574,82 @@ function jobAssignee(job){return job.assignee||job.owner||'';}
 function setJobState(name){jobStateFilter=['mine','all','closed'].includes(name)?name:'mine';document.querySelectorAll('[data-job-state]').forEach(button=>button.classList.toggle('active',button.dataset.jobState===jobStateFilter));const copy={mine:['Mijn werk','Jobs die bij jou liggen: van jou, of aan jou toegewezen om naar te kijken.'],all:['Actief werk','Alle open Jobs van het team; wijs een Job toe om hem bij iemand neer te leggen.'],closed:['Afgerond werk','Afgeronde en handmatig gesloten Jobs blijven volledig terugleesbaar.']}[jobStateFilter];document.getElementById('jobs-list-title').textContent=copy[0];document.getElementById('jobs-list-copy').textContent=copy[1];localStorage.setItem('spin-job-state',jobStateFilter);renderJobs();}
 function activeRecording(){return snapshot.recordings.find(recording=>recording.actor===currentOperator()&&recording.status==='recording');}
 function isSpinCommand(line){return ['RECORD','EDIT','END','CANCEL','FROM','LIST','USE','ACP','STOP'].includes(String(line||'').trim().split(/\s+/,1)[0].toUpperCase());}
-function terminalSize(){const terminal=document.getElementById('terminal');return {cols:Math.max(40,Math.min(240,Math.floor(terminal.clientWidth/7.6))),rows:Math.max(12,Math.min(80,Math.floor(terminal.clientHeight/20)))};}
-function cleanTerminalOutput(value){return String(value||'').replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g,'').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').replace(/\r/g,'');}
+// PTY sessions render in xterm.js: a real terminal in the browser, with raw
+// keystrokes, colours, cursor movement and resizing, so login flows and
+// TUIs work. The line console above it stays for Spin commands and history.
+const terminalTheme={background:'#050806',foreground:'#dfe7e2',cursor:'#7be4ad',cursorAccent:'#050806',selectionBackground:'#2a4a38',black:'#0b0f0c',brightBlack:'#56635c',green:'#7be4ad',brightGreen:'#9ff0c4',blue:'#8fb8e8',brightBlue:'#a9c3df',yellow:'#e8c77b',brightYellow:'#f0d69b',red:'#f08a8a',brightRed:'#f5a0a0'};
 function activeTerminal(){return activeTerminalID?terminalSessions.get(activeTerminalID):null;}
+function liveTerminals(){return [...terminalSessions.values()].filter(session=>!session.exited);}
 function printTerminal(session,kind,value){String(value||'').split('\n').forEach(line=>print(kind,`[${session.label}] ${line}`));}
+function ptyStage(){return document.getElementById('pty-stage');}
+function fitTerminal(session){if(!session?.term||session.pane.hidden||ptyStage().hidden)return;try{session.fit.fit();}catch(_){}}
+function showTerminalPane(session){const stage=ptyStage();stage.hidden=false;document.getElementById('terminal').classList.add('compact');stage.querySelectorAll('.pty-pane').forEach(pane=>pane.hidden=pane!==session.pane);requestAnimationFrame(()=>{fitTerminal(session);session.term.focus();});}
+function updateStage(){const any=terminalSessions.size>0;ptyStage().hidden=!any;document.getElementById('terminal').classList.toggle('compact',any);}
 function chooseNewTerminal(){activeTerminalID=null;updateTerminalControls();const input=document.getElementById('command');input.value='';input.focus();}
-function chooseTerminal(id){if(!terminalSessions.has(id))return;activeTerminalID=id;updateTerminalControls();document.getElementById('command').focus();}
+function chooseTerminal(id){const session=terminalSessions.get(id);if(!session)return;activeTerminalID=id;updateTerminalControls();showTerminalPane(session);}
+function closeTerminalPane(id){const session=terminalSessions.get(id);if(!session)return;if(!session.exited){session.exited=true;try{session.socket.close();}catch(_){}}terminalSessions.delete(id);try{session.term.dispose();}catch(_){}session.pane.remove();if(activeTerminalID===id)activeTerminalID=[...terminalSessions.keys()].at(-1)||null;updateStage();updateTerminalControls();const next=activeTerminal();if(next)showTerminalPane(next);}
 function updateTerminalControls(){
-  const selected=activeTerminal(),running=terminalSessions.size>0,input=document.getElementById('command'),channels=document.getElementById('terminal-channels'),recording=activeRecording();
-  document.getElementById('terminal-interrupt').hidden=!selected;
-  document.getElementById('terminal-submit').textContent=selected?'Send':'Run';
-  input.placeholder=selected?`stdin → ${selected.label}`:(recording&&running?'nieuw parallel proces':'USE tool:codex WITH tool:dotnet');
-  channels.hidden=!recording&&!running;
-  channels.innerHTML=[...terminalSessions.values()].map(session=>`<button class="channel ${session.id===activeTerminalID?'active':''}" data-terminal-id="${esc(session.id)}">${esc(session.label)} · ${esc(session.line.slice(0,28))}</button>`).join('')+(recording?'<button class="channel" id="new-terminal">+ PTY</button>':'');
+  const selected=activeTerminal(),live=liveTerminals().length,input=document.getElementById('command'),channels=document.getElementById('terminal-channels'),recording=activeRecording(),composition=activeComposition(),target=recording||composition;
+  document.getElementById('terminal-interrupt').hidden=!selected||selected.exited;
+  document.getElementById('terminal-submit').textContent=selected&&!selected.exited?'Send':'Run';
+  input.placeholder=selected&&!selected.exited?`regel naar ${selected.label} · of typ direct in de terminal`:(target&&live?'nieuw parallel proces':(composition&&!recording?'sh · ls · codex login':'USE tool:codex WITH tool:dotnet'));
+  channels.hidden=!target&&!terminalSessions.size;
+  channels.innerHTML=[...terminalSessions.values()].map(session=>`<button class="channel ${session.id===activeTerminalID?'active':''} ${session.exited?'exited':''}" data-terminal-id="${esc(session.id)}">${esc(session.label)} · ${esc(session.line.slice(0,28))}${session.exited?` · exit ${esc(String(session.exitCode??'?'))}`:''}<span class="channel-close" data-close-terminal="${esc(session.id)}" title="Sluiten">✕</span></button>`).join('')+(target?'<button class="channel" id="new-terminal">+ PTY</button>':'');
   channels.querySelectorAll('[data-terminal-id]').forEach(button=>button.onclick=()=>chooseTerminal(button.dataset.terminalId));
+  channels.querySelectorAll('[data-close-terminal]').forEach(button=>button.onclick=event=>{event.stopPropagation();closeTerminalPane(button.dataset.closeTerminal);});
   const add=channels.querySelector('#new-terminal');if(add)add.onclick=chooseNewTerminal;
   const status=document.getElementById('terminal-status');
-  if(running){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>${terminalSessions.size} LIVE PTY</span>`;}
+  if(live){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>${live} LIVE PTY</span>`;}
   else if(recording){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>REC ${esc(recording.kind)}:${esc(recording.name)}</span>`;}
+  else if(composition){status.className='terminal-status';status.innerHTML=`<span class="rec-dot"></span><span>USE ${esc(composition.selector)}</span>`;}
 }
-function finishTerminal(session,refreshState=true){
-  if(!terminalSessions.has(session.id))return;
-  terminalSessions.delete(session.id);
-  if(activeTerminalID===session.id)activeTerminalID=[...terminalSessions.keys()].at(-1)||null;
+function finishTerminal(session,exitCode,refreshState=true){
+  if(!terminalSessions.has(session.id)||session.exited)return;
+  session.exited=true;session.exitCode=exitCode;
+  try{session.socket.close();}catch(_){}
   updateTerminalControls();
   if(refreshState)refresh(true);
 }
-function startTerminalCommand(recording,line){
-  if(terminalSessions.size>=8){print('error','Deze Capsule heeft al 8 live PTY-processen.');return;}
-  const id=`terminal-${++terminalSequence}`,label=`T${terminalSequence}`;
-  const protocol=location.protocol==='https:'?'wss:':'ws:',socket=new WebSocket(`${protocol}//${location.host}/api/recordings/${encodeURIComponent(recording.id)}/terminal`);
-  const session={id,label,socket,recordingID:recording.id,line,exited:false};terminalSessions.set(id,session);activeTerminalID=id;printTerminal(session,'command',line);updateTerminalControls();
-  socket.onopen=()=>{const size=terminalSize();socket.send(JSON.stringify({type:'start',command:line,...size}));};
+// startTerminalCommand opens a PTY on the given target: the open recording
+// (recorded into the layer) or the operator's USE composition (not recorded).
+function startTerminalCommand(target,line){
+  if(liveTerminals().length>=8){print('error','Deze Capsule heeft al 8 live PTY-processen.');return;}
+  const id=`terminal-${++terminalSequence}`,label=`T${terminalSequence}`,path=target.kind==='composition'?`/api/compositions/${encodeURIComponent(target.id)}/terminal`:`/api/recordings/${encodeURIComponent(target.id)}/terminal`;
+  const protocol=location.protocol==='https:'?'wss:':'ws:',socket=new WebSocket(`${protocol}//${location.host}${path}`);
+  const pane=document.createElement('div');pane.className='pty-pane';ptyStage().appendChild(pane);
+  const mono=(getComputedStyle(document.documentElement).getPropertyValue('--mono')||'').trim()||'ui-monospace, Menlo, monospace';
+  const term=new Terminal({cursorBlink:true,fontFamily:mono,fontSize:12.5,lineHeight:1.15,scrollback:5000,theme:terminalTheme,convertEol:false});
+  const fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open(pane);
+  const session={id,label,socket,targetID:target.id,line,exited:false,exitCode:null,pane,term,fit,ready:false};
+  terminalSessions.set(id,session);activeTerminalID=id;printTerminal(session,'command',line);updateTerminalControls();showTerminalPane(session);
+  const send=message=>{if(socket.readyState===WebSocket.OPEN&&!session.exited)socket.send(JSON.stringify(message));};
+  term.onData(data=>send({type:'input',data}));
+  term.onResize(({rows,cols})=>{if(session.ready)send({type:'resize',rows,cols});});
+  socket.onopen=()=>{fitTerminal(session);socket.send(JSON.stringify({type:'start',command:line,rows:term.rows,cols:term.cols}));};
   socket.onmessage=event=>{let message;try{message=JSON.parse(event.data);}catch(_){print('error','Ongeldig terminalframe ontvangen.');return;}
-    if(message.type==='ready'){printTerminal(session,'system','PTY connected');return;}
-    if(message.type==='output'){const output=cleanTerminalOutput(message.data);if(output)printTerminal(session,'output',output);return;}
-    if(message.type==='error'){printTerminal(session,'error',message.error||'Interactieve terminalfout');session.exited=true;socket.close();finishTerminal(session);return;}
-    if(message.type==='exit'){session.exited=true;printTerminal(session,message.exit_code===0?'system':'error',`exit ${message.exit_code}`);socket.close();finishTerminal(session);}
+    if(message.type==='ready'){session.ready=true;printTerminal(session,'system','PTY connected');term.focus();return;}
+    if(message.type==='output'){term.write(message.data);return;}
+    if(message.type==='error'){term.write(`\r\n\x1b[31m${message.error||'Interactieve terminalfout'}\x1b[0m\r\n`);printTerminal(session,'error',message.error||'Interactieve terminalfout');finishTerminal(session,null);return;}
+    if(message.type==='exit'){term.write(`\r\n\x1b[2m[exit ${message.exit_code}]\x1b[0m\r\n`);printTerminal(session,message.exit_code===0?'system':'error',`exit ${message.exit_code}`);finishTerminal(session,message.exit_code);}
   };
   socket.onerror=()=>{if(!session.exited)printTerminal(session,'error','Kon de Capsule-PTY niet openen.');};
-  socket.onclose=()=>{if(!session.exited){printTerminal(session,'error','PTY-verbinding gesloten.');finishTerminal(session);}};
+  socket.onclose=()=>{if(!session.exited){printTerminal(session,'error','PTY-verbinding gesloten.');finishTerminal(session,null);}};
 }
-function sendTerminalInput(value){const session=activeTerminal();if(session?.socket.readyState===WebSocket.OPEN)session.socket.send(JSON.stringify({type:'input',data:String(value)+'\r'}));}
-function interruptTerminal(){const session=activeTerminal();if(session?.socket.readyState===WebSocket.OPEN)session.socket.send(JSON.stringify({type:'interrupt'}));}
+function sendTerminalInput(value){const session=activeTerminal();if(session&&!session.exited&&session.socket.readyState===WebSocket.OPEN)session.socket.send(JSON.stringify({type:'input',data:String(value)+'\r'}));}
+function interruptTerminal(){const session=activeTerminal();if(session&&!session.exited&&session.socket.readyState===WebSocket.OPEN)session.socket.send(JSON.stringify({type:'interrupt'}));}
+// activeComposition is the operator's own USE composition with a running
+// capsule: a place to look around without recording.
+function activeComposition(){const composition=snapshot.compositions.find(item=>item.operator===currentOperator()&&!item.session_id&&item.runtime?.status==='ready');return composition?{...composition,kind:'composition'}:null;}
 
 async function execute(line){
   line=String(line||'').trim(); if(!line)return;
   const recording=activeRecording();
   if(recording&&!isSpinCommand(line)){
     if(!recording.runtime?.container_id){print('command',line);print('error',`De opname ${recording.kind}:${recording.name} start nog; wacht tot de capsule er is voordat je commando's typt.`);return;}
-    startTerminalCommand(recording,line);return;
+    startTerminalCommand({...recording,kind:'recording'},line);return;
   }
+  const composition=activeComposition();
+  if(!recording&&composition&&!isSpinCommand(line)){startTerminalCommand(composition,line);return;}
   print('command',line);
   // Show that the work is under way the moment the command leaves, not once
   // the server answers: END RECORD and RECORD/EDIT are jobs that may take a
@@ -1219,6 +1244,8 @@ document.getElementById('record-git-tool').onclick=()=>openConsole('RECORD tool:
 document.getElementById('list-snapshots').onclick=()=>refresh(true);
 document.getElementById('console-form').onsubmit=event=>{event.preventDefault();const input=document.getElementById('command'),line=input.value;input.value='';if(activeTerminal())sendTerminalInput(line);else execute(line);};
 document.getElementById('terminal-interrupt').onclick=interruptTerminal;
+document.getElementById('capsule-dialog').addEventListener('cancel',event=>{const session=activeTerminal();if(session&&!session.exited&&document.activeElement?.closest('.pty-pane')){event.preventDefault();}});
+new ResizeObserver(()=>fitTerminal(activeTerminal())).observe(document.getElementById('pty-stage'));
 document.getElementById('chat-form').onsubmit=event=>{event.preventDefault();const input=document.getElementById('chat-input'),text=input.value.trim();if(!text)return;sendChat({type:'prompt',text});document.querySelectorAll('[data-chat-question]').forEach(node=>node.remove());input.value='';input.style.height='auto';setTimeout(()=>refresh(),250);};
 document.getElementById('reject-form').onsubmit=event=>{event.preventDefault();if(!pendingRejectQuestionID)return;const form=new FormData(event.target);decideQuestion(pendingRejectQuestionID,'reject',String(form.get('reason')||'').trim());};
 document.getElementById('chat-cancel').onclick=()=>sendChat({type:'cancel'});
@@ -1227,7 +1254,6 @@ chatFeed.addEventListener('scroll',()=>{chatState.followTail=chatAtTail(chatFeed
 if('ResizeObserver' in window)new ResizeObserver(()=>followChatTail()).observe(document.getElementById('chat-feed-inner'));
 document.getElementById('chat-input').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();document.getElementById('chat-form').requestSubmit();}});
 document.getElementById('chat-input').addEventListener('input',event=>{event.target.style.height='auto';event.target.style.height=`${Math.min(180,event.target.scrollHeight)}px`;});
-window.addEventListener('resize',()=>{const size=terminalSize();terminalSessions.forEach(session=>{if(session.socket.readyState===WebSocket.OPEN)session.socket.send(JSON.stringify({type:'resize',...size}));});});
 document.getElementById('use-form').onsubmit=event=>{event.preventDefault();const selector=document.getElementById('use-selector').value,withSelectors=selectedValues(document.getElementById('use-with'));if(!selector)return;openConsole();execute(`USE ${selector}${withSelectors.map(value=>` WITH ${value}`).join('')}`);};
 document.getElementById('mcp-transport').onchange=event=>{const http=event.target.value==='http';document.getElementById('mcp-command-field').hidden=http;document.getElementById('mcp-url-field').hidden=!http;};
 document.getElementById('git-provider').onchange=event=>{const hosts={github:'github.com',gitlab:'gitlab.com'};if(hosts[event.target.value])document.getElementById('git-host').value=hosts[event.target.value];};

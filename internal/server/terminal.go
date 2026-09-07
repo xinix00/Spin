@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"easyacp/internal/capsule"
+	"easyacp/internal/domain"
 	"easyacp/internal/store"
 	"github.com/gorilla/websocket"
 )
@@ -33,12 +34,9 @@ var terminalUpgrader = websocket.Upgrader{
 	WriteBufferSize: 4096,
 }
 
+// recordingTerminal attaches a PTY to the capsule of the operator's open
+// recording; what runs there is recorded as part of the layer.
 func (s *Server) recordingTerminal(w http.ResponseWriter, r *http.Request) {
-	interactive, ok := s.engine.(capsule.InteractiveEngine)
-	if !ok {
-		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "capsule engine has no interactive terminal"})
-		return
-	}
 	actor := s.requestOperator(r, r.URL.Query().Get("operator"))
 	recording, err := s.store.Recording(r.PathValue("recordingID"))
 	if err != nil {
@@ -48,6 +46,36 @@ func (s *Server) recordingTerminal(w http.ResponseWriter, r *http.Request) {
 	open, err := s.store.OpenRecording(actor)
 	if err != nil || open.ID != recording.ID || actor != recording.Actor {
 		writeError(w, store.ErrConflict)
+		return
+	}
+	s.serveTerminal(w, r, actor, recording, true)
+}
+
+// compositionTerminal attaches a PTY to the operator's own running USE
+// composition, to look around or log in without recording anything. The
+// runner only needs the capsule runtime, so the composition is handed to it
+// as a recording-shaped target.
+func (s *Server) compositionTerminal(w http.ResponseWriter, r *http.Request) {
+	actor := s.requestOperator(r, r.URL.Query().Get("operator"))
+	composition, err := s.store.Composition(r.PathValue("compositionID"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if composition.Operator != actor || composition.Runtime == nil || composition.Runtime.Status != "ready" {
+		writeError(w, fmt.Errorf("composition is not running for %s: %w", actor, store.ErrConflict))
+		return
+	}
+	target := domain.Recording{ID: composition.ID, Actor: actor, Runtime: composition.Runtime}
+	s.serveTerminal(w, r, actor, target, false)
+}
+
+// serveTerminal relays one PTY over the WebSocket: raw input, resizes and
+// output both ways until the process ends or the browser goes.
+func (s *Server) serveTerminal(w http.ResponseWriter, r *http.Request, actor string, recording domain.Recording, record bool) {
+	interactive, ok := s.engine.(capsule.InteractiveEngine)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "capsule engine has no interactive terminal"})
 		return
 	}
 	connection, err := terminalUpgrader.Upgrade(w, r, nil)
@@ -123,7 +151,10 @@ func (s *Server) recordingTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	execution, waitErr := process.Wait()
 	exitCode := execution.ExitCode
-	_, appendErr := s.store.RecordExecution(recording.ID, actor, &exitCode)
+	var appendErr error
+	if record {
+		_, appendErr = s.store.RecordExecution(recording.ID, actor, &exitCode)
+	}
 	if waitErr != nil && appendErr == nil {
 		appendErr = fmt.Errorf("wait for interactive command: %w", waitErr)
 	}

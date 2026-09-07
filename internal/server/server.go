@@ -466,6 +466,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/recordings", s.createRecording)
 	s.mux.HandleFunc("POST /api/recordings/{recordingID}/commands", s.appendRecordingCommand)
 	s.mux.HandleFunc("GET /api/recordings/{recordingID}/terminal", s.recordingTerminal)
+	s.mux.HandleFunc("GET /api/compositions/{compositionID}/terminal", s.compositionTerminal)
 	s.mux.HandleFunc("POST /api/recordings/{recordingID}/parents", s.attachRecordingParent)
 	s.mux.HandleFunc("POST /api/recordings/{recordingID}/end", s.endRecording)
 	s.mux.HandleFunc("GET /api/recordings/{recordingID}/seal", s.getSeal)

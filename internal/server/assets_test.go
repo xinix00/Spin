@@ -50,6 +50,9 @@ func TestDashboardServesPinnedRichMarkdownAssets(t *testing.T) {
 		assetPrefix + "vendor/material-symbols-outlined.woff2",
 		assetPrefix + "vendor/marked-18.0.11.js",
 		assetPrefix + "vendor/dompurify-3.4.14.min.js",
+		assetPrefix + "vendor/xterm-5.5.0.js",
+		assetPrefix + "vendor/xterm-5.5.0.css",
+		assetPrefix + "vendor/xterm-addon-fit-0.10.0.js",
 		assetPrefix + "vendor/mermaid-11.17.2.min.js",
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)

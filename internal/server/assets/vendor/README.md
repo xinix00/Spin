@@ -8,6 +8,8 @@ These files are pinned and served by Spin itself; the UI does not load a CDN.
 | [DOMPurify](https://github.com/cure53/DOMPurify) | 3.4.14 | `dompurify-3.4.14.min.js` | Apache-2.0 (`LICENSE.dompurify`) |
 | [Mermaid](https://mermaid.js.org/) | 11.17.2 | `mermaid-11.17.2.min.js` | MIT (`LICENSE.mermaid`) |
 | [Material Symbols](https://fonts.google.com/icons) | variable font (full) | `material-symbols-outlined.css` + `.woff2` | Apache-2.0 (`LICENSE.material-symbols`) |
+| [xterm.js](https://xtermjs.org/) | 5.5.0 | `xterm-5.5.0.js` + `xterm-5.5.0.css` | MIT (`LICENSE.xterm`) |
+| [@xterm/addon-fit](https://github.com/xtermjs/xterm.js) | 0.10.0 | `xterm-addon-fit-0.10.0.js` | MIT (`LICENSE.xterm`) |
 
 Update deliberately: verify the upstream version and license, replace the
 versioned file, then update the reference in `ui.html` or `assets/spin.js` and
