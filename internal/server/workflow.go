@@ -627,7 +627,11 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 		}
 	}
 	var prompt strings.Builder
-	fmt.Fprintf(&prompt, "Je voert Spin workflowfase %q uit (poging %d).\n\nJOB\nNaam: %s\nGoal: %s\n\nINSTRUCTIES\n%s\n", phase.Name, run.Attempt, job.Title, job.Objective, phase.Instructions)
+	reference := ""
+	if job.Reference != "" {
+		reference = "Referentie: " + job.Reference + "\n"
+	}
+	fmt.Fprintf(&prompt, "Je voert Spin workflowfase %q uit (poging %d).\n\nJOB\nNaam: %s\n%sGoal: %s\n\nINSTRUCTIES\n%s\n", phase.Name, run.Attempt, job.Title, reference, job.Objective, phase.Instructions)
 	snapshot := s.store.Snapshot()
 	if sessionIndex := slices.IndexFunc(snapshot.Sessions, func(candidate domain.Session) bool { return candidate.ID == sessionID }); sessionIndex >= 0 && job.Branch != "" {
 		var source *domain.Job

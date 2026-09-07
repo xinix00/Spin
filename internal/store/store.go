@@ -1957,7 +1957,17 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 	if !validGitBaseRef(baseRef) {
 		return domain.CreateJobResponse{}, fmt.Errorf("invalid Git base ref %q: %w", baseRef, ErrConflict)
 	}
+	reference := strings.TrimSpace(req.Reference)
+	if reference == "" && forkedFromJobID != "" {
+		reference = s.state.Jobs[forkedFromJobID].Reference
+	}
+	if reference != "" && !validJobReference(reference) {
+		return domain.CreateJobResponse{}, fmt.Errorf("reference %q may only contain letters, digits, dots, dashes and underscores: %w", reference, ErrConflict)
+	}
 	namespace := "jobs/" + gitSlug(req.Title) + "-" + strings.TrimPrefix(jobID, "job_")[:6]
+	if reference != "" {
+		namespace = "jobs/" + reference + "/" + gitSlug(req.Title) + "-" + strings.TrimPrefix(jobID, "job_")[:6]
+	}
 	branch := namespace + "/main"
 	var templateSnapshot *domain.WorkflowTemplate
 	if workflowTemplate.ID != "" {
@@ -1968,6 +1978,7 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 		ID:                  jobID,
 		ForkedFromJobID:     forkedFromJobID,
 		Title:               strings.TrimSpace(req.Title),
+		Reference:           reference,
 		Objective:           strings.TrimSpace(req.Objective),
 		AcceptanceCriteria:  append([]string(nil), req.AcceptanceCriteria...),
 		Owner:               owner,
@@ -3791,6 +3802,20 @@ func withoutString(values []string, remove string) []string {
 		}
 	}
 	return out
+}
+
+// validJobReference accepts a ticket number as one branch path segment:
+// letters, digits, dots, dashes and underscores, no leading dot.
+func validJobReference(value string) bool {
+	if value == "" || len(value) > 64 || strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".lock") {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func gitSlug(value string) string {

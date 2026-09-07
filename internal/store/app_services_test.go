@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -267,5 +268,36 @@ func TestEnablementCommandCanBeSetAfterwards(t *testing.T) {
 	edited := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "claude", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{claude.ID}, Enables: updated.Enables, ReplacesArtifactID: claude.ID})
 	if edited.Enables[0].Command != "claude-code-acp" {
 		t.Fatalf("EDIT lost the command: %+v", edited.Enables)
+	}
+}
+
+func TestJobReferenceNamespacesBranchAndCarriesToForks(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "agent", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "agent-acp"}}})
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "ref", RemoteURL: "https://example.com/ref.git", DefaultRef: "develop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Kort", Phases: []domain.WorkflowPhase{{ID: "build", Name: "Bouw", Instructions: "Bouw", AllowChanges: true, Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateJob(domain.CreateJobRequest{Title: "Slecht", Reference: "EF 12/34", Objective: "x", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("invalid reference error = %v", err)
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Reserveringen", Reference: "EF-1234", Objective: "x", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil || created.Job.Reference != "EF-1234" || !strings.HasPrefix(created.Job.Branch, "jobs/EF-1234/reserveringen-") || !strings.HasSuffix(created.Job.Branch, "/main") {
+		t.Fatalf("job = %+v, error = %v", created.Job, err)
+	}
+	if _, err := st.CloseJob(created.Job.ID, "derek"); err != nil {
+		t.Fatal(err)
+	}
+	fork, err := st.CreateJob(domain.CreateJobRequest{Title: "Vervolg", Objective: "y", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID, ForkedFromJobID: created.Job.ID})
+	if err != nil || fork.Job.Reference != "EF-1234" || !strings.HasPrefix(fork.Job.Branch, "jobs/EF-1234/vervolg-") {
+		t.Fatalf("fork = %+v, error = %v", fork.Job, err)
 	}
 }

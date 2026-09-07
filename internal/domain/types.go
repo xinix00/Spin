@@ -171,6 +171,9 @@ type Deliverable struct {
 	Content     string    `json:"content"`
 	Revision    int       `json:"revision"`
 	CreatedAt   time.Time `json:"created_at"`
+	// UpdatedAt is set when the same phase run rewrote or edited this
+	// revision in place.
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
 // DeliverableComment is immutable review history on one exact deliverable
@@ -599,9 +602,13 @@ type Composition struct {
 }
 
 type Job struct {
-	ID                 string   `json:"id"`
-	ForkedFromJobID    string   `json:"forked_from_job_id,omitempty"`
-	Title              string   `json:"title"`
+	ID              string `json:"id"`
+	ForkedFromJobID string `json:"forked_from_job_id,omitempty"`
+	Title           string `json:"title"`
+	// Reference is the ticket or issue number this Job belongs to. It
+	// becomes the branch namespace (jobs/<reference>/…) so every Job on the
+	// same ticket, forks included, is found together.
+	Reference          string   `json:"reference,omitempty"`
 	Objective          string   `json:"objective"`
 	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
 	Owner              string   `json:"owner,omitempty"`
@@ -1096,6 +1103,7 @@ type SealStatus struct {
 
 type CreateJobRequest struct {
 	Title               string   `json:"title"`
+	Reference           string   `json:"reference,omitempty"`
 	Objective           string   `json:"objective"`
 	ForkedFromJobID     string   `json:"forked_from_job_id,omitempty"`
 	IdempotencyKey      string   `json:"idempotency_key,omitempty"`

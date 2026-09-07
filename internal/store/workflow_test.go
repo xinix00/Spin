@@ -135,16 +135,18 @@ func TestWorkflowTemplateMovesJobThroughDeliverablesQuestionsAndRejectLimit(t *t
 	if _, _, err := st.EditWorkflowDeliverable(created.Session.ID, "FO", "Stap:", "Fase:", false); !errors.Is(err, ErrConflict) {
 		t.Fatalf("ambiguous edit error = %v", err)
 	}
+	// The same phase run keeps working in its own revision: an edit and a
+	// rewrite update revision 2 in place instead of stacking revisions.
 	edited, replaced, err := st.EditWorkflowDeliverable(created.Session.ID, "FO", "Stap:", "Fase:", true)
-	if err != nil || replaced != 2 || edited.Revision != 3 || edited.Content != "# Functioneel ontwerp v2\n\nFase: login\nFase: logout" {
+	if err != nil || replaced != 2 || edited.ID != deliverable.ID || edited.Revision != 2 || edited.Content != "# Functioneel ontwerp v2\n\nFase: login\nFase: logout" || edited.UpdatedAt.IsZero() {
 		t.Fatalf("edit all = %+v (%d), error = %v", edited, replaced, err)
 	}
-	if latest, err := st.LatestDeliverable(created.Session.ID, "fo"); err != nil || latest.ID != edited.ID {
+	if latest, err := st.LatestDeliverable(created.Session.ID, "fo"); err != nil || latest.ID != edited.ID || latest.Content != edited.Content {
 		t.Fatalf("latest = %+v, error = %v", latest, err)
 	}
 	deliverable, err = st.AddWorkflowDeliverable(created.Session.ID, "FO", "# Functioneel ontwerp v2")
-	if err != nil || deliverable.Revision != 4 {
-		t.Fatalf("deliverable revision = %+v, error = %v", deliverable, err)
+	if err != nil || deliverable.ID != edited.ID || deliverable.Revision != 2 || len(st.Snapshot().Deliverables) != 2 {
+		t.Fatalf("rewrite in same run = %+v, error = %v", deliverable, err)
 	}
 	if _, err := st.AddDeliverableComment(historicalComment.DeliverableID, "derek", domain.CreateDeliverableCommentRequest{SelectedText: "Functioneel ontwerp", StartOffset: 2, EndOffset: 23, Body: "Retroactief comment"}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("historical revision comment error = %v", err)
@@ -188,7 +190,7 @@ func TestWorkflowTemplateMovesJobThroughDeliverablesQuestionsAndRejectLimit(t *t
 		t.Fatalf("manual retry = %+v, error = %v", retry, err)
 	}
 	snapshot := st.Snapshot()
-	if len(snapshot.WorkflowTemplates) != 1 || len(snapshot.Deliverables) != 4 || len(snapshot.DeliverableComments) != 2 || len(snapshot.WorkflowQuestions) != 2 || len(snapshot.PhaseRuns) != 4 {
+	if len(snapshot.WorkflowTemplates) != 1 || len(snapshot.Deliverables) != 2 || len(snapshot.DeliverableComments) != 2 || len(snapshot.WorkflowQuestions) != 2 || len(snapshot.PhaseRuns) != 4 {
 		t.Fatalf("workflow snapshot = %+v", snapshot)
 	}
 	if _, err := st.DeleteJob(created.Job.ID, "derek"); err != nil {

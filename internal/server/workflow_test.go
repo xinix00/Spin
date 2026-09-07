@@ -237,6 +237,7 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 	}
 	edited := call(`{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"edit_deliverable","arguments":{"name":"FO","old_text":"# FO","new_text":"# FO v2"}}}`)
 	editedText, _ := json.Marshal(edited.Result)
+	// Revision 1 carries a comment, so the edit starts revision 2.
 	if edited.Error != nil || !bytes.Contains(editedText, []byte("revisie 2")) || len(st.Snapshot().Deliverables) != 2 {
 		t.Fatalf("edit call = %+v, deliverables = %+v", edited, st.Snapshot().Deliverables)
 	}

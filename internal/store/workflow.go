@@ -757,6 +757,15 @@ func (s *Store) deliverableTargetLocked(sessionID, name string) (domain.Job, dom
 	return domain.Job{}, domain.PhaseRun{}, domain.DeliverableDefinition{}, fmt.Errorf("deliverable %q is not declared by phase %s: %w", name, phase.Name, ErrConflict)
 }
 
+func (s *Store) deliverableHasCommentsLocked(deliverableID string) bool {
+	for _, comment := range s.state.DeliverableComments {
+		if comment.DeliverableID == deliverableID {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) latestDeliverableLocked(jobID, name string) (domain.Deliverable, bool) {
 	var latest domain.Deliverable
 	found := false
@@ -768,9 +777,20 @@ func (s *Store) latestDeliverableLocked(jobID, name string) (domain.Deliverable,
 	return latest, found
 }
 
+// storeDeliverableLocked keeps one revision per phase attempt: while the
+// same phase run keeps writing, its own latest revision is updated in place,
+// so ten edits do not make ten revisions. A revision that carries comments
+// stays as it is, because the comments anchor to its text, and a next phase
+// run always starts a new revision.
 func (s *Store) storeDeliverableLocked(job domain.Job, run domain.PhaseRun, sessionID string, definition domain.DeliverableDefinition, content string) (domain.Deliverable, error) {
 	revision := 1
 	if latest, ok := s.latestDeliverableLocked(job.ID, definition.Name); ok {
+		if latest.PhaseRunID == run.ID && !s.deliverableHasCommentsLocked(latest.ID) {
+			latest.Content = content
+			latest.UpdatedAt = time.Now().UTC()
+			s.state.Deliverables[latest.ID] = latest
+			return latest, s.saveLocked()
+		}
 		revision = latest.Revision + 1
 	}
 	deliverable := domain.Deliverable{

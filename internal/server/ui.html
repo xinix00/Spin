@@ -145,6 +145,7 @@
           <div class="form-step-note" id="job-fork-context" hidden></div>
           <div class="form-grid" data-job-step="1">
             <div><label for="title">Naam</label><input id="title" name="title" required placeholder="Implementeer darkmode"></div>
+            <div><label for="job-reference">Referentie</label><input id="job-reference" name="reference" placeholder="EF-1234 · ticketnummer, optioneel" pattern="[A-Za-z0-9._-]{1,64}" title="Letters, cijfers, punt, streepje en underscore" autocomplete="off"><small>Wordt de branch-namespace jobs/&lt;referentie&gt;/…, zodat Jobs op hetzelfde ticket bij elkaar staan.</small></div>
             <div><label for="job-template">Template</label><select id="job-template" name="template_id" required><option value="">maak eerst een Template</option></select></div>
             <div><label for="job-git">Repository</label><select id="job-git" name="git_repository_id" required><option value="">configureer eerst Git</option></select></div>
             <div><label for="job-base-ref">Start vanaf</label><input id="job-base-ref" name="base_ref" placeholder="repository default"></div>
