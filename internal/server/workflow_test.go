@@ -213,7 +213,7 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 	}
 	listed := call(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	encoded, _ := json.Marshal(listed.Result)
-	for _, expected := range []string{`"ask"`, `"accept"`, `"reject"`, `"add_deliverable"`} {
+	for _, expected := range []string{`"ask"`, `"accept"`, `"reject"`, `"add_deliverable"`, `"edit_deliverable"`, `"read_deliverable"`} {
 		if !bytes.Contains(encoded, []byte(expected)) {
 			t.Fatalf("tools/list missing %s: %s", expected, encoded)
 		}
@@ -235,8 +235,30 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 	if commentResponse.Code != http.StatusCreated || json.Unmarshal(commentResponse.Body.Bytes(), &comment) != nil || comment.Author != "derek" {
 		t.Fatalf("comment status=%d body=%s decoded=%+v", commentResponse.Code, commentResponse.Body.String(), comment)
 	}
-	if _, err := st.AddWorkflowDeliverable(created.Session.ID, "FO", "# FO v2"); err != nil {
-		t.Fatal(err)
+	edited := call(`{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"edit_deliverable","arguments":{"name":"FO","old_text":"# FO","new_text":"# FO v2"}}}`)
+	editedText, _ := json.Marshal(edited.Result)
+	if edited.Error != nil || !bytes.Contains(editedText, []byte("revisie 2")) || len(st.Snapshot().Deliverables) != 2 {
+		t.Fatalf("edit call = %+v, deliverables = %+v", edited, st.Snapshot().Deliverables)
+	}
+	read := call(`{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"read_deliverable","arguments":{"name":"FO"}}}`)
+	readText, _ := json.Marshal(read.Result)
+	if read.Error != nil || !bytes.Contains(readText, []byte("# FO v2")) {
+		t.Fatalf("read call = %+v", read)
+	}
+	missing := call(`{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"edit_deliverable","arguments":{"name":"FO","old_text":"bestaat niet","new_text":"x"}}}`)
+	missingText, _ := json.Marshal(missing)
+	if !bytes.Contains(missingText, []byte("does not occur")) || len(st.Snapshot().Deliverables) != 2 {
+		t.Fatalf("edit of missing text = %s", missingText)
+	}
+	latest := st.Snapshot().Deliverables[1]
+	if latest.Revision != 2 {
+		latest = st.Snapshot().Deliverables[0]
+	}
+	downloadRequest := httptest.NewRequest(http.MethodGet, "/api/deliverables/"+latest.ID+"/download", nil)
+	downloadResponse := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(downloadResponse, downloadRequest)
+	if downloadResponse.Code != http.StatusOK || downloadResponse.Header().Get("Content-Disposition") != "attachment; filename=FO-r2.md" || downloadResponse.Body.String() != "# FO v2\n" {
+		t.Fatalf("download status=%d disposition=%q body=%q", downloadResponse.Code, downloadResponse.Header().Get("Content-Disposition"), downloadResponse.Body.String())
 	}
 	historicalRequest := httptest.NewRequest(http.MethodPost, "/api/deliverables/"+firstRevision.ID+"/comments", bytes.NewBufferString(`{"selected_text":"FO","start_offset":0,"end_offset":2,"body":"Achteraf toegevoegd."}`))
 	historicalRequest.Header.Set("Content-Type", "application/json")
@@ -349,7 +371,7 @@ func TestWorkflowPromptInjectsOnlySelectedLatestDeliverablesAndAlwaysGoal(t *tes
 			t.Fatalf("prompt unexpectedly contains %q:\n%s", excluded, prompt)
 		}
 	}
-	if !strings.Contains(prompt, "Deze fase vraagt geen deliverables; add_deliverable is daarom niet beschikbaar") || strings.Contains(prompt, "Lever ieder hierboven gevraagd document") {
+	if !strings.Contains(prompt, "Deze fase vraagt geen deliverables; add_deliverable en edit_deliverable zijn daarom niet beschikbaar") || strings.Contains(prompt, "Lever ieder hierboven gevraagd document") {
 		t.Fatalf("build prompt has ambiguous deliverable instructions:\n%s", prompt)
 	}
 	nativePrompt, err := srv.workflowPromptForACP(advance.NextSession.ID, acpPromptCapabilities{EmbeddedContext: true})

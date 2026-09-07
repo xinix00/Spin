@@ -488,6 +488,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/jobs/{jobID}/assignee", s.assignJob)
 	s.mux.HandleFunc("DELETE /api/jobs/{jobID}", s.deleteJob)
 	s.mux.HandleFunc("POST /api/deliverables/{deliverableID}/comments", s.createDeliverableComment)
+	s.mux.HandleFunc("GET /api/deliverables/{deliverableID}/download", s.downloadDeliverable)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/retry", s.retryWorkflowSession)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/app/start", s.startAppHandler)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/app/stop", s.stopAppHandler)

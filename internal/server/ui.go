@@ -7,7 +7,7 @@ import (
 
 // frontendAssetVersion is part of every browser-asset URL. Increment it for
 // every frontend change; immutable CDN caches may retain older asset paths.
-const frontendAssetVersion = "50"
+const frontendAssetVersion = "51"
 
 //go:embed ui.html
 var dashboardHTML []byte

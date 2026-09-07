@@ -653,6 +653,9 @@ func (s *Store) RetryWorkflowSession(sessionID, operator string) (domain.CreateJ
 	return domain.CreateJobResponse{Job: job, Session: session}, previousCompositionID, nil
 }
 
+// AddWorkflowDeliverable stores a document as the next revision of a
+// declared deliverable: the whole content, so it is also how an agent
+// rewrites one. EditWorkflowDeliverable is the cheap path for a small change.
 func (s *Store) AddWorkflowDeliverable(sessionID, name, content string) (domain.Deliverable, error) {
 	name = strings.TrimSpace(name)
 	content = strings.TrimSpace(content)
@@ -661,35 +664,117 @@ func (s *Store) AddWorkflowDeliverable(sessionID, name, content string) (domain.
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	session, ok := s.state.Sessions[sessionID]
-	if !ok {
-		return domain.Deliverable{}, ErrNotFound
-	}
-	job, _, run, phase, err := s.workflowLocked(session)
+	job, run, definition, err := s.deliverableTargetLocked(sessionID, name)
 	if err != nil {
 		return domain.Deliverable{}, err
 	}
-	if run.Status != domain.PhaseRunRunning {
-		return domain.Deliverable{}, fmt.Errorf("phase is %s: %w", run.Status, ErrConflict)
+	return s.storeDeliverableLocked(job, run, sessionID, definition, content)
+}
+
+// EditWorkflowDeliverable replaces a piece of the latest revision of a
+// deliverable and stores the result as a new revision. The old text must
+// occur exactly once unless all is set, so a vague match never edits the
+// wrong place.
+func (s *Store) EditWorkflowDeliverable(sessionID, name, oldText, newText string, all bool) (domain.Deliverable, int, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || oldText == "" {
+		return domain.Deliverable{}, 0, fmt.Errorf("deliverable name and old_text are required: %w", ErrConflict)
 	}
-	definition := domain.DeliverableDefinition{}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, run, definition, err := s.deliverableTargetLocked(sessionID, name)
+	if err != nil {
+		return domain.Deliverable{}, 0, err
+	}
+	latest, ok := s.latestDeliverableLocked(job.ID, definition.Name)
+	if !ok {
+		return domain.Deliverable{}, 0, fmt.Errorf("deliverable %s has no revision yet; use add_deliverable first: %w", definition.Name, ErrConflict)
+	}
+	count := strings.Count(latest.Content, oldText)
+	switch {
+	case count == 0:
+		return domain.Deliverable{}, 0, fmt.Errorf("old_text does not occur in %s revision %d; read_deliverable shows the current text: %w", definition.Name, latest.Revision, ErrConflict)
+	case count > 1 && !all:
+		return domain.Deliverable{}, 0, fmt.Errorf("old_text occurs %d times in %s revision %d; include more surrounding text or set all: %w", count, definition.Name, latest.Revision, ErrConflict)
+	}
+	content := strings.TrimSpace(strings.ReplaceAll(latest.Content, oldText, newText))
+	if content == "" || len(content) > maxDeliverableBytes {
+		return domain.Deliverable{}, 0, fmt.Errorf("the edit leaves %s empty or larger than %d bytes: %w", definition.Name, maxDeliverableBytes, ErrConflict)
+	}
+	if content == latest.Content {
+		return domain.Deliverable{}, 0, fmt.Errorf("the edit changes nothing in %s revision %d: %w", definition.Name, latest.Revision, ErrConflict)
+	}
+	deliverable, err := s.storeDeliverableLocked(job, run, sessionID, definition, content)
+	return deliverable, count, err
+}
+
+// LatestDeliverable returns the newest revision of a deliverable of the
+// Session's Job, for an agent that wants to read before editing.
+func (s *Store) LatestDeliverable(sessionID, name string) (domain.Deliverable, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, _, definition, err := s.deliverableTargetLocked(sessionID, strings.TrimSpace(name))
+	if err != nil {
+		return domain.Deliverable{}, err
+	}
+	latest, ok := s.latestDeliverableLocked(job.ID, definition.Name)
+	if !ok {
+		return domain.Deliverable{}, fmt.Errorf("deliverable %s has no revision yet: %w", definition.Name, ErrNotFound)
+	}
+	return latest, nil
+}
+
+// Deliverable returns one stored revision by ID.
+func (s *Store) Deliverable(deliverableID string) (domain.Deliverable, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	deliverable, ok := s.state.Deliverables[strings.TrimSpace(deliverableID)]
+	if !ok {
+		return domain.Deliverable{}, ErrNotFound
+	}
+	return deliverable, nil
+}
+
+// deliverableTargetLocked resolves the running phase of a Session and the
+// deliverable it declares under name.
+func (s *Store) deliverableTargetLocked(sessionID, name string) (domain.Job, domain.PhaseRun, domain.DeliverableDefinition, error) {
+	session, ok := s.state.Sessions[sessionID]
+	if !ok {
+		return domain.Job{}, domain.PhaseRun{}, domain.DeliverableDefinition{}, ErrNotFound
+	}
+	job, _, run, phase, err := s.workflowLocked(session)
+	if err != nil {
+		return domain.Job{}, domain.PhaseRun{}, domain.DeliverableDefinition{}, err
+	}
+	if run.Status != domain.PhaseRunRunning {
+		return domain.Job{}, domain.PhaseRun{}, domain.DeliverableDefinition{}, fmt.Errorf("phase is %s: %w", run.Status, ErrConflict)
+	}
 	for _, candidate := range phase.Deliverables {
 		if strings.EqualFold(candidate.Name, name) {
-			definition = candidate
-			break
+			return job, run, candidate, nil
 		}
 	}
-	if definition.Name == "" {
-		return domain.Deliverable{}, fmt.Errorf("deliverable %q is not declared by phase %s: %w", name, phase.Name, ErrConflict)
-	}
-	revision := 1
+	return domain.Job{}, domain.PhaseRun{}, domain.DeliverableDefinition{}, fmt.Errorf("deliverable %q is not declared by phase %s: %w", name, phase.Name, ErrConflict)
+}
+
+func (s *Store) latestDeliverableLocked(jobID, name string) (domain.Deliverable, bool) {
+	var latest domain.Deliverable
+	found := false
 	for _, existing := range s.state.Deliverables {
-		if existing.JobID == job.ID && strings.EqualFold(existing.Name, definition.Name) && existing.Revision >= revision {
-			revision = existing.Revision + 1
+		if existing.JobID == jobID && strings.EqualFold(existing.Name, name) && (!found || existing.Revision > latest.Revision) {
+			latest, found = existing, true
 		}
+	}
+	return latest, found
+}
+
+func (s *Store) storeDeliverableLocked(job domain.Job, run domain.PhaseRun, sessionID string, definition domain.DeliverableDefinition, content string) (domain.Deliverable, error) {
+	revision := 1
+	if latest, ok := s.latestDeliverableLocked(job.ID, definition.Name); ok {
+		revision = latest.Revision + 1
 	}
 	deliverable := domain.Deliverable{
-		ID: newID("del"), JobID: job.ID, PhaseRunID: run.ID, SessionID: session.ID,
+		ID: newID("del"), JobID: job.ID, PhaseRunID: run.ID, SessionID: sessionID,
 		Name: definition.Name, Description: definition.Description, Content: content, Revision: revision, CreatedAt: time.Now().UTC(),
 	}
 	s.state.Deliverables[deliverable.ID] = deliverable

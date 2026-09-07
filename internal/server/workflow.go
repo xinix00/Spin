@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"slices"
 	"strings"
@@ -72,6 +73,39 @@ func (s *Server) deleteWorkflowTemplate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, template)
+}
+
+// downloadDeliverable serves one revision as a Markdown file named after
+// the deliverable and its revision, so a document is easy to share.
+func (s *Server) downloadDeliverable(w http.ResponseWriter, r *http.Request) {
+	deliverable, err := s.store.Deliverable(r.PathValue("deliverableID"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	filename := fmt.Sprintf("%s-r%d.md", safeFilename(deliverable.Name), deliverable.Revision)
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, no-store")
+	http.ServeContent(w, r, filename, deliverable.CreatedAt, strings.NewReader(deliverable.Content+"\n"))
+}
+
+// safeFilename keeps letters, digits, dots, dashes and underscores of a name.
+func safeFilename(name string) string {
+	var out strings.Builder
+	for _, char := range strings.TrimSpace(name) {
+		switch {
+		case char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z', char >= '0' && char <= '9', char == '.', char == '-', char == '_':
+			out.WriteRune(char)
+		case char == ' ':
+			out.WriteRune('_')
+		}
+	}
+	if out.Len() == 0 {
+		return "deliverable"
+	}
+	return out.String()
 }
 
 func (s *Server) createDeliverableComment(w http.ResponseWriter, r *http.Request) {
@@ -270,10 +304,21 @@ func (s *Server) workflowTools(sessionID string) ([]workflowTool, error) {
 		for _, definition := range phase.Deliverables {
 			names = append(names, definition.Name)
 		}
-		tools = append(tools, workflowTool{Name: "add_deliverable", Title: "Voeg deliverable toe", Description: "Bewaar een benoemd Markdown-document als nieuwe revisie bij deze Session.", InputSchema: object(map[string]any{
-			"name":    map[string]any{"type": "string", "enum": names},
-			"content": map[string]any{"type": "string", "description": "Volledige Markdown-inhoud"},
-		}, "name", "content")})
+		tools = append(tools,
+			workflowTool{Name: "add_deliverable", Title: "Schrijf deliverable", Description: "Bewaar een benoemd Markdown-document volledig als nieuwe revisie: voor het eerste opleveren en voor een herschrijving. Gebruik edit_deliverable voor een kleine wijziging.", InputSchema: object(map[string]any{
+				"name":    map[string]any{"type": "string", "enum": names},
+				"content": map[string]any{"type": "string", "description": "Volledige Markdown-inhoud; vervangt het hele document"},
+			}, "name", "content")},
+			workflowTool{Name: "edit_deliverable", Title: "Bewerk deliverable", Description: "Vervang een stuk tekst in de laatste revisie van een deliverable en bewaar het resultaat als nieuwe revisie. old_text moet letterlijk en precies één keer voorkomen; neem anders meer omliggende tekst mee of zet all.", InputSchema: object(map[string]any{
+				"name":     map[string]any{"type": "string", "enum": names},
+				"old_text": map[string]any{"type": "string", "description": "Letterlijke tekst die vervangen wordt"},
+				"new_text": map[string]any{"type": "string", "description": "Nieuwe tekst; leeg verwijdert old_text"},
+				"all":      map[string]any{"type": "boolean", "description": "Vervang alle voorkomens van old_text"},
+			}, "name", "old_text", "new_text")},
+			workflowTool{Name: "read_deliverable", Title: "Lees deliverable", Description: "Geef de laatste revisie van een deliverable terug, om precies te zien wat er nu staat voordat je bewerkt.", InputSchema: object(map[string]any{
+				"name": map[string]any{"type": "string", "enum": names},
+			}, "name")},
+		)
 	}
 	return tools, nil
 }
@@ -302,6 +347,21 @@ func (s *Server) callWorkflowTool(ctx context.Context, sessionID, name string, a
 			return "", err
 		}
 		return fmt.Sprintf("Deliverable %s revisie %d is opgeslagen en zichtbaar als bijlage.", deliverable.Name, deliverable.Revision), nil
+	case "edit_deliverable":
+		oldText, _ := arguments["old_text"].(string)
+		newText, _ := arguments["new_text"].(string)
+		all, _ := arguments["all"].(bool)
+		deliverable, replaced, err := s.store.EditWorkflowDeliverable(sessionID, stringArgument("name"), oldText, newText, all)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Deliverable %s revisie %d is opgeslagen: %d vervanging(en).", deliverable.Name, deliverable.Revision, replaced), nil
+	case "read_deliverable":
+		deliverable, err := s.store.LatestDeliverable(sessionID, stringArgument("name"))
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s revisie %d:\n\n%s", deliverable.Name, deliverable.Revision, deliverable.Content), nil
 	case "accept", "reject":
 		detail := stringArgument("summary")
 		if name == "reject" {
@@ -799,9 +859,9 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 	}
 	prompt.WriteString("\nWERKWIJZE\nGebruik uitsluitend de aangeboden Spin workflowtools om workflowstate te wijzigen. ask stelt één formulier met één of meer vragen, elk met de antwoordopties die je verwacht; stel alleen wat je niet zelf kunt uitzoeken en bundel alles in één ask. ")
 	if len(phase.Deliverables) > 0 {
-		prompt.WriteString("Lever ieder hierboven gevraagd document volledig als Markdown aan met add_deliverable. ")
+		prompt.WriteString("Lever ieder hierboven gevraagd document volledig als Markdown aan met add_deliverable; dat overschrijft het hele document en is ook de weg voor een herschrijving. Voor een kleine wijziging in een bestaand document gebruik je edit_deliverable (zoek/vervang op letterlijke tekst) en read_deliverable laat de huidige tekst zien. ")
 	} else {
-		prompt.WriteString("Deze fase vraagt geen deliverables; add_deliverable is daarom niet beschikbaar en je hoeft geen document op te leveren. ")
+		prompt.WriteString("Deze fase vraagt geen deliverables; add_deliverable en edit_deliverable zijn daarom niet beschikbaar en je hoeft geen document op te leveren. ")
 	}
 	prompt.WriteString("Commit of push nooit zelf. Sluit de fase altijd af met accept, of reject met een concrete reden. ACCEPT laat Spin de Session gecontroleerd in de Job-branch opnemen.\n")
 	return prompt.String(), nil
