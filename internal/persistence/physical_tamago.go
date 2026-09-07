@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"strings"
 	"sync"
 
 	"github.com/xinix00/HopOS/metal/v2/app/applib"
