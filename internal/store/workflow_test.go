@@ -128,25 +128,38 @@ func TestWorkflowTemplateMovesJobThroughDeliverablesQuestionsAndRejectLimit(t *t
 	if _, _, err := st.EditWorkflowDeliverable(created.Session.ID, "FO", "ontbreekt", "x", false); !errors.Is(err, ErrConflict) {
 		t.Fatalf("edit of absent text error = %v", err)
 	}
+	// One revision per Session: the same run rewrites its own revision 1,
+	// the historical comment re-anchors on its quoted text.
 	deliverable, err = st.AddWorkflowDeliverable(created.Session.ID, "FO", "# Functioneel ontwerp v2\n\nStap: login\nStap: logout")
-	if err != nil || deliverable.Revision != 2 {
+	if err != nil || deliverable.Revision != 1 || deliverable.ID != historicalComment.DeliverableID {
 		t.Fatalf("deliverable revision = %+v, error = %v", deliverable, err)
 	}
 	if _, _, err := st.EditWorkflowDeliverable(created.Session.ID, "FO", "Stap:", "Fase:", false); !errors.Is(err, ErrConflict) {
 		t.Fatalf("ambiguous edit error = %v", err)
 	}
-	// The same phase run keeps working in its own revision: an edit and a
-	// rewrite update revision 2 in place instead of stacking revisions.
 	edited, replaced, err := st.EditWorkflowDeliverable(created.Session.ID, "FO", "Stap:", "Fase:", true)
-	if err != nil || replaced != 2 || edited.ID != deliverable.ID || edited.Revision != 2 || edited.Content != "# Functioneel ontwerp v2\n\nFase: login\nFase: logout" || edited.UpdatedAt.IsZero() {
+	if err != nil || replaced != 2 || edited.ID != deliverable.ID || edited.Revision != 1 || edited.Content != "# Functioneel ontwerp v2\n\nFase: login\nFase: logout" || edited.UpdatedAt.IsZero() {
 		t.Fatalf("edit all = %+v (%d), error = %v", edited, replaced, err)
 	}
 	if latest, err := st.LatestDeliverable(created.Session.ID, "fo"); err != nil || latest.ID != edited.ID || latest.Content != edited.Content {
 		t.Fatalf("latest = %+v, error = %v", latest, err)
 	}
 	deliverable, err = st.AddWorkflowDeliverable(created.Session.ID, "FO", "# Functioneel ontwerp v2")
-	if err != nil || deliverable.ID != edited.ID || deliverable.Revision != 2 || len(st.Snapshot().Deliverables) != 2 {
+	if err != nil || deliverable.ID != edited.ID || deliverable.Revision != 1 || len(st.Snapshot().Deliverables) != 1 {
 		t.Fatalf("rewrite in same run = %+v, error = %v", deliverable, err)
+	}
+	// A next attempt is a new Session and therefore a new revision.
+	redo, err := st.CompleteWorkflowPhase(created.Session.ID, "reject", "nog niet compleet")
+	if err != nil || redo.NextSession == nil || redo.PhaseRun.PhaseID != "design" || redo.PhaseRun.Attempt != 2 {
+		t.Fatalf("design retry = %+v, error = %v", redo, err)
+	}
+	designRetry := *redo.NextSession
+	if _, err := st.MarkWorkflowPhaseRunning(designRetry.ID); err != nil {
+		t.Fatal(err)
+	}
+	deliverable, err = st.AddWorkflowDeliverable(designRetry.ID, "FO", "# Functioneel ontwerp v2")
+	if err != nil || deliverable.Revision != 2 || deliverable.ID == edited.ID {
+		t.Fatalf("second attempt revision = %+v, error = %v", deliverable, err)
 	}
 	if _, err := st.AddDeliverableComment(historicalComment.DeliverableID, "derek", domain.CreateDeliverableCommentRequest{SelectedText: "Functioneel ontwerp", StartOffset: 2, EndOffset: 23, Body: "Retroactief comment"}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("historical revision comment error = %v", err)
@@ -157,7 +170,7 @@ func TestWorkflowTemplateMovesJobThroughDeliverablesQuestionsAndRejectLimit(t *t
 	if err != nil || currentComment.Author != "derek" {
 		t.Fatalf("current comment = %+v, error = %v", currentComment, err)
 	}
-	advance, err := st.CompleteWorkflowPhase(created.Session.ID, "accept", "ontwerp staat")
+	advance, err := st.CompleteWorkflowPhase(designRetry.ID, "accept", "ontwerp staat")
 	if err != nil || advance.NextSession == nil || advance.PhaseRun.PhaseID != "develop" || advance.NextSession.BaseRef != created.Job.Branch {
 		t.Fatalf("advance to develop = %+v, error = %v", advance, err)
 	}
@@ -190,7 +203,7 @@ func TestWorkflowTemplateMovesJobThroughDeliverablesQuestionsAndRejectLimit(t *t
 		t.Fatalf("manual retry = %+v, error = %v", retry, err)
 	}
 	snapshot := st.Snapshot()
-	if len(snapshot.WorkflowTemplates) != 1 || len(snapshot.Deliverables) != 2 || len(snapshot.DeliverableComments) != 2 || len(snapshot.WorkflowQuestions) != 2 || len(snapshot.PhaseRuns) != 4 {
+	if len(snapshot.WorkflowTemplates) != 1 || len(snapshot.Deliverables) != 2 || len(snapshot.DeliverableComments) != 2 || len(snapshot.WorkflowQuestions) != 2 || len(snapshot.PhaseRuns) != 5 {
 		t.Fatalf("workflow snapshot = %+v", snapshot)
 	}
 	if _, err := st.DeleteJob(created.Job.ID, "derek"); err != nil {

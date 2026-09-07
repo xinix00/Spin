@@ -235,10 +235,10 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 	if commentResponse.Code != http.StatusCreated || json.Unmarshal(commentResponse.Body.Bytes(), &comment) != nil || comment.Author != "derek" {
 		t.Fatalf("comment status=%d body=%s decoded=%+v", commentResponse.Code, commentResponse.Body.String(), comment)
 	}
+	// One revision per Session: the edit updates revision 1 in place.
 	edited := call(`{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"edit_deliverable","arguments":{"name":"FO","old_text":"# FO","new_text":"# FO v2"}}}`)
 	editedText, _ := json.Marshal(edited.Result)
-	// Revision 1 carries a comment, so the edit starts revision 2.
-	if edited.Error != nil || !bytes.Contains(editedText, []byte("revisie 2")) || len(st.Snapshot().Deliverables) != 2 {
+	if edited.Error != nil || !bytes.Contains(editedText, []byte("revisie 1")) || len(st.Snapshot().Deliverables) != 1 || st.Snapshot().Deliverables[0].Content != "# FO v2" {
 		t.Fatalf("edit call = %+v, deliverables = %+v", edited, st.Snapshot().Deliverables)
 	}
 	read := call(`{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"read_deliverable","arguments":{"name":"FO"}}}`)
@@ -248,26 +248,14 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 	}
 	missing := call(`{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"edit_deliverable","arguments":{"name":"FO","old_text":"bestaat niet","new_text":"x"}}}`)
 	missingText, _ := json.Marshal(missing)
-	if !bytes.Contains(missingText, []byte("does not occur")) || len(st.Snapshot().Deliverables) != 2 {
+	if !bytes.Contains(missingText, []byte("does not occur")) || len(st.Snapshot().Deliverables) != 1 {
 		t.Fatalf("edit of missing text = %s", missingText)
 	}
-	latest := st.Snapshot().Deliverables[1]
-	if latest.Revision != 2 {
-		latest = st.Snapshot().Deliverables[0]
-	}
-	downloadRequest := httptest.NewRequest(http.MethodGet, "/api/deliverables/"+latest.ID+"/download", nil)
+	downloadRequest := httptest.NewRequest(http.MethodGet, "/api/deliverables/"+firstRevision.ID+"/download", nil)
 	downloadResponse := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(downloadResponse, downloadRequest)
-	if downloadResponse.Code != http.StatusOK || downloadResponse.Header().Get("Content-Disposition") != "attachment; filename=FO-r2.md" || downloadResponse.Body.String() != "# FO v2\n" {
+	if downloadResponse.Code != http.StatusOK || downloadResponse.Header().Get("Content-Disposition") != "attachment; filename=FO-r1.md" || downloadResponse.Body.String() != "# FO v2\n" {
 		t.Fatalf("download status=%d disposition=%q body=%q", downloadResponse.Code, downloadResponse.Header().Get("Content-Disposition"), downloadResponse.Body.String())
-	}
-	historicalRequest := httptest.NewRequest(http.MethodPost, "/api/deliverables/"+firstRevision.ID+"/comments", bytes.NewBufferString(`{"selected_text":"FO","start_offset":0,"end_offset":2,"body":"Achteraf toegevoegd."}`))
-	historicalRequest.Header.Set("Content-Type", "application/json")
-	historicalRequest = historicalRequest.WithContext(context.WithValue(historicalRequest.Context(), authContextKey{}, authenticatedIdentity{User: domain.User{Username: "derek"}}))
-	historicalResponse := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(historicalResponse, historicalRequest)
-	if historicalResponse.Code != http.StatusConflict {
-		t.Fatalf("historical comment status=%d body=%s", historicalResponse.Code, historicalResponse.Body.String())
 	}
 	asked := call(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ask","arguments":{"questions":[{"question":"Doorgaan?","options":["Ja","Nee"]},{"question":"Welke naam?"}]}}}`)
 	if asked.Error != nil || len(st.Snapshot().WorkflowQuestions) != 1 || st.Snapshot().Jobs[0].WorkflowStatus != domain.WorkflowPending {
@@ -344,17 +332,26 @@ func TestWorkflowPromptInjectsOnlySelectedLatestDeliverablesAndAlwaysGoal(t *tes
 	if _, err := st.AddDeliverableComment(oldFO.ID, "john", domain.CreateDeliverableCommentRequest{SelectedText: "oude FO", StartOffset: 0, EndOffset: 7, Body: "oude comment hoort bij r1"}); err != nil {
 		t.Fatal(err)
 	}
-	latestFO, err := st.AddWorkflowDeliverable(created.Session.ID, "FO", "laatste FO")
-	if err != nil {
+	// A second design attempt is a new Session and so writes revision 2.
+	redo, err := st.CompleteWorkflowPhase(created.Session.ID, "reject", "nog niet af")
+	if err != nil || redo.NextSession == nil {
+		t.Fatalf("design retry = %+v, error = %v", redo, err)
+	}
+	designRetry := redo.NextSession.ID
+	if _, err := st.MarkWorkflowPhaseRunning(designRetry); err != nil {
 		t.Fatal(err)
+	}
+	latestFO, err := st.AddWorkflowDeliverable(designRetry, "FO", "laatste FO")
+	if err != nil || latestFO.Revision != 2 {
+		t.Fatalf("latest FO = %+v, error = %v", latestFO, err)
 	}
 	if _, err := st.AddDeliverableComment(latestFO.ID, "derek", domain.CreateDeliverableCommentRequest{SelectedText: "laatste FO", StartOffset: 0, EndOffset: 10, Body: "Neem deelbetalingen expliciet op."}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.AddWorkflowDeliverable(created.Session.ID, "TO", "geheim technisch ontwerp"); err != nil {
+	if _, err := st.AddWorkflowDeliverable(designRetry, "TO", "geheim technisch ontwerp"); err != nil {
 		t.Fatal(err)
 	}
-	advance, err := st.CompleteWorkflowPhase(created.Session.ID, "accept", "documenten klaar")
+	advance, err := st.CompleteWorkflowPhase(designRetry, "accept", "documenten klaar")
 	if err != nil || advance.NextSession == nil {
 		t.Fatalf("advance = %+v, error = %v", advance, err)
 	}
