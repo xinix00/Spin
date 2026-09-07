@@ -146,6 +146,12 @@ func (s *Server) answerWorkflowQuestion(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 	}
+	if strings.TrimSpace(req.Finalize) != "" && strings.EqualFold(strings.TrimSpace(req.Action), "accept") {
+		if _, err := s.store.SetJobFinalize(questions[questionIndex].JobID, req.Finalize); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
 	advance, err := s.store.AnswerWorkflowQuestion(questionID, s.requestOperator(r, ""), req.Action, req.Reason)
 	if err != nil {
 		writeError(w, err)

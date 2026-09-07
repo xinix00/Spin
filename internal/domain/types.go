@@ -603,31 +603,34 @@ type Job struct {
 	Owner              string   `json:"owner,omitempty"`
 	// Assignee is who the Job is with right now; the owner at creation,
 	// handed to a colleague to look at it. Empty means the owner.
-	Assignee            string            `json:"assignee,omitempty"`
-	GitRepositoryID     string            `json:"git_repository_id"`
-	GitRepositoryName   string            `json:"git_repository_name,omitempty"`
-	GitRemoteURL        string            `json:"git_remote_url,omitempty"`
-	GitProvider         string            `json:"git_provider,omitempty"`
-	GitCredentialScope  CredentialScope   `json:"git_credential_scope,omitempty"`
-	BaseRef             string            `json:"base_ref,omitempty"`
-	Branch              string            `json:"branch"`
-	WithSelectors       []string          `json:"with_selectors,omitempty"`
-	MCPServerIDs        []string          `json:"mcp_server_ids,omitempty"`
-	AttachmentIDs       []string          `json:"attachment_ids,omitempty"`
-	TemplateID          string            `json:"template_id,omitempty"`
-	TemplateSnapshot    *WorkflowTemplate `json:"template_snapshot,omitempty"`
-	EnvironmentSelector string            `json:"environment_selector,omitempty"`
-	Model               string            `json:"model,omitempty"`
-	PhaseRunIDs         []string          `json:"phase_run_ids,omitempty"`
-	CurrentPhaseRunID   string            `json:"current_phase_run_id,omitempty"`
-	WorkflowStatus      WorkflowStatus    `json:"workflow_status,omitempty"`
-	PendingReason       string            `json:"pending_reason,omitempty"`
-	Status              JobStatus         `json:"status"`
-	SessionIDs          []string          `json:"session_ids"`
-	CandidateResultIDs  []string          `json:"candidate_result_ids"`
-	FinalResultID       string            `json:"final_result_id,omitempty"`
-	CreatedAt           time.Time         `json:"created_at"`
-	UpdatedAt           time.Time         `json:"updated_at"`
+	Assignee           string            `json:"assignee,omitempty"`
+	GitRepositoryID    string            `json:"git_repository_id"`
+	GitRepositoryName  string            `json:"git_repository_name,omitempty"`
+	GitRemoteURL       string            `json:"git_remote_url,omitempty"`
+	GitProvider        string            `json:"git_provider,omitempty"`
+	GitCredentialScope CredentialScope   `json:"git_credential_scope,omitempty"`
+	BaseRef            string            `json:"base_ref,omitempty"`
+	Branch             string            `json:"branch"`
+	WithSelectors      []string          `json:"with_selectors,omitempty"`
+	MCPServerIDs       []string          `json:"mcp_server_ids,omitempty"`
+	AttachmentIDs      []string          `json:"attachment_ids,omitempty"`
+	TemplateID         string            `json:"template_id,omitempty"`
+	TemplateSnapshot   *WorkflowTemplate `json:"template_snapshot,omitempty"`
+	// Finalize is the landing chosen for this Job at its final accept, when
+	// it differs from the Template.
+	Finalize            string         `json:"finalize,omitempty"`
+	EnvironmentSelector string         `json:"environment_selector,omitempty"`
+	Model               string         `json:"model,omitempty"`
+	PhaseRunIDs         []string       `json:"phase_run_ids,omitempty"`
+	CurrentPhaseRunID   string         `json:"current_phase_run_id,omitempty"`
+	WorkflowStatus      WorkflowStatus `json:"workflow_status,omitempty"`
+	PendingReason       string         `json:"pending_reason,omitempty"`
+	Status              JobStatus      `json:"status"`
+	SessionIDs          []string       `json:"session_ids"`
+	CandidateResultIDs  []string       `json:"candidate_result_ids"`
+	FinalResultID       string         `json:"final_result_id,omitempty"`
+	CreatedAt           time.Time      `json:"created_at"`
+	UpdatedAt           time.Time      `json:"updated_at"`
 }
 
 // JobAttachment is immutable input supplied by a person. The blob stays out
@@ -1194,6 +1197,9 @@ type AnswerWorkflowQuestionRequest struct {
 	Action  string                   `json:"action"`
 	Reason  string                   `json:"reason,omitempty"`
 	Answers []WorkflowQuestionAnswer `json:"answers,omitempty"`
+	// Finalize, on the accept that leads into the final phase, chooses how
+	// the Job lands: "pull_request" or "merge". Empty keeps the Template's.
+	Finalize string `json:"finalize,omitempty"`
 }
 
 type WorkflowAdvance struct {
