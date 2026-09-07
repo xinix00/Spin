@@ -107,11 +107,7 @@ func (s *Server) launchWorkflowMerge(session domain.Session, operator string) {
 		s.finishWorkflowAction(session.ID, "reject", err.Error())
 		return
 	}
-	how := "merge-commit"
-	if result.FastForward {
-		how = "fast-forward"
-	}
-	detail := fmt.Sprintf("%s gemerged in %s (%s, %s)", job.Branch, target, how, result.Head)
+	detail := fmt.Sprintf("%s gemerged in %s met merge-commit %s", job.Branch, target, result.Head)
 	if _, err := s.store.SetWorkflowActionResult(session.ID, domain.WorkflowActionResult{Type: domain.WorkflowActionGitMerge, ExternalID: result.Head, URL: commitURL(job.GitRemoteURL, job.GitProvider, result.Head), Detail: detail, CreatedAt: time.Now().UTC()}); err != nil {
 		s.finishWorkflowAction(session.ID, "reject", "merge slaagde maar het resultaat kon niet worden opgeslagen: "+err.Error())
 		return

@@ -146,9 +146,9 @@ type WorkspaceMerge struct {
 	Authentication *GitAuthentication
 }
 
+// WorkspaceMergeResult is the merge commit that now heads the base branch.
 type WorkspaceMergeResult struct {
-	Head        string
-	FastForward bool
+	Head string
 }
 
 // WorkspaceMerger merges a Job branch into its base branch on the remote.

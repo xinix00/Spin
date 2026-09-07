@@ -70,7 +70,7 @@ func (e *appTestEngine) MergeWorkspace(_ context.Context, _ domain.CapsuleRuntim
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.merged = append(e.merged, merge)
-	return capsule.WorkspaceMergeResult{Head: "abc123", FastForward: true}, nil
+	return capsule.WorkspaceMergeResult{Head: "abc123"}, nil
 }
 
 func (e *appTestEngine) AppServiceLogsOn(_ context.Context, _, _, service string, _ int) (string, error) {
@@ -214,7 +214,7 @@ func TestMergeFinalizerLandsTheJobOnTheBaseBranch(t *testing.T) {
 			mergeRun = run
 		}
 	}
-	if mergeRun.ActionResult == nil || mergeRun.ActionResult.Type != domain.WorkflowActionGitMerge || !strings.Contains(mergeRun.ActionResult.Detail, "fast-forward") {
+	if mergeRun.ActionResult == nil || mergeRun.ActionResult.Type != domain.WorkflowActionGitMerge || !strings.Contains(mergeRun.ActionResult.Detail, "merge-commit abc123") {
 		t.Fatalf("merge run = %+v", mergeRun)
 	}
 }

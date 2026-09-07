@@ -1213,10 +1213,10 @@ func (d *Docker) MergeWorkspace(ctx context.Context, runtime domain.CapsuleRunti
 	}
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) != 3 || fields[0] != "SPIN_MERGE" {
+		if len(fields) != 2 || fields[0] != "SPIN_MERGE" {
 			continue
 		}
-		return WorkspaceMergeResult{FastForward: strings.TrimPrefix(fields[1], "ff=") == "1", Head: strings.TrimPrefix(fields[2], "head=")}, nil
+		return WorkspaceMergeResult{Head: strings.TrimPrefix(fields[1], "head=")}, nil
 	}
 	return WorkspaceMergeResult{}, fmt.Errorf("merge did not report a result: %s", strings.TrimSpace(output))
 }
@@ -1235,16 +1235,12 @@ git fetch -q --depth=200 origin "+refs/heads/${SPIN_MERGE_SOURCE}:refs/remotes/o
 SPIN_SOURCE="$(git rev-parse "refs/remotes/origin/${SPIN_MERGE_SOURCE}")"
 SPIN_TARGET="$(git rev-parse "refs/remotes/origin/${SPIN_MERGE_TARGET}")"
 git checkout -q -B spin-merge "$SPIN_TARGET"
-SPIN_FF=0
-if git merge-base --is-ancestor "$SPIN_TARGET" "$SPIN_SOURCE"; then
-  git merge -q --ff-only "$SPIN_SOURCE"
-  SPIN_FF=1
-else
-  if ! git -c user.name="$SPIN_GIT_AUTHOR_NAME" -c user.email="$SPIN_GIT_AUTHOR_EMAIL" merge -q --no-ff -m "$SPIN_COMMIT_SUBJECT" -m "$SPIN_COMMIT_BODY" "$SPIN_SOURCE"; then
-    git merge --abort || true
-    echo "The Job branch does not merge cleanly into ${SPIN_MERGE_TARGET}; resolve the conflicts in a new phase" >&2
-    exit 45
-  fi
+# Always a merge commit, never a fast-forward: the base branch then shows
+# one commit per Job, with the Job's own commits visible underneath it.
+if ! git -c user.name="$SPIN_GIT_AUTHOR_NAME" -c user.email="$SPIN_GIT_AUTHOR_EMAIL" merge -q --no-ff -m "$SPIN_COMMIT_SUBJECT" -m "$SPIN_COMMIT_BODY" "$SPIN_SOURCE"; then
+  git merge --abort || true
+  echo "The Job branch does not merge cleanly into ${SPIN_MERGE_TARGET}; resolve the conflicts in a new phase" >&2
+  exit 45
 fi
 SPIN_HEAD="$(git rev-parse HEAD)"
 git push origin "$SPIN_HEAD:refs/heads/${SPIN_MERGE_TARGET}"
@@ -1255,7 +1251,7 @@ if [ "$SPIN_REMOTE_HEAD" != "$SPIN_HEAD" ]; then
   echo "Remote ${SPIN_MERGE_TARGET} does not match the merged HEAD after push" >&2
   exit 46
 fi
-printf 'SPIN_MERGE ff=%s head=%s\n' "$SPIN_FF" "$SPIN_HEAD"
+printf 'SPIN_MERGE head=%s\n' "$SPIN_HEAD"
 unset SPIN_GIT_PASSWORD`
 
 func validGitRef(value string) bool {
