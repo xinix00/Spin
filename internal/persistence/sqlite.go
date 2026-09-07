@@ -466,6 +466,32 @@ func (s *SQLite) RestoreSnapshot(ctx context.Context, snapshot domain.CapsuleSna
 	return err
 }
 
+// StorageUsage is what the database occupies: the file, and the objects
+// (snapshots, attachments) inside it.
+type StorageUsage struct {
+	DatabaseBytes int64 `json:"database_bytes"`
+	ObjectBytes   int64 `json:"object_bytes"`
+	Objects       int   `json:"objects"`
+}
+
+// Usage reports the database file size from SQLite's own page count, so it
+// works on every VFS, and the bytes held by complete objects.
+func (s *SQLite) Usage(ctx context.Context) (StorageUsage, error) {
+	var usage StorageUsage
+	var pageCount, pageSize int64
+	if err := s.db.QueryRowContext(ctx, `PRAGMA page_count`).Scan(&pageCount); err != nil {
+		return usage, err
+	}
+	if err := s.db.QueryRowContext(ctx, `PRAGMA page_size`).Scan(&pageSize); err != nil {
+		return usage, err
+	}
+	usage.DatabaseBytes = pageCount * pageSize
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(size), 0) FROM spin_objects WHERE complete = 1`).Scan(&usage.Objects, &usage.ObjectBytes); err != nil {
+		return usage, err
+	}
+	return usage, nil
+}
+
 func (s *SQLite) HasSnapshot(ctx context.Context, snapshot domain.CapsuleSnapshot) (bool, error) {
 	_, err := s.BlobInfo(ctx, snapshotRef(snapshot))
 	if errors.Is(err, fs.ErrNotExist) {

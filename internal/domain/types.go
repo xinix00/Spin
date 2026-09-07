@@ -509,6 +509,10 @@ type Artifact struct {
 	// from AgentOptions on the layer that ENABLES acp, kept as metadata (no
 	// re-seal) and carried to the next version on EDIT.
 	AgentSettings *AgentSettings `json:"agent_settings,omitempty"`
+	// SnapshotPrunedAt is set once the archived snapshot of a superseded
+	// version was removed to free storage; the newer version carries its
+	// content, and runners may still hold the image as a cache.
+	SnapshotPrunedAt *time.Time `json:"snapshot_pruned_at,omitempty"`
 	// SupersededBy points at the version that replaced this one through EDIT.
 	// The snapshot stays: layers recorded from it still resolve their parent by
 	// ID, and a composition that meets it binds the newest version instead.

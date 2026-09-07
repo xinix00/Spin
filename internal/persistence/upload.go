@@ -17,6 +17,10 @@ var ErrUploadOffset = errors.New("upload offset mismatch")
 // ErrBackupUploadOffset is the historical name of ErrUploadOffset.
 var ErrBackupUploadOffset = ErrUploadOffset
 
+// ErrUploadStorage reports a chunk the server could not store: the database
+// or the volume under it refused the write. A full volume ends up here.
+var ErrUploadStorage = errors.New("upload storage failed")
+
 // uploadReorderWindow bounds how far ahead of the committed prefix a chunk may
 // land. Parallel uploaders keep a handful of chunks in flight; anything further
 // ahead is a client bug rather than reordering.
@@ -92,6 +96,8 @@ func (a *chunkAssembler) WriteAt(ctx context.Context, offset, length int64, sour
 	written, err := a.sink.writeChunk(ctx, offset, length, io.LimitReader(source, length))
 	if err == nil && written != length {
 		err = io.ErrUnexpectedEOF
+	} else if err != nil && ctx.Err() == nil {
+		err = fmt.Errorf("%w: %v", ErrUploadStorage, err)
 	}
 
 	a.mu.Lock()

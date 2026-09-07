@@ -3912,3 +3912,54 @@ func newID(prefix string) string {
 	}
 	return prefix + "_" + hex.EncodeToString(b)
 }
+
+// PrunableArtifacts lists superseded versions whose archived snapshot is no
+// longer needed: the newer version carries their content, no running
+// composition resolved them and no open recording builds on them.
+func (s *Store) PrunableArtifacts() []domain.Artifact {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var prunable []domain.Artifact
+	for _, artifact := range s.state.Artifacts {
+		if artifact.SupersededBy == "" || artifact.SnapshotPrunedAt != nil || artifact.Snapshot.Digest == "" {
+			continue
+		}
+		if s.artifactInUseLocked(artifact.ID) {
+			continue
+		}
+		prunable = append(prunable, artifact)
+	}
+	slices.SortFunc(prunable, func(a, b domain.Artifact) int { return strings.Compare(a.ID, b.ID) })
+	return prunable
+}
+
+func (s *Store) artifactInUseLocked(artifactID string) bool {
+	for _, composition := range s.state.Compositions {
+		if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+			continue
+		}
+		if slices.ContainsFunc(composition.ResolvedArtifacts, func(resolved domain.ResolvedArtifact) bool { return resolved.ArtifactID == artifactID }) {
+			return true
+		}
+	}
+	for _, recording := range s.state.Recordings {
+		if recording.Status == domain.RecordingOpen && slices.Contains(recording.ParentArtifactIDs, artifactID) {
+			return true
+		}
+	}
+	return false
+}
+
+// MarkSnapshotPruned records that an artifact's archived snapshot is gone.
+func (s *Store) MarkSnapshotPruned(artifactID string) (domain.Artifact, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	artifact, ok := s.state.Artifacts[artifactID]
+	if !ok {
+		return domain.Artifact{}, ErrNotFound
+	}
+	now := time.Now().UTC()
+	artifact.SnapshotPrunedAt = &now
+	s.state.Artifacts[artifact.ID] = artifact
+	return artifact, s.saveLocked()
+}

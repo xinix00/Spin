@@ -194,10 +194,17 @@ func (s *Server) appendUpload(w http.ResponseWriter, r *http.Request) {
 	next, err := upload.Target.WriteAt(r.Context(), offset, r.ContentLength, r.Body)
 	if err != nil {
 		status := http.StatusBadRequest
+		message := err.Error()
 		if errors.Is(err, persistence.ErrUploadOffset) {
 			status = http.StatusConflict
+		} else if errors.Is(err, persistence.ErrUploadStorage) {
+			// The server, not the client, failed: most likely the volume
+			// under the database is full.
+			status = http.StatusInsufficientStorage
+			message = "server storage failed, most likely the volume is full: " + message
+			s.logger.Error("store upload chunk", "upload", upload.ID, "offset", offset, "error", err)
 		}
-		writeJSON(w, status, map[string]any{"error": err.Error(), "offset": next, "size": upload.Size})
+		writeJSON(w, status, map[string]any{"error": message, "offset": next, "size": upload.Size})
 		return
 	}
 	s.touchUpload(upload)

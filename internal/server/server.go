@@ -163,6 +163,7 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 	}
 	go s.resumeQueuedWorkflowActions()
 	s.resumeStartingRecordings()
+	s.pruneLater()
 	go s.sweepQueuedWorkflowPhases()
 	return s
 }
@@ -430,8 +431,8 @@ func (s *Server) routes() {
 		request.URL.Path = "/" + assetPath
 		assets.ServeHTTP(w, request)
 	}))
-	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": buildinfo.Version, "commit": buildinfo.Commit})
+	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "version": buildinfo.Version, "commit": buildinfo.Commit, "storage": s.storageInfo(r.Context())})
 	})
 	if s.runnerBroker != nil {
 		s.mux.HandleFunc("GET /api/runner/ws", s.runnerBroker.Handler)
@@ -458,6 +459,7 @@ func (s *Server) routes() {
 		writeJSON(w, http.StatusOK, s.stateFor(r))
 	})
 	s.mux.HandleFunc("GET /api/state/ws", s.stateStream)
+	s.mux.HandleFunc("GET /api/storage", s.storageHandler)
 	s.mux.HandleFunc("GET /api/artifacts", s.listArtifacts)
 	s.mux.HandleFunc("DELETE /api/artifacts/{artifactID}", s.deleteArtifact)
 	s.mux.HandleFunc("POST /api/artifacts/{artifactID}/acp/options", s.fetchAgentOptionsHandler)
@@ -539,7 +541,7 @@ func (s *Server) stateFor(r *http.Request) stateResponse {
 	if recommendations == nil {
 		recommendations = []domain.Recommendation{}
 	}
-	return stateResponse{Snapshot: snapshot, Recommendations: recommendations, Engine: s.engine.Info(), GitOAuthProviders: s.gitOAuth.publicProviders(r), CurrentUser: publicUser(identity.User), Preparing: s.sessionPreparations(), Version: s.store.Version()}
+	return stateResponse{Snapshot: snapshot, Recommendations: recommendations, Engine: s.engine.Info(), GitOAuthProviders: s.gitOAuth.publicProviders(r), CurrentUser: publicUser(identity.User), Preparing: s.sessionPreparations(), Storage: s.storageInfo(r.Context()), Version: s.store.Version()}
 }
 
 // stateStream pushes the state over a WebSocket: the whole of it on
@@ -629,6 +631,7 @@ type stateResponse struct {
 	GitOAuthProviders []gitOAuthProviderInfo   `json:"git_oauth_providers"`
 	CurrentUser       domain.PublicUser        `json:"current_user"`
 	Preparing         []sessionPreparation     `json:"preparing"`
+	Storage           storageInfo              `json:"storage"`
 	Version           uint64                   `json:"version"`
 }
 

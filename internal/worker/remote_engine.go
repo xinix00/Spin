@@ -68,7 +68,7 @@ func (e *RemoteEngine) StartRecording(ctx context.Context, recording domain.Reco
 	}
 	for index := range parents {
 		parent := &parents[index]
-		if !parent.Snapshot.Restorable || parent.Snapshot.Ref == "" || snapshotAvailableOn(parent.Snapshot, target.id) {
+		if !parent.Snapshot.Restorable || parent.Snapshot.Ref == "" || parent.SnapshotPrunedAt != nil || snapshotAvailableOn(parent.Snapshot, target.id) {
 			continue
 		}
 		if err := e.ensureSnapshotOn(ctx, *parent, target.id); err != nil {
@@ -181,7 +181,10 @@ func (e *RemoteEngine) materialize(ctx context.Context, composition domain.Compo
 	e.reportPlacement(composition.SessionID, target.id)
 	for index := range artifacts {
 		artifact := &artifacts[index]
-		if !artifact.Snapshot.Restorable || artifact.Snapshot.Ref == "" || snapshotAvailableOn(artifact.Snapshot, target.id) {
+		// A pruned snapshot belongs to a superseded version: its newer
+		// version is in the list and carries its content, so it is never
+		// applied on its own and does not have to reach the runner.
+		if !artifact.Snapshot.Restorable || artifact.Snapshot.Ref == "" || artifact.SnapshotPrunedAt != nil || snapshotAvailableOn(artifact.Snapshot, target.id) {
 			continue
 		}
 		if err := e.ensureSnapshotOn(ctx, *artifact, target.id); err != nil {

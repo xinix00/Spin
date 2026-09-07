@@ -1015,8 +1015,11 @@ function renderRunnerDownloads(){
 mkdir -p var && printf '%s' '&lt;worker-token&gt;' &gt; var/spin-worker.token
 ./spin-client-&lt;platform&gt; -server ${esc(location.origin)} -name $(hostname)</pre><small>Het worker-token staat bij de server (<code>SPIN_WORKER_TOKEN</code>); een Spin-admin geeft het je. Opties: <code>-env-dir</code> voor de env-bestanden van de test-app, <code>-advertise-host</code> voor het adres in de test-app-links, <code>-max-workloads</code> voor het aantal gelijktijdige capsules.</small></details>`;
 }
+// renderStorage shows what the server's database occupies; the volume under
+// it is finite and Spin cannot see how much is left.
+function renderStorage(){const root=region('storage-line'),storage=snapshot.storage||{};if(!root)return;if(storage.error){root.innerHTML=`<span class="hint">Opslag · ${esc(storage.error)}</span>`;return;}if(!storage.database_bytes){root.innerHTML='';return;}root.innerHTML=`<span class="hint">${icon('database')} Opslag op de server · database ${esc(formatBytes(storage.database_bytes))} · ${storage.objects} snapshots en bijlagen ${esc(formatBytes(storage.object_bytes))}${storage.prunable?` · ${storage.prunable} oude versie${storage.prunable===1?'':'s'} wacht op opruimen`:''}</span>`;}
 function renderRunners(){
-  renderRunnerDownloads();
+  renderRunnerDownloads();renderStorage();
   const root=region('runner-list');
   if(!snapshot.clients.length){root.innerHTML='<div class="empty">Nog geen runner aangemeld. Start spin-client met de server-URL en het worker-token.</div>';return;}
   root.innerHTML=snapshot.clients.map(client=>{
