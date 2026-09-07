@@ -63,7 +63,7 @@ func (s *Server) finishWorkflowAction(sessionID, outcome, detail string) {
 		return
 	}
 	if advance.NextSession != nil {
-		go s.launchWorkflowSession(advance.NextSession.ID, advance.NextSession.Operator)
+		s.startQueuedWorkflowLaunch(*advance.NextSession)
 	} else if advance.Question == nil && advance.Job.WorkflowStatus == domain.WorkflowDone {
 		s.retireWorkflowCompositions(advance.Job.ID, "")
 	}

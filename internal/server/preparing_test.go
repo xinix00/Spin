@@ -168,4 +168,12 @@ func TestFailedLaunchIsReportedAndSweptAgain(t *testing.T) {
 	if engine.materialized != 2 {
 		t.Fatalf("materialized %d times after the sweep, want 2", engine.materialized)
 	}
+
+	// Once the phase moves on, the old reason is no longer shown.
+	if _, err := st.MarkWorkflowPhaseRunning(created.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := preparation(); got != nil {
+		t.Fatalf("stale failure shown for a running phase: %+v", got)
+	}
 }

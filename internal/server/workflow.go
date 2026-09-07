@@ -152,7 +152,7 @@ func (s *Server) answerWorkflowQuestion(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if advance.NextSession != nil {
-		go s.launchWorkflowSession(advance.NextSession.ID, advance.NextSession.Operator)
+		s.startQueuedWorkflowLaunch(*advance.NextSession)
 	}
 	writeJSON(w, http.StatusOK, advance)
 	if advance.NextSession == nil && advance.Question == nil && advance.Job.WorkflowStatus == domain.WorkflowDone {
@@ -327,7 +327,7 @@ func (s *Server) callWorkflowTool(ctx context.Context, sessionID, name string, a
 			return "", err
 		}
 		if advance.NextSession != nil {
-			go s.launchWorkflowSession(advance.NextSession.ID, advance.NextSession.Operator)
+			s.startQueuedWorkflowLaunch(*advance.NextSession)
 			return fmt.Sprintf("Fase afgerond. %s is als nieuwe Session gestart.", advance.PhaseRun.PhaseName), nil
 		}
 		if advance.Question != nil {
@@ -420,10 +420,6 @@ func (s *Server) acceptWorkflowWorkspace(ctx context.Context, sessionID, summary
 	})
 }
 
-func (s *Server) launchWorkflowSession(sessionID, operator string) {
-	s.launchWorkflowSessionContext(context.Background(), sessionID, operator)
-}
-
 func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, operator string) {
 	operator = normalizeOperator(operator)
 	snapshot := s.store.Snapshot()
@@ -508,12 +504,16 @@ func (s *Server) retireWorkflowCompositions(jobID, keepSessionID string) {
 	}
 	sessionIDs := map[string]bool{}
 	for _, sessionID := range snapshot.Jobs[jobIndex].SessionIDs {
-		if sessionID != keepSessionID {
-			sessionIDs[sessionID] = true
-		}
+		sessionIDs[sessionID] = true
+	}
+	// The kept Session keeps exactly its prepared workspace; anything else of
+	// this Job, including an extra workspace of the same Session, goes.
+	keep := ""
+	if index := slices.IndexFunc(snapshot.Sessions, func(session domain.Session) bool { return session.ID == keepSessionID }); index >= 0 {
+		keep = snapshot.Sessions[index].PreparedCompositionID
 	}
 	for _, composition := range snapshot.Compositions {
-		if !sessionIDs[composition.SessionID] || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+		if !sessionIDs[composition.SessionID] || composition.ID == keep || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

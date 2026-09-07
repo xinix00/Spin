@@ -200,6 +200,34 @@ func (s *Server) recordLaunchProgress(sessionID string, progress launchProgress)
 	s.jobLaunchMu.Unlock()
 }
 
+// pruneLaunchFailures forgets the failures of Sessions that no longer wait
+// for a launch: their phase moved on (or another attempt already runs), so
+// the old reason would only mislead.
+func (s *Server) pruneLaunchFailures() {
+	s.jobLaunchMu.Lock()
+	sessionIDs := make([]string, 0, len(s.launchFailures))
+	for sessionID := range s.launchFailures {
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	s.jobLaunchMu.Unlock()
+	if len(sessionIDs) == 0 {
+		return
+	}
+	snapshot := s.store.Snapshot()
+	stale := make([]string, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		index := slices.IndexFunc(snapshot.Sessions, func(session domain.Session) bool { return session.ID == sessionID })
+		if index < 0 || !s.jobSessionNeedsLaunch(sessionID, snapshot.Sessions[index].PhaseRunID != "") {
+			stale = append(stale, sessionID)
+		}
+	}
+	s.jobLaunchMu.Lock()
+	for _, sessionID := range stale {
+		delete(s.launchFailures, sessionID)
+	}
+	s.jobLaunchMu.Unlock()
+}
+
 // recordLaunchFailure keeps why a launch gave up until the next attempt
 // starts; a nil error clears it.
 func (s *Server) recordLaunchFailure(sessionID string, err error) {
@@ -286,6 +314,7 @@ func (s *Server) recordLaunchPlacement(sessionID, clientID string) {
 }
 
 func (s *Server) sessionPreparations() []sessionPreparation {
+	s.pruneLaunchFailures()
 	s.jobLaunchMu.Lock()
 	preparations := make([]sessionPreparation, 0, len(s.jobLaunching))
 	for sessionID, launch := range s.jobLaunching {
