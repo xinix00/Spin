@@ -77,9 +77,24 @@ async function api(path,options={}) {
 }
 function openDialog(id){const dialog=document.getElementById(id);if(dialog&&!dialog.open)dialog.showModal();}
 function closeDialog(id){const dialog=document.getElementById(id);if(dialog?.open)dialog.close();}
-function openConsole(prefill=''){
+// The recorder has no command line: a RECORD is a form, END and CANCEL are
+// buttons, and the terminal is the capsule's shell. The Spin commands still
+// exist as the API underneath and show up in the log as what was done.
+const recordPresets=[
+  {label:'tool:git',kind:'tool',name:'git',scope:'global',from:'',git:true},
+  {label:'tool:node',kind:'tool',name:'node',scope:'global',from:'tool:git'},
+  {label:'tool:codex + ACP',kind:'tool',name:'codex',scope:'global',from:'tool:node',acp:true,command:'codex-acp'},
+  {label:'tool:claude + ACP',kind:'tool',name:'claude',scope:'global',from:'tool:node',acp:true,command:'claude-code-acp'},
+  {label:'credential:codex',kind:'credential',name:'codex',scope:'user',from:'tool:codex'},
+];
+function fillRecordForm(preset={}){const form=document.getElementById('record-form');form.reset();form.elements.kind.value=preset.kind||'tool';form.elements.name.value=preset.name||'';form.elements.scope.value=preset.scope||'user';renderRecordFromOptions();form.elements.from.value=preset.from||'';if(form.elements.from.value!==(preset.from||''))form.elements.from.value='';form.elements.enable_git.checked=Boolean(preset.git);form.elements.enable_acp.checked=Boolean(preset.acp);form.elements.command.value=preset.command||'';syncRecordForm();}
+function syncRecordForm(){const form=document.getElementById('record-form');document.getElementById('record-command-field').hidden=!form.elements.enable_acp.checked;}
+function renderRecordFromOptions(){const select=document.getElementById('record-from'),current=select.value,options=snapshot.artifacts.filter(canUse).map(artifactSelector).sort();select.innerHTML='<option value="">Alpine-basis</option>'+options.map(selector=>`<option value="${esc(selector)}">${esc(selector)}</option>`).join('');if(options.includes(current))select.value=current;}
+function recordCommandFromForm(){const form=document.getElementById('record-form'),kind=form.elements.kind.value,name=form.elements.name.value.trim().toLowerCase(),enables=[form.elements.enable_git.checked?'git':'',form.elements.enable_acp.checked?'acp':''].filter(Boolean);let line=`RECORD ${kind}:${name} --scope=${form.elements.scope.value}`;if(form.elements.from.value)line+=` --from=${form.elements.from.value}`;if(enables.length)line+=` --enable=${enables.join(',')}`;if(form.elements.enable_acp.checked&&form.elements.command.value.trim())line+=` --command=${form.elements.command.value.trim()}`;return line;}
+function openConsole(preset=null){
   openDialog('capsule-dialog');
-  requestAnimationFrame(()=>{const terminal=document.getElementById('terminal'),input=document.getElementById('command');terminal.scrollTop=terminal.scrollHeight;ensureShell();if(prefill){input.value=prefill;input.focus();}else focusTerminal();});
+  if(preset)fillRecordForm(preset);
+  requestAnimationFrame(()=>{const terminal=document.getElementById('terminal');terminal.scrollTop=terminal.scrollHeight;ensureShell();if(preset&&!activeRecording())document.getElementById('record-form').elements.name.focus();else focusTerminal();});
 }
 function syntaxLanguage(hint=''){
   const aliases={js:'javascript',mjs:'javascript',cjs:'javascript',jsx:'javascript',javascript:'javascript',ts:'typescript',tsx:'typescript',typescript:'typescript',go:'go',cs:'csharp','c#':'csharp',csharp:'csharp',java:'java',c:'c',h:'c',cc:'cpp',cpp:'cpp',cxx:'cpp',hpp:'cpp',rs:'rust',rust:'rust',swift:'swift',kt:'kotlin',kts:'kotlin',kotlin:'kotlin',php:'php',py:'python',python:'python',rb:'ruby',ruby:'ruby',sh:'shell',bash:'shell',zsh:'shell',shell:'shell',json:'json',jsonc:'json',yaml:'yaml',yml:'yaml',toml:'toml',html:'markup',htm:'markup',xml:'markup',svg:'markup',vue:'markup',svelte:'markup',razor:'markup',cshtml:'markup',markup:'markup',css:'css',scss:'css',sass:'css',less:'css',sql:'sql',md:'markdown',markdown:'markdown',mmd:'mermaid',mermaid:'mermaid',dockerfile:'docker',docker:'docker'};
@@ -585,19 +600,15 @@ function ptyStage(){return document.getElementById('pty-stage');}
 function fitTerminal(session){if(!session?.term||session.pane.hidden||ptyStage().hidden)return;try{session.fit.fit();}catch(_){}}
 function showTerminalPane(session){const stage=ptyStage();stage.hidden=false;document.getElementById('terminal').classList.add('compact');stage.querySelectorAll('.pty-pane').forEach(pane=>pane.hidden=pane!==session.pane);requestAnimationFrame(()=>{fitTerminal(session);session.term.focus();});}
 function updateStage(){const any=terminalSessions.size>0;ptyStage().hidden=!any;document.getElementById('terminal').classList.toggle('compact',any);}
-function chooseNewTerminal(){activeTerminalID=null;updateTerminalControls();const input=document.getElementById('command');input.value='';input.focus();}
 function chooseTerminal(id){const session=terminalSessions.get(id);if(!session)return;activeTerminalID=id;updateTerminalControls();showTerminalPane(session);}
 function closeTerminalPane(id){const session=terminalSessions.get(id);if(!session)return;if(!session.exited){session.exited=true;try{session.socket.close();}catch(_){}}terminalSessions.delete(id);try{session.term.dispose();}catch(_){}session.pane.remove();if(activeTerminalID===id)activeTerminalID=[...terminalSessions.keys()].at(-1)||null;updateStage();updateTerminalControls();const next=activeTerminal();if(next)showTerminalPane(next);}
 function updateTerminalControls(){
-  const selected=activeTerminal(),live=liveTerminals().length,input=document.getElementById('command'),channels=document.getElementById('terminal-channels'),recording=activeRecording(),composition=activeComposition(),target=recording||composition;
+  const selected=activeTerminal(),live=liveTerminals().length,channels=document.getElementById('terminal-channels'),recording=activeRecording(),composition=activeComposition(),target=recording||composition;
   document.getElementById('terminal-interrupt').hidden=!selected||selected.exited;
-  document.getElementById('terminal-submit').textContent=selected&&!selected.exited?'Send':'Run';
-  input.placeholder=selected&&!selected.exited?`Spin-commando · andere regels gaan naar ${selected.label}`:(target?'Spin-commando · andere regels openen een shell':'RECORD tool:naam · USE tool:codex WITH tool:dotnet');
-  channels.hidden=!target&&!terminalSessions.size;
-  channels.innerHTML=[...terminalSessions.values()].map(session=>`<button class="channel ${session.id===activeTerminalID?'active':''} ${session.exited?'exited':''}" data-terminal-id="${esc(session.id)}">${esc(session.label)} · ${esc(session.title.slice(0,28))}${session.exited?` · exit ${esc(String(session.exitCode??'?'))}`:''}<span class="channel-close" data-close-terminal="${esc(session.id)}" title="Sluiten">✕</span></button>`).join('')+(target?'<button class="channel" id="new-terminal">+ shell</button>':'');
+  channels.innerHTML=[...terminalSessions.values()].map(session=>`<button class="channel ${session.id===activeTerminalID?'active':''} ${session.exited?'exited':''}" data-terminal-id="${esc(session.id)}">${esc(session.label)} · ${esc(session.title.slice(0,28))}${session.exited?` · exit ${esc(String(session.exitCode??'?'))}`:''}<span class="channel-close" data-close-terminal="${esc(session.id)}" title="Sluiten">✕</span></button>`).join('')+(target?'<button class="channel" id="new-terminal">+ shell</button>':'<span class="hint">Geen draaiende capsule · start een opname of USE een laag</span>');
   channels.querySelectorAll('[data-terminal-id]').forEach(button=>button.onclick=()=>chooseTerminal(button.dataset.terminalId));
   channels.querySelectorAll('[data-close-terminal]').forEach(button=>button.onclick=event=>{event.stopPropagation();closeTerminalPane(button.dataset.closeTerminal);});
-  const add=channels.querySelector('#new-terminal');if(add)add.onclick=()=>{const target=terminalTarget();if(target)startTerminalCommand(target,shellCommand,{title:'shell'});else chooseNewTerminal();};
+  const add=channels.querySelector('#new-terminal');if(add)add.onclick=()=>{const target=terminalTarget();if(target)startTerminalCommand(target,shellCommand,{title:'shell'});};
   const status=document.getElementById('terminal-status');
   if(live){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>${live} LIVE PTY</span>`;}
   else if(recording){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>REC ${esc(recording.kind)}:${esc(recording.name)}</span>`;}
@@ -622,7 +633,7 @@ function ensureShell(){
   if(liveTerminals().some(session=>session.targetID===target.id)||shellAutoTarget===target.id)return;
   shellAutoTarget=target.id;startTerminalCommand(target,shellCommand,{title:'shell'});
 }
-function focusTerminal(){const session=activeTerminal();if(session&&!session.exited){session.term.focus();return;}document.getElementById('command').focus();}
+function focusTerminal(){const session=activeTerminal();if(session&&!session.exited){session.term.focus();return;}const form=document.getElementById('record-form');if(!form.hidden)form.elements.name.focus();}
 // startTerminalCommand opens a PTY on the given target: the open recording
 // (recorded into the layer) or the operator's USE composition (not recorded).
 function startTerminalCommand(target,line,options={}){
@@ -720,13 +731,13 @@ function render(){
   document.getElementById('runner-segment-count').textContent=`${onlineClients}/${snapshot.clients.length}`;
   const descriptions={jobs:`${snapshot.jobs.length} Jobs, ${snapshot.sessions.length} Sessions`,environments:`${snapshot.artifacts.length} lagen`,connections:`${snapshot.git_repositories.length} repositories, ${snapshot.git_accounts.length} Git-identities, ${myMCP().length} MCP-configuraties, ${onlineClients} runners online`,access:`${snapshot.users.length} gebruikers`};
   Object.entries(descriptions).forEach(([name,value])=>{const button=document.querySelector(`[data-tab="${name}"]`);button.title=value;button.setAttribute('aria-label',value);});
-  document.getElementById('prompt').textContent=`${currentOperator()}@spin ›`;
   renderRecording(); renderComposition(); renderArtifacts(); renderGitOptions(); renderTemplateOptions(); renderEnvironmentOptions(); renderMCPOptions(); renderJobs(); renderTemplates(); renderGitAccounts(); renderGit(); renderMCP(); renderRunners(); renderAccess();
 }
 
 function renderRecording(){
   ensureShell();
   const recording=activeRecording(),status=region('terminal-status'),root=document.getElementById('recording-section');
+  document.getElementById('record-form').hidden=Boolean(recording);renderRecordFromOptions();
   if(!recording){status.className='terminal-status';status.innerHTML='<span class="rec-dot"></span><span>idle</span>';root.innerHTML='<h3>Recorder</h3><div class="empty">Geen actieve opname.</div>';updateTerminalControls();return;}
   if(!terminalSessions.size){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>REC ${esc(recording.kind)}:${esc(recording.name)}</span>`;}
   // A recording without a capsule is being started by a job on the server;
@@ -787,8 +798,8 @@ function renderArtifacts(){
   root.querySelectorAll('[data-agent-setting]').forEach(select=>select.onchange=async()=>{const card=select.closest('.artifact'),payload={};card.querySelectorAll('[data-agent-setting]').forEach(item=>payload[item.dataset.agentSetting]=item.value);try{await api(`/api/artifacts/${encodeURIComponent(select.dataset.agentLayer)}/acp/settings`,{method:'PUT',body:JSON.stringify(payload)});await refresh(true);}catch(error){showError(error);}});
   root.querySelectorAll('[data-command-layer]').forEach(input=>{input.onchange=async()=>{const command=input.value.trim();if(!command)return;try{await api(`/api/artifacts/${encodeURIComponent(input.dataset.commandLayer)}/enablements/acp`,{method:'PUT',body:JSON.stringify({command})});await refresh(true);}catch(error){showError(error);}};input.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();input.blur();}};});
   root.querySelectorAll('[data-fetch-options]').forEach(button=>button.onclick=async()=>{button.disabled=true;button.innerHTML=`${icon('hourglass_top')}Ophalen…`;try{await api(`/api/artifacts/${encodeURIComponent(button.dataset.fetchOptions)}/acp/options`,{method:'POST'});}catch(error){showError(error);await refresh(true);}});
-  root.querySelectorAll('[data-record-from]').forEach(button=>button.onclick=()=>openConsole(`RECORD <kind>:<name> --scope=user --from=${button.dataset.recordFrom}`));
-  root.querySelectorAll('[data-edit-artifact]').forEach(button=>button.onclick=()=>openConsole(`EDIT ${button.dataset.editArtifact}`));
+  root.querySelectorAll('[data-record-from]').forEach(button=>button.onclick=()=>openConsole({scope:'user',from:button.dataset.recordFrom}));
+  root.querySelectorAll('[data-edit-artifact]').forEach(button=>button.onclick=()=>{openConsole();execute(`EDIT ${button.dataset.editArtifact}`);});
 }
 
 function usableSelectors(){return [...new Set(snapshot.artifacts.filter(canUse).map(artifactSelector))];}
@@ -1237,7 +1248,10 @@ document.getElementById('code-review-comment-form').onsubmit=async event=>{event
 document.getElementById('chat-dialog').addEventListener('close',closeACPChat);
 document.getElementById('chat-dialog').addEventListener('cancel',event=>{if(!document.getElementById('diff-drawer').hidden){event.preventDefault();closeDiff();}});
 document.getElementById('close-diff').onclick=closeDiff;
-document.querySelectorAll('[data-prefill]').forEach(button=>button.onclick=()=>openConsole(button.dataset.prefill));
+document.getElementById('record-presets').innerHTML=recordPresets.map((preset,index)=>`<button class="quick" type="button" data-record-preset="${index}">${esc(preset.label)}</button>`).join('');
+document.querySelectorAll('[data-record-preset]').forEach(button=>button.onclick=()=>fillRecordForm(recordPresets[Number(button.dataset.recordPreset)]));
+document.getElementById('record-form').elements.enable_acp.onchange=syncRecordForm;
+document.getElementById('record-form').onsubmit=event=>{event.preventDefault();const form=event.target;if(!form.reportValidity())return;execute(recordCommandFromForm());};
 document.getElementById('open-job-dialog').onclick=()=>{resetJobForm();openDialog('job-dialog');};
 const openTemplateBuilder=()=>{resetTemplateForm();openDialog('template-dialog');};document.querySelectorAll('[data-open-template]').forEach(button=>button.onclick=openTemplateBuilder);document.getElementById('add-template-step').onclick=()=>addTemplateStep();
 document.getElementById('job-next').onclick=()=>{const fields=[...document.querySelector('[data-job-step="1"]').querySelectorAll('input,textarea,select')];for(const field of fields){if(!field.checkValidity()){field.reportValidity();return;}}setJobStep(2);};
@@ -1251,10 +1265,9 @@ document.getElementById('open-user-dialog').onclick=()=>openDialog('user-dialog'
 document.getElementById('download-backup').onclick=downloadPortableBackup;
 document.getElementById('choose-restore').onclick=()=>document.getElementById('restore-backup-input').click();
 document.getElementById('restore-backup-input').onchange=event=>restorePortableBackup(event.target.files[0]);
-document.getElementById('add-snapshot').onclick=()=>openConsole('RECORD <kind>:<name> --scope=user');
-document.getElementById('record-git-tool').onclick=()=>openConsole('RECORD tool:git --scope=global --enable=git');
+document.getElementById('add-snapshot').onclick=()=>openConsole({scope:'user'});
+document.getElementById('record-git-tool').onclick=()=>openConsole(recordPresets[0]);
 document.getElementById('list-snapshots').onclick=()=>refresh(true);
-document.getElementById('console-form').onsubmit=event=>{event.preventDefault();const input=document.getElementById('command'),line=input.value;input.value='';execute(line);};
 document.getElementById('terminal-interrupt').onclick=interruptTerminal;
 document.getElementById('capsule-dialog').addEventListener('cancel',event=>{const session=activeTerminal();if(session&&!session.exited&&document.activeElement?.closest('.pty-pane')){event.preventDefault();}});
 new ResizeObserver(()=>fitTerminal(activeTerminal())).observe(document.getElementById('pty-stage'));

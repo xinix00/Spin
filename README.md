@@ -19,7 +19,7 @@ Open `http://127.0.0.1:8080`. De eerste browser maakt de lokale owner (username,
 De GUI heeft vier rustige werkvlakken:
 
 - **Jobs**: maak Templates uit gewone invoervelden en start een Job als automatische reeks ACP-Sessions;
-- **Environments**: beheer alle globale en user-scoped lagen en open alleen tijdens opname de fullscreen Capsule recorder;
+- **Environments**: beheer alle globale en user-scoped lagen en open de fullscreen Capsule recorder: een opname start je met een formulier (soort, naam, scope, bouwt op, ENABLES), je werkt in de shell van de capsule en sluit af met End & save of Cancel; de Spin-commando's hieronder zijn de API daaronder en verschijnen in de log als wat er gebeurd is;
 - **Connections**: beheer Git-remotes/accounts en MCP in twee subtabs;
 - **Access**: laat gebruikers zien en laat admins lokale users maken, archiveren en herstellen.
 

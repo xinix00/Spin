@@ -236,19 +236,27 @@
 
       <dialog class="fullscreen-dialog" id="capsule-dialog">
         <div class="console-layout">
-          <div class="dialog-head"><div><h2>Capsule recorder</h2><p>Spin-commando's sturen de recorder; overige regels draaien als echte terminal in de capsule van je opname of je USE-compositie.</p></div><div class="panel-actions"><div id="terminal-status" class="terminal-status"><span class="rec-dot"></span><span>idle</span></div><button class="icon-button" type="button" data-close-dialog="capsule-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div></div>
-          <div class="console-context"><div class="recipe-bar">
-            <button class="quick" data-prefill="RECORD tool:git --scope=global --enable=git">tool:git</button>
-            <button class="quick" data-prefill="RECORD tool:node --scope=global --from=tool:git">tool:node</button>
-            <button class="quick" data-prefill="RECORD tool:codex --scope=global --from=tool:node --enable=acp --command=codex-acp">tool:codex + ACP</button>
-            <button class="quick" data-prefill="RECORD tool:dotnet --scope=global --from=tool:codex">tool:dotnet</button>
-            <button class="quick" data-command="LIST">LIST</button>
-          </div><div class="recorder-context" id="recording-section"></div></div>
+          <div class="dialog-head"><div><h2>Capsule recorder</h2><p>Start een opname, werk in de shell van de capsule, en sluit af met End &amp; save. Zonder opname is dit de shell van je USE-compositie.</p></div><div class="panel-actions"><div id="terminal-status" class="terminal-status"><span class="rec-dot"></span><span>idle</span></div><button class="icon-button" type="button" data-close-dialog="capsule-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div></div>
+          <div class="console-context">
+            <form class="record-form" id="record-form" autocomplete="off">
+              <div class="record-presets" id="record-presets"></div>
+              <div class="record-fields">
+                <label>Soort<select name="kind"><option value="tool">tool</option><option value="credential">credential</option><option value="config">config</option></select></label>
+                <label>Naam<input name="name" required placeholder="codex" pattern="[a-z0-9][a-z0-9._-]*" title="kleine letters, cijfers, punt, streepje, underscore"></label>
+                <label>Scope<select name="scope"><option value="global">global · voor iedereen</option><option value="user">user · alleen ik</option></select></label>
+                <label>Bouwt op<select name="from" id="record-from"><option value="">Alpine-basis</option></select></label>
+                <label class="record-check"><input type="checkbox" name="enable_git"> ENABLES git</label>
+                <label class="record-check"><input type="checkbox" name="enable_acp"> ENABLES acp</label>
+                <label id="record-command-field" hidden>ACP-commando<input name="command" placeholder="codex-acp"></label>
+                <button class="primary" type="submit"><span class="material-symbols-outlined" aria-hidden="true">fiber_manual_record</span>Opname starten</button>
+              </div>
+            </form>
+            <div class="recorder-context" id="recording-section"></div>
+          </div>
           <section class="terminal-panel">
             <div class="terminal" id="terminal" aria-live="polite"></div>
             <div class="pty-stage" id="pty-stage" hidden></div>
-            <div class="terminal-channels" id="terminal-channels" hidden></div>
-            <form class="console-form" id="console-form"><span class="prompt" id="prompt">derek@spin ›</span><input id="command" autocomplete="off" spellcheck="false" aria-label="Spin command" placeholder="RECORD tool:name"><button class="danger" id="terminal-interrupt" type="button" hidden>Ctrl-C</button><button class="small-button" id="terminal-submit" type="submit">Run</button></form>
+            <div class="terminal-bar"><div class="terminal-channels" id="terminal-channels"></div><button class="danger" id="terminal-interrupt" type="button" hidden>Ctrl-C</button></div>
           </section>
         </div>
       </dialog>
