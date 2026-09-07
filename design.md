@@ -318,6 +318,7 @@ POST /api/recordings
 POST /api/recordings/{id}/commands
 POST /api/recordings/{id}/end
 GET  /api/recordings/{id}/start   # voortgang van de startjob (RECORD/EDIT)
+POST /api/artifacts/{id}/acp/options  # agent-opties (modellen, reasoning) van een ACP-laag ophalen
 POST /api/use
 POST /api/compositions/{id}/acp/probe
 POST /api/compositions/{id}/stop

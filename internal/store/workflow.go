@@ -73,6 +73,8 @@ func normalizeWorkflowTemplateRequest(req domain.CreateWorkflowTemplateRequest) 
 			phase.Executor = domain.WorkflowExecutorAgent
 		}
 		phase.AllowChanges = phase.AllowChanges || phase.AllowCommit
+		phase.Model = strings.TrimSpace(phase.Model)
+		phase.ReasoningEffort = strings.TrimSpace(phase.ReasoningEffort)
 		phase.AllowCommit = false
 		if phase.AskUser {
 			phase.Accept.AskUser = true

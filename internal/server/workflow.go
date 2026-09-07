@@ -431,7 +431,8 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 	if operator == "" {
 		operator = session.Operator
 	}
-	if _, _, _, phase, _, _, err := s.store.WorkflowForSession(session.ID); err == nil && phase.Executor == domain.WorkflowExecutorAction {
+	_, _, _, phase, _, _, phaseErr := s.store.WorkflowForSession(session.ID)
+	if phaseErr == nil && phase.Executor == domain.WorkflowExecutorAction {
 		s.retireWorkflowCompositions(session.JobID, session.ID)
 		s.launchWorkflowAction(ctx, session.ID)
 		return
@@ -483,6 +484,12 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 	if err != nil {
 		requeue("start workflow ACP", err)
 		return
+	}
+	if phaseErr == nil {
+		if err := active.applyConfig(phase.Model, phase.ReasoningEffort); err != nil {
+			requeue("configure agent for phase", err)
+			return
+		}
 	}
 	prompt, err := s.workflowPromptForACP(session.ID, active.promptCapabilities())
 	if err != nil {

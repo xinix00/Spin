@@ -464,6 +464,7 @@ func (s *Server) routes() {
 	})
 	s.mux.HandleFunc("GET /api/artifacts", s.listArtifacts)
 	s.mux.HandleFunc("DELETE /api/artifacts/{artifactID}", s.deleteArtifact)
+	s.mux.HandleFunc("POST /api/artifacts/{artifactID}/acp/options", s.fetchAgentOptionsHandler)
 	s.mux.HandleFunc("POST /api/recordings", s.createRecording)
 	s.mux.HandleFunc("POST /api/recordings/{recordingID}/commands", s.appendRecordingCommand)
 	s.mux.HandleFunc("GET /api/recordings/{recordingID}/terminal", s.recordingTerminal)

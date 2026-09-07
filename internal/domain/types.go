@@ -75,6 +75,12 @@ type WorkflowPhase struct {
 	Inject              []string                `json:"inject"`
 	Deliverables        []DeliverableDefinition `json:"deliverables"`
 	AllowChanges        bool                    `json:"allow_changes"`
+	// Model and ReasoningEffort are set on the agent's ACP session before the
+	// phase's first prompt (session/set_config_option); empty keeps the
+	// agent's default. The values an agent accepts are on its layer's
+	// AgentOptions.
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// AllowCommit is read only to migrate Templates written by older builds.
 	// New state and API clients use AllowChanges; commit is a control-plane
 	// action performed as part of ACCEPT, never an agent tool.
@@ -425,6 +431,26 @@ type Enablement struct {
 	ProtocolVersion int    `json:"protocol_version,omitempty"`
 }
 
+// AgentOption is one value an ACP agent offers for a session config option.
+type AgentOption struct {
+	Value       string `json:"value"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// AgentOptions is what an ACP layer's agent reported it can be configured
+// with (session/new configOptions), kept on the layer so Templates can pick
+// a model and reasoning effort per phase without starting the agent.
+type AgentOptions struct {
+	AgentName        string        `json:"agent_name,omitempty"`
+	Models           []AgentOption `json:"models,omitempty"`
+	ReasoningEfforts []AgentOption `json:"reasoning_efforts,omitempty"`
+	Modes            []AgentOption `json:"modes,omitempty"`
+	FetchedAt        time.Time     `json:"fetched_at"`
+	// Error is why the last fetch failed, when it did.
+	Error string `json:"error,omitempty"`
+}
+
 type Artifact struct {
 	ID                       string              `json:"id"`
 	Kind                     ArtifactKind        `json:"kind"`
@@ -443,6 +469,9 @@ type Artifact struct {
 	Sensitivity              ArtifactSensitivity `json:"sensitivity"`
 	CreatedBy                string              `json:"created_by"`
 	CreatedAt                time.Time           `json:"created_at"`
+	// AgentOptions is what this layer's ACP agent reported it accepts; nil
+	// until fetched or until a Session on this layer ran.
+	AgentOptions *AgentOptions `json:"agent_options,omitempty"`
 	// SupersededBy points at the version that replaced this one through EDIT.
 	// The snapshot stays: layers recorded from it still resolve their parent by
 	// ID, and a composition that meets it binds the newest version instead.

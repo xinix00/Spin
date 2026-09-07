@@ -109,6 +109,26 @@ type activeACP struct {
 	queued          []queuedPrompt
 	failure         error
 	onIdle          func() // runs when a turn ends with nothing queued behind it
+	// steering is set when the agent accepts _session/steering: a message
+	// written during a turn is injected into that turn instead of queued.
+	steering bool
+	// configOptions is what the agent offered at session/new: models,
+	// reasoning efforts, modes.
+	configOptions []acpConfigOption
+}
+
+// acpConfigOption is one session config option as an ACP agent reports it.
+type acpConfigOption struct {
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Category     string          `json:"category"`
+	Type         string          `json:"type"`
+	CurrentValue json.RawMessage `json:"currentValue"`
+	Options      []struct {
+		Value       string `json:"value"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	} `json:"options"`
 }
 
 // queuedPrompt is a message the operator wrote while the agent was still
@@ -398,14 +418,6 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 	if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
 		return nil, fmt.Errorf("session composition is not running: %w", store.ErrConflict)
 	}
-	enabled, err := acpEnablement(composition)
-	if err != nil {
-		return nil, err
-	}
-	streamer, ok := s.engine.(capsule.EnabledEngine)
-	if !ok {
-		return nil, fmt.Errorf("capsule engine %s cannot stream enabled entrypoints: %w", s.engine.Info().Driver, store.ErrConflict)
-	}
 	mcpServers, err := s.store.MCPServersForOperator(operator, session.MCPServerIDs)
 	if err != nil {
 		return nil, err
@@ -417,6 +429,36 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 		}
 		mcpServers = append(mcpServers, workflowServer)
 	}
+	active, err := s.openACP(composition, operator, mcpServers)
+	if err != nil {
+		return nil, err
+	}
+	active.mu.Lock()
+	active.sessionID = session.ID
+	active.onIdle = func() {
+		if _, err := s.store.SettleWorkflowChatTurn(session.ID); err != nil {
+			s.logger.Warn("settle workflow phase after ACP turn", "session", session.ID, "error", err)
+		}
+	}
+	active.mu.Unlock()
+	s.rememberAgentOptions(composition, active)
+	s.acpSessions[sessionID] = active
+	return active, nil
+}
+
+// openACP starts the agent in a running composition's capsule and takes it
+// through initialize and session/new. What the agent offers (steering, config
+// options) is kept on the result; the caller binds it to a Session or closes
+// it again.
+func (s *Server) openACP(composition domain.Composition, operator string, mcpServers []domain.MCPServer) (*activeACP, error) {
+	enabled, err := acpEnablement(composition)
+	if err != nil {
+		return nil, err
+	}
+	streamer, ok := s.engine.(capsule.EnabledEngine)
+	if !ok {
+		return nil, fmt.Errorf("capsule engine %s cannot stream enabled entrypoints: %w", s.engine.Info().Driver, store.ErrConflict)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	process, err := streamer.StartEnabled(ctx, *composition.Runtime, enabled)
 	if err != nil {
@@ -424,18 +466,13 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 		return nil, fmt.Errorf("start ACP entrypoint: %w", err)
 	}
 	active := &activeACP{
-		sessionID: session.ID, compositionID: composition.ID, operator: normalizeOperator(operator),
+		compositionID: composition.ID, operator: normalizeOperator(operator),
 		protocolVersion: enabled.ProtocolVersion, process: process, cancel: cancel, done: make(chan struct{}),
 		pending: map[string]chan acpRPCResponse{}, permissions: map[string]bool{}, sentAttachments: map[string]bool{},
 		subscribers: map[chan acpBrowserEvent]struct{}{}, history: []acpBrowserEvent{},
 	}
 	if active.protocolVersion == 0 {
 		active.protocolVersion = 1
-	}
-	active.onIdle = func() {
-		if _, err := s.store.SettleWorkflowChatTurn(session.ID); err != nil {
-			s.logger.Warn("settle workflow phase after ACP turn", "session", session.ID, "error", err)
-		}
 	}
 	go active.readLoop(s.logger)
 	initializeContext, initializeCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -465,6 +502,11 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 			Name  string `json:"name"`
 			Title string `json:"title"`
 		} `json:"agentInfo"`
+		Meta struct {
+			Steering struct {
+				Supported bool `json:"supported"`
+			} `json:"steering"`
+		} `json:"_meta"`
 	}
 	if err := json.Unmarshal(initialize, &capabilities); err != nil || capabilities.ProtocolVersion != active.protocolVersion {
 		active.close()
@@ -475,6 +517,7 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 	}
 	active.mu.Lock()
 	active.promptCaps = capabilities.AgentCapabilities.PromptCapabilities
+	active.steering = capabilities.Meta.Steering.Supported
 	active.agentName = capabilities.AgentInfo.Title
 	if active.agentName == "" {
 		active.agentName = capabilities.AgentInfo.Name
@@ -493,7 +536,8 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 		return nil, fmt.Errorf("ACP session/new: %w", err)
 	}
 	var newSession struct {
-		SessionID string `json:"sessionId"`
+		SessionID     string            `json:"sessionId"`
+		ConfigOptions []acpConfigOption `json:"configOptions"`
 	}
 	if err := json.Unmarshal(created, &newSession); err != nil || strings.TrimSpace(newSession.SessionID) == "" {
 		active.close()
@@ -504,9 +548,139 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 	}
 	active.mu.Lock()
 	active.agentSessionID = newSession.SessionID
+	active.configOptions = newSession.ConfigOptions
 	active.mu.Unlock()
-	s.acpSessions[sessionID] = active
 	return active, nil
+}
+
+// agentOptions folds the agent's config options into what a layer keeps.
+func (a *activeACP) agentOptions() domain.AgentOptions {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	options := domain.AgentOptions{AgentName: a.agentName, FetchedAt: time.Now().UTC()}
+	for _, option := range a.configOptions {
+		values := make([]domain.AgentOption, 0, len(option.Options))
+		for _, value := range option.Options {
+			values = append(values, domain.AgentOption{Value: value.Value, Name: value.Name, Description: value.Description})
+		}
+		switch option.ID {
+		case "model":
+			options.Models = values
+		case "reasoning_effort":
+			options.ReasoningEfforts = values
+		case "mode":
+			options.Modes = values
+		}
+	}
+	return options
+}
+
+// applyConfig sets the phase's model and reasoning effort on the agent's
+// session. Empty values keep the agent's own default.
+func (a *activeACP) applyConfig(model, reasoningEffort string) error {
+	for _, setting := range []struct{ id, value string }{{"model", model}, {"reasoning_effort", reasoningEffort}} {
+		value := strings.TrimSpace(setting.value)
+		if value == "" {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, err := a.request(ctx, "session/set_config_option", map[string]any{
+			"sessionId": a.agentSessionID, "configId": setting.id, "value": value,
+		})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("agent refused %s %q: %w", setting.id, value, err)
+		}
+	}
+	return nil
+}
+
+// acpArtifactID finds the layer in a composition that ENABLES acp.
+func (s *Server) acpArtifactID(composition domain.Composition) string {
+	for _, artifactID := range composition.SlotBindings {
+		artifact, err := s.store.Artifact(artifactID)
+		if err != nil {
+			continue
+		}
+		for _, enabled := range artifact.Enables {
+			if enabled.Name == "acp" {
+				return artifact.ID
+			}
+		}
+	}
+	return ""
+}
+
+// rememberAgentOptions keeps what an agent just offered on its layer, so the
+// Template editor can pick from it without starting the agent again.
+func (s *Server) rememberAgentOptions(composition domain.Composition, active *activeACP) {
+	options := active.agentOptions()
+	if len(options.Models) == 0 && len(options.ReasoningEfforts) == 0 && len(options.Modes) == 0 {
+		return
+	}
+	if artifactID := s.acpArtifactID(composition); artifactID != "" {
+		if _, err := s.store.SetArtifactAgentOptions(artifactID, options); err != nil {
+			s.logger.Warn("remember agent options", "artifact", artifactID, "error", err)
+		}
+	}
+}
+
+// fetchAgentOptions starts the layer's agent once, in a throwaway capsule,
+// to learn which models and reasoning efforts it offers, and keeps that on
+// the layer.
+func (s *Server) fetchAgentOptions(ctx context.Context, artifactID, operator string) (domain.AgentOptions, error) {
+	artifact, err := s.store.Artifact(artifactID)
+	if err != nil {
+		return domain.AgentOptions{}, err
+	}
+	enablesACP := false
+	for _, enabled := range artifact.Enables {
+		enablesACP = enablesACP || enabled.Name == "acp"
+	}
+	if !enablesACP {
+		return domain.AgentOptions{}, fmt.Errorf("layer %s:%s does not ENABLE acp: %w", artifact.Kind, artifact.Name, store.ErrConflict)
+	}
+	composition, err := s.useCapsule(ctx, domain.UseRequest{Selector: string(artifact.Kind) + ":" + artifact.Name, Profile: artifact.Profile, Operator: operator})
+	if err != nil {
+		return domain.AgentOptions{}, err
+	}
+	defer func() {
+		stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, err := s.stopCapsule(stopContext, composition.ID, operator); err != nil {
+			s.logger.Warn("stop capsule after fetching agent options", "composition", composition.ID, "error", err)
+		}
+	}()
+	active, err := s.openACP(composition, operator, nil)
+	if err != nil {
+		return domain.AgentOptions{}, err
+	}
+	options := active.agentOptions()
+	active.close()
+	if _, err := s.store.SetArtifactAgentOptions(artifact.ID, options); err != nil {
+		return domain.AgentOptions{}, err
+	}
+	return options, nil
+}
+
+// fetchAgentOptionsHandler answers at once and fetches in the background; the
+// layer's agent_options show the result (or the failure) on the next state.
+func (s *Server) fetchAgentOptionsHandler(w http.ResponseWriter, r *http.Request) {
+	operator := s.requestOperator(r, r.URL.Query().Get("operator"))
+	artifactID := r.PathValue("artifactID")
+	if _, err := s.store.Artifact(artifactID); err != nil {
+		writeError(w, err)
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if _, err := s.fetchAgentOptions(ctx, artifactID, operator); err != nil {
+			s.logger.Warn("fetch agent options", "artifact", artifactID, "error", err)
+			_, _ = s.store.SetArtifactAgentOptions(artifactID, domain.AgentOptions{Error: err.Error(), FetchedAt: time.Now().UTC()})
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "fetching", "artifact_id": artifactID})
 }
 
 // acpNewSessionParams gives the agent two distinct writable areas inside its
@@ -703,6 +877,11 @@ func (a *activeACP) startPromptWithAttachments(text string, attachments []acpPro
 		return errors.New("prompt is empty")
 	}
 	a.mu.Lock()
+	if a.busy && a.steering {
+		a.mu.Unlock()
+		go a.steer(queuedPrompt{text: text, attachments: attachments})
+		return nil
+	}
 	if a.busy {
 		if len(a.queued) >= maxQueuedPrompts {
 			a.mu.Unlock()
@@ -718,6 +897,43 @@ func (a *activeACP) startPromptWithAttachments(text string, attachments []acpPro
 	a.mu.Unlock()
 	a.runPrompts(queuedPrompt{text: text, attachments: attachments})
 	return nil
+}
+
+// steer hands a message to the running turn through the agent's steering
+// extension (_session/steering, as codex-acp offers it). The agent reads it
+// mid-turn; when the turn had just ended the agent starts a new one from it.
+// An agent that refuses gets the message queued the ordinary way.
+func (a *activeACP) steer(message queuedPrompt) {
+	prompt, newAttachmentIDs := a.buildPrompt(message)
+	a.broadcast(acpBrowserEvent{Type: "user", Text: message.text}, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	result, err := a.request(ctx, "_session/steering", map[string]any{"sessionId": a.agentSessionID, "prompt": prompt})
+	var outcome struct {
+		Outcome string `json:"outcome"`
+	}
+	if err == nil {
+		_ = json.Unmarshal(result, &outcome)
+	}
+	switch {
+	case err == nil && outcome.Outcome == "injected":
+		a.broadcast(acpBrowserEvent{Type: "steered", Text: "Ingestuurd in de lopende beurt"}, true)
+	case err == nil && outcome.Outcome == "startedNewTurn":
+		a.broadcast(acpBrowserEvent{Type: "steered", Text: "De beurt was net klaar; de agent is er een nieuwe mee begonnen"}, true)
+	default:
+		reason := outcome.Outcome
+		if err != nil {
+			reason = err.Error()
+		}
+		a.mu.Lock()
+		for _, attachmentID := range newAttachmentIDs {
+			delete(a.sentAttachments, attachmentID)
+		}
+		a.queued = append(a.queued, message)
+		depth := len(a.queued)
+		a.mu.Unlock()
+		a.broadcast(acpBrowserEvent{Type: "queued", Text: fmt.Sprintf("Insturen lukte niet (%s); het bericht wacht op de volgende beurt", reason), Queued: depth}, true)
+	}
 }
 
 // runPrompts sends one turn and then takes whatever the operator queued while

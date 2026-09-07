@@ -2272,6 +2272,22 @@ func (s *Store) BindSessionClient(sessionID, clientID string) (domain.Session, e
 	return session, s.saveLocked()
 }
 
+// SetArtifactAgentOptions records what the layer's agent reported it accepts.
+func (s *Store) SetArtifactAgentOptions(artifactID string, options domain.AgentOptions) (domain.Artifact, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	artifact, ok := s.state.Artifacts[artifactID]
+	if !ok {
+		return domain.Artifact{}, ErrNotFound
+	}
+	if options.FetchedAt.IsZero() {
+		options.FetchedAt = time.Now().UTC()
+	}
+	artifact.AgentOptions = &options
+	s.state.Artifacts[artifact.ID] = artifact
+	return artifact, s.saveLocked()
+}
+
 func (s *Store) AddSnapshotReplica(artifactID, clientID string) (domain.Artifact, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
