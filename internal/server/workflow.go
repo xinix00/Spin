@@ -864,7 +864,6 @@ func workflowGitSection(job domain.Job, session domain.Session) string {
 	fmt.Fprintf(&section, "Basisbranch: %s · waar deze Job uiteindelijk op landt; lokaal origin/%s.\n", base, base)
 	fmt.Fprintf(&section, "Job-branch: %s · het geaccepteerde werk van alle eerdere fases van deze Job; lokaal origin/%s. Elke fase komt hierop als één commit.\n", job.Branch, job.Branch)
 	fmt.Fprintf(&section, "Jouw branch: %s · HEAD in deze workspace, begonnen op de Job-branch.\n", session.GitRef)
-	section.WriteString("De workspace is shallow tot de basisbranch; vergelijk refs paarsgewijs, niet met drie punten.\n")
 	return section.String()
 }
 
