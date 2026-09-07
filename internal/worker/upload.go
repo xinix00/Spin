@@ -28,6 +28,13 @@ import (
 
 const uploadAttempts = 5
 
+// A server that pauses writes for a backup answers 503; the runner waits up
+// to uploadPauseLimit, checking every uploadPauseWait.
+const (
+	uploadPauseWait  = 10 * time.Second
+	uploadPauseLimit = 30 * time.Minute
+)
+
 type uploadSession struct {
 	ID        string `json:"id"`
 	Offset    int64  `json:"offset"`
@@ -294,11 +301,22 @@ func uploadChunks(ctx context.Context, client *uploadClient, session uploadSessi
 // upload is gone and nothing here can bring it back.
 func sendChunk(ctx context.Context, client *uploadClient, id string, offset, end int64, chunk []byte) error {
 	var last error
+	pauseDeadline := time.Now().Add(uploadPauseLimit)
 	for attempt := 1; attempt <= uploadAttempts; attempt++ {
 		committed, status, err := client.put(ctx, id, offset, chunk)
 		switch {
 		case err == nil && status == http.StatusOK:
 			return nil
+		case status == http.StatusServiceUnavailable && time.Now().Before(pauseDeadline):
+			// The server pauses writes (a backup streams); that is not a
+			// failed attempt, wait and try again.
+			attempt--
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(uploadPauseWait):
+			}
+			continue
 		case err == nil && status == http.StatusConflict && committed >= end:
 			return nil
 		case status == http.StatusNotFound:

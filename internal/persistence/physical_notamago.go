@@ -89,3 +89,17 @@ func listPhysicalDir(directory string) ([]string, error) {
 	}
 	return names, nil
 }
+
+// openPhysicalReaderAt opens a file for random access and reports its size.
+func openPhysicalReaderAt(path string) (io.ReaderAt, int64, func() error, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, 0, nil, err
+	}
+	return file, info.Size(), file.Close, nil
+}

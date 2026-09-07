@@ -149,3 +149,37 @@ func listPhysicalDir(directory string) ([]string, error) {
 	}
 	return names, nil
 }
+
+// hopReaderAt reads a file on the HopOS volume at arbitrary offsets, in ABI
+// sized pieces.
+type hopReaderAt struct{ path string }
+
+func (r hopReaderAt) ReadAt(target []byte, offset int64) (int, error) {
+	total := 0
+	for total < len(target) {
+		count := len(target) - total
+		if count > applib.MaxIOChunk {
+			count = applib.MaxIOChunk
+		}
+		read, err := physicalHopApp.ReadInto(r.path, uint64(offset)+uint64(total), target[total:total+count])
+		total += read
+		if err != nil {
+			return total, err
+		}
+		if read == 0 {
+			return total, io.EOF
+		}
+	}
+	return total, nil
+}
+
+func openPhysicalReaderAt(path string) (io.ReaderAt, int64, func() error, error) {
+	if physicalHopApp == nil {
+		return nil, 0, nil, errors.New("HopOS persistence is not registered")
+	}
+	size, err := physicalHopApp.Stat(path)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	return hopReaderAt{path: path}, int64(size), func() error { return nil }, nil
+}

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"easyacp/internal/capsule"
@@ -50,7 +51,7 @@ type Server struct {
 	launchFailures  map[string]launchFailure // why the last launch of a queued Session gave up
 	launchSweep     time.Duration            // cadence at which queued phases are offered a launch again
 	backupMu        sync.Mutex
-	backupJob       *backupJob
+	paused          atomic.Bool // writes wait while a backup streams
 	backupTicketMu  sync.Mutex
 	backupTickets   map[string]backupTicket
 	uploadMu        sync.Mutex
@@ -447,8 +448,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/auth/users/{userID}/archive", s.archiveUser)
 	s.mux.HandleFunc("POST /api/auth/users/{userID}/restore", s.restoreUser)
 	s.mux.HandleFunc("POST /api/auth/users/{userID}/password", s.resetUserPassword)
-	s.mux.HandleFunc("POST /api/backup", s.startBackupHandler)
-	s.mux.HandleFunc("GET /api/backup/status", s.backupStatusHandler)
+	s.mux.HandleFunc("POST /api/backup", s.downloadBackup)
 	s.mux.HandleFunc("POST /api/backup-ticket", s.createBackupTicket)
 	s.mux.HandleFunc("GET /api/backup", s.downloadBackupWithTicket)
 	s.mux.HandleFunc("POST /api/restore", s.restoreBackup)

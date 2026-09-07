@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"context"
@@ -12,8 +13,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -55,47 +54,35 @@ func TestSQLiteBackupRestoresStateSecretsAndAttachmentsUnderDestinationKey(t *te
 		t.Fatal(err)
 	}
 
-	// A backup is a job: start it, follow it until the copy is ready, then
-	// download the ready file through a ticket.
-	startRequest := httptest.NewRequest(http.MethodPost, "/api/backup", nil)
-	startResponse := httptest.NewRecorder()
-	sourceServer.Handler().ServeHTTP(startResponse, startRequest)
-	if startResponse.Code != http.StatusAccepted {
-		t.Fatalf("start backup status=%d body=%s", startResponse.Code, startResponse.Body.String())
-	}
-	var job backupJobResponse
-	for deadline := time.Now().Add(10 * time.Second); ; {
-		statusResponse := httptest.NewRecorder()
-		sourceServer.Handler().ServeHTTP(statusResponse, httptest.NewRequest(http.MethodGet, "/api/backup/status", nil))
-		if err := json.Unmarshal(statusResponse.Body.Bytes(), &job); err != nil {
-			t.Fatal(err)
-		}
-		if job.Status != "running" || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if job.Status != "ready" || job.Size <= 1<<20 || !strings.HasPrefix(job.Filename, "spin-backup-") {
-		t.Fatalf("backup job = %+v", job)
-	}
-	ticketResponse := httptest.NewRecorder()
-	sourceServer.Handler().ServeHTTP(ticketResponse, httptest.NewRequest(http.MethodPost, "/api/backup-ticket", nil))
-	var ticket struct {
-		URL string `json:"url"`
-	}
-	if ticketResponse.Code != http.StatusCreated || json.Unmarshal(ticketResponse.Body.Bytes(), &ticket) != nil || ticket.URL == "" {
-		t.Fatalf("ticket status=%d body=%s", ticketResponse.Code, ticketResponse.Body.String())
-	}
+	// A backup streams the live database as a zip next to the portable key;
+	// a second stream while one runs is told to wait.
+	backupRequest := httptest.NewRequest(http.MethodPost, "/api/backup", nil)
 	backupResponse := httptest.NewRecorder()
-	sourceServer.Handler().ServeHTTP(backupResponse, httptest.NewRequest(http.MethodGet, ticket.URL, nil))
-	if backupResponse.Code != http.StatusOK || !bytes.Contains([]byte(backupResponse.Header().Get("Content-Disposition")), []byte("spin-backup-")) || backupResponse.Header().Get("Content-Length") != strconv.FormatInt(job.Size, 10) {
+	sourceServer.Handler().ServeHTTP(backupResponse, backupRequest)
+	if backupResponse.Code != http.StatusOK || !bytes.Contains([]byte(backupResponse.Header().Get("Content-Disposition")), []byte("spin-backup-")) || backupResponse.Header().Get("Content-Type") != "application/zip" {
 		t.Fatalf("backup status=%d headers=%v", backupResponse.Code, backupResponse.Header())
 	}
-	if backupResponse.Header().Get("Content-Type") != "application/vnd.sqlite3" || backupResponse.Body.Len() < 4096 {
-		t.Fatalf("backup content type=%q size=%d", backupResponse.Header().Get("Content-Type"), backupResponse.Body.Len())
+	archive, err := zip.NewReader(bytes.NewReader(backupResponse.Body.Bytes()), int64(backupResponse.Body.Len()))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if backupResponse.Body.Len() <= 1<<20 {
-		t.Fatalf("backup size=%d does not exercise Lean's 1 MiB request boundary", backupResponse.Body.Len())
+	var databaseBytes, keyBytes int64
+	for _, entry := range archive.File {
+		switch entry.Name {
+		case "spin.db":
+			databaseBytes = int64(entry.UncompressedSize64)
+		case "master-key.txt":
+			keyBytes = int64(entry.UncompressedSize64)
+		}
+	}
+	if databaseBytes <= 1<<20 || keyBytes == 0 {
+		t.Fatalf("backup archive: database=%d key=%d bytes", databaseBytes, keyBytes)
+	}
+	if sourceServer.paused.Load() {
+		t.Fatal("writes stayed paused after the backup stream ended")
+	}
+	if _, err := sourceDatabase.PutBlob(context.Background(), "after:backup", "test", bytes.NewReader([]byte("writes resume"))); err != nil {
+		t.Fatalf("write after backup: %v", err)
 	}
 
 	destinationDirectory := t.TempDir()
@@ -117,7 +104,7 @@ func TestSQLiteBackupRestoresStateSecretsAndAttachmentsUnderDestinationKey(t *te
 		DisableAuthentication: true, Database: destinationDatabase, AttachmentStorage: destinationAttachments, SnapshotArchive: destinationDatabase,
 	})
 	restoreRequest := httptest.NewRequest(http.MethodPost, "/api/restore", bytes.NewReader(backupResponse.Body.Bytes()))
-	restoreRequest.Header.Set("Content-Type", "application/vnd.sqlite3")
+	restoreRequest.Header.Set("Content-Type", "application/zip")
 	restoreRecorder := httptest.NewRecorder()
 	destinationServer.Handler().ServeHTTP(restoreRecorder, restoreRequest)
 	if restoreRecorder.Code != http.StatusOK {

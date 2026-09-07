@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"archive/zip"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	sqliteDriver "github.com/ncruces/go-sqlite3/driver"
 )
@@ -106,14 +108,8 @@ func (s *SQLite) WriteBackup(ctx context.Context, destination io.Writer, masterK
 // portable key only to that copy. Callers can inspect every referenced object
 // in the frozen copy before streaming it to a user.
 func (s *SQLite) PrepareBackup(ctx context.Context, masterKey string) (*StagedBackup, error) {
-	return s.PrepareBackupProgress(ctx, masterKey, nil)
-}
-
-// PrepareBackupProgress is PrepareBackup that reports the pages copied so a
-// person can watch a large database being staged.
-func (s *SQLite) PrepareBackupProgress(ctx context.Context, masterKey string, progress func(copied, total int)) (*StagedBackup, error) {
 	temporary := s.temporaryPath("backup")
-	if err := s.backupTo(ctx, temporary, progress); err != nil {
+	if err := s.backupTo(ctx, temporary, nil); err != nil {
 		_ = removePhysicalFile(temporary)
 		return nil, err
 	}
@@ -131,6 +127,69 @@ func (s *SQLite) PrepareBackupProgress(ctx context.Context, masterKey string, pr
 		return nil, err
 	}
 	return &StagedBackup{Path: temporary, Database: backup, MasterKey: strings.TrimSpace(masterKey), remove: removePhysicalFile}, nil
+}
+
+// Names inside a streamed backup archive.
+const (
+	backupArchiveDatabase = "spin.db"
+	backupArchiveKey      = "master-key.txt"
+)
+
+// StreamBackup writes the live database to destination without a copy on
+// the volume: a zip holding the database file and the portable master key.
+// The pool has one connection; holding it pauses every write, so the file
+// is a committed, consistent snapshot for as long as the stream runs. The
+// key travels next to the file because the live database deliberately
+// never contains it.
+func (s *SQLite) StreamBackup(ctx context.Context, destination io.Writer, masterKey string) error {
+	connection, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	// Make sure nothing is left in SQLite's page cache or the VFS write
+	// coalescer: a statement on the held connection forces a sync point.
+	if _, err := connection.ExecContext(ctx, `PRAGMA user_version`); err != nil {
+		return err
+	}
+	archive := zip.NewWriter(destination)
+	database, err := archive.CreateHeader(&zip.FileHeader{Name: backupArchiveDatabase, Method: zip.Store, Modified: time.Now()})
+	if err != nil {
+		return err
+	}
+	if err := readPhysicalFile(ctx, s.path, database); err != nil {
+		return fmt.Errorf("stream database file: %w", err)
+	}
+	key, err := archive.CreateHeader(&zip.FileHeader{Name: backupArchiveKey, Method: zip.Store, Modified: time.Now()})
+	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(key, strings.TrimSpace(masterKey)+"\n"); err != nil {
+		return err
+	}
+	return archive.Close()
+}
+
+// CleanTemporaryFiles removes staged backup and restore copies a previous
+// process left on the volume; each is as large as the database itself.
+func (s *SQLite) CleanTemporaryFiles() (int, error) {
+	directory := path.Dir(filepath.ToSlash(s.path))
+	base := path.Base(filepath.ToSlash(s.path))
+	names, err := listPhysicalDir(directory)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, name := range names {
+		if !strings.HasPrefix(name, base+".backup-") && !strings.HasPrefix(name, base+".restore-") {
+			continue
+		}
+		if err := removePhysicalFile(path.Join(directory, name)); err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 func (b *StagedBackup) WriteTo(ctx context.Context, destination io.Writer) error {
@@ -160,7 +219,13 @@ func (s *SQLite) StageBackup(ctx context.Context, source io.Reader, maxBytes int
 	return backup, nil
 }
 
+// openStagedBackup accepts both backup forms: a database copy that carries
+// its format marker and key inside, and a streamed zip holding the database
+// file next to the key. A zip is unpacked to its own staged file first.
 func openStagedBackup(path, vfs string) (*StagedBackup, error) {
+	if isZipFile(path) {
+		return openStagedBackupZip(path, vfs)
+	}
 	backup, err := Open(path, OpenOptions{VFS: vfs})
 	if err != nil {
 		return nil, fmt.Errorf("open uploaded backup: %w", err)
@@ -176,6 +241,75 @@ func openStagedBackup(path, vfs string) (*StagedBackup, error) {
 		return nil, errors.New("Spin backup has no master key")
 	}
 	return &StagedBackup{Path: path, Database: backup, MasterKey: strings.TrimSpace(string(key)), remove: removePhysicalFile}, nil
+}
+
+func isZipFile(path string) bool {
+	reader, size, closeReader, err := openPhysicalReaderAt(path)
+	if err != nil || size < 4 {
+		return false
+	}
+	defer closeReader()
+	var magic [4]byte
+	if _, err := reader.ReadAt(magic[:], 0); err != nil {
+		return false
+	}
+	return string(magic[:]) == "PK\x03\x04"
+}
+
+func openStagedBackupZip(zipPath, vfs string) (*StagedBackup, error) {
+	reader, size, closeReader, err := openPhysicalReaderAt(zipPath)
+	if err != nil {
+		return nil, fmt.Errorf("open uploaded backup archive: %w", err)
+	}
+	defer closeReader()
+	archive, err := zip.NewReader(reader, size)
+	if err != nil {
+		return nil, fmt.Errorf("read uploaded backup archive: %w", err)
+	}
+	var databaseEntry, keyEntry *zip.File
+	for _, entry := range archive.File {
+		switch entry.Name {
+		case backupArchiveDatabase:
+			databaseEntry = entry
+		case backupArchiveKey:
+			keyEntry = entry
+		}
+	}
+	if databaseEntry == nil || keyEntry == nil {
+		return nil, errors.New("backup archive must contain spin.db and master-key.txt")
+	}
+	keyReader, err := keyEntry.Open()
+	if err != nil {
+		return nil, err
+	}
+	keyBytes, err := io.ReadAll(io.LimitReader(keyReader, 4096))
+	_ = keyReader.Close()
+	if err != nil || strings.TrimSpace(string(keyBytes)) == "" {
+		return nil, errors.New("backup archive has no master key")
+	}
+	databaseReader, err := databaseEntry.Open()
+	if err != nil {
+		return nil, err
+	}
+	extracted := strings.TrimSuffix(zipPath, ".db") + "-unpacked.db"
+	writeErr := writePhysicalFile(context.Background(), extracted, databaseReader, int64(databaseEntry.UncompressedSize64))
+	_ = databaseReader.Close()
+	_ = removePhysicalFile(zipPath)
+	if writeErr != nil {
+		_ = removePhysicalFile(extracted)
+		return nil, fmt.Errorf("unpack backup archive: %w", writeErr)
+	}
+	backup, err := Open(extracted, OpenOptions{VFS: vfs})
+	if err != nil {
+		_ = removePhysicalFile(extracted)
+		return nil, fmt.Errorf("open unpacked backup: %w", err)
+	}
+	if _, err := backup.ReadFile("state"); err != nil {
+		_ = backup.Close()
+		_ = removePhysicalFile(extracted)
+		return nil, errors.New("not a Spin database backup: it has no state")
+	}
+	return &StagedBackup{Path: extracted, Database: backup, MasterKey: strings.TrimSpace(string(keyBytes)), remove: removePhysicalFile}, nil
 }
 
 func (s *SQLite) RestoreFrom(ctx context.Context, backup *StagedBackup) error {
@@ -259,37 +393,6 @@ func (s *SQLite) backupTo(ctx context.Context, destination string, progress func
 			}
 		}
 	})
-}
-
-// Size is what the staged copy occupies on the volume.
-func (b *StagedBackup) Size(ctx context.Context) (int64, error) {
-	if b == nil || b.Database == nil {
-		return 0, errors.New("staged backup is closed")
-	}
-	usage, err := b.Database.Usage(ctx)
-	return usage.DatabaseBytes, err
-}
-
-// CleanTemporaryFiles removes staged backup and restore copies a previous
-// process left on the volume; each is as large as the database itself.
-func (s *SQLite) CleanTemporaryFiles() (int, error) {
-	directory := path.Dir(filepath.ToSlash(s.path))
-	base := path.Base(filepath.ToSlash(s.path))
-	names, err := listPhysicalDir(directory)
-	if err != nil {
-		return 0, err
-	}
-	removed := 0
-	for _, name := range names {
-		if !strings.HasPrefix(name, base+".backup-") && !strings.HasPrefix(name, base+".restore-") {
-			continue
-		}
-		if err := removePhysicalFile(path.Join(directory, name)); err != nil {
-			return removed, err
-		}
-		removed++
-	}
-	return removed, nil
 }
 
 func (s *SQLite) temporaryPath(kind string) string {

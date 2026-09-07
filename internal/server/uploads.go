@@ -173,6 +173,9 @@ func (s *Server) getUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) appendUpload(w http.ResponseWriter, r *http.Request) {
+	if s.pausedForBackup(w) {
+		return
+	}
 	upload, ok := s.uploadForRequest(w, r)
 	if !ok {
 		return
