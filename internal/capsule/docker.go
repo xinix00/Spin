@@ -465,11 +465,18 @@ if ! git ls-remote --exit-code --heads origin "$SPIN_GIT_TARGET" >/dev/null 2>&1
     git ls-remote --exit-code --heads origin "$SPIN_GIT_TARGET" >/dev/null
   fi
 fi
+# The agent must be able to see what the Job did before this phase and
+# where the Job will land: the base branch as a remote ref, and the Job
+# branch with its history since that base (falling back to a bounded depth
+# when the remote cannot exclude by ref). Both are shallow; nothing older
+# than the Job is pulled in.
+git fetch -q --depth=1 origin "+refs/heads/${SPIN_GIT_BOOTSTRAP}:refs/remotes/origin/${SPIN_GIT_BOOTSTRAP}" || true
+git fetch -q --shallow-exclude="$SPIN_GIT_BOOTSTRAP" origin "+refs/heads/${SPIN_GIT_BASE}:refs/remotes/origin/${SPIN_GIT_BASE}" 2>/dev/null \
+  || git fetch -q --depth=100 origin "+refs/heads/${SPIN_GIT_BASE}:refs/remotes/origin/${SPIN_GIT_BASE}"
 if git show-ref --verify --quiet "refs/heads/$SPIN_GIT_HEAD"; then
   git checkout -q "$SPIN_GIT_HEAD"
 else
-  git fetch --depth=1 origin "$SPIN_GIT_BASE"
-  git checkout -q -B "$SPIN_GIT_HEAD" FETCH_HEAD
+  git checkout -q -B "$SPIN_GIT_HEAD" "refs/remotes/origin/${SPIN_GIT_BASE}"
 fi
 git config spin.targetRef "$SPIN_GIT_TARGET"
 if ! git config --get spin.baseCommit >/dev/null 2>&1; then

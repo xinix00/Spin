@@ -561,6 +561,9 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 	var prompt strings.Builder
 	fmt.Fprintf(&prompt, "Je voert Spin workflowfase %q uit (poging %d).\n\nJOB\nNaam: %s\nGoal: %s\n\nINSTRUCTIES\n%s\n", phase.Name, run.Attempt, job.Title, job.Objective, phase.Instructions)
 	snapshot := s.store.Snapshot()
+	if sessionIndex := slices.IndexFunc(snapshot.Sessions, func(candidate domain.Session) bool { return candidate.ID == sessionID }); sessionIndex >= 0 && job.Branch != "" {
+		prompt.WriteString(workflowGitSection(job, snapshot.Sessions[sessionIndex]))
+	}
 	if job.ForkedFromJobID != "" {
 		sourceIndex := slices.IndexFunc(snapshot.Jobs, func(candidate domain.Job) bool { return candidate.ID == job.ForkedFromJobID })
 		if sourceIndex < 0 {
@@ -846,6 +849,25 @@ func workflowQuestionItems(arguments map[string]any) []domain.WorkflowQuestionIt
 		items = append(items, domain.WorkflowQuestionItem{Question: strings.TrimSpace(single)})
 	}
 	return items
+}
+
+// workflowGitSection tells the agent which branches exist and what each
+// one means, so it can look at what earlier phases of the Job did and knows
+// what its own work is measured against: the Job branch, not the base.
+func workflowGitSection(job domain.Job, session domain.Session) string {
+	base := strings.TrimSpace(job.BaseRef)
+	if base == "" {
+		base = "de basisbranch"
+	}
+	var section strings.Builder
+	section.WriteString("\nGIT\n")
+	fmt.Fprintf(&section, "Basisbranch: %s · waar deze Job uiteindelijk op landt; lokaal origin/%s.\n", base, base)
+	fmt.Fprintf(&section, "Job-branch: %s · het geaccepteerde werk van alle eerdere fases van deze Job; lokaal origin/%s. Elke fase komt hierop als één commit.\n", job.Branch, job.Branch)
+	fmt.Fprintf(&section, "Jouw branch: %s · HEAD in deze workspace, begonnen op de Job-branch.\n", session.GitRef)
+	fmt.Fprintf(&section, "Wat eerdere fases deden: git log --oneline origin/%s..origin/%s en git diff origin/%s origin/%s (twee refs, geen drie punten: de workspace is shallow).\n", base, job.Branch, base, job.Branch)
+	fmt.Fprintf(&section, "Jouw eigen werk in deze fase: git status en git diff origin/%s.\n", job.Branch)
+	section.WriteString("Meet de wijzigingen van deze Job altijd tegen de Job-branch en de basisbranch zoals hierboven; vergelijk niet met een andere branch.\n")
+	return section.String()
 }
 
 // workflowAnswersPrompt is what the agent reads when its ask comes back.

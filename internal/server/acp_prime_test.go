@@ -51,6 +51,11 @@ func TestFreshAgentSessionGetsThePhasePromptBeforeAnAnswer(t *testing.T) {
 	if !strings.Contains(primed, "Bouw het zonder zelf te committen") || !strings.HasSuffix(primed, "De gebruiker heeft je vragen beantwoord: ja.") || !strings.Contains(primed, "opnieuw gestart") {
 		t.Fatalf("resumed prompt = %q", primed)
 	}
+	// The agent is told which branches exist and what each one means.
+	job := st.Snapshot().Jobs[0]
+	if !strings.Contains(primed, "Job-branch: "+job.Branch) || !strings.Contains(primed, "Jouw branch: "+created.Session.GitRef) || !strings.Contains(primed, "Basisbranch: main") {
+		t.Fatalf("prompt lacks the Git section: %q", primed)
+	}
 	if again, _ := srv.primedPrompt(fresh, "en nog iets"); again != "en nog iets" {
 		t.Fatalf("second message was primed again: %q", again)
 	}
