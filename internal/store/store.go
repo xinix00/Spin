@@ -912,6 +912,11 @@ func (s *Store) Use(req domain.UseRequest) (domain.Composition, error) {
 			BaseRef: job.Branch, BootstrapRef: job.BaseRef, HeadRef: session.GitRef, TargetRef: job.Branch,
 			CredentialScope: credentialScope, Provider: provider,
 		}
+		if job.ForkedFromJobID != "" {
+			if source, ok := s.state.Jobs[job.ForkedFromJobID]; ok && strings.TrimSpace(source.Branch) != "" {
+				workspace.ContextRefs = []string{source.Branch}
+			}
+		}
 		if workspace.BootstrapRef == "" {
 			workspace.BootstrapRef = repository.DefaultRef
 		}
@@ -1792,8 +1797,11 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 		if strings.TrimSpace(source.Branch) == "" {
 			return domain.CreateJobResponse{}, fmt.Errorf("fork source Job has no remote branch: %w", ErrConflict)
 		}
+		// A fork continues the work but starts where the source started:
+		// on the base branch, so it lands there too. The source's own branch
+		// is closed and stays reachable as context, not as a base.
 		req.GitRepositoryID = source.GitRepositoryID
-		req.BaseRef = source.Branch
+		req.BaseRef = source.BaseRef
 		owner = operator
 	}
 	idempotencyKey := strings.TrimSpace(req.IdempotencyKey)

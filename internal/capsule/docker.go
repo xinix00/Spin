@@ -432,6 +432,7 @@ func (d *Docker) prepareGitWorkspace(ctx context.Context, composition domain.Com
 		"--env", "SPIN_GIT_BASE="+workspace.BaseRef,
 		"--env", "SPIN_GIT_BOOTSTRAP="+workspace.BootstrapRef,
 		"--env", "SPIN_GIT_HEAD="+workspace.HeadRef,
+		"--env", "SPIN_GIT_CONTEXT="+strings.Join(workspace.ContextRefs, " "),
 		"--env", "SPIN_GIT_TARGET="+workspace.TargetRef,
 		"--entrypoint", "sh",
 		selected.Snapshot.Ref, "-lc", gitWorkspaceScript,
@@ -477,6 +478,12 @@ fi
 git fetch -q --depth=1 origin "+refs/heads/${SPIN_GIT_BOOTSTRAP}:refs/remotes/origin/${SPIN_GIT_BOOTSTRAP}" || true
 git fetch -q --shallow-exclude="$SPIN_GIT_BOOTSTRAP" origin "+refs/heads/${SPIN_GIT_BASE}:refs/remotes/origin/${SPIN_GIT_BASE}" 2>/dev/null \
   || git fetch -q --depth=100 origin "+refs/heads/${SPIN_GIT_BASE}:refs/remotes/origin/${SPIN_GIT_BASE}"
+# Branches given as context (the Job this one continues) come along as
+# remote refs, with their commits since the base, read-only.
+for SPIN_CONTEXT_REF in ${SPIN_GIT_CONTEXT:-}; do
+  git fetch -q --shallow-exclude="$SPIN_GIT_BOOTSTRAP" origin "+refs/heads/${SPIN_CONTEXT_REF}:refs/remotes/origin/${SPIN_CONTEXT_REF}" 2>/dev/null \
+    || git fetch -q --depth=100 origin "+refs/heads/${SPIN_CONTEXT_REF}:refs/remotes/origin/${SPIN_CONTEXT_REF}" || true
+done
 if git show-ref --verify --quiet "refs/heads/$SPIN_GIT_HEAD"; then
   git checkout -q "$SPIN_GIT_HEAD"
 else

@@ -555,13 +555,16 @@ type ResolvedArtifact struct {
 // metadata is copied into a Composition; the server resolves the token just in
 // time for the short-lived checkout helper.
 type GitWorkspace struct {
-	RepositoryID    string          `json:"repository_id"`
-	RepositoryName  string          `json:"repository_name"`
-	RemoteURL       string          `json:"remote_url"`
-	BaseRef         string          `json:"base_ref"`
-	BootstrapRef    string          `json:"bootstrap_ref"`
-	HeadRef         string          `json:"head_ref"`
-	TargetRef       string          `json:"target_ref"`
+	RepositoryID   string `json:"repository_id"`
+	RepositoryName string `json:"repository_name"`
+	RemoteURL      string `json:"remote_url"`
+	BaseRef        string `json:"base_ref"`
+	BootstrapRef   string `json:"bootstrap_ref"`
+	HeadRef        string `json:"head_ref"`
+	TargetRef      string `json:"target_ref"`
+	// ContextRefs are branches fetched read-only next to the Job's own, such
+	// as the branch of the Job this one continues.
+	ContextRefs     []string        `json:"context_refs,omitempty"`
 	CredentialScope CredentialScope `json:"credential_scope"`
 	// AccountID is retained only for compositions persisted before scope resolution.
 	AccountID   string `json:"account_id,omitempty"`

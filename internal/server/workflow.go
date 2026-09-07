@@ -570,7 +570,13 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 	fmt.Fprintf(&prompt, "Je voert Spin workflowfase %q uit (poging %d).\n\nJOB\nNaam: %s\nGoal: %s\n\nINSTRUCTIES\n%s\n", phase.Name, run.Attempt, job.Title, job.Objective, phase.Instructions)
 	snapshot := s.store.Snapshot()
 	if sessionIndex := slices.IndexFunc(snapshot.Sessions, func(candidate domain.Session) bool { return candidate.ID == sessionID }); sessionIndex >= 0 && job.Branch != "" {
-		prompt.WriteString(workflowGitSection(job, snapshot.Sessions[sessionIndex]))
+		var source *domain.Job
+		if index := slices.IndexFunc(snapshot.Jobs, func(candidate domain.Job) bool {
+			return job.ForkedFromJobID != "" && candidate.ID == job.ForkedFromJobID
+		}); index >= 0 {
+			source = &snapshot.Jobs[index]
+		}
+		prompt.WriteString(workflowGitSection(job, snapshot.Sessions[sessionIndex], source))
 	}
 	if job.ForkedFromJobID != "" {
 		sourceIndex := slices.IndexFunc(snapshot.Jobs, func(candidate domain.Job) bool { return candidate.ID == job.ForkedFromJobID })
@@ -578,7 +584,7 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 			return "", fmt.Errorf("fork source Job %s is unavailable", job.ForkedFromJobID)
 		}
 		source := snapshot.Jobs[sourceIndex]
-		fmt.Fprintf(&prompt, "\nVERVOLGCONTEXT\nDeze Job is een vervolg op de afgesloten Job %q. Werk vanaf diens remote resultaatbranch %s.\nOorspronkelijke goal: %s\n", source.Title, source.Branch, source.Objective)
+		fmt.Fprintf(&prompt, "\nVERVOLGCONTEXT\nDeze Job is een vervolg op de afgesloten Job %q. Wat daar gemaakt is staat op branch %s (lokaal origin/%s); deze Job begint op de basisbranch en landt daar ook.\nOorspronkelijke goal: %s\n", source.Title, source.Branch, source.Branch, source.Objective)
 		if sourceAttachments := s.store.JobAttachments(source.ID); len(sourceAttachments) > 0 {
 			prompt.WriteString("Bijlagen uit die Job zijn opnieuw read-only beschikbaar:\n")
 			for _, attachment := range sourceAttachments {
@@ -862,7 +868,7 @@ func workflowQuestionItems(arguments map[string]any) []domain.WorkflowQuestionIt
 // workflowGitSection tells the agent which branches exist and what each
 // one means, so it can look at what earlier phases of the Job did and knows
 // what its own work is measured against: the Job branch, not the base.
-func workflowGitSection(job domain.Job, session domain.Session) string {
+func workflowGitSection(job domain.Job, session domain.Session, source *domain.Job) string {
 	base := strings.TrimSpace(job.BaseRef)
 	if base == "" {
 		base = "de basisbranch"
@@ -872,6 +878,9 @@ func workflowGitSection(job domain.Job, session domain.Session) string {
 	fmt.Fprintf(&section, "Basisbranch: %s · waar deze Job uiteindelijk op landt; lokaal origin/%s.\n", base, base)
 	fmt.Fprintf(&section, "Job-branch: %s · het geaccepteerde werk van alle eerdere fases van deze Job; lokaal origin/%s. Elke fase komt hierop als één commit.\n", job.Branch, job.Branch)
 	fmt.Fprintf(&section, "Jouw branch: %s · HEAD in deze workspace, begonnen op de Job-branch.\n", session.GitRef)
+	if source != nil && source.Branch != "" {
+		fmt.Fprintf(&section, "Vorige Job-branch: %s · het werk van de Job waar deze een vervolg op is; lokaal origin/%s, alleen ter inzage.\n", source.Branch, source.Branch)
+	}
 	return section.String()
 }
 

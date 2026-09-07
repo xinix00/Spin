@@ -664,7 +664,9 @@ func TestClosedJobForkStartsFromRemoteResultAndPreservesContextReference(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fork.Job.ForkedFromJobID != closed.ID || fork.Job.GitRepositoryID != repository.Repository.ID || fork.Job.BaseRef != closed.Branch || fork.Job.Owner != "john" {
+	// The fork starts on the base branch the source started on, never on
+	// the source's closed branch: it has to land where the source landed.
+	if fork.Job.ForkedFromJobID != closed.ID || fork.Job.GitRepositoryID != repository.Repository.ID || fork.Job.BaseRef != closed.BaseRef || fork.Job.BaseRef == closed.Branch || fork.Job.Owner != "john" {
 		t.Fatalf("fork did not inherit immutable source coordinates: source=%+v fork=%+v", closed, fork.Job)
 	}
 	if fork.Job.Branch == closed.Branch {
