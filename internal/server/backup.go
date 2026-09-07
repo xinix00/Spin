@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"easyacp/internal/domain"
@@ -111,15 +113,228 @@ func (p *restoreProgressWriter) fail(status int, err error) {
 	writeJSON(p.w, status, map[string]string{"error": err.Error()})
 }
 
-func (s *Server) downloadBackup(w http.ResponseWriter, r *http.Request) {
+// A backup is a job, not a request. Staging a copy of a multi-gigabyte
+// database takes minutes, which no proxy waits for, so POST /api/backup
+// starts it and answers at once, GET /api/backup/status follows the copy
+// and the check, and the download is a separate request for a file that is
+// ready, with its size known. One backup at a time; a ready file is kept
+// for half an hour.
+type backupJob struct {
+	mu        sync.Mutex
+	Status    string // running, ready, error
+	Stage     string // copy, verify, ready
+	Message   string
+	Current   int64
+	Total     int64
+	Size      int64
+	Filename  string
+	Error     string
+	StartedAt time.Time
+	ReadyAt   time.Time
+	ExpiresAt time.Time
+	staged    *persistence.StagedBackup
+	cancel    context.CancelFunc
+}
+
+type backupJobResponse struct {
+	Status    string     `json:"status"`
+	Stage     string     `json:"stage,omitempty"`
+	Message   string     `json:"message,omitempty"`
+	Current   int64      `json:"current,omitempty"`
+	Total     int64      `json:"total,omitempty"`
+	Size      int64      `json:"size,omitempty"`
+	Filename  string     `json:"filename,omitempty"`
+	Error     string     `json:"error,omitempty"`
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	ReadyAt   *time.Time `json:"ready_at,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+const backupKeepReady = 30 * time.Minute
+
+func (job *backupJob) response() backupJobResponse {
+	job.mu.Lock()
+	defer job.mu.Unlock()
+	response := backupJobResponse{Status: job.Status, Stage: job.Stage, Message: job.Message, Current: job.Current, Total: job.Total, Size: job.Size, Filename: job.Filename, Error: job.Error}
+	if !job.StartedAt.IsZero() {
+		startedAt := job.StartedAt
+		response.StartedAt = &startedAt
+	}
+	if !job.ReadyAt.IsZero() {
+		readyAt, expiresAt := job.ReadyAt, job.ExpiresAt
+		response.ReadyAt, response.ExpiresAt = &readyAt, &expiresAt
+	}
+	return response
+}
+
+func (job *backupJob) update(apply func(*backupJob)) {
+	job.mu.Lock()
+	apply(job)
+	job.mu.Unlock()
+}
+
+// currentBackup returns the running or ready job, dropping one that expired.
+func (s *Server) currentBackup() *backupJob {
+	s.backupMu.Lock()
+	defer s.backupMu.Unlock()
+	job := s.backupJob
+	if job == nil {
+		return nil
+	}
+	job.mu.Lock()
+	expired := job.Status != "running" && !job.ExpiresAt.After(time.Now())
+	staged := job.staged
+	job.mu.Unlock()
+	if expired {
+		if staged != nil {
+			_ = staged.Close()
+		}
+		s.backupJob = nil
+		return nil
+	}
+	return job
+}
+
+// startBackup begins staging a backup, or hands back the one under way.
+func (s *Server) startBackup() (*backupJob, error) {
+	if s.database == nil {
+		return nil, fmt.Errorf("SQLite backup is not configured: %w", store.ErrConflict)
+	}
+	if job := s.currentBackup(); job != nil {
+		job.mu.Lock()
+		running := job.Status == "running"
+		job.mu.Unlock()
+		if running {
+			return job, nil
+		}
+		if job.staged != nil {
+			_ = job.staged.Close()
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	job := &backupJob{Status: "running", Stage: "copy", Message: "Database kopiëren", StartedAt: time.Now().UTC(), cancel: cancel}
+	s.backupMu.Lock()
+	s.backupJob = job
+	s.backupMu.Unlock()
+	go s.runBackup(ctx, job)
+	return job, nil
+}
+
+func (s *Server) runBackup(ctx context.Context, job *backupJob) {
+	defer job.cancel()
+	fail := func(err error) {
+		s.logger.Warn("backup", "error", err)
+		job.update(func(job *backupJob) {
+			job.Status, job.Error, job.Message = "error", err.Error(), "Backup mislukt"
+			job.ExpiresAt = time.Now().Add(backupKeepReady)
+		})
+	}
+	portable, err := s.store.ExportPortableState()
+	if err != nil {
+		fail(err)
+		return
+	}
+	staged, err := s.database.PrepareBackupProgress(ctx, portable.MasterKey, func(copied, total int) {
+		job.update(func(job *backupJob) { job.Current, job.Total = int64(copied), int64(total) })
+	})
+	if err != nil {
+		fail(err)
+		return
+	}
+	job.update(func(job *backupJob) {
+		job.Stage, job.Message, job.Current, job.Total = "verify", "Kopie controleren", 0, 0
+	})
+	stateJSON, err := staged.Database.ReadFile("state")
+	if err != nil {
+		_ = staged.Close()
+		fail(fmt.Errorf("backup copy contains no state: %w", err))
+		return
+	}
+	inspection, err := s.store.InspectPortableState(stateJSON, portable.MasterKey)
+	if err != nil {
+		_ = staged.Close()
+		fail(err)
+		return
+	}
+	if err := verifyBackupObjects(ctx, staged.Database, inspection, func(_, message string, current, total int) {
+		job.update(func(job *backupJob) { job.Message, job.Current, job.Total = message, int64(current), int64(total) })
+	}); err != nil {
+		_ = staged.Close()
+		fail(err)
+		return
+	}
+	size, err := staged.Size(ctx)
+	if err != nil {
+		_ = staged.Close()
+		fail(err)
+		return
+	}
+	now := time.Now().UTC()
+	job.update(func(job *backupJob) {
+		job.Status, job.Stage, job.Message = "ready", "ready", "Backup staat klaar"
+		job.Size, job.Filename = size, "spin-backup-"+now.Format("20060102-150405Z")+".db"
+		job.ReadyAt, job.ExpiresAt = now, now.Add(backupKeepReady)
+		job.staged = staged
+		job.Current, job.Total = 0, 0
+	})
+}
+
+// verifyBackupObjects checks that every attachment and restorable snapshot
+// the state names is present in the copy, by its stored size: the copy is
+// SQLite's own, so reading gigabytes back would only prove what the page
+// checksums already did.
+func verifyBackupObjects(ctx context.Context, database *persistence.SQLite, inspection store.PortableStateInspection, report func(string, string, int, int)) error {
+	for index, attachment := range inspection.Attachments {
+		info, err := database.BlobInfo(ctx, "attachment:"+attachment.ID)
+		if err != nil || info.Size != attachment.Size {
+			return fmt.Errorf("backup is missing attachment %s: %w", attachment.Name, errors.Join(err, store.ErrConflict))
+		}
+		report("attachments", fmt.Sprintf("Bijlage %s gecontroleerd", attachment.Name), index+1, len(inspection.Attachments))
+	}
+	restorable := restorableArtifacts(inspection.Artifacts)
+	for index, artifact := range restorable {
+		if artifact.SnapshotPrunedAt != nil {
+			continue
+		}
+		if has, err := database.HasSnapshot(ctx, artifact.Snapshot); err != nil || !has {
+			return fmt.Errorf("backup Docker snapshot %s:%s (%s) is missing: %w", artifact.Kind, artifact.Name, artifact.Snapshot.Digest, errors.Join(err, store.ErrConflict))
+		}
+		report("snapshots", fmt.Sprintf("Docker-laag %s:%s gecontroleerd", artifact.Kind, artifact.Name), index+1, len(restorable))
+	}
+	return nil
+}
+
+func (s *Server) startBackupHandler(w http.ResponseWriter, r *http.Request) {
 	if !s.requireBackupAdmin(w, r) {
 		return
 	}
-	s.writeBackup(w, r)
+	job, err := s.startBackup()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, job.response())
+}
+
+func (s *Server) backupStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if !s.requireBackupAdmin(w, r) {
+		return
+	}
+	job := s.currentBackup()
+	if job == nil {
+		writeJSON(w, http.StatusOK, backupJobResponse{Status: "none"})
+		return
+	}
+	writeJSON(w, http.StatusOK, job.response())
 }
 
 func (s *Server) createBackupTicket(w http.ResponseWriter, r *http.Request) {
 	if !s.requireBackupAdmin(w, r) {
+		return
+	}
+	job := s.currentBackup()
+	if job == nil || job.response().Status != "ready" {
+		writeError(w, fmt.Errorf("no backup is ready to download; start one first: %w", store.ErrConflict))
 		return
 	}
 	token, err := randomOAuthValue(32)
@@ -145,6 +360,8 @@ func (s *Server) createBackupTicket(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"url": "/api/backup?ticket=" + token})
 }
 
+// downloadBackupWithTicket streams the ready file. A ticket is single use
+// and short-lived because the URL is what a browser download can carry.
 func (s *Server) downloadBackupWithTicket(w http.ResponseWriter, r *http.Request) {
 	if !s.requireBackupAdmin(w, r) {
 		return
@@ -159,47 +376,23 @@ func (s *Server) downloadBackupWithTicket(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "backup download ticket is invalid or expired"})
 		return
 	}
-	s.writeBackup(w, r)
-}
-
-func (s *Server) writeBackup(w http.ResponseWriter, r *http.Request) {
-	if s.database == nil {
-		writeError(w, fmt.Errorf("SQLite backup is not configured: %w", store.ErrConflict))
+	job := s.currentBackup()
+	if job == nil {
+		writeError(w, fmt.Errorf("the backup expired; start a new one: %w", store.ErrConflict))
 		return
 	}
-	s.backupMu.Lock()
-	defer s.backupMu.Unlock()
-
-	portable, err := s.store.ExportPortableState()
-	if err != nil {
-		writeError(w, err)
+	job.mu.Lock()
+	staged, size, filename, ready := job.staged, job.Size, job.Filename, job.Status == "ready"
+	job.mu.Unlock()
+	if !ready || staged == nil {
+		writeError(w, fmt.Errorf("no backup is ready to download: %w", store.ErrConflict))
 		return
 	}
-	backup, err := s.database.PrepareBackup(r.Context(), portable.MasterKey)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	defer backup.Close()
-	stateJSON, err := backup.Database.ReadFile("state")
-	if err != nil {
-		writeError(w, fmt.Errorf("backup copy contains no state: %w", err))
-		return
-	}
-	inspection, err := s.store.InspectPortableState(stateJSON, portable.MasterKey)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := validateDatabaseObjects(r.Context(), backup.Database, inspection); err != nil {
-		writeError(w, err)
-		return
-	}
-	filename := "spin-backup-" + time.Now().UTC().Format("20060102-150405Z") + ".db"
 	w.Header().Set("Content-Type", "application/vnd.sqlite3")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	w.Header().Set("X-Spin-Backup-Contains-Secrets", "true")
-	if err := backup.WriteTo(r.Context(), w); err != nil {
+	if err := staged.WriteTo(r.Context(), w); err != nil {
 		s.logger.Warn("stream SQLite backup", "error", err)
 	}
 }

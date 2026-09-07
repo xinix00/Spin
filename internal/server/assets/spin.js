@@ -1033,7 +1033,7 @@ function renderRunners(){
 
 function renderAccess(){
   const admin=authState.user?.role==='admin',form=region('user-form'),button=document.getElementById('open-user-dialog'),root=document.getElementById('user-list');
-  form.hidden=!admin;button.hidden=!admin;document.getElementById('backup-panel').hidden=!admin;
+  form.hidden=!admin;button.hidden=!admin;document.getElementById('backup-panel').hidden=!admin;if(admin&&!backupPolling)followBackup();
   root.innerHTML=snapshot.users.length?snapshot.users.map(user=>{const archived=Boolean(user.archived_at),self=user.id===authState.user?.id,action=admin?`${archived?'':`<button class="small-button" data-password-user="${esc(user.id)}" data-user-label="${esc(user.display_name||user.username)}" title="Nieuw tijdelijk wachtwoord geven">${icon('key')}Wachtwoord</button>`}${self?'':archived?`<button class="small-button" data-restore-user="${esc(user.id)}">${icon('restore')}Herstel</button>`:`<button class="danger" data-archive-user="${esc(user.id)}">${icon('archive')}Archiveer</button>`}`:'';return `<article class="mcp-card ${archived?'archived':''}"><div><div class="artifact-title"><strong>${esc(user.display_name||user.username)}</strong><span class="tag ${user.role==='admin'?'secret':''}">${esc(user.role)}</span>${self?'<span class="tag capability">you</span>':''}${archived?'<span class="tag warning">gearchiveerd</span>':''}</div><small>@${esc(user.username)} · created ${esc(new Date(user.created_at).toLocaleDateString())}${archived?` · archived ${esc(formatDateTime(user.archived_at))}`:''}</small></div><div class="panel-actions">${action}</div></article>`;}).join(''):'<div class="empty">Nog geen gebruikers.</div>';
   root.querySelectorAll('[data-archive-user]').forEach(button=>button.onclick=()=>setUserArchived(button.dataset.archiveUser,true));
   root.querySelectorAll('[data-restore-user]').forEach(button=>button.onclick=()=>setUserArchived(button.dataset.restoreUser,false));
@@ -1048,12 +1048,43 @@ async function backupResponse(path,options={}){
   if(!response.ok){const body=await response.json().catch(()=>({error:response.statusText}));const error=new Error(body.error||response.statusText);error.status=response.status;throw error;}
   return response;
 }
-async function downloadPortableBackup(){
-  const button=document.getElementById('download-backup'),label=button.innerHTML;button.disabled=true;button.innerHTML=`${icon('progress_activity')}Backup maken…`;
-  try{const response=await backupResponse('/api/backup-ticket',{method:'POST'}),result=await response.json(),link=document.createElement('a');link.href=result.url;link.download='';document.body.appendChild(link);link.click();link.remove();showNotice('SQLite-backup gestart · de server streamt state, secrets, bijlagen en opgenomen Docker-lagen rechtstreeks naar schijf.');}catch(error){showError(error);}finally{button.disabled=false;button.innerHTML=label;}
+// A backup is staged on the server first (a copy of the whole database,
+// minutes for a large one), then downloaded as a ready file with a known
+// size. The button follows: start, progress, download.
+let backupPolling=false;
+function backupProgressText(job){
+  if(job.stage==='copy')return `Database kopiëren${job.total?` · ${Math.floor(job.current/job.total*100)}%`:''}`;
+  if(job.stage==='verify')return `Kopie controleren${job.total?` · ${job.current}/${job.total}`:''}${job.message?` · ${job.message}`:''}`;
+  return job.message||'Backup voorbereiden';
 }
-function updateRestoreProgress(label,detail='',percentage=null,error=false){
-  const root=document.getElementById('restore-progress'),track=document.getElementById('restore-progress-track'),fill=document.getElementById('restore-progress-fill');root.hidden=false;root.classList.toggle('error',error);document.getElementById('restore-progress-label').textContent=label;document.getElementById('restore-progress-detail').textContent=detail;track.classList.toggle('indeterminate',percentage==null);if(percentage!=null)fill.style.width=`${Math.max(0,Math.min(100,percentage))}%`;
+function renderBackupJob(job){
+  const button=document.getElementById('download-backup');
+  if(!job||job.status==='none'){button.disabled=false;button.innerHTML=`${icon('download')}Backup`;updateRestoreProgress('',null,null,false,true);return;}
+  if(job.status==='running'){button.disabled=true;button.innerHTML=`${icon('progress_activity')}Backup maken…`;updateRestoreProgress('Backup maken',backupProgressText(job),job.stage==='copy'&&job.total?Math.floor(job.current/job.total*100):null);return;}
+  if(job.status==='error'){button.disabled=false;button.innerHTML=`${icon('download')}Backup`;updateRestoreProgress('Backup mislukt',job.error||'',100,true);return;}
+  button.disabled=false;button.innerHTML=`${icon('download')}Download backup · ${formatBytes(job.size||0)}`;updateRestoreProgress('Backup staat klaar',`${formatBytes(job.size||0)} · te downloaden tot ${new Date(job.expires_at).toLocaleTimeString('nl-NL')}`,100);
+}
+async function followBackup(){
+  if(backupPolling)return;backupPolling=true;
+  try{for(let failures=0;;){
+    let job;try{job=await (await backupResponse('/api/backup/status')).json();failures=0;}catch(error){if(++failures>=8){renderBackupJob({status:'error',error:error.message||String(error)});return;}await new Promise(resolve=>setTimeout(resolve,1500));continue;}
+    renderBackupJob(job);if(job.status!=='running')return;
+    await new Promise(resolve=>setTimeout(resolve,1500));
+  }}finally{backupPolling=false;}
+}
+async function downloadPortableBackup(){
+  const button=document.getElementById('download-backup');
+  try{
+    let job=await (await backupResponse('/api/backup/status')).json();
+    if(job.status==='ready'){
+      const ticket=await (await backupResponse('/api/backup-ticket',{method:'POST'})).json(),link=document.createElement('a');link.href=ticket.url;link.download='';document.body.appendChild(link);link.click();link.remove();
+      showNotice('Download gestart · de browser toont de voortgang van het bestand.');return;
+    }
+    button.disabled=true;job=await (await backupResponse('/api/backup',{method:'POST'})).json();renderBackupJob(job);followBackup();
+  }catch(error){showError(error);button.disabled=false;}
+}
+function updateRestoreProgress(label,detail='',percentage=null,error=false,hide=false){
+  const root=document.getElementById('restore-progress'),track=document.getElementById('restore-progress-track'),fill=document.getElementById('restore-progress-fill');root.hidden=hide;if(hide)return;root.classList.toggle('error',error);document.getElementById('restore-progress-label').textContent=label;document.getElementById('restore-progress-detail').textContent=detail;track.classList.toggle('indeterminate',percentage==null);if(percentage!=null)fill.style.width=`${Math.max(0,Math.min(100,percentage))}%`;
 }
 function updateRestoreStage(stage,message,current=0,total=0){
   const names={open:'Database openen',state:'State controleren',attachments:'Bijlagen controleren',snapshots:'Docker-lagen controleren',rollback:'Rollbackpunt maken',install:'Database activeren',secrets:'Credentials beveiligen',runners:'Runners opnieuw aanmelden'},percentage=total?current/total*100:null,detail=total?`${current}/${total}`:'';updateRestoreProgress(names[stage]||'Restore uitvoeren',message+(detail?` · ${detail}`:''),percentage);

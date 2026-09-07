@@ -85,3 +85,19 @@ func (s *Server) storageHandler(w http.ResponseWriter, r *http.Request) {
 func snapshotShippable(artifact domain.Artifact) bool {
 	return artifact.SnapshotPrunedAt == nil
 }
+
+// cleanTemporaryFiles removes staged backup and restore copies a previous
+// process left behind; each one is as large as the database.
+func (s *Server) cleanTemporaryFiles() {
+	if s.database == nil {
+		return
+	}
+	removed, err := s.database.CleanTemporaryFiles()
+	if err != nil {
+		s.logger.Warn("clean temporary database copies", "error", err)
+		return
+	}
+	if removed > 0 {
+		s.logger.Info("removed leftover database copies", "count", removed)
+	}
+}

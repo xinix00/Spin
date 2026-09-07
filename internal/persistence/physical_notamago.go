@@ -76,3 +76,16 @@ func (r *contextReader) Read(target []byte) (int, error) {
 		return r.reader.Read(target)
 	}
 }
+
+// listPhysicalDir names the entries of a directory.
+func listPhysicalDir(directory string) ([]string, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names, nil
+}

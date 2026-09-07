@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"path"
+	"path/filepath"
 	"strings"
 
 	sqliteDriver "github.com/ncruces/go-sqlite3/driver"
@@ -104,8 +106,14 @@ func (s *SQLite) WriteBackup(ctx context.Context, destination io.Writer, masterK
 // portable key only to that copy. Callers can inspect every referenced object
 // in the frozen copy before streaming it to a user.
 func (s *SQLite) PrepareBackup(ctx context.Context, masterKey string) (*StagedBackup, error) {
+	return s.PrepareBackupProgress(ctx, masterKey, nil)
+}
+
+// PrepareBackupProgress is PrepareBackup that reports the pages copied so a
+// person can watch a large database being staged.
+func (s *SQLite) PrepareBackupProgress(ctx context.Context, masterKey string, progress func(copied, total int)) (*StagedBackup, error) {
 	temporary := s.temporaryPath("backup")
-	if err := s.backupTo(ctx, temporary); err != nil {
+	if err := s.backupTo(ctx, temporary, progress); err != nil {
 		_ = removePhysicalFile(temporary)
 		return nil, err
 	}
@@ -208,14 +216,16 @@ func (s *SQLite) RestoreFrom(ctx context.Context, backup *StagedBackup) error {
 
 func (s *SQLite) RollbackPoint(ctx context.Context) (*StagedBackup, error) {
 	temporary := s.temporaryPath("rollback")
-	if err := s.backupTo(ctx, temporary); err != nil {
+	if err := s.backupTo(ctx, temporary, nil); err != nil {
 		_ = removePhysicalFile(temporary)
 		return nil, err
 	}
 	return &StagedBackup{Path: temporary, remove: removePhysicalFile}, nil
 }
 
-func (s *SQLite) backupTo(ctx context.Context, destination string) error {
+// backupTo copies the database with SQLite's online backup API, in steps of
+// pages so the copy can be cancelled and its progress reported.
+func (s *SQLite) backupTo(ctx context.Context, destination string, progress func(copied, total int)) error {
 	connection, err := s.db.Conn(ctx)
 	if err != nil {
 		return err
@@ -226,8 +236,60 @@ func (s *SQLite) backupTo(ctx context.Context, destination string) error {
 		if !ok {
 			return errors.New("unexpected SQLite driver connection")
 		}
-		return conn.Raw().Backup("main", physicalURI(destination, s.vfs))
+		backup, err := conn.Raw().BackupInit("main", physicalURI(destination, s.vfs))
+		if err != nil {
+			return err
+		}
+		for {
+			if err := ctx.Err(); err != nil {
+				_ = backup.Close()
+				return err
+			}
+			done, err := backup.Step(256)
+			if err != nil {
+				_ = backup.Close()
+				return err
+			}
+			if progress != nil {
+				total := backup.PageCount()
+				progress(total-backup.Remaining(), total)
+			}
+			if done {
+				return backup.Close()
+			}
+		}
 	})
+}
+
+// Size is what the staged copy occupies on the volume.
+func (b *StagedBackup) Size(ctx context.Context) (int64, error) {
+	if b == nil || b.Database == nil {
+		return 0, errors.New("staged backup is closed")
+	}
+	usage, err := b.Database.Usage(ctx)
+	return usage.DatabaseBytes, err
+}
+
+// CleanTemporaryFiles removes staged backup and restore copies a previous
+// process left on the volume; each is as large as the database itself.
+func (s *SQLite) CleanTemporaryFiles() (int, error) {
+	directory := path.Dir(filepath.ToSlash(s.path))
+	base := path.Base(filepath.ToSlash(s.path))
+	names, err := listPhysicalDir(directory)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, name := range names {
+		if !strings.HasPrefix(name, base+".backup-") && !strings.HasPrefix(name, base+".restore-") {
+			continue
+		}
+		if err := removePhysicalFile(path.Join(directory, name)); err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 func (s *SQLite) temporaryPath(kind string) string {

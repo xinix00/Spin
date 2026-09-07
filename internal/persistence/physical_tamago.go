@@ -132,3 +132,19 @@ func removePhysicalFile(path string) error {
 	}
 	return err
 }
+
+// listPhysicalDir names the entries of a directory on the HopOS volume; a
+// directory entry ends in "/".
+func listPhysicalDir(directory string) ([]string, error) {
+	if physicalHopApp == nil {
+		return nil, errors.New("HopOS volume is not available")
+	}
+	names, err := physicalHopApp.List(directory)
+	if err != nil {
+		return nil, err
+	}
+	for index, name := range names {
+		names[index] = strings.TrimSuffix(name, "/")
+	}
+	return names, nil
+}
