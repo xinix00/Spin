@@ -432,7 +432,8 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 		operator = session.Operator
 	}
 	_, _, _, phase, _, _, phaseErr := s.store.WorkflowForSession(session.ID)
-	if phaseErr == nil && phase.Executor == domain.WorkflowExecutorAction {
+	mergeFinalizer := phaseErr == nil && phase.Executor == domain.WorkflowExecutorAction && phase.Action != nil && phase.Action.Type == domain.WorkflowActionGitMerge
+	if phaseErr == nil && phase.Executor == domain.WorkflowExecutorAction && !mergeFinalizer {
 		s.retireWorkflowCompositions(session.JobID, session.ID)
 		s.launchWorkflowAction(ctx, session.ID)
 		return
@@ -473,6 +474,13 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 	if phaseErr == nil && phase.Executor == domain.WorkflowExecutorExpose {
 		s.launchWorkflowExpose(session, operator)
 		s.retireWorkflowCompositions(session.JobID, session.ID)
+		return
+	}
+	if mergeFinalizer {
+		// The workspace is up with the Job's environment; merge from there and
+		// let the workspace go with the Job.
+		s.launchWorkflowMerge(session, operator)
+		s.retireWorkflowCompositions(session.JobID, "")
 		return
 	}
 	// From here the phase is "running"; if the agent cannot be started after

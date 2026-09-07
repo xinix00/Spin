@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
 )
 
@@ -54,6 +55,84 @@ func (s *Server) launchWorkflowAction(ctx context.Context, sessionID string) {
 		return
 	}
 	s.finishWorkflowAction(sessionID, "accept", result.Detail)
+}
+
+// launchWorkflowMerge finalizes a Job by merging its branch into the base
+// branch from the phase's workspace, with the operator's Git identity. A
+// merge that fails leaves the decision to a person, like a failed pull
+// request does.
+func (s *Server) launchWorkflowMerge(session domain.Session, operator string) {
+	job, _, _, _, _, _, err := s.store.WorkflowForSession(session.ID)
+	if err != nil {
+		s.logger.Warn("load merge phase", "session", session.ID, "error", err)
+		return
+	}
+	_, composition, err := s.sessionComposition(session.ID, operator)
+	if err != nil || composition.Runtime == nil {
+		s.finishWorkflowAction(session.ID, "reject", "de workspace voor het mergen is er niet: "+fmt.Sprint(err))
+		return
+	}
+	merger, ok := s.engine.(capsule.WorkspaceMerger)
+	if !ok {
+		s.finishWorkflowAction(session.ID, "reject", "de capsule engine kan geen branches mergen")
+		return
+	}
+	authentication := &capsule.GitAuthentication{}
+	if account, authenticated, accountErr := s.gitAccountForWorkspace(context.Background(), composition.Git, composition.Operator); accountErr != nil {
+		s.finishWorkflowAction(session.ID, "reject", "Git-account voor het mergen: "+accountErr.Error())
+		return
+	} else if authenticated {
+		username := account.Login
+		if account.Provider == "gitlab" {
+			username = "oauth2"
+		}
+		authentication = &capsule.GitAuthentication{Username: username, Password: account.AccessToken, AuthorName: account.Name, AuthorEmail: account.Email}
+	} else if composition.Git != nil {
+		authentication.AuthorName, authentication.AuthorEmail = composition.Git.AuthorName, composition.Git.AuthorEmail
+	}
+	target := strings.TrimSpace(job.BaseRef)
+	if target == "" {
+		s.finishWorkflowAction(session.ID, "reject", "de Job heeft geen basisbranch om in te mergen")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	result, err := merger.MergeWorkspace(ctx, *composition.Runtime, capsule.WorkspaceMerge{
+		SourceRef: job.Branch, TargetRef: target,
+		CommitSubject:  fmt.Sprintf("Merge %s: %s", job.Branch, job.Title),
+		CommitBody:     fmt.Sprintf("%s\n\nSpin-Job: %s\nSpin-Merged-By: spin", strings.TrimSpace(job.Objective), job.ID),
+		Authentication: authentication,
+	})
+	if err != nil {
+		s.finishWorkflowAction(session.ID, "reject", err.Error())
+		return
+	}
+	how := "merge-commit"
+	if result.FastForward {
+		how = "fast-forward"
+	}
+	detail := fmt.Sprintf("%s gemerged in %s (%s, %s)", job.Branch, target, how, result.Head)
+	if _, err := s.store.SetWorkflowActionResult(session.ID, domain.WorkflowActionResult{Type: domain.WorkflowActionGitMerge, ExternalID: result.Head, URL: commitURL(job.GitRemoteURL, job.GitProvider, result.Head), Detail: detail, CreatedAt: time.Now().UTC()}); err != nil {
+		s.finishWorkflowAction(session.ID, "reject", "merge slaagde maar het resultaat kon niet worden opgeslagen: "+err.Error())
+		return
+	}
+	s.finishWorkflowAction(session.ID, "accept", detail)
+}
+
+// commitURL is where a person can look at a commit on the remote, for the
+// providers whose layout is known; empty otherwise.
+func commitURL(remoteURL, provider, sha string) string {
+	base := strings.TrimSuffix(strings.TrimSpace(remoteURL), ".git")
+	if base == "" || sha == "" || !strings.HasPrefix(base, "https://") {
+		return ""
+	}
+	switch strings.ToLower(provider) {
+	case "github":
+		return base + "/commit/" + sha
+	case "gitlab":
+		return base + "/-/commit/" + sha
+	}
+	return ""
 }
 
 func (s *Server) finishWorkflowAction(sessionID, outcome, detail string) {

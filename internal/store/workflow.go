@@ -13,6 +13,7 @@ const maxDeliverableBytes = 2 << 20
 
 func (s *Store) CreateWorkflowTemplate(req domain.CreateWorkflowTemplateRequest) (domain.WorkflowTemplate, error) {
 	operator, name, description, phases, err := normalizeWorkflowTemplateRequest(req)
+	finalize, _ := normalizeWorkflowFinalize(req.Finalize)
 	if err != nil {
 		return domain.WorkflowTemplate{}, err
 	}
@@ -23,7 +24,7 @@ func (s *Store) CreateWorkflowTemplate(req domain.CreateWorkflowTemplateRequest)
 	now := time.Now().UTC()
 	template := domain.WorkflowTemplate{
 		ID: newID("tpl"), Revision: 1, Name: name, Description: description, CreatedBy: operator,
-		GitSelector: gitSelector, Phases: phases, CreatedAt: now, UpdatedAt: now,
+		GitSelector: gitSelector, Finalize: finalize, Phases: phases, CreatedAt: now, UpdatedAt: now,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -52,7 +53,7 @@ func normalizeWorkflowTemplateRequest(req domain.CreateWorkflowTemplateRequest) 
 	inputs := make([]domain.WorkflowPhase, 0, len(req.Phases))
 	for _, input := range req.Phases {
 		if input.Executor == domain.WorkflowExecutorAction || input.Action != nil {
-			if input.Action != nil && strings.EqualFold(strings.TrimSpace(input.Action.Type), domain.WorkflowActionGitPullRequest) {
+			if input.Action != nil && isWorkflowFinalizerAction(input.Action.Type) {
 				// The PR finalizer is control-plane policy, not editable Template
 				// input. Accept echoed Templates by dropping the generated phase.
 				continue
@@ -179,8 +180,38 @@ func normalizeWorkflowTemplateRequest(req domain.CreateWorkflowTemplateRequest) 
 			}
 		}
 	}
-	phases = append(phases, workflowPullRequestPhase())
+	finalize, err := normalizeWorkflowFinalize(req.Finalize)
+	if err != nil {
+		return "", "", "", nil, err
+	}
+	phases = append(phases, workflowFinalizerPhase(finalize))
 	return operator, name, strings.TrimSpace(req.Description), phases, nil
+}
+
+func isWorkflowFinalizerAction(actionType string) bool {
+	actionType = strings.ToLower(strings.TrimSpace(actionType))
+	return actionType == domain.WorkflowActionGitPullRequest || actionType == domain.WorkflowActionGitMerge
+}
+
+func normalizeWorkflowFinalize(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", domain.WorkflowFinalizePullRequest:
+		return domain.WorkflowFinalizePullRequest, nil
+	case domain.WorkflowFinalizeMerge:
+		return domain.WorkflowFinalizeMerge, nil
+	}
+	return "", fmt.Errorf("finalize must be %s or %s: %w", domain.WorkflowFinalizePullRequest, domain.WorkflowFinalizeMerge, ErrConflict)
+}
+
+// workflowFinalizerPhase is the generated last phase: a pull request on the
+// remote, or Spin merging the Job branch into the base branch itself.
+func workflowFinalizerPhase(finalize string) domain.WorkflowPhase {
+	phase := workflowPullRequestPhase()
+	if finalize == domain.WorkflowFinalizeMerge {
+		phase.Name = "Mergen"
+		phase.Action = &domain.WorkflowAction{Type: domain.WorkflowActionGitMerge}
+	}
+	return phase
 }
 
 func workflowPullRequestTarget(target string) string {
@@ -206,7 +237,7 @@ func workflowPullRequestPhase() domain.WorkflowPhase {
 func ensureWorkflowPullRequestFinalizer(template domain.WorkflowTemplate) (domain.WorkflowTemplate, bool) {
 	finalizerIndex := -1
 	for index, phase := range template.Phases {
-		if phase.Executor == domain.WorkflowExecutorAction && phase.Action != nil && phase.Action.Type == domain.WorkflowActionGitPullRequest {
+		if phase.Executor == domain.WorkflowExecutorAction && phase.Action != nil && isWorkflowFinalizerAction(phase.Action.Type) {
 			finalizerIndex = index
 			break
 		}
@@ -286,6 +317,7 @@ func (s *Store) backfillWorkflowPullRequestsLocked() {
 
 func (s *Store) UpdateWorkflowTemplate(templateID string, req domain.CreateWorkflowTemplateRequest) (domain.WorkflowTemplate, error) {
 	operator, name, description, phases, err := normalizeWorkflowTemplateRequest(req)
+	finalize, _ := normalizeWorkflowFinalize(req.Finalize)
 	if err != nil {
 		return domain.WorkflowTemplate{}, err
 	}
@@ -319,6 +351,7 @@ func (s *Store) UpdateWorkflowTemplate(templateID string, req domain.CreateWorkf
 	template.Name = name
 	template.Description = description
 	template.GitSelector = gitSelector
+	template.Finalize = finalize
 	template.Phases = phases
 	template.Revision++
 	if template.Revision < 1 {
@@ -639,7 +672,9 @@ func (s *Store) SetWorkflowActionResult(sessionID string, result domain.Workflow
 	result.ExternalID = strings.TrimSpace(result.ExternalID)
 	result.URL = strings.TrimSpace(result.URL)
 	result.Detail = strings.TrimSpace(result.Detail)
-	if result.Type != phase.Action.Type || result.URL == "" {
+	// A pull request is its URL; a merge is a commit, which has a URL only
+	// on providers whose layout is known.
+	if result.Type != phase.Action.Type || (result.URL == "" && result.Type != domain.WorkflowActionGitMerge) {
 		return domain.PhaseRun{}, fmt.Errorf("action type and result URL are required: %w", ErrConflict)
 	}
 	if result.CreatedAt.IsZero() {
@@ -1400,7 +1435,9 @@ func (s *Store) newWorkflowSessionLocked(job *domain.Job, template domain.Workfl
 	}
 	environmentSelector, withSelectors := workflowPhaseEnvironment(phase, job.EnvironmentSelector, job.WithSelectors)
 	_, tool, _ := parseArtifactSelector(environmentSelector)
-	if phase.Executor == domain.WorkflowExecutorAction {
+	// A pull request is control-plane API work and needs no workspace; a
+	// merge runs git in a workspace of the Job's environment.
+	if phase.Executor == domain.WorkflowExecutorAction && (phase.Action == nil || phase.Action.Type != domain.WorkflowActionGitMerge) {
 		environmentSelector, withSelectors, tool = "", nil, ""
 	}
 	namespace := strings.TrimSuffix(job.Branch, "/main")

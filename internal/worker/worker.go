@@ -519,6 +519,17 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		w.bindStream(request.ID, localStream{process: process})
 		go w.pumpStream(request.ID, process)
 		return streamResponse{StreamID: request.ID}, true, nil
+	case methodMergeWorkspace:
+		var payload mergePayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		merger, ok := w.engine.(capsule.WorkspaceMerger)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot merge workspaces")
+		}
+		result, err := merger.MergeWorkspace(ctx, payload.Runtime, payload.Merge)
+		return result, false, err
 	case methodStartApp, methodStopApp, methodAppStatus, methodAppLogs:
 		var payload appPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {

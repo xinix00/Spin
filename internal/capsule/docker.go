@@ -1146,6 +1146,96 @@ fi
 printf 'SPIN_ACCEPT committed=%s head=%s\n' "$SPIN_COMMITTED" "$SPIN_PUBLISH"
 unset SPIN_GIT_PASSWORD`
 
+// MergeWorkspace lands the Job: the Job branch merged into the base branch
+// and pushed, verified by a fresh remote lookup. Fast-forward when possible,
+// a merge commit otherwise; a base that cannot be merged cleanly fails and
+// leaves the remote untouched.
+func (d *Docker) MergeWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, merge WorkspaceMerge) (WorkspaceMergeResult, error) {
+	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
+		return WorkspaceMergeResult{}, errors.New("composition has no live Docker capsule")
+	}
+	if !validGitRef(merge.SourceRef) || !validGitRef(merge.TargetRef) {
+		return WorkspaceMergeResult{}, fmt.Errorf("invalid Git refs %q → %q", merge.SourceRef, merge.TargetRef)
+	}
+	subject := strings.TrimSpace(merge.CommitSubject)
+	if subject == "" || len(subject) > 200 || len(merge.CommitBody) > 4000 {
+		return WorkspaceMergeResult{}, errors.New("merge commit subject must contain 1 to 200 characters and body at most 4000 characters")
+	}
+	authentication := merge.Authentication
+	if authentication == nil {
+		authentication = &GitAuthentication{}
+	}
+	authorName := strings.TrimSpace(authentication.AuthorName)
+	if authorName == "" {
+		authorName = "Spin"
+	}
+	authorEmail := strings.TrimSpace(authentication.AuthorEmail)
+	if authorEmail == "" {
+		authorEmail = "spin@local.invalid"
+	}
+	secretInput := []byte(strings.Join([]string{
+		singleLine(authentication.Username),
+		singleLine(authentication.Password),
+		singleLine(authorName),
+		singleLine(authorEmail),
+	}, "\n") + "\n")
+	output, err := d.controlInput(ctx, secretInput,
+		"exec", "-i", "-w", "/workspace",
+		"-e", "GIT_TERMINAL_PROMPT=0",
+		"-e", "SPIN_MERGE_SOURCE="+merge.SourceRef,
+		"-e", "SPIN_MERGE_TARGET="+merge.TargetRef,
+		"-e", "SPIN_COMMIT_SUBJECT="+subject,
+		"-e", "SPIN_COMMIT_BODY="+strings.TrimSpace(merge.CommitBody),
+		runtime.ContainerID, "sh", "-lc", mergeWorkspaceScript,
+	)
+	if err != nil {
+		return WorkspaceMergeResult{}, err
+	}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) != 3 || fields[0] != "SPIN_MERGE" {
+			continue
+		}
+		return WorkspaceMergeResult{FastForward: strings.TrimPrefix(fields[1], "ff=") == "1", Head: strings.TrimPrefix(fields[2], "head=")}, nil
+	}
+	return WorkspaceMergeResult{}, fmt.Errorf("merge did not report a result: %s", strings.TrimSpace(output))
+}
+
+const mergeWorkspaceScript = gitCredentialEnvironmentScript + `
+set -e
+IFS= read -r SPIN_GIT_USERNAME || true
+IFS= read -r SPIN_GIT_PASSWORD || true
+IFS= read -r SPIN_GIT_AUTHOR_NAME || true
+IFS= read -r SPIN_GIT_AUTHOR_EMAIL || true
+if [ -n "$SPIN_GIT_PASSWORD" ]; then
+  export GIT_CONFIG_COUNT=1
+fi
+git fetch -q --depth=200 origin "+refs/heads/${SPIN_MERGE_TARGET}:refs/remotes/origin/${SPIN_MERGE_TARGET}"
+git fetch -q --depth=200 origin "+refs/heads/${SPIN_MERGE_SOURCE}:refs/remotes/origin/${SPIN_MERGE_SOURCE}"
+SPIN_SOURCE="$(git rev-parse "refs/remotes/origin/${SPIN_MERGE_SOURCE}")"
+SPIN_TARGET="$(git rev-parse "refs/remotes/origin/${SPIN_MERGE_TARGET}")"
+git checkout -q -B spin-merge "$SPIN_TARGET"
+SPIN_FF=0
+if git merge-base --is-ancestor "$SPIN_TARGET" "$SPIN_SOURCE"; then
+  git merge -q --ff-only "$SPIN_SOURCE"
+  SPIN_FF=1
+else
+  if ! git -c user.name="$SPIN_GIT_AUTHOR_NAME" -c user.email="$SPIN_GIT_AUTHOR_EMAIL" merge -q --no-ff -m "$SPIN_COMMIT_SUBJECT" -m "$SPIN_COMMIT_BODY" "$SPIN_SOURCE"; then
+    git merge --abort || true
+    echo "The Job branch does not merge cleanly into ${SPIN_MERGE_TARGET}; resolve the conflicts in a new phase" >&2
+    exit 45
+  fi
+fi
+SPIN_HEAD="$(git rev-parse HEAD)"
+git push origin "$SPIN_HEAD:refs/heads/${SPIN_MERGE_TARGET}"
+SPIN_REMOTE_HEAD="$(git ls-remote --exit-code --heads origin "${SPIN_MERGE_TARGET}" | cut -f1)"
+if [ "$SPIN_REMOTE_HEAD" != "$SPIN_HEAD" ]; then
+  echo "Remote ${SPIN_MERGE_TARGET} does not match the merged HEAD after push" >&2
+  exit 46
+fi
+printf 'SPIN_MERGE ff=%s head=%s\n' "$SPIN_FF" "$SPIN_HEAD"
+unset SPIN_GIT_PASSWORD`
+
 func validGitRef(value string) bool {
 	if value == "" || strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") || strings.Contains(value, "..") {
 		return false

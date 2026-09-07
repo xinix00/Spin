@@ -47,7 +47,15 @@ const (
 	WorkflowExecutorExpose WorkflowExecutor = "expose"
 
 	WorkflowActionGitPullRequest = "git.pull_request.create"
-	WorkflowPullRequestPhaseID   = "spin-pull-request"
+	// WorkflowActionGitMerge finalizes a Job by merging its branch into the
+	// base branch itself: the review and the accept already happened in
+	// Spin, so nothing is left for a pull request to add.
+	WorkflowActionGitMerge = "git.merge"
+	// WorkflowPullRequestPhaseID is the id of the generated final phase,
+	// whichever finalizer it runs.
+	WorkflowPullRequestPhaseID  = "spin-pull-request"
+	WorkflowFinalizePullRequest = "pull_request"
+	WorkflowFinalizeMerge       = "merge"
 )
 
 type WorkflowAction struct {
@@ -98,15 +106,18 @@ type WorkflowPhase struct {
 // WorkflowTemplate is deliberately only data. Names such as Development or
 // Bugfix have no server-side meaning; their phase table defines the flow.
 type WorkflowTemplate struct {
-	ID          string          `json:"id"`
-	Revision    int             `json:"revision"`
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	GitSelector string          `json:"git_selector,omitempty"`
-	CreatedBy   string          `json:"created_by"`
-	Phases      []WorkflowPhase `json:"phases"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	ID          string `json:"id"`
+	Revision    int    `json:"revision"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	GitSelector string `json:"git_selector,omitempty"`
+	// Finalize is how a finished Job lands: a pull request on the remote
+	// (default) or a merge of the Job branch into the base branch by Spin.
+	Finalize  string          `json:"finalize,omitempty"`
+	CreatedBy string          `json:"created_by"`
+	Phases    []WorkflowPhase `json:"phases"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
 type PhaseRun struct {
@@ -1132,6 +1143,7 @@ type CreateWorkflowTemplateRequest struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	GitSelector string          `json:"git_selector,omitempty"`
+	Finalize    string          `json:"finalize,omitempty"`
 	Phases      []WorkflowPhase `json:"phases"`
 }
 

@@ -37,6 +37,7 @@ const (
 	methodInspectRange      = "workspace.inspect_range"
 	methodInjectAttachments = "workspace.inject_attachments"
 	methodAcceptWorkspace   = "workspace.accept"
+	methodMergeWorkspace    = "workspace.merge"
 	methodRemoveSnapshot    = "snapshot.remove"
 	methodExportSnapshot    = "snapshot.export"
 	methodImportSnapshot    = "snapshot.import"
@@ -91,6 +92,11 @@ type materializePayload struct {
 
 type runtimePayload struct {
 	Runtime domain.CapsuleRuntime `json:"runtime"`
+}
+
+type mergePayload struct {
+	Runtime domain.CapsuleRuntime  `json:"runtime"`
+	Merge   capsule.WorkspaceMerge `json:"merge"`
 }
 
 type appPayload struct {

@@ -131,6 +131,12 @@ func (e *RemoteEngine) Cancel(ctx context.Context, recording domain.Recording) e
 	return err
 }
 
+func (e *RemoteEngine) MergeWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, merge capsule.WorkspaceMerge) (capsule.WorkspaceMergeResult, error) {
+	var result capsule.WorkspaceMergeResult
+	_, err := e.broker.call(ctx, runtime.ClientID, methodMergeWorkspace, mergePayload{Runtime: runtime, Merge: merge}, &result)
+	return result, err
+}
+
 // App services live on the runner that holds the Session's capsule; the
 // runtime's ClientID is the affinity for all four calls.
 func (e *RemoteEngine) StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService, hosts []string) ([]domain.AppServiceRuntime, error) {

@@ -53,6 +53,7 @@ type acpBrowserMessage struct {
 
 type acpBrowserEvent struct {
 	Type           string          `json:"type"`
+	At             time.Time       `json:"at,omitempty"`
 	Text           string          `json:"text,omitempty"`
 	Update         json.RawMessage `json:"update,omitempty"`
 	Params         json.RawMessage `json:"params,omitempty"`
@@ -1264,6 +1265,9 @@ func (a *activeACP) unsubscribe(events chan acpBrowserEvent) {
 }
 
 func (a *activeACP) broadcast(event acpBrowserEvent, remember bool) {
+	if event.At.IsZero() {
+		event.At = time.Now().UTC()
+	}
 	a.mu.Lock()
 	if remember {
 		a.history = append(a.history, event)

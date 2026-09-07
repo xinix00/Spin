@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
 	"easyacp/internal/store"
 )
@@ -22,6 +23,7 @@ type appTestEngine struct {
 	started  []domain.AppService
 	stopped  int
 	sessions map[string]bool
+	merged   []capsule.WorkspaceMerge
 }
 
 func (e *appTestEngine) StartAppServices(_ context.Context, _ domain.CapsuleRuntime, sessionID string, services []domain.AppService, _ []string) ([]domain.AppServiceRuntime, error) {
@@ -62,6 +64,13 @@ func (e *appTestEngine) AppServiceStatusOn(_ context.Context, _, sessionID strin
 		return nil, nil
 	}
 	return appTestResults(e.started), nil
+}
+
+func (e *appTestEngine) MergeWorkspace(_ context.Context, _ domain.CapsuleRuntime, merge capsule.WorkspaceMerge) (capsule.WorkspaceMergeResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.merged = append(e.merged, merge)
+	return capsule.WorkspaceMergeResult{Head: "abc123", FastForward: true}, nil
 }
 
 func (e *appTestEngine) AppServiceLogsOn(_ context.Context, _, _, service string, _ int) (string, error) {
@@ -136,5 +145,90 @@ func TestExposePhaseStartsTheAppAndWaitsForAVerdict(t *testing.T) {
 	srv.retireWorkflowCompositions(job.ID, "")
 	if engine.stopped == 0 {
 		t.Fatal("app services were not stopped with the workspace")
+	}
+}
+
+// A Template that finalizes by merging lands the Job branch on the base
+// branch from a workspace, with the Job done afterwards; no pull request.
+func TestMergeFinalizerLandsTheJobOnTheBaseBranch(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &appTestEngine{}
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
+	for _, line := range []string{
+		"RECORD tool:git --scope=global --enable=git", "install git", "END RECORD",
+		"RECORD tool:agent --scope=global --from=tool:git --enable=acp --command=agent-acp", "install agent", "END RECORD",
+	} {
+		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
+			t.Fatalf("%s: %v", line, err)
+		}
+	}
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "shop", RemoteURL: "https://github.com/derek/shop.git", DefaultRef: "develop", CredentialScope: domain.CredentialScopePublic,
+		Services: []domain.AppService{{Name: "web", Run: "npm start", Ports: []int{3000}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Test en merge", Finalize: domain.WorkflowFinalizeMerge, Phases: []domain.WorkflowPhase{{
+		ID: "test", Name: "Testen", Executor: domain.WorkflowExecutorExpose,
+		Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: "SELF"},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := template.Phases[len(template.Phases)-1]; last.Action == nil || last.Action.Type != domain.WorkflowActionGitMerge || last.Name != "Mergen" {
+		t.Fatalf("finalizer = %+v", last)
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Objective: "Werkend", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.launchQueuedWorkflowPhases("test")
+	deadline := time.Now().Add(10 * time.Second)
+	var question domain.WorkflowQuestion
+	for question.ID == "" && time.Now().Before(deadline) {
+		for _, candidate := range st.Snapshot().WorkflowQuestions {
+			if candidate.SessionID == created.Session.ID && candidate.Status == "open" {
+				question = candidate
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if question.ID == "" {
+		t.Fatalf("no decision for the expose phase; failures=%+v", srv.sessionPreparations())
+	}
+	advance, err := st.AnswerWorkflowQuestion(question.ID, "derek", "accept", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if advance.NextSession == nil {
+		t.Fatalf("accept did not queue the merge phase: %+v", advance)
+	}
+	srv.startQueuedWorkflowLaunch(*advance.NextSession)
+	deadline = time.Now().Add(10 * time.Second)
+	var job domain.Job
+	for job.WorkflowStatus != domain.WorkflowDone && time.Now().Before(deadline) {
+		job = st.Snapshot().Jobs[0]
+		time.Sleep(10 * time.Millisecond)
+	}
+	if job.WorkflowStatus != domain.WorkflowDone {
+		var reasons []string
+		for _, run := range st.Snapshot().PhaseRuns {
+			reasons = append(reasons, run.PhaseID+"/"+string(run.Status)+": "+run.RejectReason)
+		}
+		t.Fatalf("job after merge = %s; runs=%v; failures=%+v", job.WorkflowStatus, reasons, srv.sessionPreparations())
+	}
+	if len(engine.merged) != 1 || engine.merged[0].SourceRef != job.Branch || engine.merged[0].TargetRef != "develop" {
+		t.Fatalf("merged = %+v", engine.merged)
+	}
+	var mergeRun domain.PhaseRun
+	for _, run := range st.Snapshot().PhaseRuns {
+		if run.JobID == job.ID && run.PhaseID == domain.WorkflowPullRequestPhaseID {
+			mergeRun = run
+		}
+	}
+	if mergeRun.ActionResult == nil || mergeRun.ActionResult.Type != domain.WorkflowActionGitMerge || !strings.Contains(mergeRun.ActionResult.Detail, "fast-forward") {
+		t.Fatalf("merge run = %+v", mergeRun)
 	}
 }

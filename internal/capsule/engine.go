@@ -135,6 +135,27 @@ type WorkspaceAcceptance struct {
 	Authentication *GitAuthentication
 }
 
+// WorkspaceMerge lands a Job: its branch merged into the base branch and
+// pushed, from a workspace that holds the operator's Git identity for the
+// moment of the push only.
+type WorkspaceMerge struct {
+	SourceRef      string // the Job branch
+	TargetRef      string // the base branch the Job lands on
+	CommitSubject  string
+	CommitBody     string
+	Authentication *GitAuthentication
+}
+
+type WorkspaceMergeResult struct {
+	Head        string
+	FastForward bool
+}
+
+// WorkspaceMerger merges a Job branch into its base branch on the remote.
+type WorkspaceMerger interface {
+	MergeWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, merge WorkspaceMerge) (WorkspaceMergeResult, error)
+}
+
 type WorkspaceAcceptanceResult struct {
 	Head      string
 	Committed bool
