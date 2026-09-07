@@ -152,6 +152,19 @@ func TestAgentOptionsFoldSessionConfigOptions(t *testing.T) {
 	}
 	active := &activeACP{agentName: "Codex", configOptions: options}
 	folded := active.agentOptions()
+	// An agent that reports modes only as session mode state (Claude Code)
+	// still ends up with them on the layer.
+	claudeModes := &acpSessionModes{CurrentModeID: "default"}
+	for _, id := range []string{"default", "bypassPermissions"} {
+		claudeModes.AvailableModes = append(claudeModes.AvailableModes, struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}{ID: id, Name: id})
+	}
+	if modesOnly := (&activeACP{agentName: "Claude Code", modes: claudeModes}).agentOptions(); len(modesOnly.Modes) != 2 || modesOnly.Modes[1].Value != "bypassPermissions" {
+		t.Fatalf("modes from session state = %+v", modesOnly.Modes)
+	}
 	if folded.AgentName != "Codex" || len(folded.Models) != 2 || folded.Models[1].Value != "gpt-5.1-codex-mini" || len(folded.ReasoningEfforts) != 2 || folded.ReasoningEfforts[0].Name != "Low" || len(folded.Modes) != 2 {
 		t.Fatalf("folded options = %+v", folded)
 	}
@@ -163,7 +176,9 @@ func TestFullAccessModeIsChosenWhenOffered(t *testing.T) {
 	modes := &acpSessionModes{CurrentModeID: "agent"}
 	for _, id := range []string{"read-only", "agent", "agent-full-access"} {
 		modes.AvailableModes = append(modes.AvailableModes, struct {
-			ID string `json:"id"`
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
 		}{ID: id})
 	}
 	if mode, ok := fullAccessMode(modes, nil); !ok || mode != "agent-full-access" {
@@ -180,5 +195,16 @@ func TestFullAccessModeIsChosenWhenOffered(t *testing.T) {
 	}
 	if _, ok := fullAccessMode(nil, nil); ok {
 		t.Fatal("an agent without modes was switched")
+	}
+	claude := &acpSessionModes{CurrentModeID: "default"}
+	for _, id := range []string{"default", "acceptEdits", "bypassPermissions", "plan"} {
+		claude.AvailableModes = append(claude.AvailableModes, struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}{ID: id})
+	}
+	if mode, ok := fullAccessMode(claude, nil); !ok || mode != "bypassPermissions" {
+		t.Fatalf("Claude Code full access = %q, %v", mode, ok)
 	}
 }

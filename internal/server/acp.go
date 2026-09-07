@@ -116,6 +116,9 @@ type activeACP struct {
 	// configOptions is what the agent offered at session/new: models,
 	// reasoning efforts, modes.
 	configOptions []acpConfigOption
+	// modes is the session mode state of session/new, for agents that
+	// report modes there instead of as a config option (Claude Code).
+	modes *acpSessionModes
 	// primed is set once this agent session has read the phase's full
 	// prompt. An agent session is not durable (a deploy or runner restart
 	// makes a new one), and a resumed one must not act on a bare answer or
@@ -568,6 +571,7 @@ func (s *Server) openACP(composition domain.Composition, operator string, mcpSer
 	active.mu.Lock()
 	active.agentSessionID = newSession.SessionID
 	active.configOptions = newSession.ConfigOptions
+	active.modes = newSession.Modes
 	active.mu.Unlock()
 	// The capsule is the sandbox: a throwaway container without the host,
 	// without Git credentials, and with everything the agent does discarded
@@ -668,7 +672,9 @@ func (s *Server) setAgentSettingsHandler(w http.ResponseWriter, r *http.Request)
 type acpSessionModes struct {
 	CurrentModeID  string `json:"currentModeId"`
 	AvailableModes []struct {
-		ID string `json:"id"`
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
 	} `json:"availableModes"`
 }
 
@@ -695,8 +701,11 @@ func fullAccessMode(modes *acpSessionModes, options []acpConfigOption) (string, 
 			available = append(available, candidate.Value)
 		}
 	}
+	// Agents name it differently: codex-acp "agent-full-access", the Claude
+	// Code adapter "bypassPermissions".
 	for _, id := range available {
-		if strings.Contains(id, "full-access") || strings.Contains(id, "full_access") {
+		lower := strings.ToLower(id)
+		if strings.Contains(lower, "full-access") || strings.Contains(lower, "full_access") || strings.Contains(lower, "bypass") {
 			return id, id != current
 		}
 	}
@@ -720,6 +729,11 @@ func (a *activeACP) agentOptions() domain.AgentOptions {
 			options.ReasoningEfforts = values
 		case "mode":
 			options.Modes = values
+		}
+	}
+	if len(options.Modes) == 0 && a.modes != nil {
+		for _, mode := range a.modes.AvailableModes {
+			options.Modes = append(options.Modes, domain.AgentOption{Value: mode.ID, Name: mode.Name, Description: mode.Description})
 		}
 	}
 	return options
