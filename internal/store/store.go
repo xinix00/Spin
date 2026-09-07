@@ -1962,7 +1962,7 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 		reference = s.state.Jobs[forkedFromJobID].Reference
 	}
 	if reference != "" && !validJobReference(reference) {
-		return domain.CreateJobResponse{}, fmt.Errorf("reference %q may only contain letters, digits, dots, dashes and underscores: %w", reference, ErrConflict)
+		return domain.CreateJobResponse{}, fmt.Errorf("reference %q may only contain letters, digits, #, dots, dashes and underscores: %w", reference, ErrConflict)
 	}
 	namespace := "jobs/" + gitSlug(req.Title) + "-" + strings.TrimPrefix(jobID, "job_")[:6]
 	if reference != "" {
@@ -3805,13 +3805,14 @@ func withoutString(values []string, remove string) []string {
 }
 
 // validJobReference accepts a ticket number as one branch path segment:
-// letters, digits, dots, dashes and underscores, no leading dot.
+// letters, digits, #, dots, dashes and underscores, no leading dot. Git
+// allows # in a ref name, and tickets are often written as #1234.
 func validJobReference(value string) bool {
 	if value == "" || len(value) > 64 || strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".lock") {
 		return false
 	}
 	for _, r := range value {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_') {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '#' || r == '.' || r == '-' || r == '_') {
 			return false
 		}
 	}
