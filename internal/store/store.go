@@ -3139,7 +3139,10 @@ func (s *Store) EnablingLayer(artifactID, capability string) (domain.Artifact, b
 		}
 		for _, enabled := range artifact.Enables {
 			if enabled.Name == capability {
-				return artifact, true
+				// A layer built on an older version follows the EDIT: the
+				// options belong to the newest version of that layer.
+				newest, _ := s.newestVersionLocked(artifact, artifact.CreatedBy)
+				return newest, true
 			}
 		}
 		for _, parentID := range artifact.ParentArtifactIDs {
@@ -3150,6 +3153,35 @@ func (s *Store) EnablingLayer(artifactID, capability string) (domain.Artifact, b
 		return domain.Artifact{}, false
 	}
 	return find(artifactID)
+}
+
+// sameLineageLocked reports whether two artifacts are versions of one layer.
+func (s *Store) sameLineageLocked(a, b domain.Artifact) bool {
+	newestA, _ := s.newestVersionLocked(a, a.CreatedBy)
+	newestB, _ := s.newestVersionLocked(b, b.CreatedBy)
+	return newestA.ID == newestB.ID
+}
+
+// dependsOnLineageLocked is artifactDependsOnLocked across EDIT versions: a
+// credential recorded on an older tool:codex still depends on tool:codex.
+func (s *Store) dependsOnLineageLocked(artifactID string, ancestor domain.Artifact) bool {
+	visited := map[string]bool{}
+	var dependsOn func(string) bool
+	dependsOn = func(id string) bool {
+		if visited[id] {
+			return false
+		}
+		visited[id] = true
+		artifact, ok := s.state.Artifacts[id]
+		if !ok {
+			return false
+		}
+		if s.sameLineageLocked(artifact, ancestor) {
+			return true
+		}
+		return slices.ContainsFunc(artifact.ParentArtifactIDs, dependsOn)
+	}
+	return dependsOn(artifactID)
 }
 
 // IdentityLayerFor is the layer an operator actually runs an agent as: the
@@ -3170,7 +3202,7 @@ func (s *Store) IdentityLayerFor(artifactID, operator string) (domain.Artifact, 
 		if candidate.Kind != domain.ArtifactCredential || candidate.Scope != domain.ScopeUser || candidate.Subject != operator || candidate.SupersededBy != "" {
 			continue
 		}
-		if !s.artifactDependsOnLocked(candidate.ID, artifact.ID) {
+		if !s.dependsOnLineageLocked(candidate.ID, artifact) {
 			continue
 		}
 		candidate := candidate

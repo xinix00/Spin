@@ -98,4 +98,14 @@ func TestIdentityLayerForPrefersTheOperatorsCredentialLayer(t *testing.T) {
 	if agent, ok := st.EnablingLayer(login.ID, "acp"); !ok || agent.ID != codex.ID {
 		t.Fatalf("enabling layer of the credential = %+v, %v", agent, ok)
 	}
+
+	// An EDIT of the tool: the credential still counts as built on it, and
+	// the enabling layer is the newest version.
+	edited := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "codex", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{codex.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "codex-acp"}}, ReplacesArtifactID: codex.ID})
+	if entry, err := st.IdentityLayerFor(edited.ID, "derek"); err != nil || entry.ID != login.ID {
+		t.Fatalf("identity layer after an EDIT = %+v, %v", entry, err)
+	}
+	if agent, ok := st.EnablingLayer(login.ID, "acp"); !ok || agent.ID != edited.ID {
+		t.Fatalf("enabling layer after an EDIT = %+v, want the newest version %s", agent, edited.ID)
+	}
 }
