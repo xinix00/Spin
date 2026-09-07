@@ -42,6 +42,9 @@ type WorkflowExecutor string
 const (
 	WorkflowExecutorAgent  WorkflowExecutor = "agent"
 	WorkflowExecutorAction WorkflowExecutor = "action"
+	// WorkflowExecutorExpose starts the repository's app services on the
+	// phase's workspace and waits for a person to test and decide.
+	WorkflowExecutorExpose WorkflowExecutor = "expose"
 
 	WorkflowActionGitPullRequest = "git.pull_request.create"
 	WorkflowPullRequestPhaseID   = "spin-pull-request"
@@ -796,9 +799,39 @@ type GitRepository struct {
 	Provider        string          `json:"provider"`
 	CredentialScope CredentialScope `json:"credential_scope"`
 	LayerSelectors  []string        `json:"layer_selectors,omitempty"`
-	CreatedBy       string          `json:"created_by"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	// Services is the repository's own recipe for running the app so a
+	// person can test it: one container per service on a Session's workspace.
+	Services  []AppService `json:"services,omitempty"`
+	CreatedBy string       `json:"created_by"`
+	CreatedAt time.Time    `json:"created_at"`
+	UpdatedAt time.Time    `json:"updated_at"`
+}
+
+// AppService is one runnable part of a repository's app. A service with Run
+// starts in the Session's own image on the Session's workspace, after its
+// Prepare commands; a service with Image is a ready-made dependency such as
+// a database. Env names a file on the runner host (var/env/<name>.env) that
+// the runner hands to the container; its contents never reach the control
+// plane.
+type AppService struct {
+	Name    string   `json:"name"`
+	Image   string   `json:"image,omitempty"`
+	Prepare []string `json:"prepare,omitempty"`
+	Run     string   `json:"run,omitempty"`
+	Ports   []int    `json:"ports,omitempty"`
+	Env     string   `json:"env,omitempty"`
+}
+
+// AppServiceRuntime is what the runner reports about one running service.
+type AppServiceRuntime struct {
+	Service     string         `json:"service"`
+	ContainerID string         `json:"container_id,omitempty"`
+	Status      string         `json:"status"` // starting, running, exited, error
+	Host        string         `json:"host,omitempty"`
+	Ports       map[string]int `json:"ports,omitempty"` // container port → host port
+	Reachable   bool           `json:"reachable"`
+	Error       string         `json:"error,omitempty"`
+	StartedAt   *time.Time     `json:"started_at,omitempty"`
 }
 
 // GitAccount is user- or global-scoped application state. Secret fields are
@@ -1146,6 +1179,7 @@ type CreateGitRepositoryRequest struct {
 	DefaultRef      string          `json:"default_ref,omitempty"`
 	LayerSelectors  []string        `json:"layer_selectors,omitempty"`
 	CredentialScope CredentialScope `json:"credential_scope,omitempty"`
+	Services        []AppService    `json:"services,omitempty"`
 }
 
 type UpdateGitRepositoryRequest struct {
@@ -1155,6 +1189,7 @@ type UpdateGitRepositoryRequest struct {
 	DefaultRef      string          `json:"default_ref"`
 	LayerSelectors  []string        `json:"layer_selectors"`
 	CredentialScope CredentialScope `json:"credential_scope,omitempty"`
+	Services        []AppService    `json:"services"`
 }
 
 type CreateGitRepositoryResponse struct {

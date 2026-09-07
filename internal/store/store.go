@@ -1304,6 +1304,10 @@ func (s *Store) CreateGitRepository(req domain.CreateGitRepositoryRequest) (doma
 	if err != nil {
 		return domain.CreateGitRepositoryResponse{}, fmt.Errorf("repository layers: %w", err)
 	}
+	services, err := normalizeAppServices(req.Services)
+	if err != nil {
+		return domain.CreateGitRepositoryResponse{}, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1318,7 +1322,7 @@ func (s *Store) CreateGitRepository(req domain.CreateGitRepositoryRequest) (doma
 	now := time.Now().UTC()
 	repository := domain.GitRepository{
 		ID: newID("git"), Name: name, RemoteURL: remoteURL, DefaultRef: defaultRef,
-		Provider: provider, CredentialScope: credentialScope, LayerSelectors: layerSelectors,
+		Provider: provider, CredentialScope: credentialScope, LayerSelectors: layerSelectors, Services: services,
 		CreatedBy: operator, CreatedAt: now, UpdatedAt: now,
 	}
 	s.state.GitRepositories[repository.ID] = repository
@@ -1337,6 +1341,10 @@ func (s *Store) UpdateGitRepository(repositoryID string, req domain.UpdateGitRep
 	layerSelectors, err := normalizeArtifactSelectors(req.LayerSelectors)
 	if err != nil {
 		return domain.GitRepository{}, fmt.Errorf("repository layers: %w", err)
+	}
+	services, err := normalizeAppServices(req.Services)
+	if err != nil {
+		return domain.GitRepository{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1372,12 +1380,65 @@ func (s *Store) UpdateGitRepository(repositoryID string, req domain.UpdateGitRep
 	repository.DefaultRef = defaultRef
 	repository.Provider, _ = gitRemoteIdentity(remoteURL)
 	repository.LayerSelectors = append([]string(nil), layerSelectors...)
+	repository.Services = services
 	if credentialScope != "" {
 		repository.CredentialScope = credentialScope
 	}
 	repository.UpdatedAt = time.Now().UTC()
 	s.state.GitRepositories[repository.ID] = repository
 	return repository, s.saveLocked()
+}
+
+// normalizeAppServices checks a repository's app recipe: unique token names,
+// either a run command or an image, sane ports, and an env name that maps
+// to a file on the runner.
+func normalizeAppServices(services []domain.AppService) ([]domain.AppService, error) {
+	out := make([]domain.AppService, 0, len(services))
+	seen := map[string]bool{}
+	for index, service := range services {
+		service.Name = normalizeName(service.Name)
+		service.Image = strings.TrimSpace(service.Image)
+		service.Run = strings.TrimSpace(service.Run)
+		service.Env = normalizeName(service.Env)
+		if service.Name == "" || !validToken(service.Name) {
+			return nil, fmt.Errorf("service %d needs a name of letters, digits and dashes: %w", index+1, ErrConflict)
+		}
+		if seen[service.Name] {
+			return nil, fmt.Errorf("service %s is listed twice: %w", service.Name, ErrConflict)
+		}
+		seen[service.Name] = true
+		if (service.Run == "") == (service.Image == "") {
+			return nil, fmt.Errorf("service %s needs either a run command or an image: %w", service.Name, ErrConflict)
+		}
+		if service.Env != "" && !validToken(service.Env) {
+			return nil, fmt.Errorf("service %s env name must be letters, digits and dashes: %w", service.Name, ErrConflict)
+		}
+		prepare := make([]string, 0, len(service.Prepare))
+		for _, command := range service.Prepare {
+			if command = strings.TrimSpace(command); command != "" {
+				prepare = append(prepare, command)
+			}
+		}
+		service.Prepare = prepare
+		if service.Image != "" {
+			service.Prepare = nil
+		}
+		ports := make([]int, 0, len(service.Ports))
+		for _, port := range service.Ports {
+			if port <= 0 || port > 65535 {
+				return nil, fmt.Errorf("service %s port %d is out of range: %w", service.Name, port, ErrConflict)
+			}
+			if !slices.Contains(ports, port) {
+				ports = append(ports, port)
+			}
+		}
+		service.Ports = ports
+		out = append(out, service)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 func (s *Store) SaveGitAccount(account domain.GitAccount) (domain.GitAccount, error) {

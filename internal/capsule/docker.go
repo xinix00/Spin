@@ -27,13 +27,22 @@ type DockerConfig struct {
 	Binary    string
 	BaseImage string
 	Network   string
+	// EnvDir holds the env files app services may use (<name>.env).
+	EnvDir string
+	// HostsFile is copied into app service containers as --add-host entries.
+	HostsFile string
+	// AdvertiseHost is the address people use to reach published app ports.
+	AdvertiseHost string
 }
 
 type Docker struct {
-	binary    string
-	baseImage string
-	network   string
-	info      domain.CapsuleEngineInfo
+	binary        string
+	baseImage     string
+	network       string
+	envDir        string
+	hostsFile     string
+	advertiseHost string
+	info          domain.CapsuleEngineInfo
 }
 
 func NewDocker(ctx context.Context, cfg DockerConfig) (*Docker, error) {
@@ -46,7 +55,7 @@ func NewDocker(ctx context.Context, cfg DockerConfig) (*Docker, error) {
 	if cfg.Network == "" {
 		cfg.Network = "bridge"
 	}
-	d := &Docker{binary: cfg.Binary, baseImage: cfg.BaseImage, network: cfg.Network}
+	d := &Docker{binary: cfg.Binary, baseImage: cfg.BaseImage, network: cfg.Network, envDir: cfg.EnvDir, hostsFile: cfg.HostsFile, advertiseHost: AdvertiseHost(cfg.AdvertiseHost)}
 	version, code, err := d.run(ctx, "version", "--format", "{{.Server.Version}}")
 	if err != nil || code != 0 || strings.TrimSpace(version) == "" {
 		return nil, fmt.Errorf("Docker daemon is unavailable: %s: %w", strings.TrimSpace(version), err)

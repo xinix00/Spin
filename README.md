@@ -115,6 +115,20 @@ Per fase kies je optioneel een **model** en een **reasoning-niveau**. Spin zet d
 
 Een bericht dat je in de chat stuurt terwijl de agent werkt, gaat bij een agent die dat aanbiedt (codex-acp: `_session/steering`) direct de lopende beurt in; anders wacht het als volgende beurt.
 
+### Test-app: de app draaien op de workspace van een stap
+
+Een repository is de app, dus daar hoort het recept om hem te draaien: onder Connections → Git heeft een repository **services**. Iedere service is één container; een service met `run` draait in de image van de Session op haar workspace (dus op exact de code die de agent in die stap bouwde, inclusief niet-gecommit werk), na de `prepare`-commando's in volgorde; een service met `image` is een kant-en-klare dependency zoals `postgres:16`. Alle services van een Session zitten in één Docker-netwerk en bereiken elkaar op servicenaam; iedere gepubliceerde poort krijgt een vrije poort op de runner-host.
+
+```text
+web   prepare: npm ci            run: npm run dev       ports: 5173   env: easyflor
+api   prepare: dotnet restore    run: dotnet run --project src/Api   ports: 5000   env: easyflor
+db    image: postgres:16                                              env: easyflor-db
+```
+
+Geheimen blijven op de runner-host. `env` noemt een bestand `var/env/<naam>.env` naast de runner (flag `-env-dir`), dat je bijvoorbeeld met 1Password vult (`op inject -i easyflor.env.tpl -o var/env/easyflor.env`). De runner geeft het met `--env-file` aan de container; de control plane, de backup en de agent-capsule zien de inhoud nooit. `host.docker.internal` wijst naar de host, en de regels uit het hosts-bestand van de runner (`-hosts-file`, standaard `/etc/hosts`) gaan als `--add-host` mee, zodat een database die de host op naam bereikt ook vanuit de app bereikbaar is. De link die de UI toont gebruikt het netwerkadres van de runner (`-advertise-host` om het te kiezen) en werkt binnen dat LAN.
+
+Op iedere actieve stap met een workspace staat het paneel **Test-app**: per service de status, de link en de logs, met Start/Herstart en Stop. Een Template-stap van het soort **Test-app** doet dit automatisch: de workspace komt op vanaf de Job-branch, de services starten en de stap wacht met de links op jouw `ACCEPT` of `REJECT` met reden. Bij een besluit gaat de app samen met de workspace weg.
+
 `ASK USER` is per ACCEPT- of REJECT-route een vinkje/gate, geen AI-uitkomst. Zo kan ACCEPT menselijke goedkeuring vragen terwijl REJECT nog automatisch terugloopt. Na bijvoorbeeld `AI ACCEPTED` ziet de gebruiker de vaste routes en kiest die `ACCEPT`, `REJECT` met een eigen reden, of `CHAT`. Bij `REJECT` gaat een nieuwe Session over de geconfigureerde terug-route. Na het ingestelde aantal automatische rejections wordt dezelfde gate getoond, inclusief de laatste reden. `CHAT` opent dezelfde ACP-Session; pas bij het sturen van een bericht wordt die hervat, zonder impliciete goed- of afkeuring. De wachtende beslissing blijft staan: zolang de agent werkt zijn de knoppen dicht, en zodra de beurt eindigt zonder nieuw besluit zijn `ACCEPT` en `REJECT` weer klikbaar.
 
 Deliverables staan als bijlagen bij zowel de fase als de chat en openen als volledig Markdown-document. Bovenin kan tussen alle immutable revisies worden gewisseld. Alleen op de laatste revisie kan een ingelogde gebruiker tekst selecteren en een permanente comment plaatsen; historische revisies en hun bestaande comments zijn read-only. De server controleert bij iedere comment opnieuw of de revisie nog actueel is, zodat een oude browsertab geen retroactieve feedback kan toevoegen. Comments op de laatste revisies gaan als onafhankelijke context naar iedere nieuwe workflow-Session en staan los van ACCEPT/REJECT.

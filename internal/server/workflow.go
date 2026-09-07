@@ -470,6 +470,11 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 		s.logger.Warn("mark workflow phase running", "session", session.ID, "error", err)
 		return
 	}
+	if phaseErr == nil && phase.Executor == domain.WorkflowExecutorExpose {
+		s.launchWorkflowExpose(session, operator)
+		s.retireWorkflowCompositions(session.JobID, session.ID)
+		return
+	}
 	// From here the phase is "running"; if the agent cannot be started after
 	// all, the phase goes back to the queue with the reason on the card and
 	// the sweep tries again, rather than a running step with nothing behind it.

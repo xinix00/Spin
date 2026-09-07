@@ -108,6 +108,14 @@ func normalizeWorkflowTemplateRequest(req domain.CreateWorkflowTemplateRequest) 
 				return "", "", "", nil, fmt.Errorf("phase %s WITH layers: %w", phase.Name, err)
 			}
 			phase.WithSelectors = withSelectors
+		case domain.WorkflowExecutorExpose:
+			// The app is started on the phase's workspace and a person tests
+			// it; there is no agent to instruct.
+			phase.Action = nil
+			phase.EnvironmentSelector = strings.ToLower(strings.TrimSpace(phase.EnvironmentSelector))
+			phase.WithSelectors = nil
+			phase.Model, phase.ReasoningEffort = "", ""
+			phase.Deliverables = nil
 		case domain.WorkflowExecutorAction:
 			return "", "", "", nil, fmt.Errorf("system actions cannot be configured as Template phases: %w", ErrConflict)
 		default:
@@ -788,7 +796,8 @@ func (s *Store) CompleteWorkflowPhase(sessionID, outcome, detail string) (domain
 			}
 		}
 	}
-	needsUser := transition.AskUser || resolveWorkflowTarget(template, phase.ID, transition.Target) == domain.WorkflowTargetAskUser
+	// An expose phase exists to be judged by a person: it always waits.
+	needsUser := transition.AskUser || phase.Executor == domain.WorkflowExecutorExpose || resolveWorkflowTarget(template, phase.ID, transition.Target) == domain.WorkflowTargetAskUser
 	if !needsUser {
 		if err := s.validateWorkflowInjectionLocked(job.ID, template, phase.ID, transition.Target); err != nil {
 			return domain.WorkflowAdvance{}, err
@@ -1005,6 +1014,9 @@ func humanWorkflowTarget(template domain.WorkflowTemplate, phaseID, rawTarget, f
 func (s *Store) awaitWorkflowDecisionLocked(job domain.Job, template domain.WorkflowTemplate, run domain.PhaseRun, phase domain.WorkflowPhase, outcome string, rejectionCount int) (domain.WorkflowAdvance, error) {
 	now := time.Now().UTC()
 	questionText := fmt.Sprintf("AI accepted %s.", phase.Name)
+	if phase.Executor == domain.WorkflowExecutorExpose {
+		questionText = fmt.Sprintf("De test-app van %s staat klaar.", phase.Name)
+	}
 	if run.Summary != "" {
 		questionText += " " + run.Summary
 	}

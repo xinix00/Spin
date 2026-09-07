@@ -27,6 +27,9 @@ func main() {
 	maxWorkloads := flag.Int("max-workloads", 4, "maximum concurrently materialized runtimes")
 	capsuleBase := flag.String("capsule-base", "alpine:3.24", "clean substrate image for root Docker recordings")
 	capsuleNetwork := flag.String("capsule-network", "bridge", "Docker network for capsule containers")
+	envDir := flag.String("env-dir", envOr("SPIN_ENV_DIR", "./var/env"), "directory with <name>.env files that app services may use")
+	hostsFile := flag.String("hosts-file", "/etc/hosts", "hosts file whose entries app service containers inherit")
+	advertiseHost := flag.String("advertise-host", strings.TrimSpace(os.Getenv("SPIN_ADVERTISE_HOST")), "address people use to reach published app ports (default: this machine's network address)")
 	tokenFile := flag.String("token-file", envOr("SPIN_WORKER_TOKEN_FILE", "./var/spin-worker.token"), "shared worker bearer-token file")
 	flag.Parse()
 	if *showVersion {
@@ -55,7 +58,7 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	probeCtx, probeCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	engine, err := capsule.NewDocker(probeCtx, capsule.DockerConfig{BaseImage: *capsuleBase, Network: *capsuleNetwork})
+	engine, err := capsule.NewDocker(probeCtx, capsule.DockerConfig{BaseImage: *capsuleBase, Network: *capsuleNetwork, EnvDir: *envDir, HostsFile: *hostsFile, AdvertiseHost: *advertiseHost})
 	probeCancel()
 	if err != nil {
 		logger.Error("start Docker capsule engine", "error", err)

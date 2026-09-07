@@ -229,6 +229,7 @@ func (s *Server) stopCapsule(ctx context.Context, compositionID, operator string
 		return composition, nil
 	}
 	s.stopACPComposition(composition.ID)
+	s.stopAppServicesForComposition(ctx, composition)
 	if err := s.engine.Stop(ctx, *composition.Runtime); err != nil {
 		return domain.Composition{}, fmt.Errorf("stop composition capsule: %w", err)
 	}

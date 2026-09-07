@@ -186,8 +186,14 @@
           <div class="wide"><label for="git-remote">HTTPS remote zonder secrets</label><input id="git-remote" name="remote_url" required placeholder="https://github.com/team/project.git"></div>
           <div class="wide"><label for="git-repository-credential-scope">Git identity</label><select id="git-repository-credential-scope" name="credential_scope"><option value="user">Persoonlijk · account van de uitvoerende gebruiker</option><option value="global">Global · gedeeld service-account</option></select></div>
           <div class="wide"><label for="git-layers">Projectlagen</label><select id="git-layers" name="layer_selectors" multiple size="5"><option disabled>record eerst buildtools of configlagen</option></select><small>Bijvoorbeeld tool:node en tool:dotnet. Iedere nieuwe Job neemt deze selectie immutable over.</small></div>
+          <div class="wide"><label>Test-app · services</label><div class="service-editor" id="git-services"></div><button class="small-button" type="button" id="git-add-service" style="margin-top:7px"><span class="material-symbols-outlined" aria-hidden="true">add</span>Service</button><small>Eén container per service, samen in één netwerk per Session (ze bereiken elkaar op servicenaam). Een service met <em>run</em> draait in de image van de Session op haar workspace, na de voorbereidende commando's; een service met <em>image</em> is een kant-en-klare dependency zoals een database. <em>Env</em> is de naam van een bestand op de runner-host: <code>var/env/&lt;naam&gt;.env</code>, bijvoorbeeld gevuld uit 1Password; de inhoud verlaat de host nooit. <code>host.docker.internal</code> en de hosts-regels van de runner zijn in de containers beschikbaar.</small></div>
           <div class="wide panel-actions"><button class="small-button" type="button" data-close-dialog="git-dialog">Annuleren</button><button class="primary" id="git-submit" type="submit">Repository bewaren</button></div>
         </form>
+      </dialog>
+
+      <dialog id="app-logs-dialog">
+        <div class="dialog-head"><div><h2 id="app-logs-title">Logs</h2><p id="app-logs-context">laatste regels · ververst elke 3 s zolang dit open is</p></div><button class="icon-button" type="button" data-close-dialog="app-logs-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+        <pre class="app-logs" id="app-logs-output"></pre>
       </dialog>
 
       <dialog id="mcp-dialog">

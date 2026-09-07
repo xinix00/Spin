@@ -148,6 +148,16 @@ type WorkspaceAcceptor interface {
 	AcceptWorkspace(context.Context, domain.CapsuleRuntime, WorkspaceAcceptance) (WorkspaceAcceptanceResult, error)
 }
 
+// AppServiceHost runs a repository's app services next to a Session's
+// capsule: same image, same workspace volume, an own network per Session,
+// host env files and published ports, so a person can test the app.
+type AppServiceHost interface {
+	StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService) ([]domain.AppServiceRuntime, error)
+	StopAppServices(ctx context.Context, sessionID string) error
+	AppServiceStatus(ctx context.Context, sessionID string) ([]domain.AppServiceRuntime, error)
+	AppServiceLogs(ctx context.Context, sessionID, service string, tail int) (string, error)
+}
+
 type SnapshotRemover interface {
 	RemoveSnapshot(context.Context, domain.CapsuleSnapshot) error
 }

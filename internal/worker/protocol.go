@@ -42,6 +42,10 @@ const (
 	methodImportSnapshot    = "snapshot.import"
 	methodArchiveSnapshot   = "snapshot.archive"
 	methodHasSnapshot       = "snapshot.has"
+	methodStartApp          = "app.start"
+	methodStopApp           = "app.stop"
+	methodAppStatus         = "app.status"
+	methodAppLogs           = "app.logs"
 )
 
 // wireMessage is the single versioned control and stream envelope used in
@@ -87,6 +91,22 @@ type materializePayload struct {
 
 type runtimePayload struct {
 	Runtime domain.CapsuleRuntime `json:"runtime"`
+}
+
+type appPayload struct {
+	Runtime   domain.CapsuleRuntime `json:"runtime,omitempty"`
+	SessionID string                `json:"session_id"`
+	Services  []domain.AppService   `json:"services,omitempty"`
+	Service   string                `json:"service,omitempty"`
+	Tail      int                   `json:"tail,omitempty"`
+}
+
+type appStatusResult struct {
+	Services []domain.AppServiceRuntime `json:"services"`
+}
+
+type appLogsResult struct {
+	Output string `json:"output"`
 }
 
 type enabledPayload struct {

@@ -131,6 +131,34 @@ func (e *RemoteEngine) Cancel(ctx context.Context, recording domain.Recording) e
 	return err
 }
 
+// App services live on the runner that holds the Session's capsule; the
+// runtime's ClientID is the affinity for all four calls.
+func (e *RemoteEngine) StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService) ([]domain.AppServiceRuntime, error) {
+	var result appStatusResult
+	_, err := e.broker.call(ctx, runtime.ClientID, methodStartApp, appPayload{Runtime: runtime, SessionID: sessionID, Services: services}, &result)
+	return result.Services, err
+}
+
+func (e *RemoteEngine) StopAppServicesOn(ctx context.Context, clientID, sessionID string) error {
+	if clientID == "" {
+		return nil
+	}
+	_, err := e.broker.call(ctx, clientID, methodStopApp, appPayload{SessionID: sessionID}, nil)
+	return err
+}
+
+func (e *RemoteEngine) AppServiceStatusOn(ctx context.Context, clientID, sessionID string) ([]domain.AppServiceRuntime, error) {
+	var result appStatusResult
+	_, err := e.broker.call(ctx, clientID, methodAppStatus, appPayload{SessionID: sessionID}, &result)
+	return result.Services, err
+}
+
+func (e *RemoteEngine) AppServiceLogsOn(ctx context.Context, clientID, sessionID, service string, tail int) (string, error) {
+	var result appLogsResult
+	_, err := e.broker.call(ctx, clientID, methodAppLogs, appPayload{SessionID: sessionID, Service: service, Tail: tail}, &result)
+	return result.Output, err
+}
+
 func (e *RemoteEngine) Materialize(ctx context.Context, composition domain.Composition, artifacts []domain.Artifact) (domain.CapsuleRuntime, error) {
 	return e.materialize(ctx, composition, artifacts, nil)
 }

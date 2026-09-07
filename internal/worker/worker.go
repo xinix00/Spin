@@ -519,6 +519,28 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		w.bindStream(request.ID, localStream{process: process})
 		go w.pumpStream(request.ID, process)
 		return streamResponse{StreamID: request.ID}, true, nil
+	case methodStartApp, methodStopApp, methodAppStatus, methodAppLogs:
+		var payload appPayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		host, ok := w.engine.(capsule.AppServiceHost)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot run app services")
+		}
+		switch request.Method {
+		case methodStartApp:
+			services, err := host.StartAppServices(ctx, payload.Runtime, payload.SessionID, payload.Services)
+			return appStatusResult{Services: services}, false, err
+		case methodStopApp:
+			return nil, false, host.StopAppServices(ctx, payload.SessionID)
+		case methodAppStatus:
+			services, err := host.AppServiceStatus(ctx, payload.SessionID)
+			return appStatusResult{Services: services}, false, err
+		default:
+			output, err := host.AppServiceLogs(ctx, payload.SessionID, payload.Service, payload.Tail)
+			return appLogsResult{Output: output}, false, err
+		}
 	case methodImportSnapshot:
 		var payload snapshotPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {

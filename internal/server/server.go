@@ -60,6 +60,8 @@ type Server struct {
 	starts          map[string]*startJob
 	startWait       time.Duration // how long RECORD and EDIT wait before answering with progress
 	startCancelWait time.Duration // how long CANCEL RECORD waits for a stopped start job
+	appMu           sync.Mutex
+	appStarts       map[string]*appStart // app service starts per Session
 	restoreJobMu    sync.Mutex
 	restoreJobs     map[string]*restoreJob
 }
@@ -143,7 +145,7 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 		internalURL:  strings.TrimRight(strings.TrimSpace(options.InternalURL), "/"),
 		attachments:  attachmentStorage, snapshotArchive: options.SnapshotArchive, database: options.Database,
 		loginLimiter: loginLimiter{attempts: map[string]loginAttempt{}}, csrfTokens: csrfTokenCache{values: map[string]string{}},
-		terminals: map[string]map[*activeTerminal]struct{}{}, acpSessions: map[string]*activeACP{}, workflowTokens: map[string]string{}, jobLaunching: map[string]*backgroundJobLaunch{}, launchFailures: map[string]launchFailure{}, launchSweep: launchSweepInterval, backupTickets: map[string]backupTicket{}, uploads: map[string]*chunkedUpload{}, seals: map[string]*sealJob{}, sealWait: sealAnswerWait, starts: map[string]*startJob{}, startWait: startAnswerWait, startCancelWait: startCancelWait, restoreJobs: map[string]*restoreJob{},
+		terminals: map[string]map[*activeTerminal]struct{}{}, acpSessions: map[string]*activeACP{}, workflowTokens: map[string]string{}, jobLaunching: map[string]*backgroundJobLaunch{}, launchFailures: map[string]launchFailure{}, launchSweep: launchSweepInterval, backupTickets: map[string]backupTicket{}, uploads: map[string]*chunkedUpload{}, seals: map[string]*sealJob{}, sealWait: sealAnswerWait, starts: map[string]*startJob{}, startWait: startAnswerWait, startCancelWait: startCancelWait, restoreJobs: map[string]*restoreJob{}, appStarts: map[string]*appStart{},
 	}
 	if restored, err := st.RepairStandingDecisions(); err != nil {
 		logger.Warn("repair standing workflow decisions", "error", err)
@@ -490,6 +492,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/jobs/{jobID}", s.deleteJob)
 	s.mux.HandleFunc("POST /api/deliverables/{deliverableID}/comments", s.createDeliverableComment)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/retry", s.retryWorkflowSession)
+	s.mux.HandleFunc("POST /api/sessions/{sessionID}/app/start", s.startAppHandler)
+	s.mux.HandleFunc("POST /api/sessions/{sessionID}/app/stop", s.stopAppHandler)
+	s.mux.HandleFunc("GET /api/sessions/{sessionID}/app", s.appStatusHandler)
+	s.mux.HandleFunc("GET /api/sessions/{sessionID}/app/{service}/logs", s.appLogsHandler)
 	s.mux.HandleFunc("POST /api/workflow-templates", s.createWorkflowTemplate)
 	s.mux.HandleFunc("PUT /api/workflow-templates/{templateID}", s.updateWorkflowTemplate)
 	s.mux.HandleFunc("DELETE /api/workflow-templates/{templateID}", s.deleteWorkflowTemplate)
