@@ -156,15 +156,14 @@ func codexConfigOptions(t *testing.T) []acpConfigOption {
 }
 
 func sessionModes(current string, ids ...string) *acpSessionModes {
-	modes := &acpSessionModes{CurrentModeID: current}
+	available := make([]map[string]string, 0, len(ids))
 	for _, id := range ids {
-		modes.AvailableModes = append(modes.AvailableModes, struct {
-			ID          string `json:"id"`
-			Name        string `json:"name"`
-			Description string `json:"description"`
-		}{ID: id, Name: id})
+		available = append(available, map[string]string{"id": id, "name": id})
 	}
-	return modes
+	encoded, _ := json.Marshal(map[string]any{"currentModeId": current, "availableModes": available})
+	var modes acpSessionModes
+	_ = json.Unmarshal(encoded, &modes)
+	return &modes
 }
 
 // The four agents report their settings three ways; all fold into the same
@@ -205,6 +204,22 @@ func TestAgentSettingsNormalizeAcrossAgents(t *testing.T) {
 		t.Fatalf("gemini mode setting = %+v", mode)
 	} else if full, wanted := fullAccessMode(mode); full != "yolo" || !wanted {
 		t.Fatalf("gemini full access = %q %v", full, wanted)
+	}
+	// claude-agent-acp (the current Claude adapter): config options with
+	// categories, effort levels, and the full-access mode marked in _meta.
+	var claudeAgent []acpConfigOption
+	_ = json.Unmarshal([]byte(`[{"id":"mode","category":"mode","currentValue":"default","options":[{"value":"default","name":"Manual","_meta":{"kind":"standard"}},{"value":"auto","name":"Auto","_meta":{"kind":"auto_review"}},{"value":"bypassPermissions","name":"Bypass permissions","_meta":{"kind":"full_access"}}]},{"id":"model","category":"model","currentValue":"claude-fable-5-1[1m]","options":[{"value":"default","name":"Default (recommended)"},{"value":"claude-fable-5-1[1m]","name":"Fable"},{"value":"sonnet","name":"Sonnet"}]},{"id":"effort","category":"thought_level","currentValue":"high","options":[{"value":"default"},{"value":"low"},{"value":"medium"},{"value":"high"},{"value":"xhigh"},{"value":"max"}]}]`), &claudeAgent)
+	claudeAgentSettings := acpSettingsOf(claudeAgent, sessionModes("default", "default", "auto", "bypassPermissions"), nil)
+	if folded := (&activeACP{settings: claudeAgentSettings}).agentOptions(); len(folded.Models) != 3 || folded.Models[1].Name != "Fable" || len(folded.ReasoningEfforts) != 6 || folded.ReasoningEfforts[4].Value != "xhigh" || len(folded.Modes) != 3 {
+		t.Fatalf("claude-agent-acp options = %+v", folded)
+	}
+	if mode, _ := (&activeACP{settings: claudeAgentSettings}).setting(acpCategoryMode); mode.Method != "session/set_config_option" || mode.FullAccess != "bypassPermissions" {
+		t.Fatalf("claude-agent-acp mode = %+v", mode)
+	} else if full, wanted := fullAccessMode(mode); full != "bypassPermissions" || !wanted {
+		t.Fatalf("claude-agent-acp full access = %q %v", full, wanted)
+	}
+	if effort, _ := (&activeACP{settings: claudeAgentSettings}).setting(acpCategoryThoughtLevel); effort.ID != "effort" || effort.Current != "high" {
+		t.Fatalf("claude-agent-acp effort = %+v", effort)
 	}
 	// OpenCode: config options for model and mode, no full-access mode.
 	var opencode []acpConfigOption

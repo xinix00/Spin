@@ -157,16 +157,23 @@ func (a *activeACP) markPrimed() {
 
 // acpConfigOption is one session config option as an ACP agent reports it.
 type acpConfigOption struct {
-	ID           string          `json:"id"`
-	Name         string          `json:"name"`
-	Category     string          `json:"category"`
-	Type         string          `json:"type"`
-	CurrentValue json.RawMessage `json:"currentValue"`
-	Options      []struct {
-		Value       string `json:"value"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	} `json:"options"`
+	ID           string           `json:"id"`
+	Name         string           `json:"name"`
+	Category     string           `json:"category"`
+	Type         string           `json:"type"`
+	CurrentValue json.RawMessage  `json:"currentValue"`
+	Options      []acpOptionValue `json:"options"`
+}
+
+// acpOptionValue is one choice of a select option or mode. Newer agents
+// mark what a choice is in _meta.kind ("full_access", "plan", ...).
+type acpOptionValue struct {
+	Value       string `json:"value"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Meta        struct {
+		Kind string `json:"kind"`
+	} `json:"_meta"`
 }
 
 // queuedPrompt is a message the operator wrote while the agent was still
@@ -678,6 +685,9 @@ type acpSessionModes struct {
 		ID          string `json:"id"`
 		Name        string `json:"name"`
 		Description string `json:"description"`
+		Meta        struct {
+			Kind string `json:"kind"`
+		} `json:"_meta"`
 	} `json:"availableModes"`
 }
 
@@ -718,6 +728,9 @@ type acpSetting struct {
 	Current  string
 	Values   []domain.AgentOption
 	Method   string // session/set_mode, session/set_model or session/set_config_option
+	// FullAccess is the value the agent itself marks as full access
+	// (_meta.kind "full_access"), when it does.
+	FullAccess string
 }
 
 // params builds the request that sets this setting to value.
@@ -744,6 +757,9 @@ func acpSettingsOf(options []acpConfigOption, modes *acpSessionModes, models *ac
 		_ = json.Unmarshal(option.CurrentValue, &setting.Current)
 		for _, value := range option.Options {
 			setting.Values = append(setting.Values, domain.AgentOption{Value: value.Value, Name: value.Name, Description: value.Description})
+			if value.Meta.Kind == "full_access" {
+				setting.FullAccess = value.Value
+			}
 		}
 		settings = append(settings, setting)
 	}
@@ -754,6 +770,9 @@ func acpSettingsOf(options []acpConfigOption, modes *acpSessionModes, models *ac
 		setting := acpSetting{ID: "mode", Name: "Mode", Category: acpCategoryMode, Current: modes.CurrentModeID, Method: "session/set_mode"}
 		for _, mode := range modes.AvailableModes {
 			setting.Values = append(setting.Values, domain.AgentOption{Value: mode.ID, Name: mode.Name, Description: mode.Description})
+			if mode.Meta.Kind == "full_access" {
+				setting.FullAccess = mode.ID
+			}
 		}
 		settings = append(settings, setting)
 	}
@@ -798,10 +817,15 @@ func (a *activeACP) setting(category string) (acpSetting, bool) {
 }
 
 // fullAccessMode finds the agent's full-access mode and reports whether
-// switching to it is needed. Agents name it differently: codex-acp
-// "agent-full-access", the Claude Code adapter "bypassPermissions", Gemini
-// CLI "yolo". OpenCode has no such mode; its permissions are configuration.
+// switching to it is needed. An agent that marks it (_meta.kind
+// "full_access", as claude-agent-acp does) is believed; otherwise the name
+// decides: codex-acp "agent-full-access", the old Claude Code adapter
+// "bypassPermissions", Gemini CLI "yolo". OpenCode has no such mode; its
+// permissions are configuration.
 func fullAccessMode(mode acpSetting) (string, bool) {
+	if mode.FullAccess != "" {
+		return mode.FullAccess, mode.FullAccess != mode.Current
+	}
 	for _, value := range mode.Values {
 		lower := strings.ToLower(value.Value)
 		if strings.Contains(lower, "full-access") || strings.Contains(lower, "full_access") || strings.Contains(lower, "bypass") || lower == "yolo" {
