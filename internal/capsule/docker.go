@@ -158,9 +158,12 @@ func (d *Docker) StartInteractive(ctx context.Context, recording domain.Recordin
 		cols = 120
 	}
 	cmd := exec.CommandContext(ctx, d.binary,
-		"exec", "-it", "-w", "/workspace", recording.Runtime.ContainerID,
+		"exec", "-it", "-w", "/workspace", "-e", "TERM=xterm-256color", recording.Runtime.ContainerID,
 		"sh", "-lc", input,
 	)
+	// The Docker CLI prints a "What's next" hint after exec on Docker
+	// Desktop; it would land in the person's terminal.
+	cmd.Env = append(os.Environ(), "DOCKER_CLI_HINTS=false")
 	terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: rows, Cols: cols})
 	if err != nil {
 		return nil, err

@@ -50,7 +50,7 @@ END RECORD
 RECORD credential:codex --scope=user --from=tool:codex
 ```
 
-De Capsule terminal is een echte interactieve PTY, in de browser getekend door xterm.js: toetsaanslagen gaan rauw naar het proces, kleuren, cursorbewegingen en TUI's werken, en de terminal past zich aan het venster aan. Ieder proces krijgt een eigen paneel dat na afloop blijft staan (een login-URL blijft dus leesbaar) tot je het sluit. Dezelfde terminal werkt ook zonder opname: na `USE …` draaien niet-Spin-regels als shell in je USE-compositie, om rond te kijken of in te loggen zonder dat er iets in een laag belandt. Voor Codex op een headless Docker-host start je device-auth daarom rechtstreeks in de webterminal:
+De Capsule terminal is een echte interactieve PTY, in de browser getekend door xterm.js: toetsaanslagen gaan rauw naar het proces, kleuren, cursorbewegingen en TUI's werken, en de terminal past zich aan het venster aan. Zodra een capsule klaar is (je open opname, of je USE-compositie) opent Spin er een shell in; daar typ je direct. De invoerregel onder de terminal is voor Spin-commando's (`RECORD`, `USE`, `END RECORD`, …); een andere regel daar gaat naar de actieve shell. `+ shell` opent een tweede shell in dezelfde capsule en ieder paneel blijft na afloop staan (een login-URL blijft dus leesbaar) tot je het sluit. In een USE-compositie belandt niets in een laag: dat is de plek om rond te kijken of in te loggen. Voor Codex op een headless Docker-host start je device-auth daarom rechtstreeks in de webterminal:
 
 ```text
 codex login --device-auth

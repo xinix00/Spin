@@ -79,7 +79,7 @@ function openDialog(id){const dialog=document.getElementById(id);if(dialog&&!dia
 function closeDialog(id){const dialog=document.getElementById(id);if(dialog?.open)dialog.close();}
 function openConsole(prefill=''){
   openDialog('capsule-dialog');
-  requestAnimationFrame(()=>{const terminal=document.getElementById('terminal'),input=document.getElementById('command');terminal.scrollTop=terminal.scrollHeight;if(prefill)input.value=prefill;input.focus();});
+  requestAnimationFrame(()=>{const terminal=document.getElementById('terminal'),input=document.getElementById('command');terminal.scrollTop=terminal.scrollHeight;ensureShell();if(prefill){input.value=prefill;input.focus();}else focusTerminal();});
 }
 function syntaxLanguage(hint=''){
   const aliases={js:'javascript',mjs:'javascript',cjs:'javascript',jsx:'javascript',javascript:'javascript',ts:'typescript',tsx:'typescript',typescript:'typescript',go:'go',cs:'csharp','c#':'csharp',csharp:'csharp',java:'java',c:'c',h:'c',cc:'cpp',cpp:'cpp',cxx:'cpp',hpp:'cpp',rs:'rust',rust:'rust',swift:'swift',kt:'kotlin',kts:'kotlin',kotlin:'kotlin',php:'php',py:'python',python:'python',rb:'ruby',ruby:'ruby',sh:'shell',bash:'shell',zsh:'shell',shell:'shell',json:'json',jsonc:'json',yaml:'yaml',yml:'yaml',toml:'toml',html:'markup',htm:'markup',xml:'markup',svg:'markup',vue:'markup',svelte:'markup',razor:'markup',cshtml:'markup',markup:'markup',css:'css',scss:'css',sass:'css',less:'css',sql:'sql',md:'markdown',markdown:'markdown',mmd:'mermaid',mermaid:'mermaid',dockerfile:'docker',docker:'docker'};
@@ -592,12 +592,12 @@ function updateTerminalControls(){
   const selected=activeTerminal(),live=liveTerminals().length,input=document.getElementById('command'),channels=document.getElementById('terminal-channels'),recording=activeRecording(),composition=activeComposition(),target=recording||composition;
   document.getElementById('terminal-interrupt').hidden=!selected||selected.exited;
   document.getElementById('terminal-submit').textContent=selected&&!selected.exited?'Send':'Run';
-  input.placeholder=selected&&!selected.exited?`regel naar ${selected.label} · of typ direct in de terminal`:(target&&live?'nieuw parallel proces':(composition&&!recording?'sh · ls · codex login':'USE tool:codex WITH tool:dotnet'));
+  input.placeholder=selected&&!selected.exited?`Spin-commando · andere regels gaan naar ${selected.label}`:(target?'Spin-commando · andere regels openen een shell':'RECORD tool:naam · USE tool:codex WITH tool:dotnet');
   channels.hidden=!target&&!terminalSessions.size;
-  channels.innerHTML=[...terminalSessions.values()].map(session=>`<button class="channel ${session.id===activeTerminalID?'active':''} ${session.exited?'exited':''}" data-terminal-id="${esc(session.id)}">${esc(session.label)} · ${esc(session.line.slice(0,28))}${session.exited?` · exit ${esc(String(session.exitCode??'?'))}`:''}<span class="channel-close" data-close-terminal="${esc(session.id)}" title="Sluiten">✕</span></button>`).join('')+(target?'<button class="channel" id="new-terminal">+ PTY</button>':'');
+  channels.innerHTML=[...terminalSessions.values()].map(session=>`<button class="channel ${session.id===activeTerminalID?'active':''} ${session.exited?'exited':''}" data-terminal-id="${esc(session.id)}">${esc(session.label)} · ${esc(session.title.slice(0,28))}${session.exited?` · exit ${esc(String(session.exitCode??'?'))}`:''}<span class="channel-close" data-close-terminal="${esc(session.id)}" title="Sluiten">✕</span></button>`).join('')+(target?'<button class="channel" id="new-terminal">+ shell</button>':'');
   channels.querySelectorAll('[data-terminal-id]').forEach(button=>button.onclick=()=>chooseTerminal(button.dataset.terminalId));
   channels.querySelectorAll('[data-close-terminal]').forEach(button=>button.onclick=event=>{event.stopPropagation();closeTerminalPane(button.dataset.closeTerminal);});
-  const add=channels.querySelector('#new-terminal');if(add)add.onclick=chooseNewTerminal;
+  const add=channels.querySelector('#new-terminal');if(add)add.onclick=()=>{const target=terminalTarget();if(target)startTerminalCommand(target,shellCommand,{title:'shell'});else chooseNewTerminal();};
   const status=document.getElementById('terminal-status');
   if(live){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>${live} LIVE PTY</span>`;}
   else if(recording){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>REC ${esc(recording.kind)}:${esc(recording.name)}</span>`;}
@@ -610,24 +610,37 @@ function finishTerminal(session,exitCode,refreshState=true){
   updateTerminalControls();
   if(refreshState)refresh(true);
 }
+// The terminal is a shell by default: as soon as a capsule is ready (the
+// open recording, or the USE composition) one is opened in it, and every
+// line that is not a Spin command goes there. Extra shells come from + PTY.
+const shellCommand='if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -il; fi';
+let shellAutoTarget='';
+function terminalTarget(){const recording=activeRecording();if(recording)return recording.runtime?.container_id?{...recording,kind:'recording'}:null;return activeComposition();}
+function ensureShell(){
+  const dialog=document.getElementById('capsule-dialog'),target=terminalTarget();
+  if(!dialog?.open||!target)return;
+  if(liveTerminals().some(session=>session.targetID===target.id)||shellAutoTarget===target.id)return;
+  shellAutoTarget=target.id;startTerminalCommand(target,shellCommand,{title:'shell'});
+}
+function focusTerminal(){const session=activeTerminal();if(session&&!session.exited){session.term.focus();return;}document.getElementById('command').focus();}
 // startTerminalCommand opens a PTY on the given target: the open recording
 // (recorded into the layer) or the operator's USE composition (not recorded).
-function startTerminalCommand(target,line){
+function startTerminalCommand(target,line,options={}){
   if(liveTerminals().length>=8){print('error','Deze Capsule heeft al 8 live PTY-processen.');return;}
-  const id=`terminal-${++terminalSequence}`,label=`T${terminalSequence}`,path=target.kind==='composition'?`/api/compositions/${encodeURIComponent(target.id)}/terminal`:`/api/recordings/${encodeURIComponent(target.id)}/terminal`;
+  const id=`terminal-${++terminalSequence}`,label=`T${terminalSequence}`,title=options.title||line,path=target.kind==='composition'?`/api/compositions/${encodeURIComponent(target.id)}/terminal`:`/api/recordings/${encodeURIComponent(target.id)}/terminal`;
   const protocol=location.protocol==='https:'?'wss:':'ws:',socket=new WebSocket(`${protocol}//${location.host}${path}`);
   const pane=document.createElement('div');pane.className='pty-pane';ptyStage().appendChild(pane);
   const mono=(getComputedStyle(document.documentElement).getPropertyValue('--mono')||'').trim()||'ui-monospace, Menlo, monospace';
   const term=new Terminal({cursorBlink:true,fontFamily:mono,fontSize:12.5,lineHeight:1.15,scrollback:5000,theme:terminalTheme,convertEol:false});
   const fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open(pane);
-  const session={id,label,socket,targetID:target.id,line,exited:false,exitCode:null,pane,term,fit,ready:false};
-  terminalSessions.set(id,session);activeTerminalID=id;printTerminal(session,'command',line);updateTerminalControls();showTerminalPane(session);
+  const session={id,label,socket,targetID:target.id,line,title,exited:false,exitCode:null,pane,term,fit,ready:false};
+  terminalSessions.set(id,session);activeTerminalID=id;printTerminal(session,'command',title==='shell'?`shell in ${target.kind==='composition'?'USE '+target.selector:'opname '+target.kind+':'+target.name}`:line);updateTerminalControls();showTerminalPane(session);
   const send=message=>{if(socket.readyState===WebSocket.OPEN&&!session.exited)socket.send(JSON.stringify(message));};
   term.onData(data=>send({type:'input',data}));
   term.onResize(({rows,cols})=>{if(session.ready)send({type:'resize',rows,cols});});
   socket.onopen=()=>{fitTerminal(session);socket.send(JSON.stringify({type:'start',command:line,rows:term.rows,cols:term.cols}));};
   socket.onmessage=event=>{let message;try{message=JSON.parse(event.data);}catch(_){print('error','Ongeldig terminalframe ontvangen.');return;}
-    if(message.type==='ready'){session.ready=true;printTerminal(session,'system','PTY connected');term.focus();return;}
+    if(message.type==='ready'){session.ready=true;term.focus();if(options.initial)send({type:'input',data:String(options.initial)+'\r'});return;}
     if(message.type==='output'){term.write(message.data);return;}
     if(message.type==='error'){term.write(`\r\n\x1b[31m${message.error||'Interactieve terminalfout'}\x1b[0m\r\n`);printTerminal(session,'error',message.error||'Interactieve terminalfout');finishTerminal(session,null);return;}
     if(message.type==='exit'){term.write(`\r\n\x1b[2m[exit ${message.exit_code}]\x1b[0m\r\n`);printTerminal(session,message.exit_code===0?'system':'error',`exit ${message.exit_code}`);finishTerminal(session,message.exit_code);}
@@ -643,13 +656,11 @@ function activeComposition(){const composition=snapshot.compositions.find(item=>
 
 async function execute(line){
   line=String(line||'').trim(); if(!line)return;
-  const recording=activeRecording();
-  if(recording&&!isSpinCommand(line)){
-    if(!recording.runtime?.container_id){print('command',line);print('error',`De opname ${recording.kind}:${recording.name} start nog; wacht tot de capsule er is voordat je commando's typt.`);return;}
-    startTerminalCommand({...recording,kind:'recording'},line);return;
+  if(!isSpinCommand(line)){
+    const recording=activeRecording(),target=terminalTarget(),live=activeTerminal();
+    if(recording&&!target){print('command',line);print('error',`De opname ${recording.kind}:${recording.name} start nog; wacht tot de capsule er is voordat je commando's typt.`);return;}
+    if(target){if(live&&!live.exited&&live.targetID===target.id){sendTerminalInput(line);}else{startTerminalCommand(target,shellCommand,{title:'shell',initial:line});}return;}
   }
-  const composition=activeComposition();
-  if(!recording&&composition&&!isSpinCommand(line)){startTerminalCommand(composition,line);return;}
   print('command',line);
   // Show that the work is under way the moment the command leaves, not once
   // the server answers: END RECORD and RECORD/EDIT are jobs that may take a
@@ -714,6 +725,7 @@ function render(){
 }
 
 function renderRecording(){
+  ensureShell();
   const recording=activeRecording(),status=region('terminal-status'),root=document.getElementById('recording-section');
   if(!recording){status.className='terminal-status';status.innerHTML='<span class="rec-dot"></span><span>idle</span>';root.innerHTML='<h3>Recorder</h3><div class="empty">Geen actieve opname.</div>';updateTerminalControls();return;}
   if(!terminalSessions.size){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>REC ${esc(recording.kind)}:${esc(recording.name)}</span>`;}
@@ -1242,7 +1254,7 @@ document.getElementById('restore-backup-input').onchange=event=>restorePortableB
 document.getElementById('add-snapshot').onclick=()=>openConsole('RECORD <kind>:<name> --scope=user');
 document.getElementById('record-git-tool').onclick=()=>openConsole('RECORD tool:git --scope=global --enable=git');
 document.getElementById('list-snapshots').onclick=()=>refresh(true);
-document.getElementById('console-form').onsubmit=event=>{event.preventDefault();const input=document.getElementById('command'),line=input.value;input.value='';if(activeTerminal())sendTerminalInput(line);else execute(line);};
+document.getElementById('console-form').onsubmit=event=>{event.preventDefault();const input=document.getElementById('command'),line=input.value;input.value='';execute(line);};
 document.getElementById('terminal-interrupt').onclick=interruptTerminal;
 document.getElementById('capsule-dialog').addEventListener('cancel',event=>{const session=activeTerminal();if(session&&!session.exited&&document.activeElement?.closest('.pty-pane')){event.preventDefault();}});
 new ResizeObserver(()=>fitTerminal(activeTerminal())).observe(document.getElementById('pty-stage'));
