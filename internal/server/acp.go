@@ -119,6 +119,10 @@ type activeACP struct {
 	// modes is the session mode state of session/new, for agents that
 	// report modes there instead of as a config option (Claude Code).
 	modes *acpSessionModes
+	// models is the session model state of session/new, for agents that
+	// report models there and switch them with session/set_model (Claude
+	// Code) instead of a "model" config option.
+	models *acpSessionModels
 	// primed is set once this agent session has read the phase's full
 	// prompt. An agent session is not durable (a deploy or runner restart
 	// makes a new one), and a resumed one must not act on a bare answer or
@@ -560,6 +564,7 @@ func (s *Server) openACP(composition domain.Composition, operator string, mcpSer
 		SessionID     string            `json:"sessionId"`
 		ConfigOptions []acpConfigOption `json:"configOptions"`
 		Modes         *acpSessionModes  `json:"modes"`
+		Models        *acpSessionModels `json:"models"`
 	}
 	if err := json.Unmarshal(created, &newSession); err != nil || strings.TrimSpace(newSession.SessionID) == "" {
 		active.close()
@@ -572,6 +577,7 @@ func (s *Server) openACP(composition domain.Composition, operator string, mcpSer
 	active.agentSessionID = newSession.SessionID
 	active.configOptions = newSession.ConfigOptions
 	active.modes = newSession.Modes
+	active.models = newSession.Models
 	active.mu.Unlock()
 	// The capsule is the sandbox: a throwaway container without the host,
 	// without Git credentials, and with everything the agent does discarded
@@ -678,6 +684,17 @@ type acpSessionModes struct {
 	} `json:"availableModes"`
 }
 
+// acpSessionModels is the session model state some agents report at
+// session/new instead of a "model" config option.
+type acpSessionModels struct {
+	CurrentModelID  string `json:"currentModelId"`
+	AvailableModels []struct {
+		ID          string `json:"modelId"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	} `json:"availableModels"`
+}
+
 // fullAccessMode finds the agent's full-access mode, from the session mode
 // state or the "mode" config option, and reports whether switching to it is
 // needed.
@@ -736,25 +753,55 @@ func (a *activeACP) agentOptions() domain.AgentOptions {
 			options.Modes = append(options.Modes, domain.AgentOption{Value: mode.ID, Name: mode.Name, Description: mode.Description})
 		}
 	}
+	if len(options.Models) == 0 && a.models != nil {
+		for _, model := range a.models.AvailableModels {
+			options.Models = append(options.Models, domain.AgentOption{Value: model.ID, Name: model.Name, Description: model.Description})
+		}
+	}
 	return options
 }
 
-// applyConfig sets the phase's model and reasoning effort on the agent's
-// session. Empty values keep the agent's own default.
-func (a *activeACP) applyConfig(model, reasoningEffort string) error {
-	for _, setting := range []struct{ id, value string }{{"model", model}, {"reasoning_effort", reasoningEffort}} {
-		value := strings.TrimSpace(setting.value)
-		if value == "" {
-			continue
+// hasConfigOption reports whether the agent offered a config option with id.
+func (a *activeACP) hasConfigOption(id string) bool {
+	for _, option := range a.configOptions {
+		if option.ID == id {
+			return true
 		}
+	}
+	return false
+}
+
+// applyConfig sets the phase's model and reasoning effort on the agent's
+// session. Empty values keep the agent's own default. The model goes the
+// way the agent offered it: a "model" config option, or session/set_model
+// for an agent that reported its models as session state. A reasoning
+// effort is only sent when the agent offered one, or nothing at all is
+// known about what it offers.
+func (a *activeACP) applyConfig(model, reasoningEffort string) error {
+	a.mu.Lock()
+	sessionID, models, advertised := a.agentSessionID, a.models, len(a.configOptions) > 0 || a.models != nil
+	a.mu.Unlock()
+	set := func(method string, params map[string]any, what, value string) error {
+		params["sessionId"] = sessionID
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_, err := a.request(ctx, "session/set_config_option", map[string]any{
-			"sessionId": a.agentSessionID, "configId": setting.id, "value": value,
-		})
+		_, err := a.request(ctx, method, params)
 		cancel()
 		if err != nil {
-			return fmt.Errorf("agent refused %s %q: %w", setting.id, value, err)
+			return fmt.Errorf("agent refused %s %q: %w", what, value, err)
 		}
+		return nil
+	}
+	if model = strings.TrimSpace(model); model != "" {
+		if !a.hasConfigOption("model") && models != nil {
+			if err := set("session/set_model", map[string]any{"modelId": model}, "model", model); err != nil {
+				return err
+			}
+		} else if err := set("session/set_config_option", map[string]any{"configId": "model", "value": model}, "model", model); err != nil {
+			return err
+		}
+	}
+	if reasoningEffort = strings.TrimSpace(reasoningEffort); reasoningEffort != "" && (a.hasConfigOption("reasoning_effort") || !advertised) {
+		return set("session/set_config_option", map[string]any{"configId": "reasoning_effort", "value": reasoningEffort}, "reasoning_effort", reasoningEffort)
 	}
 	return nil
 }

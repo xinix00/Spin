@@ -208,3 +208,45 @@ func TestFullAccessModeIsChosenWhenOffered(t *testing.T) {
 		t.Fatalf("Claude Code full access = %q, %v", mode, ok)
 	}
 }
+
+// Claude Code reports its models as session state and switches them with
+// session/set_model; it offers no reasoning effort, so none is sent.
+func TestApplyConfigUsesSetModelForSessionModels(t *testing.T) {
+	var models acpSessionModels
+	if err := json.Unmarshal([]byte(`{"currentModelId":"claude-sonnet-5","availableModels":[{"modelId":"claude-sonnet-5","name":"Sonnet 5"},{"modelId":"claude-opus-5","name":"Opus 5","description":"Most capable"}]}`), &models); err != nil {
+		t.Fatal(err)
+	}
+	if folded := (&activeACP{agentName: "Claude Code", models: &models}).agentOptions(); len(folded.Models) != 2 || folded.Models[1].Value != "claude-opus-5" || folded.Models[1].Description != "Most capable" {
+		t.Fatalf("models from session state = %+v", folded.Models)
+	}
+	process := newScriptedACPProcess()
+	active := newTestActiveACP(process)
+	active.models = &models
+	defer active.close()
+	requests := acpRequests(t, process)
+	done := make(chan error, 1)
+	go func() { done <- active.applyConfig("claude-opus-5", "high") }()
+	set := nextACPRequest(t, requests, "session/set_model")
+	var params struct {
+		SessionID string `json:"sessionId"`
+		ModelID   string `json:"modelId"`
+	}
+	_ = json.Unmarshal(set.Params, &params)
+	if params.SessionID != "agent-session" || params.ModelID != "claude-opus-5" {
+		t.Fatalf("set_model params = %s", set.Params)
+	}
+	process.send(map[string]any{"jsonrpc": "2.0", "id": set.ID, "result": map[string]any{}})
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("applyConfig did not return")
+	}
+	select {
+	case extra := <-requests:
+		t.Fatalf("a reasoning effort the agent never offered was sent: %s", extra.Params)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
