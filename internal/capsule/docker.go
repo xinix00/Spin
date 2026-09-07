@@ -234,12 +234,21 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 		return domain.CapsuleSnapshot{}, errors.New("recording has no live Docker capsule")
 	}
 	tag := "spin/artifact:" + safeName(recording.ID)
-	_, err := d.control(ctx,
-		"commit", "--pause=true",
-		"--change", "LABEL spin.managed=true",
-		"--change", "LABEL spin.recording_id="+recording.ID,
-		recording.Runtime.ContainerID, tag,
-	)
+	d.tidyCapsule(ctx, recording.Runtime.ContainerID)
+	var err error
+	if recording.ReplacesArtifactID != "" {
+		// An EDIT replaces files of the version below; committing would keep
+		// the old ones in the lower layer forever. Flatten the filesystem
+		// into one layer instead, so the image is as big as what is in it.
+		err = d.flattenCapsule(ctx, recording, tag)
+	} else {
+		_, err = d.control(ctx,
+			"commit", "--pause=true",
+			"--change", "LABEL spin.managed=true",
+			"--change", "LABEL spin.recording_id="+recording.ID,
+			recording.Runtime.ContainerID, tag,
+		)
+	}
 	if err != nil {
 		// A retried END RECORD: the container was already committed and removed
 		// by an attempt whose answer never reached the server. The image tagged
@@ -262,6 +271,47 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 		Restorable:           true,
 		IncludesProcessState: false,
 	}, nil
+}
+
+// tidyCapsule drops caches that have no business in a layer before it is
+// sealed: package-manager download caches and temp files. Failure is not
+// fatal; the layer is then merely bigger.
+func (d *Docker) tidyCapsule(ctx context.Context, containerID string) {
+	_, _, _ = d.run(ctx, "exec", containerID, "sh", "-c", "rm -rf /root/.npm/_cacache /root/.cache/pip /root/.cache/go-build /tmp/* /var/cache/apk/* 2>/dev/null; true")
+}
+
+// flattenCapsule seals a capsule as a single-layer image: the container's
+// filesystem is exported and imported again, so files replaced during an
+// EDIT are gone instead of shadowed in a lower layer.
+func (d *Docker) flattenCapsule(ctx context.Context, recording domain.Recording, tag string) error {
+	containerID := recording.Runtime.ContainerID
+	if _, err := d.control(ctx, "pause", containerID); err != nil {
+		return err
+	}
+	defer func() { _, _, _ = d.run(ctx, "unpause", containerID) }()
+	export := exec.CommandContext(ctx, d.binary, "export", containerID)
+	imports := exec.CommandContext(ctx, d.binary, "import",
+		"--change", "LABEL spin.managed=true",
+		"--change", "LABEL spin.recording_id="+recording.ID,
+		"-", tag)
+	pipe, err := export.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	imports.Stdin = pipe
+	var exportErr, importErr bytes.Buffer
+	export.Stderr, imports.Stderr = &exportErr, &importErr
+	if err := export.Start(); err != nil {
+		return fmt.Errorf("docker export: %w", err)
+	}
+	if err := imports.Run(); err != nil {
+		_ = export.Wait()
+		return fmt.Errorf("docker import %s: %s: %w", tag, strings.TrimSpace(importErr.String()), err)
+	}
+	if err := export.Wait(); err != nil {
+		return fmt.Errorf("docker export %s: %s: %w", containerID, strings.TrimSpace(exportErr.String()), err)
+	}
+	return nil
 }
 
 // Cancel removes the recording's capsule. Without a known container ID it

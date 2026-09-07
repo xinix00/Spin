@@ -196,7 +196,7 @@ ACP PROBE [composition-id]
 STOP USE [composition-id]
 ```
 
-Houd een laag klein: Docker bewaart in een EDIT-laag alleen wat erbij komt, maar wat je vervangt blijft in de laag eronder staan, en npm laat zijn downloadcache achter. Ruim daarom vóór `END RECORD` op met `npm cache clean --force && rm -rf /root/.npm/_cacache` (en voor .NET `rm -rf /root/.nuget/packages` als de packages niet in de laag hoeven).
+Houd een laag klein. Bij `END RECORD` van een EDIT slaat Spin de image plat tot één laag (export en import van het bestandssysteem), zodat bestanden die je vervangen hebt echt verdwijnen in plaats van te blijven staan in de laag eronder; bij elke seal verwijdert Spin bovendien de downloadcaches van npm, pip en Go en `/tmp`. Wat je zelf niet in de laag wilt (bijvoorbeeld `/root/.nuget/packages`) verwijder je vóór `END RECORD`.
 
 Een laag is een immutable snapshot, dus bewerken is opnieuw opnemen. `EDIT` (de knop **Bewerk** op een laag) start een opname van de huidige versie met al haar instellingen: scope, profiel, `ENABLES` en entrypoint komen mee, en de opname begint in de bestaande snapshot. Je typt alleen wat erbij moet:
 
