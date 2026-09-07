@@ -620,8 +620,8 @@ type Job struct {
 	AttachmentIDs      []string          `json:"attachment_ids,omitempty"`
 	TemplateID         string            `json:"template_id,omitempty"`
 	TemplateSnapshot   *WorkflowTemplate `json:"template_snapshot,omitempty"`
-	// Finalize is the landing chosen for this Job at its final accept, when
-	// it differs from the Template.
+	// Finalize is how this Job lands, as the Template's transition into the
+	// final phase decided it.
 	Finalize            string         `json:"finalize,omitempty"`
 	EnvironmentSelector string         `json:"environment_selector,omitempty"`
 	Model               string         `json:"model,omitempty"`

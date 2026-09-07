@@ -467,35 +467,6 @@ func (s *Store) workflowLocked(session domain.Session) (domain.Job, domain.Workf
 	return job, template, run, phase, nil
 }
 
-// SetJobFinalize decides for one Job how it lands: its frozen Template copy
-// gets the finalizer phase for that choice, so the phase that runs next is
-// the chosen one. Only possible while the Job is still open.
-func (s *Store) SetJobFinalize(jobID, finalize string) (domain.Job, error) {
-	finalize, err := normalizeWorkflowFinalize(finalize)
-	if err != nil {
-		return domain.Job{}, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	job, ok := s.state.Jobs[strings.TrimSpace(jobID)]
-	if !ok {
-		return domain.Job{}, ErrNotFound
-	}
-	if job.Status == domain.JobDone || job.Status == domain.JobCancelled {
-		return domain.Job{}, fmt.Errorf("the Job is closed: %w", ErrConflict)
-	}
-	template, ok := s.workflowTemplateForJobLocked(job)
-	if !ok {
-		return domain.Job{}, fmt.Errorf("Job has no workflow Template: %w", ErrNotFound)
-	}
-	template = templateWithFinalizer(template, finalize)
-	job.TemplateSnapshot = &template
-	job.Finalize = finalize
-	job.UpdatedAt = time.Now().UTC()
-	s.state.Jobs[job.ID] = job
-	return job, s.saveLocked()
-}
-
 // workflowLandingFor is the landing the phase's transition for this
 // outcome asks for, if any.
 func workflowLandingFor(phase domain.WorkflowPhase, outcome string) string {

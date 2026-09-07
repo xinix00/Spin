@@ -170,46 +170,6 @@ func TestAssignJobHandsItToAKnownUser(t *testing.T) {
 	}
 }
 
-// The final accept may choose how the Job lands; the Job's frozen Template
-// copy then carries that finalizer.
-func TestSetJobFinalizeSwapsTheFinalizerOfTheJob(t *testing.T) {
-	st, err := Open("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
-	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "agent", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "agent-acp"}}})
-	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "shop", RemoteURL: "https://github.com/derek/shop.git", DefaultRef: "develop"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Code", Phases: []domain.WorkflowPhase{{ID: "dev", Name: "Dev", Instructions: "Bouw", AllowChanges: true, Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone, AskUser: true}, Reject: domain.WorkflowTransition{Target: "SELF"}}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Objective: "Werkend", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	job, err := st.SetJobFinalize(created.Job.ID, "merge")
-	if err != nil {
-		t.Fatal(err)
-	}
-	last := job.TemplateSnapshot.Phases[len(job.TemplateSnapshot.Phases)-1]
-	if job.Finalize != "merge" || last.Action == nil || last.Action.Type != domain.WorkflowActionGitMerge || last.Name != "Mergen" {
-		t.Fatalf("finalizer after choice = %+v (job finalize %q)", last, job.Finalize)
-	}
-	if _, err := st.SetJobFinalize(created.Job.ID, "fax"); err == nil {
-		t.Fatal("an unknown landing was accepted")
-	}
-	// The Template itself is untouched.
-	for _, stored := range st.Snapshot().WorkflowTemplates {
-		if stored.ID == template.ID && stored.Finalize == "merge" {
-			t.Fatal("choosing for one Job changed the Template")
-		}
-	}
-}
-
 // A step whose accept ends the Job says how it lands, so an agent that
 // accepts on its own does not need a person to choose.
 func TestStepTargetCarriesTheLanding(t *testing.T) {
