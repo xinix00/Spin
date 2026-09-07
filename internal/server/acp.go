@@ -626,6 +626,23 @@ func currentMode(modes *acpSessionModes, options []acpConfigOption) string {
 	return ""
 }
 
+// setEnablementCommandHandler sets the entrypoint of a capability a layer
+// ENABLES, for a recording that was made without --command.
+func (s *Server) setEnablementCommandHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Command string `json:"command"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	updated, err := s.store.SetArtifactEnablementCommand(r.PathValue("artifactID"), r.PathValue("name"), req.Command)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
 // setAgentSettingsHandler stores the chosen mode, model and reasoning effort
 // on the layer that carries the agent, whichever layer of its closure the
 // request names.

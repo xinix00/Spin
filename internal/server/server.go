@@ -462,6 +462,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/artifacts/{artifactID}", s.deleteArtifact)
 	s.mux.HandleFunc("POST /api/artifacts/{artifactID}/acp/options", s.fetchAgentOptionsHandler)
 	s.mux.HandleFunc("PUT /api/artifacts/{artifactID}/acp/settings", s.setAgentSettingsHandler)
+	s.mux.HandleFunc("PUT /api/artifacts/{artifactID}/enablements/{name}", s.setEnablementCommandHandler)
 	s.mux.HandleFunc("POST /api/recordings", s.createRecording)
 	s.mux.HandleFunc("POST /api/recordings/{recordingID}/commands", s.appendRecordingCommand)
 	s.mux.HandleFunc("GET /api/recordings/{recordingID}/terminal", s.recordingTerminal)

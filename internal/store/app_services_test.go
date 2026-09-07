@@ -248,3 +248,24 @@ func TestResetUserPasswordEndsTheUsersSessions(t *testing.T) {
 		t.Fatalf("stored user = %+v, %v", stored, err)
 	}
 }
+
+// A layer recorded with --enable=acp but without --command gets its
+// entrypoint afterwards; an EDIT of the layer inherits it.
+func TestEnablementCommandCanBeSetAfterwards(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claude := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "claude", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "acp"}}})
+	if _, err := st.SetArtifactEnablementCommand(claude.ID, "git", "x"); err == nil {
+		t.Fatal("set a command on a capability the layer does not enable")
+	}
+	updated, err := st.SetArtifactEnablementCommand(claude.ID, "acp", " claude-code-acp ")
+	if err != nil || updated.Enables[0].Command != "claude-code-acp" || updated.Enables[0].Transport != "stdio" {
+		t.Fatalf("updated enablement = %+v, %v", updated.Enables, err)
+	}
+	edited := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "claude", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{claude.ID}, Enables: updated.Enables, ReplacesArtifactID: claude.ID})
+	if edited.Enables[0].Command != "claude-code-acp" {
+		t.Fatalf("EDIT lost the command: %+v", edited.Enables)
+	}
+}

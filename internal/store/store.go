@@ -2484,6 +2484,36 @@ func (s *Store) BindSessionClient(sessionID, clientID string) (domain.Session, e
 	return session, s.saveLocked()
 }
 
+// SetArtifactEnablementCommand sets the entrypoint of a capability the
+// layer ENABLES, after the fact: the command is metadata of the layer, not
+// content of its snapshot, and a recording made without --command would
+// otherwise be stuck. Later versions (EDIT) inherit it.
+func (s *Store) SetArtifactEnablementCommand(artifactID, name, command string) (domain.Artifact, error) {
+	name = normalizeName(name)
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return domain.Artifact{}, fmt.Errorf("command is required: %w", ErrConflict)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	artifact, ok := s.state.Artifacts[artifactID]
+	if !ok {
+		return domain.Artifact{}, ErrNotFound
+	}
+	for index := range artifact.Enables {
+		if artifact.Enables[index].Name != name {
+			continue
+		}
+		artifact.Enables[index].Command = command
+		if name == "acp" && artifact.Enables[index].Transport == "" {
+			artifact.Enables[index].Transport = "stdio"
+		}
+		s.state.Artifacts[artifact.ID] = artifact
+		return artifact, s.saveLocked()
+	}
+	return domain.Artifact{}, fmt.Errorf("layer does not ENABLE %s: %w", name, ErrConflict)
+}
+
 // SetArtifactAgentSettings stores how Sessions on the layer start its agent.
 // Only the layer's creator, or an admin through the server, changes it.
 func (s *Store) SetArtifactAgentSettings(artifactID string, settings domain.AgentSettings) (domain.Artifact, error) {
