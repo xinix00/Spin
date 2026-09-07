@@ -256,7 +256,7 @@ function renderChatBusy(){const ready=chatState.socket?.readyState===WebSocket.O
   // can be silent for minutes, and silence for much longer is worth seeing.
   const activity=()=>{if(!label)return;if(!chatState.busy){label.textContent='ready';label.title='';return;}const since=chatState.lastActivity?Math.max(0,Math.round((Date.now()-new Date(chatState.lastActivity).getTime())/1000)):null,short=since==null?'':since<60?`${since}s`:`${Math.floor(since/60)}m${String(since%60).padStart(2,'0')}s`;label.textContent=`${chatState.queued?`working +${chatState.queued}`:'working'}${short?` · ${short}`:''}`;label.title=`${chatState.queued?`${chatState.queued} bericht(en) in wachtrij · `:''}laatste activiteit ${short||'onbekend'} geleden`;label.classList.toggle('stale',since!=null&&since>180);};
   activity();clearInterval(chatState.activityTimer);if(chatState.busy)chatState.activityTimer=setInterval(activity,1000);
-  document.getElementById('chat-input').placeholder=chatState.busy?'Stuur een bericht · het gaat in de wachtrij voor de volgende turn':'Bericht aan de agent';}
+  document.getElementById('chat-input').placeholder='Stuur een bericht';}
 function sendChat(message){if(chatState.socket?.readyState===WebSocket.OPEN)chatState.socket.send(JSON.stringify(message));}
 function connectACPChat(sessionID){
   chatState.manualClose=false;const protocol=location.protocol==='https:'?'wss:':'ws:',socket=new WebSocket(`${protocol}//${location.host}/api/sessions/${encodeURIComponent(sessionID)}/acp`);chatState.socket=socket;
