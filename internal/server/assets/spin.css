@@ -54,3 +54,4 @@ input,textarea,select,.job-state-tabs,.segments{background:#11161c}.job,.templat
 .question-item legend{float:none;width:auto;max-width:100%;padding:0 4px;font-size:12.5px;line-height:1.4}
 .question-item{overflow-wrap:anywhere}
 .agent-settings{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}.agent-setting{display:flex;align-items:center;gap:6px;margin:0;font-size:10.5px}.agent-setting span{color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-size:9.5px}.agent-setting select{width:auto;max-width:260px;padding:4px 7px;font-size:11px}
+.tool-terminal{max-height:none;color:#8e9b94}

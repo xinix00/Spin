@@ -198,7 +198,7 @@ function renderToolBody(tool){
     else if(item?.type==='diff'){
       const file=toolDiffFile(item,tool),changePath=file.path;
       sections.push(toolSection('Change',`<button class="tool-diff-link" type="button" data-open-change="${esc(changePath)}"><span>${esc(changePath||'file')}</span><span class="diff-add">+${file.added}</span><span class="diff-del">−${file.deleted}</span></button><div class="tool-change-preview">${renderDiff(file)}</div><div class="tool-diff-note">Klik op het bestand voor de volledige Git-diff.</div>`));
-    } else if(item?.type==='terminal')sections.push(toolSection('Terminal',`<code>${esc(item.terminalId||'attached')}</code>`));
+    } else if(item?.type==='terminal')sections.push(toolSection('Terminal',`<pre class="tool-code tool-terminal">${esc(item.terminalId||'attached')}</pre>`));
   });
   if(tool.rawOutput!=null){const result=commandResult(tool.rawOutput);if(!contentTexts.includes(result.text)){const body=tool.kind==='read'&&path&&typeof tool.rawOutput==='string'?sourceCode(result.text,path,'tool-code tool-output syntax-code'):`<pre class="tool-code tool-output">${esc(result.text)}</pre>`;sections.push(toolSection(result.meta?`Output · ${result.meta}`:'Output',body,result.failed?'tool-output error':''));}}
   if(Array.isArray(tool.locations)&&tool.locations.length)sections.push(toolSection('Locations',`<div class="tool-locations">${tool.locations.map(location=>`<button type="button" data-open-change="${esc(workspacePath(location.path))}">${esc(workspacePath(location.path))}${location.line?`:${esc(location.line)}`:''}</button>`).join('')}</div>`));
