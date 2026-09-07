@@ -19,69 +19,33 @@ Open `http://127.0.0.1:8080`. De eerste browser maakt de lokale owner (username,
 De GUI heeft vier rustige werkvlakken:
 
 - **Jobs**: maak Templates uit gewone invoervelden en start een Job als automatische reeks ACP-Sessions;
-- **Environments**: beheer alle globale en user-scoped lagen en open de fullscreen Capsule recorder: een opname start je met een formulier (soort, naam, scope, bouwt op, ENABLES), je werkt in de shell van de capsule en sluit af met End & save of Cancel; de Spin-commando's hieronder zijn de API daaronder en verschijnen in de log als wat er gebeurd is;
+- **Environments**: beheer alle globale en user-scoped lagen en open de fullscreen Capsule recorder: een opname start je met een formulier (soort, naam, scope, bouwt op, ENABLES), je werkt in de shell van de capsule en sluit af met End & save of Cancel. Er is geen commandotaal; de knoppen praten met de API hieronder en de log zegt in gewone woorden wat er gebeurd is;
 - **Connections**: beheer Git-remotes/accounts en MCP in twee subtabs;
 - **Access**: laat gebruikers zien en laat admins lokale users maken, archiveren en herstellen.
 
 ## Eerste Codex + ACP-keten
 
-Voer in de Capsule terminal uit:
+Open de Capsule recorder onder Environments. Iedere laag is één opname: kies in het formulier soort, naam, scope, waarop hij bouwt en wat hij ENABLES (de presets vullen dat in), klik **Opname starten**, typ in de shell van de capsule wat erin moet en klik **End & save**.
 
-```text
-RECORD tool:git --scope=global --enable=git
-apk add --no-cache git openssh-client ca-certificates
-END RECORD
+| Laag | Bouwt op | ENABLES | In de shell |
+| --- | --- | --- | --- |
+| `tool:git` (global) | Alpine-basis | git | `apk add --no-cache git openssh-client ca-certificates` |
+| `tool:node` (global) | tool:git | | `apk add --no-cache nodejs npm` |
+| `tool:codex` (global) | tool:node | acp · commando `codex-acp` | `npm install -g @openai/codex @agentclientprotocol/codex-acp` |
+| `tool:dotnet` (global) | tool:codex | | `apk add --no-cache dotnet10-sdk` |
+| `credential:codex` (user) | tool:codex | | `codex login --device-auth`, daarna `codex login status` |
 
-RECORD tool:node --scope=global --from=tool:git
-apk add --no-cache nodejs npm
-END RECORD
+De Capsule terminal is een echte interactieve PTY, in de browser getekend door xterm.js: toetsaanslagen gaan rauw naar het proces, kleuren, cursorbewegingen en TUI's werken, en de terminal past zich aan het venster aan. Zodra een capsule klaar is (je open opname, of je USE-compositie) opent Spin er een shell in; daar typ je direct. `+ shell` opent een tweede shell in dezelfde capsule en ieder paneel blijft na afloop staan (een login-URL blijft dus leesbaar) tot je het sluit. In een USE-compositie belandt niets in een laag: dat is de plek om rond te kijken of in te loggen. Voor Codex op een headless Docker-host start je device-auth daarom rechtstreeks in die shell: de URL en eenmalige code verschijnen terwijl het proces draait, en de `Ctrl-C`-knop onderbreekt het. Een tweede shell is handig wanneer een loginserver op container-localhost wacht: laat de login in de ene staan en roep de callback met `wget` of `curl` aan vanuit de andere. Een Capsule ondersteunt maximaal acht gelijktijdige shells.
 
-RECORD tool:codex --scope=global --from=tool:node --enable=acp --command=codex-acp
-npm install -g @openai/codex @agentclientprotocol/codex-acp
-mkdir -p /etc/spin/enabled
-echo "CODEX_CONFIG='{\"sandbox_workspace_write\":{\"network_access\":true}}'" > /etc/spin/enabled/acp.env
-codex --version
-END RECORD
-
-RECORD tool:dotnet --scope=global --from=tool:codex
-apk add --no-cache dotnet10-sdk
-END RECORD
-
-RECORD credential:codex --scope=user --from=tool:codex
-```
-
-De Capsule terminal is een echte interactieve PTY, in de browser getekend door xterm.js: toetsaanslagen gaan rauw naar het proces, kleuren, cursorbewegingen en TUI's werken, en de terminal past zich aan het venster aan. Zodra een capsule klaar is (je open opname, of je USE-compositie) opent Spin er een shell in; daar typ je direct. De invoerregel onder de terminal is voor Spin-commando's (`RECORD`, `USE`, `END RECORD`, …); een andere regel daar gaat naar de actieve shell. `+ shell` opent een tweede shell in dezelfde capsule en ieder paneel blijft na afloop staan (een login-URL blijft dus leesbaar) tot je het sluit. In een USE-compositie belandt niets in een laag: dat is de plek om rond te kijken of in te loggen. Voor Codex op een headless Docker-host start je device-auth daarom rechtstreeks in de webterminal:
-
-```text
-codex login --device-auth
-```
-
-De URL en eenmalige code verschijnen direct terwijl het proces nog draait. De invoer stuurt tijdens een lopend commando stdin naar dezelfde PTY en de zichtbare `Ctrl-C`-knop onderbreekt het proces. Controleer na de login met `codex login status` en geef daarna `END RECORD`.
-
-Spin-commando's blijven gewone HTTP-opdrachten aan de orchestrator. Iedere andere regel binnen een actieve opname start via WebSocket een `docker exec -it` met een echte pseudo-terminal; output wordt uitsluitend live gestreamd en na exit blijft alleen minimale executionmetadata over.
-
-Een Capsule ondersteunt maximaal acht gelijktijdige PTY-kanalen. `+ PTY` maakt de invoer vrij voor een nieuw proces in dezelfde container; kies daarna een kanaalchip om weer naar diens stdin en Ctrl-C terug te gaan. Dit is onder meer bruikbaar wanneer een loginserver op container-localhost wacht: laat de login in het ene kanaal staan en roep de callback met `wget` of `curl` aan vanuit een tweede kanaal.
+Iedere shell is een `docker exec -it` met een echte pseudo-terminal over een WebSocket; output wordt uitsluitend live gestreamd en na exit blijft alleen minimale executionmetadata over.
 
 Spin bewaart voor geen enkele Recording commandtekst of transcript. Alleen volgnummer, exitcode en tijdstip vormen een minimaal execution ledger; live output bestaat uitsluitend in de browserstream. Bestaande historische input/output wordt bij het openen van de state permanent verwijderd.
 
-Start daarna de omgeving en verifieer de echte ACP-entrypoint:
+Start daarna de omgeving met **Start** op de laag `credential:codex` en verifieer de echte ACP-entrypoint met **ACP probe** op de compositiekaart. Meerdere opgenomen onderdelen samen starten kan met de stack-launcher onder Environments: één entry-environment plus extra lagen (`WITH`). De eerste laag blijft de agent/entry; extra lagen zijn buildtools, configuratie of andere lagen. Voor automatische Jobs is de verantwoordelijkheid bewust verdeeld: het Template kiest een environment die `git` enablet, de Repository kiest projectlagen zoals Node of .NET, en de Job kiest een environment die `acp` enablet. Bij het inschieten bevriest Spin die drie delen als één Session-recipe.
 
-```text
-USE credential:codex
-ACP PROBE
-```
+Als één gekozen snapshot alle andere in zijn parentclosure bevat, start Docker die image direct. Bij onafhankelijke branches bouwt Spin vluchtig één composition-image: de minimaal benodigde snapshots worden in de gekozen `USE`/`WITH`-volgorde als filesystem-union gestreamd, zonder tussentijdse export op disk. Latere snapshots winnen bij bestandsconflicten; hun afwezigheid verwijdert geen bestand uit een eerdere onafhankelijke branch. Laat een laag op een andere bouwen ("bouwt op" in het formulier) wanneer exacte delete-semantiek of een vaste lineage nodig is. De tijdelijke composition-image verdwijnt weer bij **Stop**.
 
-Meerdere opgenomen onderdelen selecteren kan met `WITH`:
-
-```text
-USE tool:codex WITH tool:dotnet
-```
-
-De eerste selector blijft de agent/entry; extra selectors zijn buildtools, configuratie of andere lagen. Environments bevat hiervoor een directe stack-launcher. Voor automatische Jobs is de verantwoordelijkheid bewust verdeeld: het Template kiest een environment die `git` enablet, de Repository kiest projectlagen zoals Node of .NET, en de Job kiest een environment die `acp` enablet. Bij het inschieten bevriest Spin die drie delen als één Session-recipe.
-
-Als één gekozen snapshot alle andere in zijn parentclosure bevat, start Docker die image direct. Bij onafhankelijke branches bouwt Spin vluchtig één composition-image: de minimaal benodigde snapshots worden in de gekozen `USE`/`WITH`-volgorde als filesystem-union gestreamd, zonder tussentijdse export op disk. Latere snapshots winnen bij bestandsconflicten; hun afwezigheid verwijdert geen bestand uit een eerdere onafhankelijke branch. Gebruik `--from` wanneer exacte delete-semantiek of een vaste lineage nodig is. De tijdelijke composition-image verdwijnt weer bij `STOP`.
-
-`USE credential:codex` kiest bij operator Derek zijn snapshot en bij John die van John. De parentketen wordt automatisch meegenomen. `USE tool:codex` start bewust dezelfde tool zonder credentiallaag.
+Start op `credential:codex` kiest bij operator Derek zijn snapshot en bij John die van John. De parentketen wordt automatisch meegenomen. Start op `tool:codex` start bewust dezelfde tool zonder credentiallaag.
 
 Voeg onder Connections → Git een remote zonder ingebedde secrets toe, selecteer de projectlagen en kies credentialscope `user` of `global`. Git-auth is nadrukkelijk geen snapshotlaag en een repository bewaart geen account-ID. De Job-wizard maakt automatisch `Job → root Session → Composition`; checkout, push en PR resolven op dat moment de provideridentity via remote-host, scope en uitvoerende gebruiker. Nieuwe Jobs worden geweigerd wanneer de uiteindelijke Composition niet zowel `git` als `acp` enablet; artifactnamen spelen daarbij geen rol. Alleen oude ongekoppelde repositories blijven als `public` migratievorm leesbaar totdat je er een identityscope voor kiest.
 
@@ -188,7 +152,7 @@ export SPIN_GITLAB_CLIENT_SECRET=...
 
 Registreer als callbacks respectievelijk `${SPIN_PUBLIC_URL}/api/git/oauth/github/callback` en `${SPIN_PUBLIC_URL}/api/git/oauth/gitlab/callback`. Zonder `SPIN_PUBLIC_URL` leidt Spin de callback af van de host waarop je de GUI opent. De flow gebruikt authorization code + PKCE, haalt de provideridentiteit op en bewaart die bij de ingelogde user. Voor self-hosted of nog niet geconfigureerde providers blijft een handmatige HTTPS-tokenfallback beschikbaar.
 
-De ACP-hook volgt het stabiele ACP v1-transport: newline-delimited JSON-RPC 2.0 over stdio. `ACP PROBE` blijft beschikbaar als korte diagnostische handshake. Voor een Job-Session houdt Spin het subprocess levend en doorloopt het `initialize → session/new → session/prompt`; `session/update`, plannen, tool calls en permission requests worden live naar het chatscherm gestreamd. De Changes-kolom leest de echte Git-workspace en toont per bestand toegevoegde en verwijderde regels.
+De ACP-hook volgt het stabiele ACP v1-transport: newline-delimited JSON-RPC 2.0 over stdio. **ACP probe** op de compositiekaart blijft beschikbaar als korte diagnostische handshake. Voor een Job-Session houdt Spin het subprocess levend en doorloopt het `initialize → session/new → session/prompt`; `session/update`, plannen, tool calls en permission requests worden live naar het chatscherm gestreamd. De Changes-kolom leest de echte Git-workspace en toont per bestand toegevoegde en verwijderde regels.
 
 Onder Access kan een admin een gebruiker een nieuw tijdelijk wachtwoord geven (**Wachtwoord**); alle sessies van die gebruiker eindigen daarbij. Voor een collega die het wachtwoord kwijt is, is dat de route.
 
@@ -198,39 +162,34 @@ De browser vraagt de staat niet, hij krijgt hem. Eén WebSocket (`/api/state/ws`
 
 Renderen blijft idempotent en volledig, maar de DOM wordt alleen aangeraakt waar de HTML echt verschilt: de Job-lijst per kaart op sleutel, de andere lijsten per regio. Een regio of kaart waarin je bezig bent (een open dropdown, een veld waarin je typt) wordt pas bijgewerkt als de focus die verlaat. Opengeklapte panelen onthouden hun stand.
 
-## Commando's
+## API van lagen en capsules
+
+De recorder en de laagkaarten gebruiken deze endpoints; er is geen commandotaal.
 
 ```text
-RECORD kind:name [--scope=user|global] [--from=kind:name]
-                 [--enable=git|acp] [--command=codex-acp]
-                 [--transport=stdio] [--protocol-version=1]
-EDIT kind:name [--profile=default]
-<opaque shell command>
-END RECORD
-CANCEL RECORD
-FROM kind:name
-LIST [kind]
-USE kind:name [WITH kind:name ...] [--profile=default]
-USE session:<session-id>
-ACP PROBE [composition-id]
-STOP USE [composition-id]
+POST /api/recordings                      {kind, name, scope, parent_artifact_ids, enables:[{name, command}]}
+POST /api/artifacts/{id}/edit             EDIT: de huidige versie opnieuw opnemen
+POST /api/recordings/{id}/end             End & save (202 met seal-voortgang, of 201 met het artifact)
+POST /api/recordings/{id}/cancel
+GET  /api/recordings/{id}/start|seal      voortgang van de start- en seal-jobs
+GET  /api/recordings/{id}/terminal        WebSocket-PTY in de opname
+POST /api/use                             {selector, with_selectors, profile} of {session_id}
+POST /api/compositions/{id}/stop
+POST /api/compositions/{id}/acp/probe
+GET  /api/compositions/{id}/terminal      WebSocket-PTY in een USE-compositie
 ```
 
-Houd een laag klein. Bij `END RECORD` van een EDIT slaat Spin de image plat tot één laag (export en import van het bestandssysteem), zodat bestanden die je vervangen hebt echt verdwijnen in plaats van te blijven staan in de laag eronder; bij elke seal verwijdert Spin bovendien de downloadcaches van npm, pip en Go en `/tmp`. Wat je zelf niet in de laag wilt (bijvoorbeeld `/root/.nuget/packages`) verwijder je vóór `END RECORD`.
+Houd een laag klein. Bij End & save van een EDIT slaat Spin de image plat tot één laag (export en import van het bestandssysteem), zodat bestanden die je vervangen hebt echt verdwijnen in plaats van te blijven staan in de laag eronder; bij elke seal verwijdert Spin bovendien de downloadcaches van npm, pip en Go en `/tmp`. Wat je zelf niet in de laag wilt (bijvoorbeeld `/root/.nuget/packages`) verwijder je vóór End & save.
 
-Een laag is een immutable snapshot, dus bewerken is opnieuw opnemen. `EDIT` (de knop **Bewerk** op een laag) start een opname van de huidige versie met al haar instellingen: scope, profiel, `ENABLES` en entrypoint komen mee, en de opname begint in de bestaande snapshot. Je typt alleen wat erbij moet:
+Een laag is een immutable snapshot, dus bewerken is opnieuw opnemen. **Bewerk** op een laag (EDIT) start een opname van de huidige versie met al haar instellingen: scope, profiel, `ENABLES` en entrypoint komen mee, en de opname begint in de bestaande snapshot. Je typt in de shell alleen wat erbij moet, bijvoorbeeld:
 
-```text
-EDIT tool:codex
+```sh
 echo "CODEX_CONFIG='{\"sandbox_workspace_write\":{\"network_access\":true}}'" > /etc/spin/enabled/acp.env
-END RECORD
 ```
 
-`RECORD`, `EDIT` en `END RECORD` zijn jobs, geen requests: de opname of het artifact bestaat meteen, het werk (basisimage naar de runner, capsule starten, image exporteren en in stukken van 1 MiB archiveren) loopt op de server door en de browser volgt de voortgang via `GET /api/recordings/{id}/start` en `/seal`. Een opname zonder capsule heeft altijd zo'n startjob: valt de server tussendoor weg, dan hervat hij bij het opstarten iedere nog startende opname en geeft de runner de capsule terug die hij daarvoor al had gemaakt. `CANCEL RECORD` werkt ook tijdens het starten (de job stopt en de opname vervalt) en heeft geen runner nodig voor een opname die er nooit een kreeg.
+Opname starten, EDIT en End & save zijn jobs, geen requests: de opname of het artifact bestaat meteen, het werk (basisimage naar de runner, capsule starten, image exporteren en in stukken van 1 MiB archiveren) loopt op de server door en de browser volgt de voortgang via `GET /api/recordings/{id}/start` en `/seal`. Een opname zonder capsule heeft altijd zo'n startjob: valt de server tussendoor weg, dan hervat hij bij het opstarten iedere nog startende opname en geeft de runner de capsule terug die hij daarvoor al had gemaakt. Cancel werkt ook tijdens het starten (de job stopt en de opname vervalt) en heeft geen runner nodig voor een opname die er nooit een kreeg.
 
-`END RECORD` maakt het resultaat de nieuwe versie en zet de oude opzij: die verschijnt niet meer in lijsten en selectors, maar haar snapshot blijft bestaan voor lopende Sessions en voor lagen die ervan zijn afgeleid. Die afgeleide lagen volgen de bewerking vanzelf: een compositie die de oude versie in haar closure aantreft (bijvoorbeeld via `credential:codex --from=tool:codex`) bindt de nieuwste versie in dat slot. De Docker-engine neemt die nieuwste versie als basis en past iedere laag die erop gebouwd is toe als haar eigen Docker-diff, dus alleen wat die opname toevoegde, wijzigde of verwijderde (whiteouts); wat de EDIT weghaalde komt zo niet via een oudere afgeleide laag terug. Alleen een laag uit een onafhankelijke keten wordt nog als geheel gekopieerd. Een EDIT van `tool:codex` bereikt zo ook iedere credential- en toolinglaag die erop is gebouwd, zonder die opnieuw op te nemen.
-
-De oude tweedelige vormen zoals `RECORD tool codex` en `USE tool codex` worden nog gelezen als compatibiliteit, maar de GUI en documentatie schrijven alleen de canonieke selectorvorm.
+End & save maakt het resultaat de nieuwe versie en zet de oude opzij: die verschijnt niet meer in lijsten en selectors, maar haar snapshot blijft bestaan voor lopende Sessions en voor lagen die ervan zijn afgeleid. Die afgeleide lagen volgen de bewerking vanzelf: een compositie die de oude versie in haar closure aantreft (bijvoorbeeld via `credential:codex --from=tool:codex`) bindt de nieuwste versie in dat slot. De Docker-engine neemt die nieuwste versie als basis en past iedere laag die erop gebouwd is toe als haar eigen Docker-diff, dus alleen wat die opname toevoegde, wijzigde of verwijderde (whiteouts); wat de EDIT weghaalde komt zo niet via een oudere afgeleide laag terug. Alleen een laag uit een onafhankelijke keten wordt nog als geheel gekopieerd. Een EDIT van `tool:codex` bereikt zo ook iedere credential- en toolinglaag die erop is gebouwd, zonder die opnieuw op te nemen.
 
 ## Server, client en opslag
 
@@ -249,9 +208,9 @@ Nieuwe workloads worden round-robin over online, niet-drainende runners verdeeld
 
 Een nette SIGTERM stuurt best-effort `goodbye` met de lokale idle-status. Een harde Docker-kill of ontbrekend internet is nadrukkelijk geen bewijs dat de workload dood is en veroorzaakt dus geen automatische failover. De Job toont bij de actieve fase welke client ontbreekt en hoe lang die offline is. `Retry` behoudt de logische fasepoging, verbreekt bewust de oude runtime-affinity en materialiseert een nieuwe Capsule via round-robin. Een later terugkerende oude runner kan die opnieuw gekoppelde Session niet meer overnemen.
 
-Docker-images zijn runner-lokale caches, niet langer de bron van waarheid. Bij `END RECORD` exporteert de runner eerst een opaque `docker image save`, gzip-gecomprimeerd aan de bron (2 tot 3 keer kleiner; `docker load` leest dat zelf), en uploadt die in losse, geackte 1 MiB-chunks naar `spin.db`, over dezelfde `/api/uploads`-API waarmee een browser een backup terugzet; pas na die duurzame archivering wordt het Artifact afgerond. Een verbroken verbinding hervat op de bevestigde offset, en een herhaalde `END RECORD` vindt een al gecommitte image terug. Wanneer een nieuwe Session op een andere runner landt, gebruikt Spin een online replica of laadt de centrale export terug en onthoudt de nieuwe cachekopie. Layerinhoud wordt niet geïnterpreteerd en een verdwenen laptop vernietigt dus geen Artifact.
+Docker-images zijn runner-lokale caches, niet langer de bron van waarheid. Bij End & save exporteert de runner eerst een opaque `docker image save`, gzip-gecomprimeerd aan de bron (2 tot 3 keer kleiner; `docker load` leest dat zelf), en uploadt die in losse, geackte 1 MiB-chunks naar `spin.db`, over dezelfde `/api/uploads`-API waarmee een browser een backup terugzet; pas na die duurzame archivering wordt het Artifact afgerond. Een verbroken verbinding hervat op de bevestigde offset, en een herhaalde `END RECORD` vindt een al gecommitte image terug. Wanneer een nieuwe Session op een andere runner landt, gebruikt Spin een online replica of laadt de centrale export terug en onthoudt de nieuwe cachekopie. Layerinhoud wordt niet geïnterpreteerd en een verdwenen laptop vernietigt dus geen Artifact.
 
-Die opslaggrens is bewust hard: uitsluitend afgeronde `RECORD … END RECORD`-lagen worden centrale artifacts. Tijdelijke composities, containers, Session-worktrees en hun Docker-delta's blijven wegwerpcache op de runner. Retry begint opnieuw bij de opgeslagen artifacts en de actuele remote Job-branch; er hoeft geen half afgemaakte runtime te worden verhuisd.
+Die opslaggrens is bewust hard: uitsluitend afgeronde, opgeslagen lagen worden centrale artifacts. Tijdelijke composities, containers, Session-worktrees en hun Docker-delta's blijven wegwerpcache op de runner. Retry begint opnieuw bij de opgeslagen artifacts en de actuele remote Job-branch; er hoeft geen half afgemaakte runtime te worden verhuisd.
 
 Access → Backup downloadt één consistente `spin-backup-<tijd>.db` met state, portable masterkey, bijlagen en alle vereiste Docker-snapshots. Restore opent de upload eerst apart, ontsleutelt en valideert de state, leest iedere BLOB volledig terug met SHA-256, maakt een lokaal rollbackpunt en vervangt daarna pas de actieve database. Zo'n backup bevat zowel credentials als credential-images en moet als een passwordbestand worden behandeld.
 

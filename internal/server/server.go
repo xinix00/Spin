@@ -56,11 +56,11 @@ type Server struct {
 	uploads         map[string]*chunkedUpload
 	sealMu          sync.Mutex
 	seals           map[string]*sealJob
-	sealWait        time.Duration // how long END RECORD waits before answering with progress
+	sealWait        time.Duration // how long End & save waits before answering with progress
 	startMu         sync.Mutex
 	starts          map[string]*startJob
 	startWait       time.Duration // how long RECORD and EDIT wait before answering with progress
-	startCancelWait time.Duration // how long CANCEL RECORD waits for a stopped start job
+	startCancelWait time.Duration // how long a cancel waits for a stopped start job
 	appMu           sync.Mutex
 	appStarts       map[string]*appStart // app service starts per Session
 	restoreJobMu    sync.Mutex
@@ -463,6 +463,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/artifacts/{artifactID}/acp/options", s.fetchAgentOptionsHandler)
 	s.mux.HandleFunc("PUT /api/artifacts/{artifactID}/acp/settings", s.setAgentSettingsHandler)
 	s.mux.HandleFunc("PUT /api/artifacts/{artifactID}/enablements/{name}", s.setEnablementCommandHandler)
+	s.mux.HandleFunc("POST /api/artifacts/{artifactID}/edit", s.editArtifact)
 	s.mux.HandleFunc("POST /api/recordings", s.createRecording)
 	s.mux.HandleFunc("POST /api/recordings/{recordingID}/commands", s.appendRecordingCommand)
 	s.mux.HandleFunc("GET /api/recordings/{recordingID}/terminal", s.recordingTerminal)
@@ -475,7 +476,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/use", s.useArtifacts)
 	s.mux.HandleFunc("POST /api/compositions/{compositionID}/acp/probe", s.probeACPHandler)
 	s.mux.HandleFunc("POST /api/compositions/{compositionID}/stop", s.stopComposition)
-	s.mux.HandleFunc("POST /api/commands", s.executeCommand)
 	s.mux.HandleFunc("POST /api/jobs", s.createJob)
 	s.mux.HandleFunc("POST /api/job-attachments", s.uploadStagedJobAttachment)
 	s.mux.HandleFunc("GET /api/job-attachments/{attachmentID}", s.downloadJobAttachment)
@@ -739,6 +739,29 @@ func (s *Server) createRecording(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Actor = s.requestOperator(r, req.Actor)
 	recording, start, err := s.createCapsuleRecording(req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if start != nil {
+		w.Header().Set("Location", "/api/recordings/"+recording.ID+"/start")
+		writeJSON(w, http.StatusAccepted, start)
+		return
+	}
+	writeJSON(w, http.StatusCreated, recording)
+}
+
+// editArtifact starts an EDIT recording of a layer; like createRecording it
+// answers with the start job when the capsule takes a moment.
+func (s *Server) editArtifact(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Operator string `json:"operator"`
+	}
+	if r.ContentLength != 0 && !decodeJSON(w, r, &req) {
+		return
+	}
+	actor := s.requestOperator(r, req.Operator)
+	recording, start, err := s.editCapsuleArtifact(actor, r.PathValue("artifactID"))
 	if err != nil {
 		writeError(w, err)
 		return

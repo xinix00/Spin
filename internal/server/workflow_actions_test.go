@@ -45,14 +45,7 @@ func TestGitPullRequestActionUsesJobOwnerProviderAccountInsteadOfRepositoryCreat
 		}
 	})}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), &testEngine{}, ServerOptions{DisableAuthentication: true, HTTPClient: httpClient})
-	for _, line := range []string{
-		"RECORD tool:git --scope=global --enable=git", "install git", "END RECORD",
-		"RECORD tool:agent --scope=global --from=tool:git --enable=acp --command=agent-acp", "install agent", "END RECORD",
-	} {
-		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-	}
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
 	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "easyacp", RemoteURL: "https://github.com/derek/easyacp.git", DefaultRef: "main", CredentialScope: domain.CredentialScopeUser})
 	if err != nil {
 		t.Fatal(err)

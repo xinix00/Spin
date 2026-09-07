@@ -89,14 +89,7 @@ func TestExposePhaseStartsTheAppAndWaitsForAVerdict(t *testing.T) {
 	}
 	engine := &appTestEngine{}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
-	for _, line := range []string{
-		"RECORD tool:git --scope=global --enable=git", "install git", "END RECORD",
-		"RECORD tool:agent --scope=global --from=tool:git --enable=acp --command=agent-acp", "install agent", "END RECORD",
-	} {
-		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-	}
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
 	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "shop", RemoteURL: "https://github.com/derek/shop.git", DefaultRef: "main", CredentialScope: domain.CredentialScopePublic,
 		Services: []domain.AppService{{Name: "web", Prepare: []string{"npm ci"}, Run: "npm start", Ports: []int{3000}, Env: "shop"}}})
 	if err != nil {
@@ -157,14 +150,7 @@ func TestMergeFinalizerLandsTheJobOnTheBaseBranch(t *testing.T) {
 	}
 	engine := &appTestEngine{}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
-	for _, line := range []string{
-		"RECORD tool:git --scope=global --enable=git", "install git", "END RECORD",
-		"RECORD tool:agent --scope=global --from=tool:git --enable=acp --command=agent-acp", "install agent", "END RECORD",
-	} {
-		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-	}
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
 	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "shop", RemoteURL: "https://github.com/derek/shop.git", DefaultRef: "develop", CredentialScope: domain.CredentialScopePublic,
 		Services: []domain.AppService{{Name: "web", Run: "npm start", Ports: []int{3000}}}})
 	if err != nil {

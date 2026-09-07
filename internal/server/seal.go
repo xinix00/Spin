@@ -12,13 +12,13 @@ import (
 	"easyacp/internal/store"
 )
 
-// END RECORD is a job, not a request. Committing the container is quick;
+// End & save is a job, not a request. Committing the container is quick;
 // exporting a gigabyte and sending it to the archive in 1 MiB chunks is not,
 // and the edge closes any HTTP request that lasts longer than 100 seconds. So
 // the work runs detached, the command answers with the artifact when it is
 // quick and with progress when it is not, and the browser follows the rest.
 
-// sealAnswerWait is how long END RECORD waits before answering with progress;
+// sealAnswerWait is how long End & save waits before answering with progress;
 // short, so the browser shows real progress within seconds.
 const sealAnswerWait = 3 * time.Second
 
@@ -50,9 +50,9 @@ func (j *sealJob) snapshot() (domain.SealStatus, string) {
 	return j.status, j.digest
 }
 
-// startSeal validates the request the way END RECORD always did, then runs the
+// startSeal validates the request the way saving always did, then runs the
 // seal in the background. A seal already running for the recording is reused,
-// so a retried END RECORD joins it instead of committing twice.
+// so a retried save joins it instead of committing twice.
 func (s *Server) startSeal(recordingID string, req domain.EndRecordingRequest) (*sealJob, error) {
 	if s.terminalBusy(recordingID) {
 		return nil, fmt.Errorf("an interactive command is still running; wait for it or send Ctrl-C: %w", store.ErrConflict)

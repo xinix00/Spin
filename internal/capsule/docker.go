@@ -257,7 +257,7 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 		)
 	}
 	if err != nil {
-		// A retried END RECORD: the container was already committed and removed
+		// A retried save: the container was already committed and removed
 		// by an attempt whose answer never reached the server. The image tagged
 		// for this recording is that snapshot.
 		if _, inspectErr := d.control(ctx, "image", "inspect", "--format", "{{.Id}}", tag); inspectErr != nil {

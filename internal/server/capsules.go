@@ -29,6 +29,39 @@ func (s *Server) executeRecordingCommand(ctx context.Context, recordingID string
 	return recording, execution, err
 }
 
+// editCapsuleArtifact starts an EDIT: the current version of a layer is
+// recorded again with every setting it has, and ending that recording makes
+// the result the new version everything follows.
+func (s *Server) editCapsuleArtifact(actor, artifactID string) (domain.Recording, *domain.StartStatus, error) {
+	current, err := s.store.Artifact(artifactID)
+	if err != nil {
+		return domain.Recording{}, nil, err
+	}
+	if current.SupersededBy != "" {
+		return domain.Recording{}, nil, fmt.Errorf("%s is an older version; edit the current one: %w", artifactSelectorOf(current), store.ErrConflict)
+	}
+	if !canUseArtifact(actor, current) {
+		return domain.Recording{}, nil, fmt.Errorf("%s belongs to another user: %w", artifactSelectorOf(current), store.ErrConflict)
+	}
+	return s.createCapsuleRecording(domain.CreateRecordingRequest{
+		Actor: actor, Kind: current.Kind, Name: current.Name,
+		Scope: current.Scope, Subject: current.Subject, Profile: current.Profile,
+		Provides: current.Provides, Requires: current.Requires, Enables: current.Enables, Slot: current.Slot,
+		ParentArtifactIDs: []string{current.ID}, CompatibilityFingerprint: current.CompatibilityFingerprint,
+		Sensitivity: current.Sensitivity, ReplacesArtifactID: current.ID,
+	})
+}
+
+func artifactSelectorOf(artifact domain.Artifact) string {
+	return string(artifact.Kind) + ":" + artifact.Name
+}
+
+// canUseArtifact mirrors the store's rule: a user-scoped layer is its
+// subject's alone.
+func canUseArtifact(actor string, artifact domain.Artifact) bool {
+	return artifact.Scope != domain.ScopeUser || artifact.Subject == strings.ToLower(strings.TrimSpace(actor))
+}
+
 // endCapsuleRecording starts sealing and waits briefly. A small layer is done
 // before the wait ends and the artifact comes back as it always did; a large
 // one answers with its progress instead, and the caller follows the seal.
@@ -105,7 +138,7 @@ func (s *Server) archiveCapsuleSnapshot(ctx context.Context, snapshot domain.Cap
 // that never got a capsule needs no runner to go away.
 func (s *Server) cancelCapsuleRecording(ctx context.Context, recordingID string, req domain.CancelRecordingRequest) (domain.Recording, error) {
 	if s.sealInProgress(recordingID) {
-		return domain.Recording{}, fmt.Errorf("this recording is being saved; wait for END RECORD to finish: %w", store.ErrConflict)
+		return domain.Recording{}, fmt.Errorf("this recording is being saved; wait for the save to finish: %w", store.ErrConflict)
 	}
 	recording, err := s.store.Recording(recordingID)
 	if err != nil {

@@ -15,11 +15,8 @@ const chatState = {sessionID:'',socket:null,busy:false,manualClose:false,followT
 const jobChangesState = {jobID:'',sessionID:'',changes:{branch:'',added:0,deleted:0,files:[]},selectedPath:'',bundle:null,selection:null};
 let terminalLines = [
   ['system','Spin recorder ready.'],
-  ['output','RECORD tool:git --scope=global --enable=git → apk add --no-cache git openssh-client ca-certificates → END RECORD'],
-  ['output','RECORD tool:node --scope=global --from=tool:git → apk add --no-cache nodejs npm → END RECORD'],
-  ['output','RECORD tool:codex --from=tool:node --enable=acp --command=codex-acp → npm install -g @openai/codex @agentclientprotocol/codex-acp → END RECORD'],
-  ['output','RECORD tool:dotnet --from=tool:codex → END RECORD → USE tool:codex WITH tool:dotnet'],
-  ['output','RECORD credential:codex --scope=user --from=tool:codex → codex login --device-auth → END RECORD']
+  ['output','Start een opname met het formulier hierboven en werk in de shell van de capsule; End & save maakt er een laag van.'],
+  ['output','Eerste keten: tool:git (ENABLES git) → tool:node → tool:codex (ENABLES acp, codex-acp) → credential:codex (user, codex login --device-auth).']
 ];
 
 const esc = value => String(value ?? '').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -78,8 +75,8 @@ async function api(path,options={}) {
 function openDialog(id){const dialog=document.getElementById(id);if(dialog&&!dialog.open)dialog.showModal();}
 function closeDialog(id){const dialog=document.getElementById(id);if(dialog?.open)dialog.close();}
 // The recorder has no command line: a RECORD is a form, END and CANCEL are
-// buttons, and the terminal is the capsule's shell. The Spin commands still
-// exist as the API underneath and show up in the log as what was done.
+// buttons, and the terminal is the capsule's shell. The log says in plain
+// words what was done.
 const recordPresets=[
   {label:'tool:git',kind:'tool',name:'git',scope:'global',from:'',git:true},
   {label:'tool:node',kind:'tool',name:'node',scope:'global',from:'tool:git'},
@@ -87,10 +84,12 @@ const recordPresets=[
   {label:'tool:claude + ACP',kind:'tool',name:'claude',scope:'global',from:'tool:node',acp:true,command:'claude-code-acp'},
   {label:'credential:codex',kind:'credential',name:'codex',scope:'user',from:'tool:codex'},
 ];
-function fillRecordForm(preset={}){const form=document.getElementById('record-form');form.reset();form.elements.kind.value=preset.kind||'tool';form.elements.name.value=preset.name||'';form.elements.scope.value=preset.scope||'user';renderRecordFromOptions();form.elements.from.value=preset.from||'';if(form.elements.from.value!==(preset.from||''))form.elements.from.value='';form.elements.enable_git.checked=Boolean(preset.git);form.elements.enable_acp.checked=Boolean(preset.acp);form.elements.command.value=preset.command||'';syncRecordForm();}
+function fillRecordForm(preset={}){const form=document.getElementById('record-form');form.reset();form.elements.kind.value=preset.kind||'tool';form.elements.name.value=preset.name||'';form.elements.scope.value=preset.scope||'user';renderRecordFromOptions();const parent=preset.from?artifactBySelector(preset.from):null;form.elements.from.value=parent?parent.id:'';form.elements.enable_git.checked=Boolean(preset.git);form.elements.enable_acp.checked=Boolean(preset.acp);form.elements.command.value=preset.command||'';syncRecordForm();}
 function syncRecordForm(){const form=document.getElementById('record-form');document.getElementById('record-command-field').hidden=!form.elements.enable_acp.checked;}
-function renderRecordFromOptions(){const select=document.getElementById('record-from'),current=select.value,options=snapshot.artifacts.filter(canUse).map(artifactSelector).sort();select.innerHTML='<option value="">Alpine-basis</option>'+options.map(selector=>`<option value="${esc(selector)}">${esc(selector)}</option>`).join('');if(options.includes(current))select.value=current;}
-function recordCommandFromForm(){const form=document.getElementById('record-form'),kind=form.elements.kind.value,name=form.elements.name.value.trim().toLowerCase(),enables=[form.elements.enable_git.checked?'git':'',form.elements.enable_acp.checked?'acp':''].filter(Boolean);let line=`RECORD ${kind}:${name} --scope=${form.elements.scope.value}`;if(form.elements.from.value)line+=` --from=${form.elements.from.value}`;if(enables.length)line+=` --enable=${enables.join(',')}`;if(form.elements.enable_acp.checked&&form.elements.command.value.trim())line+=` --command=${form.elements.command.value.trim()}`;return line;}
+function recordFromOptions(){const seen=new Set();return snapshot.artifacts.filter(artifact=>canUse(artifact)&&!artifact.superseded_by).map(artifact=>({id:artifact.id,label:artifactSelector(artifact)+(artifact.scope==='user'?' · user':'')})).filter(option=>{if(seen.has(option.label))return false;seen.add(option.label);return true;}).sort((a,b)=>a.label.localeCompare(b.label));}
+function renderRecordFromOptions(){const select=document.getElementById('record-from'),current=select.value,options=recordFromOptions();select.innerHTML='<option value="">Alpine-basis</option>'+options.map(option=>`<option value="${esc(option.id)}">${esc(option.label)}</option>`).join('');if(options.some(option=>option.id===current))select.value=current;}
+function artifactBySelector(selector){return snapshot.artifacts.filter(artifact=>canUse(artifact)&&!artifact.superseded_by&&artifactSelector(artifact)===selector).sort((a,b)=>(a.scope==='user'?0:1)-(b.scope==='user'?0:1))[0]||null;}
+function recordRequestFromForm(){const form=document.getElementById('record-form'),enables=[];if(form.elements.enable_git.checked)enables.push({name:'git'});if(form.elements.enable_acp.checked)enables.push({name:'acp',command:form.elements.command.value.trim()||undefined});return {kind:form.elements.kind.value,name:form.elements.name.value.trim().toLowerCase(),scope:form.elements.scope.value,parent_artifact_ids:form.elements.from.value?[form.elements.from.value]:[],enables};}
 function openConsole(preset=null){
   openDialog('capsule-dialog');
   if(preset)fillRecordForm(preset);
@@ -533,7 +532,7 @@ async function followStart(start){
     await new Promise(resolve=>setTimeout(resolve,1500));
     try{
       const next=await api(`/api/recordings/${encodeURIComponent(start.recording_id)}/start`);failures=0;startState=next;renderRecording();
-      if(next.status==='done'){startState=null;const recording=next.recording||{};print('output',`● RECORDING ${recording.kind}:${recording.name} · scope=${recording.scope} · base=${recording.runtime?.base_ref||'?'} · type commands, then END RECORD`);await refresh(true);return;}
+      if(next.status==='done'){startState=null;const recording=next.recording||{};print('output',`● RECORDING ${recording.kind}:${recording.name} · scope=${recording.scope} · base=${recording.runtime?.base_ref||'?'} · werk in de shell en klik End & save`);await refresh(true);return;}
       if(next.status==='cancelled'){startState=null;printProgress('Starten afgebroken · opname geannuleerd');await refresh(true);return;}
       if(next.status==='error'){startState=null;print('error',next.error||'Starten mislukt');await refresh(true);return;}
       printProgress(startProgressText(next));
@@ -541,13 +540,13 @@ async function followStart(start){
       failures+=1;
       // 404: the server holds no job for this recording (an older server, or
       // the recording just ended); refresh so the card follows the truth.
-      if(error.status===404||failures>=8){startState=null;print('error',`Voortgang van het starten is niet meer op te vragen: ${error.message||error}. Gebruik CANCEL RECORD om de opname op te ruimen.`);await refresh(true);return;}
+      if(error.status===404||failures>=8){startState=null;print('error',`Voortgang van het starten is niet meer op te vragen: ${error.message||error}. Gebruik Cancel om de opname op te ruimen.`);await refresh(true);return;}
       printProgress(`Starten · verbinding herstellen (poging ${failures})`);
     }
   }
   }finally{followingStartID='';}
 }
-// sealState mirrors the END RECORD job the browser is following, for the
+// sealState mirrors the End & save job the browser is following, for the
 // recorder panel; the console shows the same numbers as a progress line.
 let sealState=null;
 function sealProgressText(seal){
@@ -588,10 +587,9 @@ function jobIsClosed(job){return job.status==='done'||job.status==='cancelled'||
 function jobAssignee(job){return job.assignee||job.owner||'';}
 function setJobState(name){jobStateFilter=['mine','all','closed'].includes(name)?name:'mine';document.querySelectorAll('[data-job-state]').forEach(button=>button.classList.toggle('active',button.dataset.jobState===jobStateFilter));const copy={mine:['Mijn werk','Jobs die bij jou liggen: van jou, of aan jou toegewezen om naar te kijken.'],all:['Actief werk','Alle open Jobs van het team; wijs een Job toe om hem bij iemand neer te leggen.'],closed:['Afgerond werk','Afgeronde en handmatig gesloten Jobs blijven volledig terugleesbaar.']}[jobStateFilter];document.getElementById('jobs-list-title').textContent=copy[0];document.getElementById('jobs-list-copy').textContent=copy[1];localStorage.setItem('spin-job-state',jobStateFilter);renderJobs();}
 function activeRecording(){return snapshot.recordings.find(recording=>recording.actor===currentOperator()&&recording.status==='recording');}
-function isSpinCommand(line){return ['RECORD','EDIT','END','CANCEL','FROM','LIST','USE','ACP','STOP'].includes(String(line||'').trim().split(/\s+/,1)[0].toUpperCase());}
 // PTY sessions render in xterm.js: a real terminal in the browser, with raw
 // keystrokes, colours, cursor movement and resizing, so login flows and
-// TUIs work. The line console above it stays for Spin commands and history.
+// TUIs work. The line console above it stays as the log of what was done.
 const terminalTheme={background:'#050806',foreground:'#dfe7e2',cursor:'#7be4ad',cursorAccent:'#050806',selectionBackground:'#2a4a38',black:'#0b0f0c',brightBlack:'#56635c',green:'#7be4ad',brightGreen:'#9ff0c4',blue:'#8fb8e8',brightBlue:'#a9c3df',yellow:'#e8c77b',brightYellow:'#f0d69b',red:'#f08a8a',brightRed:'#f5a0a0'};
 function activeTerminal(){return activeTerminalID?terminalSessions.get(activeTerminalID):null;}
 function liveTerminals(){return [...terminalSessions.values()].filter(session=>!session.exited);}
@@ -659,38 +657,66 @@ function startTerminalCommand(target,line,options={}){
   socket.onerror=()=>{if(!session.exited)printTerminal(session,'error','Kon de Capsule-PTY niet openen.');};
   socket.onclose=()=>{if(!session.exited){printTerminal(session,'error','PTY-verbinding gesloten.');finishTerminal(session,null);}};
 }
-function sendTerminalInput(value){const session=activeTerminal();if(session&&!session.exited&&session.socket.readyState===WebSocket.OPEN)session.socket.send(JSON.stringify({type:'input',data:String(value)+'\r'}));}
 function interruptTerminal(){const session=activeTerminal();if(session&&!session.exited&&session.socket.readyState===WebSocket.OPEN)session.socket.send(JSON.stringify({type:'interrupt'}));}
 // activeComposition is the operator's own USE composition with a running
 // capsule: a place to look around without recording.
 function activeComposition(){const composition=snapshot.compositions.find(item=>item.operator===currentOperator()&&!item.session_id&&item.runtime?.status==='ready');return composition?{...composition,kind:'composition'}:null;}
 
-async function execute(line){
-  line=String(line||'').trim(); if(!line)return;
-  if(!isSpinCommand(line)){
-    const recording=activeRecording(),target=terminalTarget(),live=activeTerminal();
-    if(recording&&!target){print('command',line);print('error',`De opname ${recording.kind}:${recording.name} start nog; wacht tot de capsule er is voordat je commando's typt.`);return;}
-    if(target){if(live&&!live.exited&&live.targetID===target.id){sendTerminalInput(line);}else{startTerminalCommand(target,shellCommand,{title:'shell',initial:line});}return;}
-  }
-  print('command',line);
-  // Show that the work is under way the moment the command leaves, not once
-  // the server answers: END RECORD and RECORD/EDIT are jobs that may take a
-  // few seconds before their first status comes back.
-  const verb=line.split(/\s+/,1)[0].toUpperCase();
-  if(recording&&verb==='END'){sealState={recording_id:recording.id,status:'running',stage:'commit',message:'Capsule wordt gecommit op de runner'};renderRecording();printProgress(sealProgressText(sealState));}
-  else if(verb==='RECORD'||verb==='EDIT'){const target=(line.split(/\s+/)[1]||'').toLowerCase();printProgress(`Starten · ${target||'opname'} · opname aanmaken en runner kiezen`);const status=document.getElementById('terminal-status');status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>STARTING ${esc(target)}</span>`;}
-  try{
-    const response=await api('/api/commands',{method:'POST',body:JSON.stringify({operator:currentOperator(),line})});
-    print('output',response.message);
-    if(response.seal&&response.seal.status==='running'){await refresh(true);await followSeal(response.seal);return;}
-    if(response.start&&response.start.status==='running'){await refresh(true);await followStart(response.start);return;}
-    sealState=null;
-    if(response.output)print(response.exit_code==null||response.exit_code===0?'output':'error',response.output);
-    else if(response.exit_code!=null)print(response.exit_code===0?'system':'error',`exit ${response.exit_code} · geen stdout/stderr ontvangen`);
-    if(response.artifacts?.length)response.artifacts.forEach(artifact=>print('output',`${artifactSelector(artifact)}/${artifact.profile} · ${artifact.scope} · ${artifact.snapshot_digest.slice(0,20)}…`));
-    await refresh(true);
-  }catch(error){sealState=null;print('error',error.message||error);showError(error);await refresh(true).catch(()=>{});}
+// Actions on layers and capsules go straight to the API. The log shows what
+// was done in plain words; the runner's progress follows as before.
+function markStarting(label){printProgress(`Starten · ${label} · opname aanmaken en runner kiezen`);const status=document.getElementById('terminal-status');status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>STARTING ${esc(label)}</span>`;}
+async function runAction(label,request,onDone){
+  print('command',label);
+  try{const response=await request();if(onDone)await onDone(response);await refresh(true);}
+  catch(error){sealState=null;startState=null;print('error',error.message||error);showError(error);await refresh(true).catch(()=>{});}
 }
+// A recording answers with the recording when the capsule is up, or with the
+// start job to follow when it takes a moment.
+async function recordingStarted(response){
+  if(response.recording_id&&response.status){await refresh(true);await followStart(response);return;}
+  startState=null;print('output',`● RECORDING ${response.kind}:${response.name} · scope=${response.scope} · base=${response.runtime?.base_ref||'?'}`);
+}
+function startLayerRecording(payload){
+  const label=`${payload.kind}:${payload.name}`;markStarting(label);
+  return runAction(`Opname ${label} starten`,()=>api('/api/recordings',{method:'POST',body:JSON.stringify({...payload,actor:currentOperator()})}),recordingStarted);
+}
+function editLayer(artifact){
+  const label=artifactSelector(artifact);markStarting(`EDIT ${label}`);
+  return runAction(`${label} bewerken (EDIT)`,()=>api(`/api/artifacts/${encodeURIComponent(artifact.id)}/edit`,{method:'POST',body:JSON.stringify({operator:currentOperator()})}),recordingStarted);
+}
+function endRecording(recording){
+  sealState={recording_id:recording.id,status:'running',stage:'commit',message:'Capsule wordt gecommit op de runner'};renderRecording();printProgress(sealProgressText(sealState));
+  return runAction(`Opname ${recording.kind}:${recording.name} opslaan`,()=>api(`/api/recordings/${encodeURIComponent(recording.id)}/end`,{method:'POST',body:JSON.stringify({actor:currentOperator()})}),async response=>{
+    if(response.recording_id&&response.status){await refresh(true);await followSeal(response);return;}
+    sealState=null;print('system',`saved ${artifactSelector(response)}/${response.profile} as ${response.snapshot_digest}`);
+  });
+}
+function cancelRecording(recording){return runAction(`Opname ${recording.kind}:${recording.name} annuleren`,()=>api(`/api/recordings/${encodeURIComponent(recording.id)}/cancel`,{method:'POST',body:JSON.stringify({actor:currentOperator()})}),()=>{sealState=null;startState=null;print('output','opname geannuleerd');});}
+function useLayers(selector,withSelectors=[]){
+  return runAction(`USE ${selector}${withSelectors.map(value=>` WITH ${value}`).join('')}`,()=>api('/api/use',{method:'POST',body:JSON.stringify({operator:currentOperator(),selector,with_selectors:withSelectors,profile:'default'})}),composition=>{
+    let message=`composition ${composition.id} · ${composition.selector} · entry=${composition.entry_artifact_id}`;
+    if(composition.enabled?.length)message+=` · ENABLED=${enabledNames(composition.enabled)}`;
+    if(composition.warnings?.length)message+=`\nwarning: ${composition.warnings.join('; ')}`;
+    if(composition.runtime?.attach_command)message+=`\nready: ${composition.runtime.attach_command}`;
+    print('output',message);
+  });
+}
+function useSession(sessionID){return runAction(`USE session:${sessionID}`,()=>api('/api/use',{method:'POST',body:JSON.stringify({operator:currentOperator(),session_id:sessionID})}),composition=>print('output',`composition ${composition.id} · ${composition.runtime?.attach_command||composition.runtime?.status||'gestart'}`));}
+function stopComposition(id){return runAction(`Compositie ${short(id)} stoppen`,()=>api(`/api/compositions/${encodeURIComponent(id)}/stop`,{method:'POST',body:JSON.stringify({operator:currentOperator()})}),composition=>print('output',`stopped composition ${composition.id}`));}
+function probeACP(id){return runAction(`ACP probe op ${short(id)}`,()=>api(`/api/compositions/${encodeURIComponent(id)}/acp/probe`,{method:'POST',body:JSON.stringify({operator:currentOperator()})}),probe=>{print('output',`ACP v1 handshake geslaagd · ${probe.enablement?.command||''}`);print('output',JSON.stringify(probe.handshake,null,2));});}
+// bindActionButtons wires data-action buttons to these actions.
+function bindActionButtons(root=document){root.querySelectorAll('[data-action]').forEach(button=>button.onclick=()=>{
+  const {action,id,selector}=button.dataset,recording=activeRecording();
+  setTab('environments');openConsole();
+  switch(action){
+    case 'end':if(recording)endRecording(recording);break;
+    case 'cancel':if(recording)cancelRecording(recording);break;
+    case 'use':useLayers(selector);break;
+    case 'use-session':useSession(id);break;
+    case 'stop':stopComposition(id);break;
+    case 'probe':probeACP(id);break;
+  }
+});}
 
 // Rendering is idempotent and full, but the DOM is only touched where the
 // HTML differs, and never where the user is: a region holding the focused
@@ -750,10 +776,10 @@ function renderRecording(){
   const sealing=sealState&&sealState.recording_id===recording.id&&sealState.status==='running'?sealState:null;
   // While the capsule is still starting the runtime block already carries the
   // progress bar; there is nothing to end yet, but the start can be cancelled.
-  const actions=sealing?`<div class="seal-progress"><div class="seal-track ${sealing.total?'':'indeterminate'}"><div class="seal-fill" style="width:${sealing.total?Math.floor((sealing.current||0)/sealing.total*100):100}%"></div></div><small>${esc(sealProgressText(sealing))}</small></div>`:(recording.runtime?.container_id?`<div class="panel-actions" style="margin-top:9px"><button class="small-button" data-command="END RECORD">End & save</button><button class="danger" data-command="CANCEL RECORD">Cancel</button></div>`:`<div class="panel-actions" style="margin-top:9px"><button class="danger" data-command="CANCEL RECORD">Cancel start</button></div>`);
+  const actions=sealing?`<div class="seal-progress"><div class="seal-track ${sealing.total?'':'indeterminate'}"><div class="seal-fill" style="width:${sealing.total?Math.floor((sealing.current||0)/sealing.total*100):100}%"></div></div><small>${esc(sealProgressText(sealing))}</small></div>`:(recording.runtime?.container_id?`<div class="panel-actions" style="margin-top:9px"><button class="small-button" data-action="end">End & save</button><button class="danger" data-action="cancel">Cancel</button></div>`:`<div class="panel-actions" style="margin-top:9px"><button class="danger" data-action="cancel">Cancel start</button></div>`);
   if(sealing){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>SAVING ${esc(recording.kind)}:${esc(recording.name)}${sealing.total?` ${Math.floor((sealing.current||0)/sealing.total*100)}%`:''}</span>`;}
   root.innerHTML=`<h3>Recorder</h3><div class="record-card"><strong>● ${esc(recording.kind)}:${esc(recording.name)}</strong><small>${esc(recording.scope)} · ${(recording.commands||[]).length} commands</small>${recording.enables?.length?`<small>ENABLES <span class="capability">${esc(enabledNames(recording.enables))}</span></small>`:''}${runtime}${actions}</div>`;
-  bindCommandButtons(root);updateTerminalControls();
+  bindActionButtons(root);updateTerminalControls();
 }
 
 function renderComposition(){
@@ -767,8 +793,8 @@ function renderComposition(){
   const runtime=composition.runtime?`<div class="binding"><span>capsule</span><span>${esc(composition.runtime.status)} · ${esc(composition.runtime.attach_command||'')}</span></div>`:'';
   const ready=composition.runtime&&composition.runtime.status!=='stopped';
   const acp=(composition.enabled||[]).some(item=>item.name==='acp');
-  root.innerHTML=`<div class="meta"><span class="tag">${short(composition.id)}</span><span class="tag">${esc(composition.selector)}</span></div>${bindings}${withLayers}${enabled}${mcp}${git}${runtime}<div class="panel-actions" style="margin-top:9px">${ready&&acp?`<button class="small-button" data-command="ACP PROBE ${esc(composition.id)}">ACP probe</button>`:''}${ready?`<button class="danger" data-command="STOP USE ${esc(composition.id)}">Stop</button>`:''}</div>`;
-  bindCommandButtons(root);
+  root.innerHTML=`<div class="meta"><span class="tag">${short(composition.id)}</span><span class="tag">${esc(composition.selector)}</span></div>${bindings}${withLayers}${enabled}${mcp}${git}${runtime}<div class="panel-actions" style="margin-top:9px">${ready&&acp?`<button class="small-button" data-action="probe" data-id="${esc(composition.id)}">ACP probe</button>`:''}${ready?`<button class="danger" data-action="stop" data-id="${esc(composition.id)}">Stop</button>`:''}</div>`;
+  bindActionButtons(root);
 }
 
 function acpLayerOf(artifact,seen=new Set()){if(!artifact||seen.has(artifact.id))return null;seen.add(artifact.id);if((artifact.enables||[]).some(item=>item.name==='acp'))return artifact;for(const parentID of artifact.parent_artifact_ids||[]){const found=acpLayerOf(byID(snapshot.artifacts,parentID),seen);if(found)return found;}return null;}
@@ -777,8 +803,8 @@ function renderArtifacts(){
   if(!artifacts.length){root.innerHTML='<div class="empty">Nog geen environments. Open de recorder om <code>tool:git</code> als eerste laag te maken.</div>';return;}
   root.innerHTML=artifacts.map(artifact=>{
     const identity=artifact.subject?`${artifact.scope}:${artifact.subject}`:artifact.scope;
-    const use=canUse(artifact)?`<button class="small-button" data-command="USE ${esc(artifactSelector(artifact))}">${icon('arrow_forward')}Start</button>`:'';
-    const next=`<button class="small-button" data-record-from="${esc(artifactSelector(artifact))}">${icon('add')}Laag</button><button class="small-button" data-edit-artifact="${esc(artifactSelector(artifact))}" title="Neem deze laag opnieuw op met al haar instellingen en voeg toe wat ontbreekt; END RECORD vervangt de huidige versie, ook voor lagen die erop gebouwd zijn">${icon('edit')}Bewerk</button>`;
+    const use=canUse(artifact)?`<button class="small-button" data-action="use" data-selector="${esc(artifactSelector(artifact))}">${icon('arrow_forward')}Start</button>`:'';
+    const next=`<button class="small-button" data-record-from="${esc(artifactSelector(artifact))}">${icon('add')}Laag</button><button class="small-button" data-edit-artifact="${esc(artifactSelector(artifact))}" title="Neem deze laag opnieuw op met al haar instellingen en voeg toe wat ontbreekt; End &amp; save vervangt de huidige versie, ook voor lagen die erop gebouwd zijn">${icon('edit')}Bewerk</button>`;
     const remove=artifact.created_by===currentOperator()?`<button class="danger" data-remove-artifact="${esc(artifact.id)}" data-artifact-label="${esc(artifactSelector(artifact))}">${icon('delete')}Verwijder</button>`:'';
     // The agent's options live on the layer that ENABLES acp; a credential
     // layer built on it shows and refreshes the same options, probed as the
@@ -794,12 +820,12 @@ function renderArtifacts(){
     const settingsLine=acp&&options&&!options.error&&artifact.id===agentLayer.id?`<div class="agent-settings">${pick('mode','Modus',options.modes,settings.mode,'automatisch · full access als de agent dat kent')}<label class="agent-setting"><span>Model</span><input data-agent-setting="model" data-agent-layer="${esc(agentLayer.id)}" list="agent-model-options-${esc(agentLayer.id)}" value="${esc(settings.model||'')}" placeholder="agent default" autocomplete="off" title="Kies uit de lijst of typ een model-id dat de agent kent; leeg is het standaardmodel van je account"><datalist id="agent-model-options-${esc(agentLayer.id)}">${(options.models||[]).map(item=>`<option value="${esc(item.value)}">${esc(item.name||item.value)}${item.description?` · ${esc(item.description)}`:''}</option>`).join('')}</datalist></label>${pick('reasoning_effort','Reasoning',options.reasoning_efforts,settings.reasoning_effort,'agent default')}</div>`:'';
     return `<article class="artifact"><div><div class="artifact-title"><span>${esc(artifactSelector(artifact))}</span><span class="tag">L${artifactLayer(artifact)}</span>${artifactLineage(artifact).version>1?`<span class="tag capability" title="Bewerkt met EDIT; oudere versies blijven bestaan voor lagen die erop gebouwd zijn">v${artifactLineage(artifact).version}</span>`:''}<span class="tag ${esc(artifact.kind)}">${esc(artifact.kind)}</span><span class="tag">${esc(identity)}</span>${artifact.sensitivity==='secret'?'<span class="tag secret">secret</span>':''}</div><small title="${esc(artifact.snapshot_digest)}">${esc(artifact.profile)} · ${esc(artifact.snapshot?.driver||'legacy')} · ${esc(String(artifact.snapshot_digest||'').replace(/^sha256:/,'').slice(0,12))}</small><small>parent ${artifactLineage(artifact).parents.map(esc).join(', ')||'Alpine substrate'}</small>${artifact.enables?.length?`<small>ENABLES <span class="capability">${esc(enabledNames(artifact.enables))}</span>${(artifact.enables||[]).filter(item=>item.name==='acp').map(item=>` · commando <input class="command-input" data-command-layer="${esc(artifact.id)}" value="${esc(item.command||'')}" placeholder="bijv. codex-acp of claude-code-acp" title="Entrypoint van de ACP-agent in deze laag; achteraf aan te passen, EDIT neemt het over">`).join('')}</small>`:''}${optionsLine}${settingsLine}</div><div class="artifact-actions">${use}${fetchOptions}${next}${remove}</div></article>`;
   }).join('');
-  bindCommandButtons(root);bindArtifactRemove(root);
+  bindActionButtons(root);bindArtifactRemove(root);
   root.querySelectorAll('[data-agent-setting]').forEach(select=>select.onchange=async()=>{const card=select.closest('.artifact'),payload={};card.querySelectorAll('[data-agent-setting]').forEach(item=>payload[item.dataset.agentSetting]=item.value);try{await api(`/api/artifacts/${encodeURIComponent(select.dataset.agentLayer)}/acp/settings`,{method:'PUT',body:JSON.stringify(payload)});await refresh(true);}catch(error){showError(error);}});
   root.querySelectorAll('[data-command-layer]').forEach(input=>{input.onchange=async()=>{const command=input.value.trim();if(!command)return;try{await api(`/api/artifacts/${encodeURIComponent(input.dataset.commandLayer)}/enablements/acp`,{method:'PUT',body:JSON.stringify({command})});await refresh(true);}catch(error){showError(error);}};input.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();input.blur();}};});
   root.querySelectorAll('[data-fetch-options]').forEach(button=>button.onclick=async()=>{button.disabled=true;button.innerHTML=`${icon('hourglass_top')}Ophalen…`;try{await api(`/api/artifacts/${encodeURIComponent(button.dataset.fetchOptions)}/acp/options`,{method:'POST'});}catch(error){showError(error);await refresh(true);}});
   root.querySelectorAll('[data-record-from]').forEach(button=>button.onclick=()=>openConsole({scope:'user',from:button.dataset.recordFrom}));
-  root.querySelectorAll('[data-edit-artifact]').forEach(button=>button.onclick=()=>{openConsole();execute(`EDIT ${button.dataset.editArtifact}`);});
+  root.querySelectorAll('[data-edit-artifact]').forEach(button=>button.onclick=()=>{const artifact=artifactBySelector(button.dataset.editArtifact);if(!artifact)return;openConsole();editLayer(artifact);});
 }
 
 function usableSelectors(){return [...new Set(snapshot.artifacts.filter(canUse).map(artifactSelector))];}
@@ -860,12 +886,12 @@ function renderJobs(){
       const actionFailure=session?.executor==='action'&&run.reject_reason&&!question?`<p class="warning">${esc(run.reject_reason)}</p>`:'';
       return `<details class="workflow-step ${stepIsRunning?'active':''}" data-detail-state="${esc(stepDetailKey)}" ${detailOpenAttribute(stepDetailKey,stepIsRunning)}><summary><span class="workflow-marker ${esc(run.status)}"></span><span class="workflow-step-copy"><strong>${esc(run.phase_name)} <span class="tag">poging ${run.attempt}</span>${session?.executor==='action'?'<span class="tag capability">ACTION</span>':''}</strong><small>${session?short(session.id):'geen Session'}</small>${active?presenceHTML:''}</span><span class="workflow-step-status">${esc(sessionPreparation(session)?'voorbereiden':run.status)}</span></summary><div class="workflow-step-body"><div class="workflow-step-content">${outputs.length?`<div class="deliverable-chips">${outputs.map(item=>`<button class="deliverable-chip" data-deliverable="${esc(item.id)}">${esc(item.name)} · r${item.revision}</button>`).join('')}</div>`:''}${actionHTML}${actionFailure}${appPanel}${questionHTML}${question?.kind==='approval'?'':decisionHTML}</div>${actions?`<div class="session-actions">${actions}</div>`:''}</div></details>`;
     }).join('');
-    const legacySessions=!template?sessions.map(session=>{const composition=byID(snapshot.compositions,session.prepared_composition_id),ready=composition?.runtime&&composition.runtime.status!=='stopped',acp=(composition?.enabled||[]).some(item=>item.name==='acp');return `<div class="session"><div><strong>${esc(session.role||'worker')}</strong><small>${esc(session.git_ref)}</small>${sessionPresenceHTML(session)}</div><div class="session-actions"><span class="tag">${ready?'capsule ready':esc(session.status)}</span>${ready&&acp?`<button class="primary" data-open-acp="${esc(session.id)}">Open chat</button>`:`<button class="small-button" data-command="USE session:${esc(session.id)}">Run</button>`}</div></div>`;}).join(''):'';
+    const legacySessions=!template?sessions.map(session=>{const composition=byID(snapshot.compositions,session.prepared_composition_id),ready=composition?.runtime&&composition.runtime.status!=='stopped',acp=(composition?.enabled||[]).some(item=>item.name==='acp');return `<div class="session"><div><strong>${esc(session.role||'worker')}</strong><small>${esc(session.git_ref)}</small>${sessionPresenceHTML(session)}</div><div class="session-actions"><span class="tag">${ready?'capsule ready':esc(session.status)}</span>${ready&&acp?`<button class="primary" data-open-acp="${esc(session.id)}">Open chat</button>`:`<button class="small-button" data-action="use-session" data-id="${esc(session.id)}">Run</button>`}</div></div>`;}).join(''):'';
     const detailKey=`job:${job.id}`,createdAt=formatDateTime(job.created_at);
     const referenced=snapshot.jobs.some(candidate=>candidate.forked_from_job_id===job.id),isOwner=job.owner===currentOperator(),changeAction=`<button class="small-button" type="button" data-job-changes="${esc(job.id)}" ${hasComparisonWorkspace?'':'disabled'} title="${hasComparisonWorkspace?'Bekijk alle Job changes sinds de basisbranch':'De eerste Git-workspace is nog niet gereed'}">${icon('difference')}Changes</button>`,ownerActions=jobIsClosed(job)?`<button class="small-button" type="button" data-fork-job="${esc(job.id)}">${icon('fork_right')}Fork</button>${isOwner?`<button class="icon-button danger" type="button" data-remove-job="${esc(job.id)}" ${referenced?'disabled':''} title="${referenced?'Deze Job levert context aan een vervolg-Job':'Job definitief verwijderen'}" aria-label="Job definitief verwijderen">${icon('delete')}</button>`:''}`:(isOwner?`<button class="small-button" type="button" data-add-job-attachment="${esc(job.id)}" title="PDF of afbeelding toevoegen">${icon('attach_file')}Bijlage</button><button class="small-button" type="button" data-close-job="${esc(job.id)}">${icon('archive')}Sluiten</button>`:'');
     const source=byID(snapshot.jobs,job.forked_from_job_id);return {key:job.id,html:`<article class="job ${jobIsClosed(job)?'closed':''}"><div class="job-head"><div><div class="job-title-row"><h3>${esc(job.title)}</h3>${createdAt?`<span class="job-created" title="Aangemaakt ${esc(createdAt)}">${icon('calendar_today')}${esc(createdAt)}</span>`:''}</div><div class="job-objective md">${markdown(job.objective)}</div><div class="meta"><span class="tag ${statusClass}">${esc(workflowStatus)}</span>${jobIsClosed(job)?`<span class="tag">${icon('person')} ${esc(jobAssignee(job))}</span>`:`<label class="tag assignee-tag" title="Bij wie ligt deze Job">${icon('person')}<select data-assign-job="${esc(job.id)}">${assigneeOptions(job)}</select></label>`}${job.reference?`<span class="tag reference" title="Referentie">${icon('tag')} ${esc(job.reference)}</span>`:''}${source?`<span class="tag capability">${icon('fork_right')} ${esc(source.title)}</span>`:''}${template?`<span class="tag">${esc(template.name)} · r${template.revision||1}</span>`:''}<span class="tag branch">${esc(job.branch)}</span><span class="tag">${esc(repository?.name||'Git ontbreekt')}@${esc(job.base_ref)}</span></div>${attachmentChips?`<div class="attachment-selection">${attachmentChips}</div>`:''}${deliverableChips?`<div class="deliverable-chips">${deliverableChips}</div>`:''}</div><div class="job-head-actions">${changeAction}${ownerActions}</div></div><details class="job-detail" data-job-detail="${esc(job.id)}" data-detail-state="${esc(detailKey)}" ${detailOpenAttribute(detailKey,job.workflow_status==='busy')}><summary>${runs.length||sessions.length} stap${(runs.length||sessions.length)===1?'':'pen'} · workflow en Sessions</summary><div class="job-detail-body">${template?runHTML:`<div class="sessions">${legacySessions}</div>`}</div></details></article>`};
   });
-  const bind=()=>{bindDetailStates(root);bindCommandButtons(root);bindACPButtons(root);bindDeliverables(root);bindQuestionButtons(root);bindResultButtons(root);bindAppPanels(root);
+  const bind=()=>{bindDetailStates(root);bindActionButtons(root);bindACPButtons(root);bindDeliverables(root);bindQuestionButtons(root);bindResultButtons(root);bindAppPanels(root);
   root.querySelectorAll('[data-assign-job]').forEach(select=>select.onchange=async()=>{try{await api(`/api/jobs/${encodeURIComponent(select.dataset.assignJob)}/assignee`,{method:'PUT',body:JSON.stringify({assignee:select.value})});await refresh(true);}catch(error){showError(error);await refresh(true);}});};
   root._afterPatch=bind;if(patchKeyed(root,cards))bind();root.querySelectorAll('[data-job-changes]').forEach(button=>button.onclick=()=>openJobChanges(button));root.querySelectorAll('[data-add-job-attachment]').forEach(button=>button.onclick=()=>chooseJobAttachments(button.dataset.addJobAttachment));root.querySelectorAll('[data-close-job]').forEach(button=>button.onclick=()=>closeJob(button));root.querySelectorAll('[data-fork-job]').forEach(button=>button.onclick=()=>openJobFork(button.dataset.forkJob));root.querySelectorAll('[data-remove-job]').forEach(button=>button.onclick=()=>removeJob(button.dataset.removeJob));root.querySelectorAll('[data-retry-session]').forEach(button=>button.onclick=()=>retrySession(button));
 }
@@ -1142,7 +1168,6 @@ async function restorePortableBackup(file){
   try{const result=await uploadRestoreDatabase(file);restored=true;announceRestoreComplete(result);}catch(error){updateRestoreProgress('Restore mislukt',error.message||String(error),100,true);showError(error);}finally{if(!restored&&!rememberedRestoreJob()&&authState.authenticated&&stateStream.stopped)connectStateStream();button.disabled=false;backupButton.disabled=false;button.innerHTML=label;document.getElementById('restore-backup-input').value='';}
 }
 
-function bindCommandButtons(root=document){root.querySelectorAll('[data-command]').forEach(button=>button.onclick=()=>{setTab('environments');openConsole();execute(button.dataset.command);});}
 function bindArtifactRemove(root){root.querySelectorAll('[data-remove-artifact]').forEach(button=>button.onclick=()=>removeArtifact(button.dataset.removeArtifact,button.dataset.artifactLabel));}
 function bindSpawnForms(root){root.querySelectorAll('.spawn-form').forEach(form=>{
   const draft=spawnDrafts.get(form.dataset.jobId);
@@ -1251,7 +1276,7 @@ document.getElementById('close-diff').onclick=closeDiff;
 document.getElementById('record-presets').innerHTML=recordPresets.map((preset,index)=>`<button class="quick" type="button" data-record-preset="${index}">${esc(preset.label)}</button>`).join('');
 document.querySelectorAll('[data-record-preset]').forEach(button=>button.onclick=()=>fillRecordForm(recordPresets[Number(button.dataset.recordPreset)]));
 document.getElementById('record-form').elements.enable_acp.onchange=syncRecordForm;
-document.getElementById('record-form').onsubmit=event=>{event.preventDefault();const form=event.target;if(!form.reportValidity())return;execute(recordCommandFromForm());};
+document.getElementById('record-form').onsubmit=event=>{event.preventDefault();const form=event.target;if(!form.reportValidity())return;startLayerRecording(recordRequestFromForm());};
 document.getElementById('open-job-dialog').onclick=()=>{resetJobForm();openDialog('job-dialog');};
 const openTemplateBuilder=()=>{resetTemplateForm();openDialog('template-dialog');};document.querySelectorAll('[data-open-template]').forEach(button=>button.onclick=openTemplateBuilder);document.getElementById('add-template-step').onclick=()=>addTemplateStep();
 document.getElementById('job-next').onclick=()=>{const fields=[...document.querySelector('[data-job-step="1"]').querySelectorAll('input,textarea,select')];for(const field of fields){if(!field.checkValidity()){field.reportValidity();return;}}setJobStep(2);};
@@ -1279,7 +1304,7 @@ chatFeed.addEventListener('scroll',()=>{chatState.followTail=chatAtTail(chatFeed
 if('ResizeObserver' in window)new ResizeObserver(()=>followChatTail()).observe(document.getElementById('chat-feed-inner'));
 document.getElementById('chat-input').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();document.getElementById('chat-form').requestSubmit();}});
 document.getElementById('chat-input').addEventListener('input',event=>{event.target.style.height='auto';event.target.style.height=`${Math.min(180,event.target.scrollHeight)}px`;});
-document.getElementById('use-form').onsubmit=event=>{event.preventDefault();const selector=document.getElementById('use-selector').value,withSelectors=selectedValues(document.getElementById('use-with'));if(!selector)return;openConsole();execute(`USE ${selector}${withSelectors.map(value=>` WITH ${value}`).join('')}`);};
+document.getElementById('use-form').onsubmit=event=>{event.preventDefault();const selector=document.getElementById('use-selector').value,withSelectors=selectedValues(document.getElementById('use-with'));if(!selector)return;openConsole();useLayers(selector,withSelectors);};
 document.getElementById('mcp-transport').onchange=event=>{const http=event.target.value==='http';document.getElementById('mcp-command-field').hidden=http;document.getElementById('mcp-url-field').hidden=!http;};
 document.getElementById('git-provider').onchange=event=>{const hosts={github:'github.com',gitlab:'gitlab.com'};if(hosts[event.target.value])document.getElementById('git-host').value=hosts[event.target.value];};
 document.getElementById('job-form').onsubmit=async event=>{event.preventDefault();if(jobSubmitting)return;const form=new FormData(event.target),files=selectedJobAttachmentFiles(),source=byID(snapshot.jobs,forkingJobID),payload={title:form.get('title'),reference:String(form.get('reference')||'').trim(),objective:form.get('objective'),owner:form.get('owner'),operator:currentOperator(),template_id:form.get('template_id'),git_repository_id:source?.git_repository_id||form.get('git_repository_id'),base_ref:source?.branch||form.get('base_ref'),environment_selector:form.get('environment_selector'),mcp_server_ids:selectedValues(document.getElementById('job-mcp')),forked_from_job_id:source?.id||'',run:true},fileFingerprint=files.map(file=>[file.name,file.size,file.type,file.lastModified]),fingerprint=JSON.stringify([payload,fileFingerprint]);setJobSubmitting(true);try{validateJobAttachmentFiles(files);if(!pendingJobSubmission||pendingJobSubmission.fingerprint!==fingerprint){if(pendingJobSubmission?.attachmentIds?.length)await Promise.allSettled(pendingJobSubmission.attachmentIds.map(id=>api(`/api/job-attachments/${encodeURIComponent(id)}`,{method:'DELETE'})));pendingJobSubmission={fingerprint,key:newIdempotencyKey(),attachmentIds:[]};}for(let index=pendingJobSubmission.attachmentIds.length;index<files.length;index++){setJobSubmitting(true,`Bijlage ${index+1}/${files.length} uploaden…`);const attachment=await uploadAttachment(files[index],'/api/job-attachments');pendingJobSubmission.attachmentIds.push(attachment.id);}payload.attachment_ids=[...pendingJobSubmission.attachmentIds];payload.idempotency_key=pendingJobSubmission.key;setJobSubmitting(true,'Job inschieten…');await api('/api/jobs',{method:'POST',body:JSON.stringify(payload)});pendingJobSubmission=null;resetJobForm();closeDialog('job-dialog');setJobState('open');print('system',`${source?'Vervolg-Job':'Job'} ingeschoten${files.length?` met ${files.length} bijlage${files.length===1?'':'n'}`:''}; de eerste Session start op de achtergrond.`);await refresh(true);}catch(error){showError(error);}finally{setJobSubmitting(false);}};
@@ -1292,4 +1317,4 @@ document.getElementById('setup-form').onsubmit=async event=>{event.preventDefaul
 document.getElementById('login-form').onsubmit=async event=>{event.preventDefault();const form=new FormData(event.target);try{const status=await api('/api/auth/login',{method:'POST',body:JSON.stringify({username:form.get('username'),password:form.get('password')})});event.target.reset();enterApp(status);setTab(localStorage.getItem('spin-tab')||'jobs');setWorkView(localStorage.getItem('spin-work-view')||'jobs');setJobState(jobStateFilter);setConnection(localStorage.getItem('spin-connection')||'git');handleOAuthStatus();await refresh(true);}catch(error){document.getElementById('auth-copy').textContent=error.message||error;}};
 document.getElementById('logout').onclick=async()=>{try{await api('/api/auth/logout',{method:'POST'});}catch(_){}closeACPChat();terminalSessions.forEach(session=>session.socket.close());terminalSessions.clear();stopStateStream();authState={configured:true,authenticated:false,user:null};csrfToken='';showAuthGate('Je bent uitgelogd.');};
 
-bindCommandButtons();bootstrap();
+bindActionButtons();bootstrap();

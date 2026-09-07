@@ -43,18 +43,14 @@ func TestRecordAnswersWithProgressWhenStartingTakesLong(t *testing.T) {
 	engine := &slowStartEngine{testEngine: &testEngine{}, release: make(chan struct{})}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
 	srv.startWait = 50 * time.Millisecond
-	run := func(line string) (domain.CommandResponse, error) {
-		return srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line})
+	codex := toolLayer("codex")
+	codex.Enables = []domain.Enablement{{Name: "acp", Command: "codex-acp"}}
+	recording, starting := startLayer(t, srv, "derek", codex)
+	if starting == nil || starting.Status != "running" || recording.Runtime != nil {
+		t.Fatalf("slow RECORD = %+v / %+v", recording, starting)
 	}
-	started, err := run("RECORD tool:codex --scope=global --enable=acp --command=codex-acp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if started.Start == nil || started.Start.Status != "running" || started.Recording == nil || started.Recording.Runtime != nil {
-		t.Fatalf("slow RECORD = %+v", started)
-	}
-	recordingID := started.Recording.ID
-	if _, err := run("RECORD tool:node --scope=global"); err == nil || !strings.Contains(err.Error(), "still starting") {
+	recordingID := recording.ID
+	if _, _, err := srv.createCapsuleRecording(toolLayer("node").request(t, srv, "derek")); err == nil || !strings.Contains(err.Error(), "still starting") {
 		t.Fatalf("second RECORD while one starts = %v", err)
 	}
 	status := func() domain.StartStatus {
@@ -87,15 +83,15 @@ func TestRecordAnswersWithProgressWhenStartingTakesLong(t *testing.T) {
 	if err != nil || open.ID != recordingID || open.Runtime == nil {
 		t.Fatalf("open recording after start = %+v, %v", open, err)
 	}
-	if ended, err := run("END RECORD"); err != nil || ended.Artifact == nil || ended.Artifact.Slot != "tool:codex" {
-		t.Fatalf("END after a slow start = %+v, %v", ended, err)
+	if ended := saveLayer(t, srv, "derek"); ended.Slot != "tool:codex" {
+		t.Fatalf("END after a slow start = %+v", ended)
 	}
 
 	// A start that fails leaves no open recording behind.
 	failing := &slowStartEngine{testEngine: &testEngine{}, release: make(chan struct{}), fail: errors.New("runner has no room")}
 	close(failing.release)
 	failingServer := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), failing, ServerOptions{DisableAuthentication: true})
-	if _, err := failingServer.runCommand(domain.CommandRequest{Operator: "derek", Line: "RECORD tool:node --scope=global"}); err == nil {
+	if _, _, err := failingServer.createCapsuleRecording(toolLayer("node").request(t, failingServer, "derek")); err == nil {
 		t.Fatal("RECORD with a failing start did not report the failure")
 	}
 	if _, err := st.OpenRecording("derek"); err == nil {
@@ -113,18 +109,15 @@ func TestCancelStopsARunningStart(t *testing.T) {
 	engine := &slowStartEngine{testEngine: &testEngine{}, release: make(chan struct{})}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
 	srv.startWait = 50 * time.Millisecond
-	run := func(line string) (domain.CommandResponse, error) {
-		return srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line})
+	recording, starting := startLayer(t, srv, "derek", toolLayer("codex"))
+	if starting == nil {
+		t.Fatalf("slow RECORD = %+v", recording)
 	}
-	started, err := run("RECORD tool:codex --scope=global")
-	if err != nil || started.Start == nil {
-		t.Fatalf("slow RECORD = %+v, %v", started, err)
-	}
-	recordingID := started.Recording.ID
+	recordingID := recording.ID
 	// The engine ignores the context; the server must still stop waiting.
 	srv.startCancelWait = 100 * time.Millisecond
-	cancelled, err := run("CANCEL RECORD")
-	if err != nil || cancelled.Recording == nil || cancelled.Recording.Status != domain.RecordingCancelled {
+	cancelled, err := cancelLayer(srv, "derek")
+	if err != nil || cancelled.Status != domain.RecordingCancelled {
 		t.Fatalf("CANCEL during start = %+v, %v", cancelled, err)
 	}
 	if _, err := st.OpenRecording("derek"); err == nil {
@@ -141,8 +134,8 @@ func TestCancelStopsARunningStart(t *testing.T) {
 	if engine.testEngine.cancelled != 1 {
 		t.Fatalf("capsule that came up after the cancel was not removed: cancelled=%d", engine.testEngine.cancelled)
 	}
-	if again, err := run("RECORD tool:codex --scope=global"); err != nil || again.Recording == nil || again.Recording.Runtime == nil {
-		t.Fatalf("RECORD after a cancelled start = %+v, %v", again, err)
+	if again := recordLayer(t, srv, "derek", toolLayer("codex")); again.Runtime == nil {
+		t.Fatalf("RECORD after a cancelled start = %+v", again)
 	}
 }
 
@@ -157,11 +150,11 @@ func TestServerResumesStartsAfterRestart(t *testing.T) {
 	stuck := &slowStartEngine{testEngine: &testEngine{}, release: make(chan struct{})}
 	first := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), stuck, ServerOptions{DisableAuthentication: true})
 	first.startWait = 50 * time.Millisecond
-	started, err := first.runCommand(domain.CommandRequest{Operator: "derek", Line: "RECORD tool:codex --scope=global"})
-	if err != nil || started.Start == nil {
-		t.Fatalf("slow RECORD = %+v, %v", started, err)
+	recording, starting := startLayer(t, first, "derek", toolLayer("codex"))
+	if starting == nil {
+		t.Fatalf("slow RECORD = %+v", recording)
 	}
-	recordingID := started.Recording.ID
+	recordingID := recording.ID
 	// "Restart": a new server over the same state, with a runner that answers.
 	second := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), &testEngine{}, ServerOptions{DisableAuthentication: true})
 	status := func() domain.StartStatus {
@@ -189,7 +182,7 @@ func TestServerResumesStartsAfterRestart(t *testing.T) {
 	if err != nil || open.ID != recordingID || open.Runtime == nil || open.Runtime.ContainerID == "" {
 		t.Fatalf("open recording after the resumed start = %+v, %v", open, err)
 	}
-	if ended, err := second.runCommand(domain.CommandRequest{Operator: "derek", Line: "END RECORD"}); err != nil || ended.Artifact == nil {
-		t.Fatalf("END after a resumed start = %+v, %v", ended, err)
+	if ended := saveLayer(t, second, "derek"); ended.ID == "" {
+		t.Fatalf("END after a resumed start = %+v", ended)
 	}
 }

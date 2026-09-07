@@ -95,14 +95,7 @@ func TestRecordingTerminalStreamsInputOutputAndAuditsCommand(t *testing.T) {
 	}
 	engine := &interactiveTestEngine{}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
-	started, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: "RECORD tool:codex --scope=global"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	recording := started.Recording
-	if recording == nil {
-		t.Fatal("recording was not created")
-	}
+	recording := recordLayer(t, srv, "derek", toolLayer("codex"))
 
 	clientConn, serverConn := net.Pipe()
 	go func() { _ = (&http.Server{Handler: srv.Handler()}).Serve(&singleConnListener{conn: serverConn}) }()
@@ -184,20 +177,16 @@ func TestCompositionTerminalOpensPTYWithoutRecording(t *testing.T) {
 	}
 	engine := &interactiveTestEngine{}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
-	for _, line := range []string{"RECORD tool:codex --scope=global", "install codex", "END RECORD"} {
-		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-	}
-	used, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: "USE tool:codex"})
-	if err != nil || used.Composition == nil || used.Composition.Runtime == nil || used.Composition.Runtime.Status != "ready" {
-		t.Fatalf("USE = %+v, error = %v", used, err)
+	buildLayers(t, srv, "derek", toolLayer("codex"))
+	used := useLayers(t, srv, "derek", "tool:codex")
+	if used.Runtime == nil || used.Runtime.Status != "ready" {
+		t.Fatalf("USE = %+v", used)
 	}
 	dial := func(operator string) (*websocket.Conn, *http.Response, error) {
 		clientConn, serverConn := net.Pipe()
 		go func() { _ = (&http.Server{Handler: srv.Handler()}).Serve(&singleConnListener{conn: serverConn}) }()
 		dialer := websocket.Dialer{NetDial: func(_, _ string) (net.Conn, error) { return clientConn, nil }}
-		return dialer.Dial("ws://spin.test/api/compositions/"+used.Composition.ID+"/terminal?operator="+operator, nil)
+		return dialer.Dial("ws://spin.test/api/compositions/"+used.ID+"/terminal?operator="+operator, nil)
 	}
 	if _, response, err := dial("mallory"); err == nil || response == nil || response.StatusCode != http.StatusConflict {
 		t.Fatalf("another operator opened the terminal: err=%v response=%+v", err, response)

@@ -29,14 +29,7 @@ func TestWorkflowAcceptOwnsCommitAndPublishesSessionToJobBranch(t *testing.T) {
 		return jsonResponse(http.StatusCreated, `{"number":7,"html_url":"https://github.com/derek/accept/pull/7","title":"Feature"}`), nil
 	})}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true, InternalURL: "http://spin.internal", HTTPClient: httpClient})
-	for _, line := range []string{
-		"RECORD tool:git --scope=global --enable=git", "install git", "END RECORD",
-		"RECORD tool:agent --scope=global --from=tool:git --enable=acp --command=agent-acp", "install agent", "END RECORD",
-	} {
-		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-	}
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
 	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "accept", RemoteURL: "https://github.com/derek/accept.git", CredentialScope: domain.CredentialScopeUser})
 	if err != nil {
 		t.Fatal(err)
@@ -164,14 +157,7 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 		t.Fatal(err)
 	}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), &testEngine{}, ServerOptions{DisableAuthentication: true, InternalURL: "http://spin.internal"})
-	for _, line := range []string{
-		"RECORD tool:git --scope=global --enable=git", "install git", "END RECORD",
-		"RECORD tool:agent --scope=global --from=tool:git --enable=acp --command=agent-acp", "install agent", "END RECORD",
-	} {
-		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-	}
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
 	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "mcp", RemoteURL: "https://example.com/mcp.git"})
 	if err != nil {
 		t.Fatal(err)
@@ -290,14 +276,7 @@ func TestWorkflowPromptInjectsOnlySelectedLatestDeliverablesAndAlwaysGoal(t *tes
 		t.Fatal(err)
 	}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), &testEngine{}, ServerOptions{DisableAuthentication: true})
-	for _, line := range []string{
-		"RECORD tool:git --scope=global --enable=git", "install git", "END RECORD",
-		"RECORD tool:agent --scope=global --from=tool:git --enable=acp --command=agent-acp", "install agent", "END RECORD",
-	} {
-		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-	}
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
 	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "prompt", RemoteURL: "https://example.com/prompt.git"})
 	if err != nil {
 		t.Fatal(err)
@@ -436,14 +415,7 @@ func TestForkedWorkflowReceivesPreviousGoalAndLatestDeliverables(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), &testEngine{}, ServerOptions{DisableAuthentication: true})
-	for _, line := range []string{
-		"RECORD tool:git --scope=global --enable=git", "install git", "END RECORD",
-		"RECORD tool:agent --scope=global --from=tool:git --enable=acp --command=agent-acp", "install agent", "END RECORD",
-	} {
-		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-	}
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
 	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "follow-up", RemoteURL: "https://example.com/follow-up.git"})
 	if err != nil {
 		t.Fatal(err)
@@ -512,14 +484,7 @@ func TestWorkflowRetryEndpointStopsOldCompositionAndReturnsImmediately(t *testin
 	}
 	engine := &blockingStopEngine{started: make(chan struct{}), release: make(chan struct{})}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
-	for _, line := range []string{
-		"RECORD tool:git --scope=global --enable=git", "install git", "END RECORD",
-		"RECORD tool:agent --scope=global --from=tool:git --enable=acp --command=agent-acp", "install agent", "END RECORD",
-	} {
-		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-	}
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
 	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "retry-endpoint", RemoteURL: "https://example.com/retry.git"})
 	if err != nil {
 		t.Fatal(err)

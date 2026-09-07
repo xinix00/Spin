@@ -38,27 +38,22 @@ func TestEndRecordAnswersWithProgressWhenSealingTakesLong(t *testing.T) {
 	engine := &slowSealEngine{testEngine: &testEngine{}, release: make(chan struct{})}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
 	srv.sealWait = 50 * time.Millisecond
-	run := func(line string) (domain.CommandResponse, error) {
-		return srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line})
-	}
-	started, err := run("RECORD tool:codex --scope=global --enable=acp --command=codex-acp")
-	if err != nil || started.Recording == nil {
-		t.Fatalf("record: %+v, %v", started, err)
-	}
-	recordingID := started.Recording.ID
+	codex := toolLayer("codex")
+	codex.Enables = []domain.Enablement{{Name: "acp", Command: "codex-acp"}}
+	recordingID := recordLayer(t, srv, "derek", codex).ID
 
-	ending, err := run("END RECORD")
+	artifact, ending, err := endLayer(srv, "derek")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ending.Artifact != nil || ending.Seal == nil || ending.Seal.Status != "running" || ending.Seal.RecordingID != recordingID {
-		t.Fatalf("slow END RECORD = %+v", ending)
+	if artifact.ID != "" || ending == nil || ending.Status != "running" || ending.RecordingID != recordingID {
+		t.Fatalf("slow END RECORD = %+v / %+v", artifact, ending)
 	}
-	again, err := run("END RECORD")
-	if err != nil || again.Seal == nil || !again.Seal.StartedAt.Equal(ending.Seal.StartedAt) {
+	_, again, err := endLayer(srv, "derek")
+	if err != nil || again == nil || !again.StartedAt.Equal(ending.StartedAt) {
 		t.Fatalf("repeated END RECORD did not join the running seal: %+v, %v", again, err)
 	}
-	if _, err := run("CANCEL RECORD"); err == nil {
+	if _, err := cancelLayer(srv, "derek"); err == nil {
 		t.Fatal("cancelled a recording that is being saved")
 	}
 	status := func() domain.SealStatus {
@@ -93,19 +88,16 @@ func TestEndRecordAnswersWithProgressWhenSealingTakesLong(t *testing.T) {
 	if _, err := st.OpenRecording("derek"); err == nil {
 		t.Fatal("recording still open after the seal finished")
 	}
-	if listed, err := run("LIST tool"); err != nil || len(listed.Artifacts) != 1 || listed.Artifacts[0].ID != seal.Artifact.ID {
-		t.Fatalf("artifact after seal: %+v, %v", listed.Artifacts, err)
+	if artifacts := st.Snapshot().Artifacts; len(artifacts) != 1 || artifacts[0].ID != seal.Artifact.ID {
+		t.Fatalf("artifact after seal: %+v", artifacts)
 	}
 
 	// The REST form of END answers the same way.
 	quick := &testEngine{}
 	quickServer := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), quick, ServerOptions{DisableAuthentication: true})
-	second, err := quickServer.runCommand(domain.CommandRequest{Operator: "derek", Line: "RECORD tool:node --scope=global"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := recordLayer(t, quickServer, "derek", toolLayer("node"))
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/recordings/"+second.Recording.ID+"/end", strings.NewReader(`{"actor":"derek"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/recordings/"+second.ID+"/end", strings.NewReader(`{"actor":"derek"}`))
 	request.Header.Set("Content-Type", "application/json")
 	quickServer.Handler().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusCreated {

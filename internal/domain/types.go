@@ -1048,27 +1048,6 @@ type StopCompositionRequest struct {
 	Operator string `json:"operator"`
 }
 
-type CommandRequest struct {
-	Operator string `json:"operator"`
-	Line     string `json:"line"`
-}
-
-type CommandResponse struct {
-	Message     string       `json:"message"`
-	Output      string       `json:"output,omitempty"`
-	ExitCode    *int         `json:"exit_code,omitempty"`
-	Recording   *Recording   `json:"recording,omitempty"`
-	Artifact    *Artifact    `json:"artifact,omitempty"`
-	Composition *Composition `json:"composition,omitempty"`
-	Artifacts   []Artifact   `json:"artifacts,omitempty"`
-	// Seal is set when END RECORD is still running in the background: the
-	// browser follows it through GET /api/recordings/{id}/seal.
-	Seal *SealStatus `json:"seal,omitempty"`
-	// Start is set when RECORD or EDIT is still bringing the capsule up: the
-	// browser follows it through GET /api/recordings/{id}/start.
-	Start *StartStatus `json:"start,omitempty"`
-}
-
 // StartStatus reports RECORD or EDIT while the capsule comes up. Providing the
 // base image to a runner that lacks it can take minutes; the container itself
 // starts in seconds.
@@ -1085,7 +1064,7 @@ type StartStatus struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
-// SealStatus reports END RECORD while it runs. Sealing commits the snapshot on
+// SealStatus reports End & save while it runs. Sealing commits the snapshot on
 // the runner, uploads it to the archive in chunks and records the artifact; a
 // large image takes minutes, longer than any single HTTP request may last.
 type SealStatus struct {

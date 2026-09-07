@@ -200,19 +200,8 @@ func TestDeleteArtifactRemovesTheBackingSnapshot(t *testing.T) {
 	}
 	engine := &testEngine{}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
-	run := func(line string) domain.CommandResponse {
-		t.Helper()
-		response, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line})
-		if err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-		return response
-	}
-	run("RECORD tool:disposable --scope=global")
-	artifact := run("END RECORD").Artifact
-	if artifact == nil {
-		t.Fatal("recording returned no artifact")
-	}
+	recordLayer(t, srv, "derek", toolLayer("disposable"))
+	artifact := saveLayer(t, srv, "derek")
 
 	request := httptest.NewRequest(http.MethodDelete, "/api/artifacts/"+artifact.ID+"?operator=derek", nil)
 	response := httptest.NewRecorder()
@@ -270,33 +259,24 @@ func TestCommandFlowUsesCapsuleEngine(t *testing.T) {
 	engine := &testEngine{}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
 
-	run := func(line string) domain.CommandResponse {
-		t.Helper()
-		response, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line})
-		if err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-		return response
+	started := recordLayer(t, srv, "derek", toolLayer("codex"))
+	if started.Runtime == nil || started.Runtime.Driver != "test" {
+		t.Fatalf("recording runtime = %+v", started)
 	}
-
-	started := run("RECORD tool:codex --scope=global")
-	if started.Recording == nil || started.Recording.Runtime == nil || started.Recording.Runtime.Driver != "test" {
-		t.Fatalf("recording runtime = %+v", started.Recording)
-	}
-	executed := run("install codex")
-	if executed.Output != "ran: install codex" || executed.ExitCode == nil || *executed.ExitCode != 7 {
+	_, executed := runInRecording(t, srv, "derek", "install codex")
+	if executed.Output != "ran: install codex" || executed.ExitCode != 7 {
 		t.Fatalf("execution = %+v", executed)
 	}
-	artifact := run("END RECORD").Artifact
-	if artifact == nil || artifact.Snapshot.Ref == "" || !artifact.Snapshot.Restorable {
+	artifact := saveLayer(t, srv, "derek")
+	if artifact.Snapshot.Ref == "" || !artifact.Snapshot.Restorable {
 		t.Fatalf("artifact = %+v", artifact)
 	}
-	composition := run("USE tool:codex").Composition
-	if composition == nil || composition.Runtime == nil || composition.Runtime.Status != "ready" {
+	composition := useLayers(t, srv, "derek", "tool:codex")
+	if composition.Runtime == nil || composition.Runtime.Status != "ready" {
 		t.Fatalf("composition = %+v", composition)
 	}
-	stopped := run("STOP USE").Composition
-	if stopped == nil || stopped.Runtime == nil || stopped.Runtime.Status != "stopped" {
+	stopped, err := srv.stopCapsule(context.Background(), composition.ID, "derek")
+	if err != nil || stopped.Runtime == nil || stopped.Runtime.Status != "stopped" {
 		t.Fatalf("stopped composition = %+v", stopped)
 	}
 	if engine.started != 1 || engine.executed != 1 || engine.sealed != 1 || engine.materialized != 1 {
@@ -311,16 +291,7 @@ func TestFailedMaterializationDoesNotLeaveADeadComposition(t *testing.T) {
 	}
 	engine := &testEngine{}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
-	run := func(line string) {
-		t.Helper()
-		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-	}
-	run("RECORD tool:codex --scope=global")
-	run("END RECORD")
-	run("RECORD tool:dotnet --scope=global")
-	run("END RECORD")
+	buildLayers(t, srv, "derek", toolLayer("codex"), toolLayer("dotnet"))
 	engine.materializeErr = fmt.Errorf("independent Docker lineages")
 
 	if _, err := srv.useCapsule(context.Background(), domain.UseRequest{
@@ -340,34 +311,28 @@ func TestRecordFromBuildsExplicitToolAndCredentialLayers(t *testing.T) {
 	}
 	engine := &testEngine{}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
-	run := func(line string) domain.CommandResponse {
-		t.Helper()
-		response, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line})
-		if err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-		return response
-	}
 
-	run("RECORD tool:node --scope=global")
-	run("apk add nodejs npm")
-	node := run("END RECORD").Artifact
-	if node == nil || node.Slot != "tool:node" {
+	recordLayer(t, srv, "derek", toolLayer("node"))
+	runInRecording(t, srv, "derek", "apk add nodejs npm")
+	node := saveLayer(t, srv, "derek")
+	if node.Slot != "tool:node" {
 		t.Fatalf("node layer = %+v", node)
 	}
 
-	codexRecording := run("RECORD tool:codex --scope=global --from=tool:node --enable=acp --command=codex-acp").Recording
-	if codexRecording == nil || len(codexRecording.ParentArtifactIDs) != 1 || codexRecording.ParentArtifactIDs[0] != node.ID {
+	codexSpec := agentLayer("codex", "codex-acp")
+	codexSpec.From = "tool:node"
+	codexRecording := recordLayer(t, srv, "derek", codexSpec)
+	if len(codexRecording.ParentArtifactIDs) != 1 || codexRecording.ParentArtifactIDs[0] != node.ID {
 		t.Fatalf("codex recording parents = %+v", codexRecording)
 	}
 	if codexRecording.Runtime == nil || codexRecording.Runtime.BaseRef != node.Snapshot.Ref {
 		t.Fatalf("codex runtime = %+v", codexRecording.Runtime)
 	}
-	run("npm install -g @openai/codex")
-	codex := run("END RECORD").Artifact
+	runInRecording(t, srv, "derek", "npm install -g @openai/codex")
+	codex := saveLayer(t, srv, "derek")
 
-	credentialRecording := run("RECORD credential:codex --scope=user --from=tool:codex").Recording
-	if credentialRecording == nil || len(credentialRecording.ParentArtifactIDs) != 1 || credentialRecording.ParentArtifactIDs[0] != codex.ID {
+	credentialRecording := recordLayer(t, srv, "derek", layerSpec{Kind: domain.ArtifactCredential, Name: "codex", Scope: domain.ScopeUser, From: "tool:codex"})
+	if len(credentialRecording.ParentArtifactIDs) != 1 || credentialRecording.ParentArtifactIDs[0] != codex.ID {
 		t.Fatalf("credential recording = %+v", credentialRecording)
 	}
 }
@@ -379,25 +344,18 @@ func TestACPProbeUsesEnabledEntrypointInMaterializedCapsule(t *testing.T) {
 	}
 	engine := &testEngine{}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
-	run := func(line string) domain.CommandResponse {
-		t.Helper()
-		response, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line})
-		if err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-		return response
-	}
 
-	run("RECORD tool:codex --scope=global --enable=acp --command=codex-acp")
-	run("install codex-acp")
-	run("END RECORD")
-	composition := run("USE tool:codex").Composition
-	if composition == nil || len(composition.Enabled) != 1 {
+	codexSpec := toolLayer("codex")
+	codexSpec.Enables = []domain.Enablement{{Name: "acp", Command: "codex-acp"}}
+	codexSpec.Install = "install codex-acp"
+	buildLayers(t, srv, "derek", codexSpec)
+	composition := useLayers(t, srv, "derek", "tool:codex")
+	if len(composition.Enabled) != 1 {
 		t.Fatalf("composition = %+v", composition)
 	}
-	probed := run("ACP PROBE " + composition.ID)
-	if engine.probed != 1 || !strings.Contains(probed.Output, `"protocolVersion": 1`) {
-		t.Fatalf("probe = %+v, calls=%d", probed, engine.probed)
+	probed, err := srv.probeACP(context.Background(), composition.ID, "derek")
+	if err != nil || engine.probed != 1 || !strings.Contains(string(probed.Handshake), `"protocolVersion":1`) {
+		t.Fatalf("probe = %+v, error = %v, calls=%d", probed, err, engine.probed)
 	}
 }
 
@@ -408,33 +366,9 @@ func TestCreateJobQueuesRootSessionWithoutWaitingAndCanRemoveIt(t *testing.T) {
 	}
 	engine := &blockingMaterializeEngine{started: make(chan struct{}), release: make(chan struct{})}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
-	if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: "RECORD tool:git --scope=global --enable=git"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: "install git"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: "END RECORD"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: "RECORD tool:demo --scope=global --from=tool:git --enable=acp --command=demo-acp"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: "install demo"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: "END RECORD"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: "RECORD tool:dotnet --scope=global --from=tool:demo"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: "install dotnet"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: "END RECORD"}); err != nil {
-		t.Fatal(err)
-	}
+	dotnet := toolLayer("dotnet")
+	dotnet.From = "tool:demo"
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("demo", "demo-acp"), dotnet)
 
 	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "rudimentary", RemoteURL: "https://example.com/rudimentary.git"})
 	if err != nil {
@@ -533,14 +467,7 @@ func TestAuthenticatedGitCheckoutUsesSecretEngineBoundary(t *testing.T) {
 	}
 	engine := &testEngine{}
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
-	for _, line := range []string{
-		"RECORD tool:git --scope=global --enable=git", "install git", "END RECORD",
-		"RECORD tool:demo --scope=global --from=tool:git --enable=acp --command=demo-acp", "install demo", "END RECORD",
-	} {
-		if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: line}); err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-	}
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("demo", "demo-acp"))
 	_, err = st.CreateGitAccount(domain.CreateGitAccountRequest{
 		Operator: "derek", Provider: "github", Login: "derek", Name: "Derek", Email: "derek@example.com", AccessToken: "top-secret-token",
 	})

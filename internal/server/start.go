@@ -25,14 +25,14 @@ import (
 // The recording is durable and the job is not, so the two must never drift
 // apart: a recording without a runtime always has a job. Every start is
 // resumed when the server comes back (the runner reuses a capsule it already
-// created for that recording), CANCEL RECORD stops a running start instead of
+// created for that recording), cancelling stops a running start instead of
 // being refused, and a start that fails cancels its recording.
 
 const startAnswerWait = 3 * time.Second
 
 const startResultLifetime = 15 * time.Minute
 
-// startCancelWait bounds how long CANCEL RECORD waits for a stopped start job
+// startCancelWait bounds how long a cancel waits for a stopped start job
 // to wind down before it proceeds regardless.
 const startCancelWait = 10 * time.Second
 
@@ -66,7 +66,7 @@ func (s *Server) createCapsuleRecording(req domain.CreateRecordingRequest) (doma
 		if open.Runtime == nil || open.Runtime.ContainerID == "" {
 			state = "is still starting"
 		}
-		return domain.Recording{}, nil, fmt.Errorf("your recording %s:%s %s; END RECORD or CANCEL RECORD it first: %w", open.Kind, open.Name, state, store.ErrConflict)
+		return domain.Recording{}, nil, fmt.Errorf("your recording %s:%s %s; save or cancel it first: %w", open.Kind, open.Name, state, store.ErrConflict)
 	}
 	recording, err := s.store.CreateRecording(req)
 	if err != nil {

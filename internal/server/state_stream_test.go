@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"easyacp/internal/domain"
 	"easyacp/internal/store"
 	"github.com/gorilla/websocket"
 )
@@ -41,12 +40,8 @@ func TestStateStreamPushesTheStateOnChange(t *testing.T) {
 	if len(first.Artifacts) != 0 {
 		t.Fatalf("initial state = %+v", first)
 	}
-	if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: "RECORD tool:git --scope=global --enable=git"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := srv.runCommand(domain.CommandRequest{Operator: "derek", Line: "END RECORD"}); err != nil {
-		t.Fatal(err)
-	}
+	recordLayer(t, srv, "derek", gitLayer())
+	saveLayer(t, srv, "derek")
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		next := read()

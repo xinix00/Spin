@@ -162,7 +162,7 @@ func filterExport(export io.Reader, out io.Writer) error {
 
 // layerDiff writes the top layer of a docker save stream to out, minus its
 // whiteout entries, and returns the paths those whiteouts delete. The top
-// layer is the recording's own change: one commit per END RECORD.
+// layer is the recording's own change: one commit per saved recording.
 func layerDiff(save io.ReadSeeker, out io.Writer) ([]string, error) {
 	var manifest []struct {
 		Layers []string `json:"Layers"`
