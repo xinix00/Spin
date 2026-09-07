@@ -2401,6 +2401,25 @@ func (s *Store) SetArtifactAgentSettings(artifactID string, settings domain.Agen
 	return artifact, s.saveLocked()
 }
 
+// MarkArtifactAgentOptionsFetching flags a fetch in progress on the layer
+// without touching the options it already has.
+func (s *Store) MarkArtifactAgentOptionsFetching(artifactID string, fetching bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	artifact, ok := s.state.Artifacts[artifactID]
+	if !ok {
+		return ErrNotFound
+	}
+	options := domain.AgentOptions{}
+	if artifact.AgentOptions != nil {
+		options = *artifact.AgentOptions
+	}
+	options.Fetching = fetching
+	artifact.AgentOptions = &options
+	s.state.Artifacts[artifact.ID] = artifact
+	return s.saveLocked()
+}
+
 // SetArtifactAgentOptions records what the layer's agent reported it accepts.
 func (s *Store) SetArtifactAgentOptions(artifactID string, options domain.AgentOptions) (domain.Artifact, error) {
 	s.mu.Lock()

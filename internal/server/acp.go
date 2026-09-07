@@ -809,15 +809,18 @@ func (s *Server) fetchAgentOptionsHandler(w http.ResponseWriter, r *http.Request
 		writeError(w, err)
 		return
 	}
+	target := artifactID
+	if agentLayer, ok := s.store.EnablingLayer(artifactID, "acp"); ok {
+		target = agentLayer.ID
+	}
+	// The card shows "fetching" from the state until the result lands; a
+	// browser refresh in between must not reset it.
+	_ = s.store.MarkArtifactAgentOptionsFetching(target, true)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		if _, err := s.fetchAgentOptions(ctx, artifactID, operator); err != nil {
 			s.logger.Warn("fetch agent options", "artifact", artifactID, "error", err)
-			target := artifactID
-			if agentLayer, ok := s.store.EnablingLayer(artifactID, "acp"); ok {
-				target = agentLayer.ID
-			}
 			_, _ = s.store.SetArtifactAgentOptions(target, domain.AgentOptions{Error: err.Error(), FetchedAt: time.Now().UTC()})
 		}
 	}()

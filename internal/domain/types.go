@@ -461,6 +461,9 @@ type AgentOptions struct {
 	FetchedAt        time.Time     `json:"fetched_at"`
 	// Error is why the last fetch failed, when it did.
 	Error string `json:"error,omitempty"`
+	// Fetching is set while a fetch runs; the previous options stay
+	// visible meanwhile.
+	Fetching bool `json:"fetching,omitempty"`
 }
 
 type Artifact struct {
