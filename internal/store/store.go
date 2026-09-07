@@ -3120,6 +3120,70 @@ func (s *Store) addArtifactLocked(composition *domain.Composition, artifact doma
 	return nil
 }
 
+// EnablingLayer finds the layer in an artifact's closure (itself or an
+// ancestor) that ENABLES the capability, for instance the tool layer that
+// carries the ACP agent under a user's credential layer.
+func (s *Store) EnablingLayer(artifactID, capability string) (domain.Artifact, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	visited := map[string]bool{}
+	var find func(string) (domain.Artifact, bool)
+	find = func(id string) (domain.Artifact, bool) {
+		if visited[id] {
+			return domain.Artifact{}, false
+		}
+		visited[id] = true
+		artifact, ok := s.state.Artifacts[id]
+		if !ok {
+			return domain.Artifact{}, false
+		}
+		for _, enabled := range artifact.Enables {
+			if enabled.Name == capability {
+				return artifact, true
+			}
+		}
+		for _, parentID := range artifact.ParentArtifactIDs {
+			if found, ok := find(parentID); ok {
+				return found, true
+			}
+		}
+		return domain.Artifact{}, false
+	}
+	return find(artifactID)
+}
+
+// IdentityLayerFor is the layer an operator actually runs an agent as: the
+// operator's newest user-scoped credential layer built on the given layer
+// (the login lives there, apart from the tool), or the layer itself when
+// the operator has none. A Job gets the same pairing through its project
+// layers; probing an agent must not be different.
+func (s *Store) IdentityLayerFor(artifactID, operator string) (domain.Artifact, error) {
+	operator = normalizeSubject(operator)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	artifact, ok := s.state.Artifacts[artifactID]
+	if !ok {
+		return domain.Artifact{}, ErrNotFound
+	}
+	var identity *domain.Artifact
+	for _, candidate := range s.state.Artifacts {
+		if candidate.Kind != domain.ArtifactCredential || candidate.Scope != domain.ScopeUser || candidate.Subject != operator || candidate.SupersededBy != "" {
+			continue
+		}
+		if !s.artifactDependsOnLocked(candidate.ID, artifact.ID) {
+			continue
+		}
+		candidate := candidate
+		if identity == nil || candidate.CreatedAt.After(identity.CreatedAt) {
+			identity = &candidate
+		}
+	}
+	if identity != nil {
+		return *identity, nil
+	}
+	return artifact, nil
+}
+
 func (s *Store) artifactDependsOnLocked(artifactID, ancestorID string) bool {
 	visited := map[string]bool{}
 	var dependsOn func(string) bool

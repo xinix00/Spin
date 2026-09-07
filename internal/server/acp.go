@@ -633,14 +633,17 @@ func (s *Server) fetchAgentOptions(ctx context.Context, artifactID, operator str
 	if err != nil {
 		return domain.AgentOptions{}, err
 	}
-	enablesACP := false
-	for _, enabled := range artifact.Enables {
-		enablesACP = enablesACP || enabled.Name == "acp"
+	agentLayer, ok := s.store.EnablingLayer(artifact.ID, "acp")
+	if !ok {
+		return domain.AgentOptions{}, fmt.Errorf("layer %s:%s has no ACP agent in its closure: %w", artifact.Kind, artifact.Name, store.ErrConflict)
 	}
-	if !enablesACP {
-		return domain.AgentOptions{}, fmt.Errorf("layer %s:%s does not ENABLE acp: %w", artifact.Kind, artifact.Name, store.ErrConflict)
+	// Probe the agent the way the operator runs it: under their credential
+	// layer when they have one, so the agent is logged in and answers.
+	entry, err := s.store.IdentityLayerFor(artifact.ID, operator)
+	if err != nil {
+		return domain.AgentOptions{}, err
 	}
-	composition, err := s.useCapsule(ctx, domain.UseRequest{Selector: string(artifact.Kind) + ":" + artifact.Name, Profile: artifact.Profile, Operator: operator})
+	composition, err := s.useCapsule(ctx, domain.UseRequest{Selector: string(entry.Kind) + ":" + entry.Name, Profile: entry.Profile, Operator: operator})
 	if err != nil {
 		return domain.AgentOptions{}, err
 	}
@@ -657,7 +660,9 @@ func (s *Server) fetchAgentOptions(ctx context.Context, artifactID, operator str
 	}
 	options := active.agentOptions()
 	active.close()
-	if _, err := s.store.SetArtifactAgentOptions(artifact.ID, options); err != nil {
+	// The options belong to the layer that carries the agent, whichever
+	// layer the probe was started from.
+	if _, err := s.store.SetArtifactAgentOptions(agentLayer.ID, options); err != nil {
 		return domain.AgentOptions{}, err
 	}
 	return options, nil
@@ -677,7 +682,11 @@ func (s *Server) fetchAgentOptionsHandler(w http.ResponseWriter, r *http.Request
 		defer cancel()
 		if _, err := s.fetchAgentOptions(ctx, artifactID, operator); err != nil {
 			s.logger.Warn("fetch agent options", "artifact", artifactID, "error", err)
-			_, _ = s.store.SetArtifactAgentOptions(artifactID, domain.AgentOptions{Error: err.Error(), FetchedAt: time.Now().UTC()})
+			target := artifactID
+			if agentLayer, ok := s.store.EnablingLayer(artifactID, "acp"); ok {
+				target = agentLayer.ID
+			}
+			_, _ = s.store.SetArtifactAgentOptions(target, domain.AgentOptions{Error: err.Error(), FetchedAt: time.Now().UTC()})
 		}
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "fetching", "artifact_id": artifactID})

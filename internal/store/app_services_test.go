@@ -75,3 +75,27 @@ func TestExposePhaseNormalisesAndWaitsForAPerson(t *testing.T) {
 		t.Fatalf("expose phase = %+v", template.Phases[1])
 	}
 }
+
+// Probing an agent happens as the operator runs it: under their own
+// credential layer built on the tool, which is where the login lives.
+func TestIdentityLayerForPrefersTheOperatorsCredentialLayer(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
+	codex := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "codex", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "codex-acp"}}})
+	if entry, err := st.IdentityLayerFor(codex.ID, "derek"); err != nil || entry.ID != codex.ID {
+		t.Fatalf("without a credential layer = %+v, %v", entry, err)
+	}
+	login := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactCredential, Name: "codex", Scope: domain.ScopeUser, ParentArtifactIDs: []string{codex.ID}})
+	if entry, err := st.IdentityLayerFor(codex.ID, "derek"); err != nil || entry.ID != login.ID {
+		t.Fatalf("with a credential layer = %+v, %v", entry, err)
+	}
+	if entry, err := st.IdentityLayerFor(codex.ID, "john"); err != nil || entry.ID != codex.ID {
+		t.Fatalf("another operator borrowed derek's login: %+v, %v", entry, err)
+	}
+	if agent, ok := st.EnablingLayer(login.ID, "acp"); !ok || agent.ID != codex.ID {
+		t.Fatalf("enabling layer of the credential = %+v, %v", agent, ok)
+	}
+}

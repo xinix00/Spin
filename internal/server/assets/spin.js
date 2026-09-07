@@ -671,6 +671,7 @@ function renderComposition(){
   bindCommandButtons(root);
 }
 
+function acpLayerOf(artifact,seen=new Set()){if(!artifact||seen.has(artifact.id))return null;seen.add(artifact.id);if((artifact.enables||[]).some(item=>item.name==='acp'))return artifact;for(const parentID of artifact.parent_artifact_ids||[]){const found=acpLayerOf(byID(snapshot.artifacts,parentID),seen);if(found)return found;}return null;}
 function renderArtifacts(){
   const root=document.getElementById('artifacts'),artifacts=snapshot.artifacts.filter(canUse);
   if(!artifacts.length){root.innerHTML='<div class="empty">Nog geen environments. Open de recorder om <code>tool:git</code> als eerste laag te maken.</div>';return;}
@@ -679,7 +680,10 @@ function renderArtifacts(){
     const use=canUse(artifact)?`<button class="small-button" data-command="USE ${esc(artifactSelector(artifact))}">${icon('arrow_forward')}Start</button>`:'';
     const next=`<button class="small-button" data-record-from="${esc(artifactSelector(artifact))}">${icon('add')}Laag</button><button class="small-button" data-edit-artifact="${esc(artifactSelector(artifact))}" title="Neem deze laag opnieuw op met al haar instellingen en voeg toe wat ontbreekt; END RECORD vervangt de huidige versie, ook voor lagen die erop gebouwd zijn">${icon('edit')}Bewerk</button>`;
     const remove=artifact.created_by===currentOperator()?`<button class="danger" data-remove-artifact="${esc(artifact.id)}" data-artifact-label="${esc(artifactSelector(artifact))}">${icon('delete')}Verwijder</button>`:'';
-    const acp=(artifact.enables||[]).some(item=>item.name==='acp'),options=artifact.agent_options;
+    // The agent's options live on the layer that ENABLES acp; a credential
+    // layer built on it shows and refreshes the same options, probed as the
+    // operator's own identity.
+    const agentLayer=acpLayerOf(artifact),acp=Boolean(agentLayer),options=agentLayer?.agent_options;
     // An ACP layer keeps what its agent offers (models, reasoning efforts)
     // once fetched, so a Template can choose per phase without starting it.
     const optionsLine=acp?`<small>Agent-opties · ${options?.error?`<span class="tag warning">ophalen mislukt · ${esc(options.error)}</span>`:options?`${(options.models||[]).length} modellen · ${(options.reasoning_efforts||[]).length} reasoning-niveaus · ${esc(options.agent_name||'agent')} · ${esc(new Date(options.fetched_at).toLocaleString())}`:'nog niet opgehaald'}</small>`:'';
