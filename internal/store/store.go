@@ -3924,7 +3924,7 @@ func (s *Store) PrunableArtifacts() []domain.Artifact {
 		if artifact.SupersededBy == "" || artifact.SnapshotPrunedAt != nil || artifact.Snapshot.Digest == "" {
 			continue
 		}
-		if s.artifactInUseLocked(artifact.ID) {
+		if s.artifactInUseLocked(artifact.ID) || s.snapshotSharedLocked(artifact) {
 			continue
 		}
 		prunable = append(prunable, artifact)
@@ -3950,6 +3950,18 @@ func (s *Store) artifactInUseLocked(artifactID string) bool {
 	return false
 }
 
+// snapshotSharedLocked reports whether another artifact that still has its
+// snapshot points at the same digest: the archive stores one object per
+// digest, so removing it for one would remove it for the other.
+func (s *Store) snapshotSharedLocked(artifact domain.Artifact) bool {
+	for _, other := range s.state.Artifacts {
+		if other.ID != artifact.ID && other.SnapshotPrunedAt == nil && other.Snapshot.Digest == artifact.Snapshot.Digest {
+			return true
+		}
+	}
+	return false
+}
+
 // MarkSnapshotPruned records that an artifact's archived snapshot is gone.
 func (s *Store) MarkSnapshotPruned(artifactID string) (domain.Artifact, error) {
 	s.mu.Lock()
@@ -3960,6 +3972,21 @@ func (s *Store) MarkSnapshotPruned(artifactID string) (domain.Artifact, error) {
 	}
 	now := time.Now().UTC()
 	artifact.SnapshotPrunedAt = &now
+	s.state.Artifacts[artifact.ID] = artifact
+	return artifact, s.saveLocked()
+}
+
+// SetSnapshotDigestForTest rewrites an artifact's snapshot digest; tests use
+// it to give versions the distinct digests a real seal produces.
+func (s *Store) SetSnapshotDigestForTest(artifactID, digest string) (domain.Artifact, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	artifact, ok := s.state.Artifacts[artifactID]
+	if !ok {
+		return domain.Artifact{}, ErrNotFound
+	}
+	artifact.Snapshot.Digest = digest
+	artifact.SnapshotDigest = digest
 	s.state.Artifacts[artifact.ID] = artifact
 	return artifact, s.saveLocked()
 }

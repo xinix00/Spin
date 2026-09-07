@@ -53,20 +53,31 @@ func TestSupersededSnapshotsArePruned(t *testing.T) {
 	if info := srv.storageInfo(ctx); info.DatabaseBytes == 0 {
 		t.Fatalf("storage = %+v", info)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		srv.pruneSupersededSnapshots(ctx)
-		has, err := database.HasSnapshot(ctx, first.Snapshot)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !has {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("old snapshot still archived")
-		}
-		time.Sleep(10 * time.Millisecond)
+	// The test engine gives every version the same digest, and the archive
+	// keeps one object per digest: as long as the current version points at
+	// it, the shared snapshot must stay.
+	if first.Snapshot.Digest != second.Snapshot.Digest {
+		t.Fatalf("test engine digests differ: %s vs %s", first.Snapshot.Digest, second.Snapshot.Digest)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if pruned := srv.pruneSupersededSnapshots(ctx); pruned != 0 {
+		t.Fatalf("a snapshot shared with the current version was pruned: %d", pruned)
+	}
+	if has, err := database.HasSnapshot(ctx, second.Snapshot); err != nil || !has {
+		t.Fatalf("current snapshot gone: has=%v err=%v", has, err)
+	}
+	// Give the old version its own digest, as a real EDIT does; then it goes.
+	if _, err := st.SetSnapshotDigestForTest(first.ID, "sha256:old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StoreSnapshot(ctx, domain.CapsuleSnapshot{Digest: "sha256:old"}, io.LimitReader(alwaysReader{}, 16)); err != nil {
+		t.Fatal(err)
+	}
+	if pruned := srv.pruneSupersededSnapshots(ctx); pruned != 1 {
+		t.Fatalf("pruned = %d", pruned)
+	}
+	if has, err := database.HasSnapshot(ctx, domain.CapsuleSnapshot{Digest: "sha256:old"}); err != nil || has {
+		t.Fatalf("old snapshot still archived: has=%v err=%v", has, err)
 	}
 	if has, err := database.HasSnapshot(ctx, second.Snapshot); err != nil || !has {
 		t.Fatalf("current snapshot was pruned: has=%v err=%v", has, err)
@@ -81,4 +92,13 @@ func TestSupersededSnapshotsArePruned(t *testing.T) {
 	if pruned := srv.pruneSupersededSnapshots(ctx); pruned != 0 {
 		t.Fatalf("pruning is not idempotent: %d", pruned)
 	}
+}
+
+type alwaysReader struct{}
+
+func (alwaysReader) Read(buffer []byte) (int, error) {
+	for index := range buffer {
+		buffer[index] = 'x'
+	}
+	return len(buffer), nil
 }
