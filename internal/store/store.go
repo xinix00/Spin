@@ -1964,9 +1964,19 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 	if reference != "" && !validJobReference(reference) {
 		return domain.CreateJobResponse{}, fmt.Errorf("reference %q may only contain letters, digits, #, dots, dashes and underscores: %w", reference, ErrConflict)
 	}
-	namespace := "jobs/" + gitSlug(req.Title) + "-" + strings.TrimPrefix(jobID, "job_")[:6]
+	// The branch namespace is the ticket number when there is one, else a
+	// name from the title. A second Job on the same ticket (a fork, or a
+	// retry) keeps the number and adds the name, so branches never collide.
+	named := gitSlug(req.Title) + "-" + strings.TrimPrefix(jobID, "job_")[:6]
+	namespace := "jobs/" + named
 	if reference != "" {
-		namespace = "jobs/" + reference + "/" + gitSlug(req.Title) + "-" + strings.TrimPrefix(jobID, "job_")[:6]
+		namespace = "jobs/" + reference
+		for _, existing := range s.state.Jobs {
+			if existing.Branch == namespace+"/main" {
+				namespace += "/" + named
+				break
+			}
+		}
 	}
 	branch := namespace + "/main"
 	var templateSnapshot *domain.WorkflowTemplate

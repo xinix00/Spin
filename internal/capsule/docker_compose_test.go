@@ -101,3 +101,16 @@ func TestFilterExportDropsDockerManagedPaths(t *testing.T) {
 		t.Fatalf("kept = %v", names)
 	}
 }
+
+func TestValidGitRefAcceptsTicketBranches(t *testing.T) {
+	for _, ref := range []string{"jobs/#290488/main", "jobs/#1234/vervolg-ab12cd/main", "develop", "release/1.2.3"} {
+		if !validGitRef(ref) {
+			t.Fatalf("%q was rejected", ref)
+		}
+	}
+	for _, ref := range []string{"", "/jobs/main", "jobs/main/", "a..b", "jobs/ #1/main", "jobs/$x/main"} {
+		if validGitRef(ref) {
+			t.Fatalf("%q was accepted", ref)
+		}
+	}
+}

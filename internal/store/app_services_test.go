@@ -290,14 +290,14 @@ func TestJobReferenceNamespacesBranchAndCarriesToForks(t *testing.T) {
 		t.Fatalf("invalid reference error = %v", err)
 	}
 	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Reserveringen", Reference: "#1234", Objective: "x", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
-	if err != nil || created.Job.Reference != "#1234" || !strings.HasPrefix(created.Job.Branch, "jobs/#1234/reserveringen-") || !strings.HasSuffix(created.Job.Branch, "/main") {
+	if err != nil || created.Job.Reference != "#1234" || created.Job.Branch != "jobs/#1234/main" {
 		t.Fatalf("job = %+v, error = %v", created.Job, err)
 	}
 	if _, err := st.CloseJob(created.Job.ID, "derek"); err != nil {
 		t.Fatal(err)
 	}
 	fork, err := st.CreateJob(domain.CreateJobRequest{Title: "Vervolg", Objective: "y", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID, ForkedFromJobID: created.Job.ID})
-	if err != nil || fork.Job.Reference != "#1234" || !strings.HasPrefix(fork.Job.Branch, "jobs/#1234/vervolg-") {
+	if err != nil || fork.Job.Reference != "#1234" || !strings.HasPrefix(fork.Job.Branch, "jobs/#1234/vervolg-") || !strings.HasSuffix(fork.Job.Branch, "/main") {
 		t.Fatalf("fork = %+v, error = %v", fork.Job, err)
 	}
 }

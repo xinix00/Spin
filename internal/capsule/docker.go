@@ -1258,7 +1258,9 @@ func validGitRef(value string) bool {
 		return false
 	}
 	for _, char := range value {
-		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && !strings.ContainsRune("/_-.", char) {
+		// # is a valid ref character and Job branches carry ticket numbers
+		// (jobs/#1234/main); refs reach the scripts quoted, never bare.
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && !strings.ContainsRune("/_-.#", char) {
 			return false
 		}
 	}
