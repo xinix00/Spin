@@ -119,6 +119,8 @@ Het commando van een ACP-laag (`--command=…` bij RECORD) staat op de kaart van
 
 Dit is generiek per het ACP-protocol, niet per agent. ACP kent drie manieren waarop een agent sessie-instellingen aanbiedt, omdat het protocol gegroeid is: mode-state (`session/set_mode`), model-state (`session/set_model`) en de generieke `configOptions` (`session/set_config_option`) die beide opvolgen. Spin vouwt alle drie tot één lijst instellingen op de categorieën uit de spec (`mode`, `model`, `thought_level`) en zet een keuze via de methode waarmee de agent die instelling aanbood. Codex en OpenCode melden `configOptions`; Claude Code en Gemini CLI melden `modes` en `models`. Een nieuwe agent die de spec volgt werkt dus zonder code voor hem. Het enige heuristische is welke modus "volledige toegang" is (`agent-full-access`, `bypassPermissions`, `yolo`); kies anders de modus expliciet op de laag.
 
+Het modelveld op de laag accepteert naast de lijst ook een getypt model-id, want de lijst is wat de agent laat kiezen en niet alles wat hij kan. De Claude Code-adapter toont bijvoorbeeld voor een Max-, Team- of Pro-account alleen `Default`, `Sonnet` en `Haiku`: `Default` is daar het standaardmodel van het account (het topmodel), en een ander model kies je door zijn id of alias (`opus`) te typen; de adapter geeft dat door via `session/set_model`. Weigert een agent een waarde, dan staat zijn eigen reden in de foutmelding op de kaart.
+
 Een bericht dat je in de chat stuurt terwijl de agent werkt, gaat bij een agent die dat aanbiedt (codex-acp: `_session/steering`) direct de lopende beurt in; anders wacht het als volgende beurt.
 
 ### Test-app: de app draaien op de workspace van een stap

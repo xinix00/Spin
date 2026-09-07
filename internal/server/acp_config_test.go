@@ -272,3 +272,12 @@ func TestApplyConfigUsesSetModelForSessionModels(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 }
+
+func TestACPErrorCarriesAgentData(t *testing.T) {
+	plain := (&acpRPCError{Code: -32603, Message: "Internal error"}).asError().Error()
+	withText := (&acpRPCError{Code: -32603, Message: "Internal error", Data: json.RawMessage(`"model gpt-6-astra is not available"`)}).asError().Error()
+	withObject := (&acpRPCError{Code: -32603, Message: "Internal error", Data: json.RawMessage(`{"details":"Query closed"}`)}).asError().Error()
+	if plain != "Internal error (-32603)" || withText != "Internal error (-32603): model gpt-6-astra is not available" || withObject != `Internal error (-32603): {"details":"Query closed"}` {
+		t.Fatalf("errors = %q / %q / %q", plain, withText, withObject)
+	}
+}

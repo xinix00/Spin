@@ -37,6 +37,23 @@ type acpRPCError struct {
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
+// asError renders the agent's error with its data: "Internal error" alone
+// says nothing, the data carries the agent's own reason.
+func (e *acpRPCError) asError() error {
+	detail := strings.TrimSpace(string(e.Data))
+	var text string
+	if json.Unmarshal(e.Data, &text) == nil {
+		detail = strings.TrimSpace(text)
+	}
+	if detail == "" || detail == "null" {
+		return fmt.Errorf("%s (%d)", e.Message, e.Code)
+	}
+	if len(detail) > 400 {
+		detail = detail[:400] + "…"
+	}
+	return fmt.Errorf("%s (%d): %s", e.Message, e.Code, detail)
+}
+
 type acpEnvelope struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
@@ -1099,7 +1116,7 @@ func (a *activeACP) request(ctx context.Context, method string, params any) (jso
 	select {
 	case received := <-response:
 		if received.Error != nil {
-			return nil, fmt.Errorf("%s (%d)", received.Error.Message, received.Error.Code)
+			return nil, received.Error.asError()
 		}
 		return received.Result, nil
 	case <-ctx.Done():

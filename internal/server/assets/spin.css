@@ -53,7 +53,7 @@ input,textarea,select,.job-state-tabs,.segments{background:#11161c}.job,.templat
 .question-option input[type=text]{width:auto;flex:1 1 220px;min-width:140px;padding:6px 9px}
 .question-item legend{float:none;width:auto;max-width:100%;padding:0 4px;font-size:12.5px;line-height:1.4}
 .question-item{overflow-wrap:anywhere}
-.agent-settings{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}.agent-setting{display:flex;align-items:center;gap:6px;margin:0;font-size:10.5px}.agent-setting span{color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-size:9.5px}.agent-setting select{width:auto;max-width:260px;padding:4px 7px;font-size:11px}
+.agent-settings{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}.agent-setting{display:flex;align-items:center;gap:6px;margin:0;font-size:10.5px}.agent-setting span{color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-size:9.5px}.agent-setting input{width:220px;padding:5px 8px;font-size:11px}.agent-setting select{width:auto;max-width:260px;padding:4px 7px;font-size:11px}
 .tool-terminal{max-height:none;color:#8e9b94}
 .chat-time{margin-left:8px;color:#65736b;font:10px var(--mono);font-weight:400;letter-spacing:0}.tool-card summary .chat-time{margin-left:auto;margin-right:6px;white-space:nowrap}.chat-live-label.stale{color:var(--amber)}
 .assignee-tag{gap:4px;padding:1px 7px 1px 5px;margin:0;font-size:10px}.assignee-tag .material-symbols-outlined{font-size:13px}.assignee-tag select{width:auto;border:0;background:transparent;color:var(--text);padding:1px 2px;font-size:10px;font-weight:650;cursor:pointer}
