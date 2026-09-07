@@ -595,15 +595,15 @@ type Composition struct {
 }
 
 type Job struct {
-	ID                  string            `json:"id"`
-	ForkedFromJobID     string            `json:"forked_from_job_id,omitempty"`
-	Title               string            `json:"title"`
-	Objective           string            `json:"objective"`
-	AcceptanceCriteria  []string          `json:"acceptance_criteria,omitempty"`
-	Owner               string            `json:"owner,omitempty"`
+	ID                 string   `json:"id"`
+	ForkedFromJobID    string   `json:"forked_from_job_id,omitempty"`
+	Title              string   `json:"title"`
+	Objective          string   `json:"objective"`
+	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
+	Owner              string   `json:"owner,omitempty"`
 	// Assignee is who the Job is with right now; the owner at creation,
 	// handed to a colleague to look at it. Empty means the owner.
-	Assignee string `json:"assignee,omitempty"`
+	Assignee            string            `json:"assignee,omitempty"`
 	GitRepositoryID     string            `json:"git_repository_id"`
 	GitRepositoryName   string            `json:"git_repository_name,omitempty"`
 	GitRemoteURL        string            `json:"git_remote_url,omitempty"`
