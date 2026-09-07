@@ -563,6 +563,7 @@ func (s *Store) EndRecording(recordingID string, req domain.EndRecordingRequest)
 		if artifact.AgentSettings == nil {
 			artifact.AgentSettings = previous.AgentSettings
 		}
+		s.state.Artifacts[artifact.ID] = artifact
 		s.state.Artifacts[previous.ID] = previous
 	}
 	s.state.Recordings[recording.ID] = recording
