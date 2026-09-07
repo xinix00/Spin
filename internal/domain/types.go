@@ -441,6 +441,15 @@ type AgentOption struct {
 	Description string `json:"description,omitempty"`
 }
 
+// AgentSettings is the chosen way to start an ACP layer's agent. Empty
+// fields mean automatic: full access when the agent offers it, and the
+// agent's own default model and reasoning effort.
+type AgentSettings struct {
+	Mode            string `json:"mode,omitempty"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+}
+
 // AgentOptions is what an ACP layer's agent reported it can be configured
 // with (session/new configOptions), kept on the layer so Templates can pick
 // a model and reasoning effort per phase without starting the agent.
@@ -475,6 +484,10 @@ type Artifact struct {
 	// AgentOptions is what this layer's ACP agent reported it accepts; nil
 	// until fetched or until a Session on this layer ran.
 	AgentOptions *AgentOptions `json:"agent_options,omitempty"`
+	// AgentSettings is how Sessions on this layer start the agent: chosen
+	// from AgentOptions on the layer that ENABLES acp, kept as metadata (no
+	// re-seal) and carried to the next version on EDIT.
+	AgentSettings *AgentSettings `json:"agent_settings,omitempty"`
 	// SupersededBy points at the version that replaced this one through EDIT.
 	// The snapshot stays: layers recorded from it still resolve their parent by
 	// ID, and a composition that meets it binds the newest version instead.

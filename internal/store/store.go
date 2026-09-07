@@ -555,6 +555,14 @@ func (s *Store) EndRecording(recordingID string, req domain.EndRecordingRequest)
 		// The edit is complete: the old version steps aside. Its snapshot stays
 		// for the layers recorded from it and for anything still running on it.
 		previous.SupersededBy = artifact.ID
+		// The agent's options and chosen settings are metadata of the layer,
+		// not of a version: they move to the new version with the EDIT.
+		if artifact.AgentOptions == nil {
+			artifact.AgentOptions = previous.AgentOptions
+		}
+		if artifact.AgentSettings == nil {
+			artifact.AgentSettings = previous.AgentSettings
+		}
 		s.state.Artifacts[previous.ID] = previous
 	}
 	s.state.Recordings[recording.ID] = recording
@@ -2371,6 +2379,25 @@ func (s *Store) BindSessionClient(sessionID, clientID string) (domain.Session, e
 	session.UpdatedAt = time.Now().UTC()
 	s.state.Sessions[session.ID] = session
 	return session, s.saveLocked()
+}
+
+// SetArtifactAgentSettings stores how Sessions on the layer start its agent.
+// Only the layer's creator, or an admin through the server, changes it.
+func (s *Store) SetArtifactAgentSettings(artifactID string, settings domain.AgentSettings) (domain.Artifact, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	artifact, ok := s.state.Artifacts[artifactID]
+	if !ok {
+		return domain.Artifact{}, ErrNotFound
+	}
+	settings.Mode, settings.Model, settings.ReasoningEffort = strings.TrimSpace(settings.Mode), strings.TrimSpace(settings.Model), strings.TrimSpace(settings.ReasoningEffort)
+	if settings == (domain.AgentSettings{}) {
+		artifact.AgentSettings = nil
+	} else {
+		artifact.AgentSettings = &settings
+	}
+	s.state.Artifacts[artifact.ID] = artifact
+	return artifact, s.saveLocked()
 }
 
 // SetArtifactAgentOptions records what the layer's agent reported it accepts.

@@ -109,3 +109,23 @@ func TestIdentityLayerForPrefersTheOperatorsCredentialLayer(t *testing.T) {
 		t.Fatalf("enabling layer after an EDIT = %+v, want the newest version %s", agent, edited.ID)
 	}
 }
+
+// The chosen agent settings live on the enabling layer and follow an EDIT.
+func TestAgentSettingsFollowAnEdit(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	codex := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "codex", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "acp", Command: "codex-acp"}}})
+	if _, err := st.SetArtifactAgentSettings(codex.ID, domain.AgentSettings{Mode: " agent-full-access ", Model: "gpt-6-astra"}); err != nil {
+		t.Fatal(err)
+	}
+	edited := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "codex", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{codex.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "codex-acp"}}, ReplacesArtifactID: codex.ID})
+	stored, err := st.Artifact(edited.ID)
+	if err != nil || stored.AgentSettings == nil || stored.AgentSettings.Mode != "agent-full-access" || stored.AgentSettings.Model != "gpt-6-astra" {
+		t.Fatalf("settings after EDIT = %+v, %v", stored.AgentSettings, err)
+	}
+	if cleared, err := st.SetArtifactAgentSettings(edited.ID, domain.AgentSettings{}); err != nil || cleared.AgentSettings != nil {
+		t.Fatalf("clearing settings = %+v, %v", cleared.AgentSettings, err)
+	}
+}

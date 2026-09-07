@@ -574,7 +574,12 @@ func (s *Server) openACP(composition domain.Composition, operator string, mcpSer
 	// (codex-acp starts in "agent", workspace-write without network) only
 	// takes away network, /tmp and parallel builds, so the session runs in
 	// the agent's full-access mode when it offers one.
-	if modeID, ok := fullAccessMode(newSession.Modes, newSession.ConfigOptions); ok {
+	settings := s.agentSettingsFor(composition)
+	modeID, ok := fullAccessMode(newSession.Modes, newSession.ConfigOptions)
+	if settings.Mode != "" {
+		modeID, ok = settings.Mode, settings.Mode != currentMode(newSession.Modes, newSession.ConfigOptions)
+	}
+	if ok {
 		modeContext, modeCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		_, err := active.request(modeContext, "session/set_mode", map[string]any{"sessionId": newSession.SessionID, "modeId": modeID})
 		modeCancel()
@@ -582,7 +587,63 @@ func (s *Server) openACP(composition domain.Composition, operator string, mcpSer
 			s.logger.Warn("set ACP session mode", "mode", modeID, "error", err)
 		}
 	}
+	// The layer's chosen model and reasoning effort are the defaults for
+	// every Session on it; a Template phase may override them afterwards.
+	if err := active.applyConfig(settings.Model, settings.ReasoningEffort); err != nil {
+		active.close()
+		return nil, fmt.Errorf("apply the layer's agent settings: %w", err)
+	}
 	return active, nil
+}
+
+// agentSettingsFor is what the layer that ENABLES acp in a composition chose
+// for its agent; nothing when it chose nothing.
+func (s *Server) agentSettingsFor(composition domain.Composition) domain.AgentSettings {
+	artifactID := s.acpArtifactID(composition)
+	if artifactID == "" {
+		return domain.AgentSettings{}
+	}
+	artifact, err := s.store.Artifact(artifactID)
+	if err != nil || artifact.AgentSettings == nil {
+		return domain.AgentSettings{}
+	}
+	return *artifact.AgentSettings
+}
+
+// currentMode is the mode an agent reports a new session in.
+func currentMode(modes *acpSessionModes, options []acpConfigOption) string {
+	if modes != nil && modes.CurrentModeID != "" {
+		return modes.CurrentModeID
+	}
+	for _, option := range options {
+		if option.ID == "mode" {
+			var value string
+			_ = json.Unmarshal(option.CurrentValue, &value)
+			return value
+		}
+	}
+	return ""
+}
+
+// setAgentSettingsHandler stores the chosen mode, model and reasoning effort
+// on the layer that carries the agent, whichever layer of its closure the
+// request names.
+func (s *Server) setAgentSettingsHandler(w http.ResponseWriter, r *http.Request) {
+	var settings domain.AgentSettings
+	if !decodeJSON(w, r, &settings) {
+		return
+	}
+	agentLayer, ok := s.store.EnablingLayer(r.PathValue("artifactID"), "acp")
+	if !ok {
+		writeError(w, fmt.Errorf("layer has no ACP agent in its closure: %w", store.ErrConflict))
+		return
+	}
+	updated, err := s.store.SetArtifactAgentSettings(agentLayer.ID, settings)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 // acpSessionModes is the mode state an agent reports at session/new.
