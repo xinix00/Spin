@@ -215,6 +215,20 @@
         </form>
       </dialog>
 
+      <dialog id="layer-dialog">
+        <div class="dialog-head"><div><h2>Nieuwe laag</h2><p>Een laag is één opname: kies wat hij is en waarop hij bouwt, werk daarna in de shell van de capsule en sluit af met End &amp; save.</p></div><button class="icon-button" type="button" data-close-dialog="layer-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+        <form id="record-form" class="form-grid" autocomplete="off">
+          <div class="wide"><label>Presets</label><div class="record-presets" id="record-presets"></div></div>
+          <div><label for="record-kind">Soort</label><select id="record-kind" name="kind"><option value="tool">tool · gereedschap, voor iedereen bruikbaar</option><option value="credential">credential · een login, van één gebruiker</option><option value="config">config · instellingen</option></select></div>
+          <div><label for="record-name">Naam</label><input id="record-name" name="name" required placeholder="codex" pattern="[a-z0-9][a-z0-9._-]*" title="kleine letters, cijfers, punt, streepje, underscore"></div>
+          <div><label for="record-scope">Scope</label><select id="record-scope" name="scope"><option value="global">global · voor iedereen</option><option value="user">user · alleen ik</option></select></div>
+          <div><label for="record-from">Bouwt op</label><select id="record-from" name="from"><option value="">Alpine-basis</option></select></div>
+          <div class="wide record-enables"><label>ENABLES</label><label class="record-check"><input type="checkbox" name="enable_git"> git · deze laag levert Git voor Job-workspaces</label><label class="record-check"><input type="checkbox" name="enable_acp"> acp · deze laag bevat een agent</label></div>
+          <div class="wide" id="record-command-field" hidden><label for="record-command">ACP-commando</label><input id="record-command" name="command" placeholder="codex-acp"><small>Het programma dat de agent over ACP start, bijvoorbeeld codex-acp of claude-agent-acp.</small></div>
+          <div class="wide panel-actions"><button class="small-button" type="button" data-close-dialog="layer-dialog">Annuleren</button><button class="primary" type="submit"><span class="material-symbols-outlined" aria-hidden="true">fiber_manual_record</span>Opname starten</button></div>
+        </form>
+      </dialog>
+
       <dialog id="password-dialog">
         <div class="dialog-head"><div><h2>Wachtwoord opnieuw instellen</h2><p id="password-dialog-copy">Geef een tijdelijk wachtwoord; alle sessies van deze gebruiker worden beëindigd.</p></div><button class="icon-button" type="button" data-close-dialog="password-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
         <form id="password-form" class="form-grid">
@@ -238,19 +252,6 @@
         <div class="console-layout">
           <div class="dialog-head"><div><h2>Capsule recorder</h2><p>Start een opname, werk in de shell van de capsule, en sluit af met End &amp; save. Zonder opname is dit de shell van je USE-compositie.</p></div><div class="panel-actions"><div id="terminal-status" class="terminal-status"><span class="rec-dot"></span><span>idle</span></div><button class="icon-button" type="button" data-close-dialog="capsule-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div></div>
           <div class="console-context">
-            <form class="record-form" id="record-form" autocomplete="off">
-              <div class="record-presets" id="record-presets"></div>
-              <div class="record-fields">
-                <label>Soort<select name="kind"><option value="tool">tool</option><option value="credential">credential</option><option value="config">config</option></select></label>
-                <label>Naam<input name="name" required placeholder="codex" pattern="[a-z0-9][a-z0-9._-]*" title="kleine letters, cijfers, punt, streepje, underscore"></label>
-                <label>Scope<select name="scope"><option value="global">global · voor iedereen</option><option value="user">user · alleen ik</option></select></label>
-                <label>Bouwt op<select name="from" id="record-from"><option value="">Alpine-basis</option></select></label>
-                <label class="record-check"><input type="checkbox" name="enable_git"> ENABLES git</label>
-                <label class="record-check"><input type="checkbox" name="enable_acp"> ENABLES acp</label>
-                <label id="record-command-field" hidden>ACP-commando<input name="command" placeholder="codex-acp"></label>
-                <button class="primary" type="submit"><span class="material-symbols-outlined" aria-hidden="true">fiber_manual_record</span>Opname starten</button>
-              </div>
-            </form>
             <div class="recorder-context" id="recording-section"></div>
           </div>
           <section class="terminal-panel">

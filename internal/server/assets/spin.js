@@ -85,11 +85,12 @@ function recordFromOptions(){const seen=new Set();return snapshot.artifacts.filt
 function renderRecordFromOptions(){const select=document.getElementById('record-from'),current=select.value,options=recordFromOptions();select.innerHTML='<option value="">Alpine-basis</option>'+options.map(option=>`<option value="${esc(option.id)}">${esc(option.label)}</option>`).join('');if(options.some(option=>option.id===current))select.value=current;}
 function artifactBySelector(selector){return snapshot.artifacts.filter(artifact=>canUse(artifact)&&!artifact.superseded_by&&artifactSelector(artifact)===selector).sort((a,b)=>(a.scope==='user'?0:1)-(b.scope==='user'?0:1))[0]||null;}
 function recordRequestFromForm(){const form=document.getElementById('record-form'),enables=[];if(form.elements.enable_git.checked)enables.push({name:'git'});if(form.elements.enable_acp.checked)enables.push({name:'acp',command:form.elements.command.value.trim()||undefined});return {kind:form.elements.kind.value,name:form.elements.name.value.trim().toLowerCase(),scope:form.elements.scope.value,parent_artifact_ids:form.elements.from.value?[form.elements.from.value]:[],enables};}
-function openConsole(preset=null){
+function openConsole(){
   openDialog('capsule-dialog');
-  if(preset)fillRecordForm(preset);
-  requestAnimationFrame(()=>{ensureShell();if(preset&&!activeRecording())document.getElementById('record-form').elements.name.focus();else focusTerminal();});
+  requestAnimationFrame(()=>{ensureShell();focusTerminal();});
 }
+// openLayerDialog asks what the new layer is; the recording starts from it.
+function openLayerDialog(preset={}){if(activeRecording()){showError(new Error('Je hebt al een opname open; sluit die eerst af met End & save of Cancel.'));openConsole();return;}fillRecordForm(preset);openDialog('layer-dialog');requestAnimationFrame(()=>document.getElementById('record-form').elements.name.focus());}
 function syntaxLanguage(hint=''){
   const aliases={js:'javascript',mjs:'javascript',cjs:'javascript',jsx:'javascript',javascript:'javascript',ts:'typescript',tsx:'typescript',typescript:'typescript',go:'go',cs:'csharp','c#':'csharp',csharp:'csharp',java:'java',c:'c',h:'c',cc:'cpp',cpp:'cpp',cxx:'cpp',hpp:'cpp',rs:'rust',rust:'rust',swift:'swift',kt:'kotlin',kts:'kotlin',kotlin:'kotlin',php:'php',py:'python',python:'python',rb:'ruby',ruby:'ruby',sh:'shell',bash:'shell',zsh:'shell',shell:'shell',json:'json',jsonc:'json',yaml:'yaml',yml:'yaml',toml:'toml',html:'markup',htm:'markup',xml:'markup',svg:'markup',vue:'markup',svelte:'markup',razor:'markup',cshtml:'markup',markup:'markup',css:'css',scss:'css',sass:'css',less:'css',sql:'sql',md:'markdown',markdown:'markdown',mmd:'mermaid',mermaid:'mermaid',dockerfile:'docker',docker:'docker'};
   const raw=String(hint||'').trim().toLowerCase().split(/\s+/)[0].split(/[?#]/)[0],base=raw.split('/').pop()||raw;if(aliases[raw])return aliases[raw];if(aliases[base])return aliases[base];const extension=base.includes('.')?base.split('.').pop():'';return aliases[extension]||'';
@@ -488,7 +489,9 @@ function enterApp(status){
   document.getElementById('job-owner').readOnly=true;
   connectStateStream();
 }
-function showBanner(text,kind){const box=document.getElementById('error');box.textContent=text;box.classList.toggle('notice',kind==='notice');box.style.display='block';clearTimeout(box._hide);box._hide=setTimeout(()=>box.style.display='none',kind==='notice'?4500:6500);}
+// A banner shows where the person is: inside the open dialog (a modal
+// covers the page) or at the top of the page.
+function showBanner(text,kind){const dialog=document.querySelector('dialog[open]');let box=document.getElementById('error');if(dialog){box=dialog.querySelector('.dialog-banner');if(!box){box=document.createElement('div');box.className='error-banner dialog-banner';dialog.prepend(box);}}box.textContent=text;box.classList.toggle('notice',kind==='notice');box.style.display='block';clearTimeout(box._hide);box._hide=setTimeout(()=>box.style.display='none',kind==='notice'?4500:6500);}
 function showError(error){showBanner(error.message||error,'error');}
 function showNotice(text){showBanner(text,'notice');}
 function startProgressText(start){
@@ -603,7 +606,7 @@ function ensureShell(){
   if(liveTerminals().some(session=>session.targetID===target.id)||shellAutoTarget===target.id)return;
   shellAutoTarget=target.id;startTerminalCommand(target,shellCommand,{title:'shell'});
 }
-function focusTerminal(){const session=activeTerminal();if(session&&!session.exited){session.term.focus();return;}const form=document.getElementById('record-form');if(!form.hidden)form.elements.name.focus();}
+function focusTerminal(){const session=activeTerminal();if(session&&!session.exited)session.term.focus();}
 // startTerminalCommand opens a PTY on the given target: the open recording
 // (recorded into the layer) or the operator's USE composition (not recorded).
 function startTerminalCommand(target,line,options={}){
@@ -726,8 +729,8 @@ function render(){
 function renderRecording(){
   ensureShell();
   const recording=activeRecording(),status=region('terminal-status'),root=document.getElementById('recording-section');
-  document.getElementById('record-form').hidden=Boolean(recording);renderRecordFromOptions();
-  if(!recording){status.className='terminal-status';status.innerHTML='<span class="rec-dot"></span><span>idle</span>';root.innerHTML='<h3>Recorder</h3><div class="empty">Geen actieve opname.</div>';updateTerminalControls();return;}
+  renderRecordFromOptions();
+  if(!recording){status.className='terminal-status';status.innerHTML='<span class="rec-dot"></span><span>idle</span>';root.innerHTML=`<div class="recorder-idle"><p>${activeComposition()?`Shell van <strong>${esc(activeComposition().selector)}</strong>. Er wordt niets opgenomen.`:'Geen opname. Een nieuwe laag begint met een opname in een verse capsule.'}</p><button class="primary" type="button" id="recorder-new-layer">${icon('fiber_manual_record')}Nieuwe laag</button></div>`;root.querySelector('#recorder-new-layer').onclick=()=>openLayerDialog({scope:'user'});updateTerminalControls();return;}
   if(!terminalSessions.size){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>REC ${esc(recording.kind)}:${esc(recording.name)}</span>`;}
   // A recording without a capsule is being started by a job on the server;
   // attach to that job when this browser is not following it yet (after a
@@ -787,7 +790,7 @@ function renderArtifacts(){
   root.querySelectorAll('[data-agent-setting]').forEach(select=>select.onchange=async()=>{const card=select.closest('.artifact'),payload={};card.querySelectorAll('[data-agent-setting]').forEach(item=>payload[item.dataset.agentSetting]=item.value);try{await api(`/api/artifacts/${encodeURIComponent(select.dataset.agentLayer)}/acp/settings`,{method:'PUT',body:JSON.stringify(payload)});await refresh(true);}catch(error){showError(error);}});
   root.querySelectorAll('[data-command-layer]').forEach(input=>{input.onchange=async()=>{const command=input.value.trim();if(!command)return;try{await api(`/api/artifacts/${encodeURIComponent(input.dataset.commandLayer)}/enablements/acp`,{method:'PUT',body:JSON.stringify({command})});await refresh(true);}catch(error){showError(error);}};input.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();input.blur();}};});
   root.querySelectorAll('[data-fetch-options]').forEach(button=>button.onclick=async()=>{button.disabled=true;button.innerHTML=`${icon('hourglass_top')}Ophalen…`;try{await api(`/api/artifacts/${encodeURIComponent(button.dataset.fetchOptions)}/acp/options`,{method:'POST'});}catch(error){showError(error);await refresh(true);}});
-  root.querySelectorAll('[data-record-from]').forEach(button=>button.onclick=()=>openConsole({scope:'user',from:button.dataset.recordFrom}));
+  root.querySelectorAll('[data-record-from]').forEach(button=>button.onclick=()=>openLayerDialog({scope:'user',from:button.dataset.recordFrom}));
   root.querySelectorAll('[data-edit-artifact]').forEach(button=>button.onclick=()=>{const artifact=artifactBySelector(button.dataset.editArtifact);if(!artifact)return;openConsole();editLayer(artifact);});
 }
 
@@ -1238,7 +1241,7 @@ document.getElementById('close-diff').onclick=closeDiff;
 document.getElementById('record-presets').innerHTML=recordPresets.map((preset,index)=>`<button class="quick" type="button" data-record-preset="${index}">${esc(preset.label)}</button>`).join('');
 document.querySelectorAll('[data-record-preset]').forEach(button=>button.onclick=()=>fillRecordForm(recordPresets[Number(button.dataset.recordPreset)]));
 document.getElementById('record-form').elements.enable_acp.onchange=syncRecordForm;
-document.getElementById('record-form').onsubmit=event=>{event.preventDefault();const form=event.target;if(!form.reportValidity())return;startLayerRecording(recordRequestFromForm());};
+document.getElementById('record-form').onsubmit=event=>{event.preventDefault();const form=event.target;if(!form.reportValidity())return;const payload=recordRequestFromForm();closeDialog('layer-dialog');setTab('environments');openConsole();startLayerRecording(payload);};
 document.getElementById('open-job-dialog').onclick=()=>{resetJobForm();openDialog('job-dialog');};
 const openTemplateBuilder=()=>{resetTemplateForm();openDialog('template-dialog');};document.querySelectorAll('[data-open-template]').forEach(button=>button.onclick=openTemplateBuilder);document.getElementById('add-template-step').onclick=()=>addTemplateStep();
 document.getElementById('job-next').onclick=()=>{const fields=[...document.querySelector('[data-job-step="1"]').querySelectorAll('input,textarea,select')];for(const field of fields){if(!field.checkValidity()){field.reportValidity();return;}}setJobStep(2);};
@@ -1252,8 +1255,8 @@ document.getElementById('open-user-dialog').onclick=()=>openDialog('user-dialog'
 document.getElementById('download-backup').onclick=downloadPortableBackup;
 document.getElementById('choose-restore').onclick=()=>document.getElementById('restore-backup-input').click();
 document.getElementById('restore-backup-input').onchange=event=>restorePortableBackup(event.target.files[0]);
-document.getElementById('add-snapshot').onclick=()=>openConsole({scope:'user'});
-document.getElementById('record-git-tool').onclick=()=>openConsole(recordPresets[0]);
+document.getElementById('add-snapshot').onclick=()=>openLayerDialog({scope:'user'});
+document.getElementById('record-git-tool').onclick=()=>openLayerDialog(recordPresets[0]);
 document.getElementById('list-snapshots').onclick=()=>refresh(true);
 document.getElementById('terminal-interrupt').onclick=interruptTerminal;
 document.getElementById('capsule-dialog').addEventListener('cancel',event=>{const session=activeTerminal();if(session&&!session.exited&&document.activeElement?.closest('.pty-pane')){event.preventDefault();}});

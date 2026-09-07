@@ -19,13 +19,13 @@ Open `http://127.0.0.1:8080`. De eerste browser maakt de lokale owner (username,
 De GUI heeft vier rustige werkvlakken:
 
 - **Jobs**: maak Templates uit gewone invoervelden en start een Job als automatische reeks ACP-Sessions;
-- **Environments**: beheer alle globale en user-scoped lagen en open de fullscreen Capsule recorder: een opname start je met een formulier (soort, naam, scope, bouwt op, ENABLES), je werkt in de shell van de capsule en sluit af met End & save of Cancel. Er is geen commandotaal; de knoppen praten met de API hieronder en de log zegt in gewone woorden wat er gebeurd is;
+- **Environments**: beheer alle globale en user-scoped lagen en maak een laag met **Nieuwe laag** (of **+ Laag** op een bestaande laag): een schermpje vraagt soort, naam, scope, waarop hij bouwt en wat hij ENABLES, daarna werk je in de shell van de fullscreen Capsule recorder en sluit je af met End & save of Cancel. Er is geen commandotaal; de knoppen praten met de API hieronder en de log zegt in gewone woorden wat er gebeurd is;
 - **Connections**: beheer Git-remotes/accounts en MCP in twee subtabs;
 - **Access**: laat gebruikers zien en laat admins lokale users maken, archiveren en herstellen.
 
 ## Eerste Codex + ACP-keten
 
-Open de Capsule recorder onder Environments. Iedere laag is één opname: kies in het formulier soort, naam, scope, waarop hij bouwt en wat hij ENABLES (de presets vullen dat in), klik **Opname starten**, typ in de shell van de capsule wat erin moet en klik **End & save**.
+Klik onder Environments op **Nieuwe laag**. Iedere laag is één opname: kies in het schermpje soort, naam, scope, waarop hij bouwt en wat hij ENABLES (de presets vullen dat in), klik **Opname starten**, typ in de shell van de capsule wat erin moet en klik **End & save**.
 
 | Laag | Bouwt op | ENABLES | In de shell |
 | --- | --- | --- | --- |
