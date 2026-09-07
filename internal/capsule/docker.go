@@ -1274,7 +1274,11 @@ func (d *Docker) materializationArtifact(ctx context.Context, composition domain
 	if len(layers) == 1 {
 		return layers[0], false, nil
 	}
-	ref, err := d.mergeSnapshots(ctx, composition, layers)
+	byID := make(map[string]domain.Artifact, len(artifacts))
+	for _, artifact := range artifacts {
+		byID[artifact.ID] = artifact
+	}
+	ref, err := d.mergeSnapshots(ctx, composition, layers, byID)
 	if err != nil {
 		return domain.Artifact{}, false, err
 	}
@@ -1285,21 +1289,35 @@ func (d *Docker) materializationArtifact(ctx context.Context, composition domain
 	}, true, nil
 }
 
-func (d *Docker) mergeSnapshots(ctx context.Context, composition domain.Composition, layers []domain.Artifact) (string, error) {
+func (d *Docker) mergeSnapshots(ctx context.Context, composition domain.Composition, layers []domain.Artifact, byID map[string]domain.Artifact) (string, error) {
 	targetName := runtimeName("spin-compose-build", composition.ID)
 	imageRef := "spin/composition:" + safeName(composition.ID)
+	baseIndex, diffable := compositionBase(layers, byID)
+	base := layers[baseIndex]
+	// The build container runs, so deletions of a layer diff can be applied
+	// inside it before its files are copied in.
 	if _, err := d.control(ctx,
-		"create", "--name", targetName,
+		"run", "-d", "--name", targetName,
 		"--label", "spin.managed=true",
 		"--label", "spin.kind=composition-build",
 		"--label", "spin.composition_id="+composition.ID,
-		"--entrypoint", "sh", layers[0].Snapshot.Ref, "-lc", "exit 0",
+		"--network", "none",
+		"--entrypoint", "sh", base.Snapshot.Ref, "-lc", "trap 'exit 0' TERM INT; while :; do sleep 3600; done",
 	); err != nil {
-		return "", fmt.Errorf("create composition base from %s: %w", layers[0].ID, err)
+		return "", fmt.Errorf("create composition base from %s: %w", base.ID, err)
 	}
 	defer func() { _ = d.removeContainer(context.Background(), targetName) }()
 
-	for index, layer := range layers[1:] {
+	for index, layer := range layers {
+		if index == baseIndex {
+			continue
+		}
+		if diffable[layer.ID] {
+			if err := d.applyLayerDiff(ctx, targetName, layer); err != nil {
+				return "", err
+			}
+			continue
+		}
 		sourceName := runtimeName("spin-compose-source", composition.ID+"-"+strconv.Itoa(index+1))
 		if err := d.mergeSnapshot(ctx, targetName, sourceName, layer); err != nil {
 			return "", err
