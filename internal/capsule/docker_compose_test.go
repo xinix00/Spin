@@ -71,11 +71,33 @@ func TestCompositionBasePrefersTheWidestClosure(t *testing.T) {
 	codexV2 := domain.Artifact{ID: "codex2", ParentArtifactIDs: []string{"codex1"}}
 	other := domain.Artifact{ID: "other"}
 	byID := map[string]domain.Artifact{"git": git, "codex1": codexV1, "cred": credential, "codex2": codexV2, "other": other}
-	base, diffable := compositionBase([]domain.Artifact{credential, codexV2, other}, byID)
-	if base != 1 {
+	base, plan := compositionBase([]domain.Artifact{git, credential, codexV2, other}, byID)
+	if base != 2 {
 		t.Fatalf("base = %d, want the newest codex", base)
 	}
-	if !diffable["cred"] || diffable["other"] {
-		t.Fatalf("diffable = %v", diffable)
+	if plan["cred"] != layerDiffOnly || plan["other"] != layerFullCopy || plan["git"] != layerContained {
+		t.Fatalf("plan = %v", plan)
+	}
+}
+
+// Paths a running container owns are never copied into it.
+func TestFilterExportDropsDockerManagedPaths(t *testing.T) {
+	export := tarWith(map[string]string{"proc/1/status": "x", "sys/kernel": "x", "dev/null": "", "etc/hosts": "x", "etc/passwd": "root", "usr/bin/tool": "bin"})
+	var out bytes.Buffer
+	if err := filterExport(bytes.NewReader(export), &out); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	reader := tar.NewReader(&out)
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		names = append(names, header.Name)
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, []string{"etc/passwd", "usr/bin/tool"}) {
+		t.Fatalf("kept = %v", names)
 	}
 }

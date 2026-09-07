@@ -1292,7 +1292,7 @@ func (d *Docker) materializationArtifact(ctx context.Context, composition domain
 func (d *Docker) mergeSnapshots(ctx context.Context, composition domain.Composition, layers []domain.Artifact, byID map[string]domain.Artifact) (string, error) {
 	targetName := runtimeName("spin-compose-build", composition.ID)
 	imageRef := "spin/composition:" + safeName(composition.ID)
-	baseIndex, diffable := compositionBase(layers, byID)
+	baseIndex, plan := compositionBase(layers, byID)
 	base := layers[baseIndex]
 	// The build container runs, so deletions of a layer diff can be applied
 	// inside it before its files are copied in.
@@ -1312,7 +1312,10 @@ func (d *Docker) mergeSnapshots(ctx context.Context, composition domain.Composit
 		if index == baseIndex {
 			continue
 		}
-		if diffable[layer.ID] {
+		switch plan[layer.ID] {
+		case layerContained:
+			continue
+		case layerDiffOnly:
 			if err := d.applyLayerDiff(ctx, targetName, layer); err != nil {
 				return "", err
 			}
@@ -1360,24 +1363,38 @@ func (d *Docker) copyContainerRoot(ctx context.Context, sourceName, targetName s
 	var exportError bytes.Buffer
 	exporter.Stderr = &exportError
 	copier := exec.CommandContext(ctx, d.binary, "cp", "-", targetName+":/")
-	copier.Stdin = stream
+	filtered, err := copier.StdinPipe()
+	if err != nil {
+		return err
+	}
 	var copyError bytes.Buffer
 	copier.Stderr = &copyError
 	if err := copier.Start(); err != nil {
 		return fmt.Errorf("start docker cp: %w", err)
 	}
 	if err := exporter.Start(); err != nil {
-		_ = copier.Process.Kill()
+		_ = filtered.Close()
 		_ = copier.Wait()
 		return fmt.Errorf("start docker export: %w", err)
 	}
-	exportErr := exporter.Wait()
+	// The export passes through this process: kernel and Docker-managed
+	// paths are dropped, and a copy that fails does not leave the export
+	// blocked on a pipe nobody reads.
+	filterErr := filterExport(stream, filtered)
+	_ = filtered.Close()
 	copyErr := copier.Wait()
-	if exportErr != nil {
-		return fmt.Errorf("docker export: %s: %w", strings.TrimSpace(exportError.String()), exportErr)
+	if filterErr != nil || copyErr != nil {
+		_ = exporter.Process.Kill()
 	}
+	exportErr := exporter.Wait()
 	if copyErr != nil {
 		return fmt.Errorf("docker cp: %s: %w", strings.TrimSpace(copyError.String()), copyErr)
+	}
+	if filterErr != nil {
+		return fmt.Errorf("filter export of %s: %w", sourceName, filterErr)
+	}
+	if exportErr != nil {
+		return fmt.Errorf("docker export: %s: %w", strings.TrimSpace(exportError.String()), exportErr)
 	}
 	return nil
 }

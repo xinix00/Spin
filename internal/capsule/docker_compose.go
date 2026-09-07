@@ -32,7 +32,7 @@ import (
 // built on, counting EDIT versions as one lineage (a credential recorded on
 // an older tool:codex is built on tool:codex). It reports for each other
 // layer whether its parents are inside that base, which makes it a diff.
-func compositionBase(layers []domain.Artifact, byID map[string]domain.Artifact) (int, map[string]bool) {
+func compositionBase(layers []domain.Artifact, byID map[string]domain.Artifact) (int, map[string]layerAction) {
 	tip := func(id string) string {
 		for depth := 0; depth < 64; depth++ {
 			artifact, ok := byID[id]
@@ -85,18 +85,79 @@ func compositionBase(layers []domain.Artifact, byID map[string]domain.Artifact) 
 			best, bestScore, bestSize = index, score, len(closures[index])
 		}
 	}
-	covered := map[string]bool{}
+	plan := map[string]layerAction{}
 	for index, layer := range layers {
 		if index == best {
+			continue
+		}
+		if inBase(best, layer.ID) {
+			// Already part of the base (an ancestor, or an older version
+			// of one): copying it again would put older files over newer.
+			plan[layer.ID] = layerContained
 			continue
 		}
 		parentsCovered := len(layer.ParentArtifactIDs) > 0
 		for _, parentID := range layer.ParentArtifactIDs {
 			parentsCovered = parentsCovered && inBase(best, parentID)
 		}
-		covered[layer.ID] = parentsCovered
+		if parentsCovered {
+			plan[layer.ID] = layerDiffOnly
+		} else {
+			plan[layer.ID] = layerFullCopy
+		}
 	}
-	return best, covered
+	return best, plan
+}
+
+// layerAction is how a non-base layer joins a composition.
+type layerAction int
+
+const (
+	layerFullCopy  layerAction = iota // unrelated chain: whole filesystem
+	layerDiffOnly                     // built on the base: its own top layer
+	layerContained                    // already inside the base: nothing
+)
+
+// dockerManagedPath reports paths a running container owns itself: kernel
+// filesystems and the files Docker mounts. Copying an export over them fails.
+func dockerManagedPath(name string) bool {
+	name = strings.TrimPrefix(strings.TrimPrefix(name, "./"), "/")
+	for _, prefix := range []string{"proc/", "sys/", "dev/"} {
+		if name == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	switch name {
+	case "etc/hosts", "etc/hostname", "etc/resolv.conf", ".dockerenv":
+		return true
+	}
+	return false
+}
+
+// filterExport copies a container export to out without the paths a running
+// container manages itself.
+func filterExport(export io.Reader, out io.Writer) error {
+	reader := tar.NewReader(export)
+	writer := tar.NewWriter(out)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if dockerManagedPath(header.Name) {
+			continue
+		}
+		if err := writer.WriteHeader(header); err != nil {
+			return err
+		}
+		if _, err := io.Copy(writer, reader); err != nil {
+			return err
+		}
+	}
+	return writer.Close()
 }
 
 // layerDiff writes the top layer of a docker save stream to out, minus its
@@ -168,6 +229,9 @@ func filterWhiteouts(layer io.Reader, out io.Writer) ([]string, error) {
 		}
 		if err != nil {
 			return nil, err
+		}
+		if dockerManagedPath(header.Name) {
+			continue
 		}
 		dir, name := path.Split(strings.TrimPrefix(header.Name, "./"))
 		switch {
