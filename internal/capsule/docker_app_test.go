@@ -1,3 +1,5 @@
+//go:build !tamago
+
 package capsule
 
 import (
