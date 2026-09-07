@@ -5,6 +5,7 @@ package capsule
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -448,18 +449,28 @@ func (d *Docker) RemoveSnapshot(ctx context.Context, snapshot domain.CapsuleSnap
 	return d.removeImage(ctx, snapshot.Ref)
 }
 
+// ExportSnapshot writes the image as a gzip-compressed docker save stream.
+// Compressing at the source is what makes the archive, the upload and every
+// later restore smaller, where compressing on the wire only would leave the
+// archive at full size; docker load reads gzip natively, so the import side
+// and older uncompressed archives need nothing.
 func (d *Docker) ExportSnapshot(ctx context.Context, snapshot domain.CapsuleSnapshot, destination io.Writer) error {
 	if snapshot.Driver != "docker" || strings.TrimSpace(snapshot.Ref) == "" {
 		return errors.New("snapshot is not an exportable Docker image")
 	}
+	compressor, err := gzip.NewWriterLevel(destination, gzip.BestSpeed)
+	if err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, d.binary, "image", "save", snapshot.Ref)
-	cmd.Stdout = destination
+	cmd.Stdout = compressor
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		_ = compressor.Close()
 		return fmt.Errorf("docker image save %s: %s: %w", snapshot.Ref, strings.TrimSpace(stderr.String()), err)
 	}
-	return nil
+	return compressor.Close()
 }
 
 // HasSnapshot reports whether this daemon holds the image the snapshot names,

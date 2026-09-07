@@ -196,6 +196,8 @@ ACP PROBE [composition-id]
 STOP USE [composition-id]
 ```
 
+Houd een laag klein: Docker bewaart in een EDIT-laag alleen wat erbij komt, maar wat je vervangt blijft in de laag eronder staan, en npm laat zijn downloadcache achter. Ruim daarom vóór `END RECORD` op met `npm cache clean --force && rm -rf /root/.npm/_cacache` (en voor .NET `rm -rf /root/.nuget/packages` als de packages niet in de laag hoeven).
+
 Een laag is een immutable snapshot, dus bewerken is opnieuw opnemen. `EDIT` (de knop **Bewerk** op een laag) start een opname van de huidige versie met al haar instellingen: scope, profiel, `ENABLES` en entrypoint komen mee, en de opname begint in de bestaande snapshot. Je typt alleen wat erbij moet:
 
 ```text
@@ -227,7 +229,7 @@ Nieuwe workloads worden round-robin over online, niet-drainende runners verdeeld
 
 Een nette SIGTERM stuurt best-effort `goodbye` met de lokale idle-status. Een harde Docker-kill of ontbrekend internet is nadrukkelijk geen bewijs dat de workload dood is en veroorzaakt dus geen automatische failover. De Job toont bij de actieve fase welke client ontbreekt en hoe lang die offline is. `Retry` behoudt de logische fasepoging, verbreekt bewust de oude runtime-affinity en materialiseert een nieuwe Capsule via round-robin. Een later terugkerende oude runner kan die opnieuw gekoppelde Session niet meer overnemen.
 
-Docker-images zijn runner-lokale caches, niet langer de bron van waarheid. Bij `END RECORD` exporteert de runner eerst een opaque `docker image save` en uploadt die in losse, geackte 1 MiB-chunks naar `spin.db`, over dezelfde `/api/uploads`-API waarmee een browser een backup terugzet; pas na die duurzame archivering wordt het Artifact afgerond. Een verbroken verbinding hervat op de bevestigde offset, en een herhaalde `END RECORD` vindt een al gecommitte image terug. Wanneer een nieuwe Session op een andere runner landt, gebruikt Spin een online replica of laadt de centrale export terug en onthoudt de nieuwe cachekopie. Layerinhoud wordt niet geïnterpreteerd en een verdwenen laptop vernietigt dus geen Artifact.
+Docker-images zijn runner-lokale caches, niet langer de bron van waarheid. Bij `END RECORD` exporteert de runner eerst een opaque `docker image save`, gzip-gecomprimeerd aan de bron (2 tot 3 keer kleiner; `docker load` leest dat zelf), en uploadt die in losse, geackte 1 MiB-chunks naar `spin.db`, over dezelfde `/api/uploads`-API waarmee een browser een backup terugzet; pas na die duurzame archivering wordt het Artifact afgerond. Een verbroken verbinding hervat op de bevestigde offset, en een herhaalde `END RECORD` vindt een al gecommitte image terug. Wanneer een nieuwe Session op een andere runner landt, gebruikt Spin een online replica of laadt de centrale export terug en onthoudt de nieuwe cachekopie. Layerinhoud wordt niet geïnterpreteerd en een verdwenen laptop vernietigt dus geen Artifact.
 
 Die opslaggrens is bewust hard: uitsluitend afgeronde `RECORD … END RECORD`-lagen worden centrale artifacts. Tijdelijke composities, containers, Session-worktrees en hun Docker-delta's blijven wegwerpcache op de runner. Retry begint opnieuw bij de opgeslagen artifacts en de actuele remote Job-branch; er hoeft geen half afgemaakte runtime te worden verhuisd.
 

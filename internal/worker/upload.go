@@ -167,7 +167,7 @@ func (w *Worker) archiveSnapshot(ctx context.Context, exporter capsule.SnapshotE
 		return archiveResult{}, err
 	}
 	logger := w.logger.With("snapshot", snapshot.Ref, "digest", snapshot.Digest)
-	file, err := os.CreateTemp("", "spin-snapshot-*.tar")
+	file, err := os.CreateTemp("", "spin-snapshot-*.tar.gz")
 	if err != nil {
 		return archiveResult{}, err
 	}
