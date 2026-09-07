@@ -443,6 +443,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/auth/users", s.createUser)
 	s.mux.HandleFunc("POST /api/auth/users/{userID}/archive", s.archiveUser)
 	s.mux.HandleFunc("POST /api/auth/users/{userID}/restore", s.restoreUser)
+	s.mux.HandleFunc("POST /api/auth/users/{userID}/password", s.resetUserPassword)
 	s.mux.HandleFunc("POST /api/backup", s.downloadBackup)
 	s.mux.HandleFunc("POST /api/backup-ticket", s.createBackupTicket)
 	s.mux.HandleFunc("GET /api/backup", s.downloadBackupWithTicket)

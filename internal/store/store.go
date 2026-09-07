@@ -1129,6 +1129,31 @@ func (s *Store) CreateUser(actorID string, user domain.User) (domain.PublicUser,
 // SetUserArchived disables or restores an identity without deleting any
 // records that refer to it. Archiving also revokes every login session owned
 // by the user in the same persisted transition.
+// ResetUserPassword lets an admin give a user a new (temporary) password.
+// Every session of that user ends, so whoever held the old password is out.
+func (s *Store) ResetUserPassword(actorID, userID, passwordHash string) (domain.PublicUser, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.requireAdminLocked(actorID); err != nil {
+		return domain.PublicUser{}, err
+	}
+	user, ok := s.state.Users[strings.TrimSpace(userID)]
+	if !ok {
+		return domain.PublicUser{}, ErrNotFound
+	}
+	if strings.TrimSpace(passwordHash) == "" {
+		return domain.PublicUser{}, fmt.Errorf("password hash is required: %w", ErrConflict)
+	}
+	user.PasswordHash = passwordHash
+	s.state.Users[user.ID] = user
+	for id, session := range s.state.AuthSessions {
+		if session.UserID == user.ID {
+			delete(s.state.AuthSessions, id)
+		}
+	}
+	return publicUser(user), s.saveLocked()
+}
+
 func (s *Store) SetUserArchived(actorID, userID string, archived bool) (domain.PublicUser, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

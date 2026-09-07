@@ -2,6 +2,7 @@ package store
 
 import (
 	"strings"
+	"time"
 	"testing"
 
 	"easyacp/internal/domain"
@@ -211,5 +212,39 @@ func TestStepTargetCarriesTheLanding(t *testing.T) {
 	_, _, _, next, _, _, err := st.WorkflowForSession(advance.NextSession.ID)
 	if err != nil || next.Action == nil || next.Action.Type != domain.WorkflowActionGitMerge {
 		t.Fatalf("finalizer phase = %+v, %v", next, err)
+	}
+}
+
+// An admin can give a user a new password; the user's sessions end with it,
+// and only an admin may do it.
+func TestResetUserPasswordEndsTheUsersSessions(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := st.CreateInitialUser(domain.User{Username: "derek", DisplayName: "Derek", PasswordHash: "hash-derek"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	john, err := st.CreateUser(admin.ID, domain.User{Username: "john", DisplayName: "John", Role: domain.UserMember, PasswordHash: "hash-old"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := st.CreateAuthSession(john.ID, "token-hash", "csrf-hash", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ResetUserPassword(john.ID, john.ID, "hash-new"); err == nil {
+		t.Fatal("a member reset a password")
+	}
+	if _, err := st.ResetUserPassword(admin.ID, john.ID, "hash-new"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.AuthenticateSession(session.TokenHash); err == nil {
+		t.Fatal("the old session survived the password reset")
+	}
+	stored, err := st.UserByUsername("john")
+	if err != nil || stored.PasswordHash != "hash-new" {
+		t.Fatalf("stored user = %+v, %v", stored, err)
 	}
 }

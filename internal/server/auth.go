@@ -280,6 +280,32 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, created)
 }
 
+// resetUserPassword gives a user a new temporary password, by an admin.
+func (s *Server) resetUserPassword(w http.ResponseWriter, r *http.Request) {
+	identity, ok := identityFromRequest(r)
+	if !ok || identity.User.Role != domain.UserAdmin {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin role required"})
+		return
+	}
+	var req struct {
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	passwordHash, err := hashPassword(req.Password)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	user, err := s.store.ResetUserPassword(identity.User.ID, r.PathValue("userID"), passwordHash)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, user)
+}
+
 func (s *Server) archiveUser(w http.ResponseWriter, r *http.Request) {
 	s.setUserArchived(w, r, true)
 }

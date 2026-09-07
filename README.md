@@ -186,6 +186,8 @@ Registreer als callbacks respectievelijk `${SPIN_PUBLIC_URL}/api/git/oauth/githu
 
 De ACP-hook volgt het stabiele ACP v1-transport: newline-delimited JSON-RPC 2.0 over stdio. `ACP PROBE` blijft beschikbaar als korte diagnostische handshake. Voor een Job-Session houdt Spin het subprocess levend en doorloopt het `initialize → session/new → session/prompt`; `session/update`, plannen, tool calls en permission requests worden live naar het chatscherm gestreamd. De Changes-kolom leest de echte Git-workspace en toont per bestand toegevoegde en verwijderde regels.
 
+Onder Access kan een admin een gebruiker een nieuw tijdelijk wachtwoord geven (**Wachtwoord**); alle sessies van die gebruiker eindigen daarbij. Voor een collega die het wachtwoord kwijt is, is dat de route.
+
 ## Live status zonder polling
 
 De browser vraagt de staat niet, hij krijgt hem. Eén WebSocket (`/api/state/ws`) stuurt de volledige staat bij verbinden, daarna opnieuw zodra de store een keer is opgeslagen (opeenvolgende opslagen binnen 150 ms worden één bericht) en elke drie seconden zolang er iets alleen in het geheugen beweegt: een launch, een seal, een start, het ophalen van agent-opties, een test-app. Ieder bericht draagt een versienummer dat alleen oploopt. Valt de verbinding weg, dan herstelt de browser die met oplopende wachttijd; na een actie haalt hij de staat één keer direct op.

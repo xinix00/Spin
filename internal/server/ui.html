@@ -213,6 +213,14 @@
         </form>
       </dialog>
 
+      <dialog id="password-dialog">
+        <div class="dialog-head"><div><h2>Wachtwoord opnieuw instellen</h2><p id="password-dialog-copy">Geef een tijdelijk wachtwoord; alle sessies van deze gebruiker worden beëindigd.</p></div><button class="icon-button" type="button" data-close-dialog="password-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+        <form id="password-form" class="form-grid">
+          <div class="wide"><label for="password-new">Tijdelijk wachtwoord</label><input id="password-new" name="password" type="password" minlength="12" maxlength="256" required autocomplete="new-password"><small>Minimaal 12 tekens. Geef het door en laat de gebruiker het zelf vervangen.</small></div>
+          <div class="wide panel-actions"><button class="small-button" type="button" data-close-dialog="password-dialog">Annuleren</button><button class="primary" type="submit">Wachtwoord instellen</button></div>
+        </form>
+      </dialog>
+
       <dialog id="user-dialog">
         <div class="dialog-head"><div><h2>Gebruiker toevoegen</h2><p>De nieuwe identiteit krijgt eigen credentials, accounts en snapshots.</p></div><button class="icon-button" type="button" data-close-dialog="user-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
         <form id="user-form" class="form-grid">
