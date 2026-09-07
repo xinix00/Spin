@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"slices"
@@ -32,9 +33,12 @@ type DockerConfig struct {
 	EnvDir string
 	// AdvertiseHost is the address people use to reach published app ports.
 	AdvertiseHost string
+	// Logger receives what the engine decides; nil is quiet.
+	Logger *slog.Logger
 }
 
 type Docker struct {
+	logger        *slog.Logger
 	binary        string
 	baseImage     string
 	network       string
@@ -53,7 +57,7 @@ func NewDocker(ctx context.Context, cfg DockerConfig) (*Docker, error) {
 	if cfg.Network == "" {
 		cfg.Network = "bridge"
 	}
-	d := &Docker{binary: cfg.Binary, baseImage: cfg.BaseImage, network: cfg.Network, envDir: cfg.EnvDir, advertiseHost: AdvertiseHost(cfg.AdvertiseHost)}
+	d := &Docker{logger: cfg.Logger, binary: cfg.Binary, baseImage: cfg.BaseImage, network: cfg.Network, envDir: cfg.EnvDir, advertiseHost: AdvertiseHost(cfg.AdvertiseHost)}
 	version, code, err := d.run(ctx, "version", "--format", "{{.Server.Version}}")
 	if err != nil || code != 0 || strings.TrimSpace(version) == "" {
 		return nil, fmt.Errorf("Docker daemon is unavailable: %s: %w", strings.TrimSpace(version), err)
@@ -1294,6 +1298,17 @@ func (d *Docker) mergeSnapshots(ctx context.Context, composition domain.Composit
 	imageRef := "spin/composition:" + safeName(composition.ID)
 	baseIndex, plan := compositionBase(layers, byID)
 	base := layers[baseIndex]
+	if d.logger != nil {
+		summary := make([]string, 0, len(layers))
+		for index, layer := range layers {
+			action := "base"
+			if index != baseIndex {
+				action = map[layerAction]string{layerFullCopy: "full copy", layerDiffOnly: "diff", layerContained: "contained"}[plan[layer.ID]]
+			}
+			summary = append(summary, layer.ID+"="+action)
+		}
+		d.logger.Info("compose plan", "composition", composition.ID, "layers", strings.Join(summary, " "))
+	}
 	// The build container runs, so deletions of a layer diff can be applied
 	// inside it before its files are copied in.
 	if _, err := d.control(ctx,
