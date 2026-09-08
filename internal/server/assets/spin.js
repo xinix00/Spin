@@ -1269,7 +1269,9 @@ document.getElementById('record-git-tool').onclick=()=>openLayerDialog(recordPre
 document.getElementById('list-snapshots').onclick=()=>refresh(true);
 document.getElementById('terminal-interrupt').onclick=interruptTerminal;
 document.getElementById('capsule-dialog').addEventListener('cancel',event=>{const session=activeTerminal();if(session&&!session.exited&&document.activeElement?.closest('.pty-pane')){event.preventDefault();}});
-new ResizeObserver(()=>fitTerminal(activeTerminal())).observe(document.getElementById('pty-stage'));
+// Refit only when the stage itself changed size, and never more than a few
+// times a second: a fit that changed the terminal must not trigger itself.
+let stageSize='';new ResizeObserver(entries=>{const box=entries[0]?.contentRect,key=box?`${Math.round(box.width)}x${Math.round(box.height)}`:'';if(key===stageSize)return;stageSize=key;clearTimeout(window._fitTimer);window._fitTimer=setTimeout(()=>fitTerminal(activeTerminal()),120);}).observe(document.getElementById('pty-stage'));
 document.getElementById('chat-form').onsubmit=event=>{event.preventDefault();const input=document.getElementById('chat-input'),text=input.value.trim();if(!text)return;sendChat({type:'prompt',text});document.querySelectorAll('[data-chat-question]').forEach(node=>node.remove());input.value='';input.style.height='auto';setTimeout(()=>refresh(),250);};
 document.getElementById('reject-form').onsubmit=event=>{event.preventDefault();if(!pendingRejectQuestionID)return;const form=new FormData(event.target);decideQuestion(pendingRejectQuestionID,'reject',String(form.get('reason')||'').trim());};
 document.getElementById('chat-cancel').onclick=()=>sendChat({type:'cancel'});
