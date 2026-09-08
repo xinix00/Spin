@@ -198,27 +198,6 @@ func runGitWorkspaceScript(directory, remote, baseRef, bootstrapRef, headRef, ta
 	return string(output), err
 }
 
-func TestMaterializationRootChoosesSnapshotContainingEveryBinding(t *testing.T) {
-	tool := domain.Artifact{
-		ID: "tool", Snapshot: domain.CapsuleSnapshot{Driver: "docker", Ref: "image:tool", Restorable: true},
-	}
-	credential := domain.Artifact{
-		ID: "credential", ParentArtifactIDs: []string{tool.ID},
-		Snapshot: domain.CapsuleSnapshot{Driver: "docker", Ref: "image:credential", Restorable: true},
-	}
-	composition := domain.Composition{
-		ResolvedArtifacts: []domain.ResolvedArtifact{{ArtifactID: tool.ID}, {ArtifactID: credential.ID}},
-		SlotBindings:      map[string]string{"tool:codex": tool.ID, "credential:codex": credential.ID},
-	}
-	root, err := materializationRoot(composition, []domain.Artifact{tool, credential})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if root.ID != credential.ID {
-		t.Fatalf("root = %s, want %s", root.ID, credential.ID)
-	}
-}
-
 func TestEnabledLaunchCommandSourcesLayerEnvironment(t *testing.T) {
 	command, err := enabledLaunchCommand(domain.Enablement{Name: "acp", Command: "codex-acp"}, "/tmp/spin-enabled-test.pid")
 	if err != nil {
@@ -447,51 +426,5 @@ func TestDockerMaterializesIndependentSnapshotsLive(t *testing.T) {
 	}
 	if _, code, _ := engine.run(ctx, "image", "inspect", runtime.BaseRef); code == 0 {
 		t.Fatalf("ephemeral composition image %s still exists after Stop", runtime.BaseRef)
-	}
-}
-
-func TestMaterializationLayersKeepsIndependentSnapshotsInRequestOrder(t *testing.T) {
-	tool := domain.Artifact{ID: "tool", Snapshot: domain.CapsuleSnapshot{Driver: "docker", Ref: "image:tool", Restorable: true}}
-	credential := domain.Artifact{ID: "credential", Snapshot: domain.CapsuleSnapshot{Driver: "docker", Ref: "image:credential", Restorable: true}}
-	composition := domain.Composition{
-		Selector:             "tool:codex",
-		WithSelectors:        []string{"credential:codex"},
-		RequestedArtifactIDs: []string{tool.ID, credential.ID},
-		ResolvedArtifacts:    []domain.ResolvedArtifact{{ArtifactID: tool.ID}, {ArtifactID: credential.ID}},
-		SlotBindings:         map[string]string{"tool:codex": tool.ID, "credential:codex": credential.ID},
-	}
-	layers, err := materializationLayers(composition, []domain.Artifact{tool, credential})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(layers) != 2 || layers[0].ID != tool.ID || layers[1].ID != credential.ID {
-		t.Fatalf("layers = %+v", layers)
-	}
-}
-
-func TestMaterializationLayersDropsRequestedAncestors(t *testing.T) {
-	git := domain.Artifact{ID: "git", Snapshot: domain.CapsuleSnapshot{Driver: "docker", Ref: "image:git", Restorable: true}}
-	node := domain.Artifact{ID: "node", Snapshot: domain.CapsuleSnapshot{Driver: "docker", Ref: "image:node", Restorable: true}}
-	codex := domain.Artifact{ID: "codex", ParentArtifactIDs: []string{node.ID}, Snapshot: domain.CapsuleSnapshot{Driver: "docker", Ref: "image:codex", Restorable: true}}
-	credential := domain.Artifact{ID: "credential", ParentArtifactIDs: []string{codex.ID}, Snapshot: domain.CapsuleSnapshot{Driver: "docker", Ref: "image:credential", Restorable: true}}
-	dotnet := domain.Artifact{ID: "dotnet", Snapshot: domain.CapsuleSnapshot{Driver: "docker", Ref: "image:dotnet", Restorable: true}}
-	artifacts := []domain.Artifact{git, node, codex, credential, dotnet}
-	composition := domain.Composition{
-		ID:                   "cmp_job",
-		RequestedArtifactIDs: []string{git.ID, credential.ID, codex.ID, dotnet.ID, node.ID},
-		ResolvedArtifacts: []domain.ResolvedArtifact{
-			{ArtifactID: git.ID}, {ArtifactID: node.ID}, {ArtifactID: codex.ID}, {ArtifactID: credential.ID}, {ArtifactID: dotnet.ID},
-		},
-		SlotBindings: map[string]string{
-			"tool:git": git.ID, "tool:node": node.ID, "tool:codex": codex.ID,
-			"credential:codex": credential.ID, "tool:dotnet": dotnet.ID,
-		},
-	}
-	layers, err := materializationLayers(composition, artifacts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(layers) != 3 || layers[0].ID != git.ID || layers[1].ID != credential.ID || layers[2].ID != dotnet.ID {
-		t.Fatalf("layers = %+v, want git, credential, dotnet", layers)
 	}
 }

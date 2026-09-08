@@ -1018,9 +1018,8 @@ func TestPruneClientsForgetsIdleOfflineRunners(t *testing.T) {
 	}
 }
 
-// Two agents in one stack: the entry's agent supplies the command, however
-// the layers are ordered underneath it.
-func TestUseEntryAgentWinsOverAgentsLowerInTheStack(t *testing.T) {
+// Two agents in one stack: the topmost decides, whichever order they come in.
+func TestUseTopmostAgentDecidesTheCommand(t *testing.T) {
 	st, err := Open("")
 	if err != nil {
 		t.Fatal(err)
@@ -1029,17 +1028,66 @@ func TestUseEntryAgentWinsOverAgentsLowerInTheStack(t *testing.T) {
 	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "codex", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "codex-acp"}}})
 	claude := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "claude", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "claude-agent-acp"}}})
 	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactCredential, Name: "claude", Scope: domain.ScopeUser, ParentArtifactIDs: []string{claude.ID}})
-	composition, err := st.Use(domain.UseRequest{Selector: "credential:claude", WithSelectors: []string{"tool:codex"}, Operator: "derek"})
+	acpOf := func(composition domain.Composition) string {
+		for _, enabled := range composition.Enabled {
+			if enabled.Name == "acp" {
+				return enabled.Command
+			}
+		}
+		return ""
+	}
+	codexOnTop, err := st.Use(domain.UseRequest{Selector: "credential:claude", WithSelectors: []string{"tool:codex"}, Operator: "derek"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var acp string
-	for _, enabled := range composition.Enabled {
-		if enabled.Name == "acp" {
-			acp = enabled.Command
+	if acpOf(codexOnTop) != "codex-acp" || codexOnTop.Tool != "codex" {
+		t.Fatalf("codex on top: acp = %q, tool = %q", acpOf(codexOnTop), codexOnTop.Tool)
+	}
+	claudeOnTop, err := st.Use(domain.UseRequest{Selector: "tool:codex", WithSelectors: []string{"credential:claude"}, Operator: "derek"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acpOf(claudeOnTop) != "claude-agent-acp" || claudeOnTop.Tool != "claude" {
+		t.Fatalf("claude on top: acp = %q, tool = %q", acpOf(claudeOnTop), claudeOnTop.Tool)
+	}
+	// The stack is recorded bottom to top: git under both, credential above its tool.
+	names := []string{}
+	for _, id := range claudeOnTop.Layers {
+		artifact, _ := st.Artifact(id)
+		names = append(names, string(artifact.Kind)+":"+artifact.Name)
+	}
+	if len(names) != 4 || names[0] != "tool:git" || names[1] != "tool:codex" || names[2] != "tool:claude" || names[3] != "credential:claude" {
+		t.Fatalf("stack = %v", names)
+	}
+}
+
+// An EDIT of a layer under a credential lifts into every stack that holds
+// the credential: the newer version sits right above the one it replaces.
+func TestUseLiftsEditedLayersIntoTheStack(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
+	claudeV1 := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "claude", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "claude-code-acp"}}})
+	credential := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactCredential, Name: "claude", Scope: domain.ScopeUser, ParentArtifactIDs: []string{claudeV1.ID}})
+	claudeV2 := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "claude", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{claudeV1.ID}, ReplacesArtifactID: claudeV1.ID, Enables: []domain.Enablement{{Name: "acp", Command: "claude-agent-acp"}}})
+	composition, err := st.Use(domain.UseRequest{Selector: "credential:claude", Operator: "derek"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{git.ID, claudeV1.ID, claudeV2.ID, credential.ID}
+	if len(composition.Layers) != len(want) {
+		t.Fatalf("stack = %v, want %v", composition.Layers, want)
+	}
+	for index := range want {
+		if composition.Layers[index] != want[index] {
+			t.Fatalf("stack = %v, want %v", composition.Layers, want)
 		}
 	}
-	if acp != "claude-agent-acp" || composition.Tool != "claude" {
-		t.Fatalf("acp command = %q, tool = %q; the layer underneath took over", acp, composition.Tool)
+	for _, enabled := range composition.Enabled {
+		if enabled.Name == "acp" && enabled.Command != "claude-agent-acp" {
+			t.Fatalf("acp command = %q; the edit did not reach the stack", enabled.Command)
+		}
 	}
 }

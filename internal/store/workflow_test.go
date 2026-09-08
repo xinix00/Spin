@@ -436,24 +436,24 @@ func TestWorkflowPhaseOwnsItsEnvironmentRecipe(t *testing.T) {
 	if err != nil || advance.NextSession == nil {
 		t.Fatalf("advance = %+v, error = %v", advance, err)
 	}
-	// Layers in order: the Job's own layer underneath, the reviewer on top
-	// as the worker's credential layer for it.
+	// Layers in order: the Job's own layers underneath, the reviewer on top
+	// as the worker's credential layer for it; the topmost agent decides.
 	next := advance.NextSession
-	if next.EnvironmentSelector != "credential:reviewer" || next.Tool != "reviewer" || len(next.WithSelectors) != 2 || next.WithSelectors[0] != "tool:developer" || next.WithSelectors[1] != "tool:git" {
+	if next.EnvironmentSelector != "tool:developer" || next.Tool != "reviewer" || len(next.WithSelectors) != 2 || next.WithSelectors[0] != "tool:git" || next.WithSelectors[1] != "credential:reviewer" {
 		t.Fatalf("review Session layers = %s + %v, tool %s", next.EnvironmentSelector, next.WithSelectors, next.Tool)
 	}
 }
 
-func TestWorkflowPhaseCanAddOwnWithLayersToJobDefaultEnvironment(t *testing.T) {
+func TestWorkflowPhaseLayersGoOnTopOfTheJobsLayers(t *testing.T) {
 	phase := domain.WorkflowPhase{WithSelectors: []string{"tool:reviewer"}}
-	selector, withSelectors := workflowPhaseEnvironment(phase, "tool:codex", []string{"tool:dotnet"})
-	if selector != "tool:codex" || len(withSelectors) != 2 || withSelectors[0] != "tool:dotnet" || withSelectors[1] != "tool:reviewer" {
-		t.Fatalf("phase recipe = USE %s WITH %v", selector, withSelectors)
+	selector, layers := workflowPhaseLayers(phase, "tool:codex", []string{"tool:dotnet"})
+	if selector != "tool:codex" || len(layers) != 2 || layers[0] != "tool:dotnet" || layers[1] != "tool:reviewer" {
+		t.Fatalf("phase stack = %s + %v", selector, layers)
 	}
 
-	selector, withSelectors = workflowPhaseEnvironment(domain.WorkflowPhase{}, "tool:codex", []string{"tool:dotnet"})
-	if selector != "tool:codex" || len(withSelectors) != 1 || withSelectors[0] != "tool:dotnet" {
-		t.Fatalf("fallback recipe = USE %s WITH %v", selector, withSelectors)
+	selector, layers = workflowPhaseLayers(domain.WorkflowPhase{}, "tool:codex", []string{"tool:dotnet"})
+	if selector != "tool:codex" || len(layers) != 1 || layers[0] != "tool:dotnet" {
+		t.Fatalf("fallback stack = %s + %v", selector, layers)
 	}
 }
 

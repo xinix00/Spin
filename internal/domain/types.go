@@ -590,23 +590,29 @@ type GitWorkspace struct {
 }
 
 type Composition struct {
-	ID                   string             `json:"id"`
-	Operator             string             `json:"operator"`
-	Selector             string             `json:"selector"`
-	EntryArtifactID      string             `json:"entry_artifact_id"`
-	Tool                 string             `json:"tool,omitempty"` // legacy worker routing hint
-	SessionID            string             `json:"session_id,omitempty"`
-	Profile              string             `json:"profile"`
-	WithSelectors        []string           `json:"with_selectors,omitempty"`
-	RequestedArtifactIDs []string           `json:"requested_artifact_ids,omitempty"`
-	ResolvedArtifacts    []ResolvedArtifact `json:"resolved_artifacts"`
-	SlotBindings         map[string]string  `json:"slot_bindings"`
-	Enabled              []Enablement       `json:"enabled,omitempty"`
-	MCPServerIDs         []string           `json:"mcp_server_ids,omitempty"`
-	Git                  *GitWorkspace      `json:"git,omitempty"`
-	Warnings             []string           `json:"warnings,omitempty"`
-	Runtime              *CapsuleRuntime    `json:"runtime,omitempty"`
-	CreatedAt            time.Time          `json:"created_at"`
+	ID                   string   `json:"id"`
+	Operator             string   `json:"operator"`
+	Selector             string   `json:"selector"`
+	EntryArtifactID      string   `json:"entry_artifact_id"`
+	Tool                 string   `json:"tool,omitempty"` // legacy worker routing hint
+	SessionID            string   `json:"session_id,omitempty"`
+	Profile              string   `json:"profile"`
+	WithSelectors        []string `json:"with_selectors,omitempty"`
+	RequestedArtifactIDs []string `json:"requested_artifact_ids,omitempty"`
+	// Layers is the stack, bottom to top: every layer version that
+	// contributes, parents before children, newer versions right above the
+	// ones they replace, later selections above earlier ones. The filesystem
+	// is each layer's own diff applied in this order; the agent is the
+	// topmost layer that enables acp.
+	Layers            []string           `json:"layers,omitempty"`
+	ResolvedArtifacts []ResolvedArtifact `json:"resolved_artifacts"`
+	SlotBindings      map[string]string  `json:"slot_bindings"`
+	Enabled           []Enablement       `json:"enabled,omitempty"`
+	MCPServerIDs      []string           `json:"mcp_server_ids,omitempty"`
+	Git               *GitWorkspace      `json:"git,omitempty"`
+	Warnings          []string           `json:"warnings,omitempty"`
+	Runtime           *CapsuleRuntime    `json:"runtime,omitempty"`
+	CreatedAt         time.Time          `json:"created_at"`
 }
 
 type Job struct {

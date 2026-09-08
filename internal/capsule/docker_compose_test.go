@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"io"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"easyacp/internal/domain"
 )
@@ -64,34 +66,91 @@ func TestLayerDiffTakesTheTopLayerAndItsWhiteouts(t *testing.T) {
 
 // The layer with the widest closure is the base; a layer recorded on a
 // version inside that closure is applied as a diff, an unrelated one fully.
-func TestCompositionBasePrefersTheWidestClosure(t *testing.T) {
-	git := domain.Artifact{ID: "git"}
-	codexV1 := domain.Artifact{ID: "codex1", ParentArtifactIDs: []string{"git"}, SupersededBy: "codex2"}
-	credential := domain.Artifact{ID: "cred", ParentArtifactIDs: []string{"codex1"}}
-	codexV2 := domain.Artifact{ID: "codex2", ParentArtifactIDs: []string{"codex1"}}
-	other := domain.Artifact{ID: "other"}
-	byID := map[string]domain.Artifact{"git": git, "codex1": codexV1, "cred": credential, "codex2": codexV2, "other": other}
-	base, plan := compositionBase([]domain.Artifact{git, credential, codexV2, other}, byID)
-	if base != 2 {
-		t.Fatalf("base = %d, want the newest codex", base)
+func restorable(id string, parents ...string) domain.Artifact {
+	return domain.Artifact{ID: id, ParentArtifactIDs: parents, Snapshot: domain.CapsuleSnapshot{Driver: "docker", Ref: "image:" + id, Restorable: true}}
+}
+
+func planIDs(plan LayerPlan) []string {
+	ids := []string{plan.Base.ID + "=base"}
+	for _, step := range plan.Steps {
+		action := "diff"
+		if step.Full {
+			action = "full"
+		}
+		ids = append(ids, step.Artifact.ID+"="+action)
 	}
-	if plan["cred"] != layerDiffOnly || plan["other"] != layerFullCopy || plan["git"] != layerContained {
-		t.Fatalf("plan = %v", plan)
+	return ids
+}
+
+// The base is the deepest layer whose image is exactly the stack up to it;
+// what lies above is applied as its own diff, an unrelated root whole.
+func TestPlanLayersTakesTheDeepestExactPrefixAsBase(t *testing.T) {
+	git, node := restorable("git"), restorable("node", "git")
+	codex := restorable("codex", "node")
+	credential := restorable("cred", "codex")
+	dotnet := restorable("dotnet")
+	composition := domain.Composition{Layers: []string{"git", "node", "codex", "cred", "dotnet"}}
+	plan, err := PlanLayers(composition, []domain.Artifact{git, node, codex, credential, dotnet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(planIDs(plan), " "); got != "cred=base dotnet=full" {
+		t.Fatalf("plan = %s", got)
 	}
 }
 
-// A credential recorded on an older tool becomes the base of a stack of the
-// two; the tool's EDIT (a newer install) is not inside that base and must go
-// over it as a diff, or the edit never reaches the composition.
-func TestCompositionBaseAppliesANewerVersionOfAnAncestorAsDiff(t *testing.T) {
-	git := domain.Artifact{ID: "git"}
-	claudeV1 := domain.Artifact{ID: "claude1", ParentArtifactIDs: []string{"git"}, SupersededBy: "claude2"}
-	claudeV2 := domain.Artifact{ID: "claude2", ParentArtifactIDs: []string{"claude1"}}
-	credential := domain.Artifact{ID: "cred", ParentArtifactIDs: []string{"claude1"}}
-	byID := map[string]domain.Artifact{"git": git, "claude1": claudeV1, "claude2": claudeV2, "cred": credential}
-	base, plan := compositionBase([]domain.Artifact{credential, claudeV2}, byID)
-	if plan[[]string{"cred", "claude2"}[1-base]] != layerDiffOnly {
-		t.Fatalf("base = %d, plan = %v; the newer tool version was left out", base, plan)
+// A credential recorded on an older tool: the tool's EDIT sits above the
+// old version in the stack, below the credential, and the credential's image
+// is no longer an exact prefix. The newest tool is the base and the
+// credential goes over it as its diff.
+func TestPlanLayersAppliesTheCredentialOverAnEditedTool(t *testing.T) {
+	git := restorable("git")
+	claudeV1 := restorable("claude1", "git")
+	claudeV1.SupersededBy = "claude2"
+	claudeV2 := restorable("claude2", "claude1")
+	credential := restorable("cred", "claude1")
+	composition := domain.Composition{Layers: []string{"git", "claude1", "claude2", "cred"}}
+	plan, err := PlanLayers(composition, []domain.Artifact{git, claudeV1, claudeV2, credential})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(planIDs(plan), " "); got != "claude2=base cred=diff" {
+		t.Fatalf("plan = %s", got)
+	}
+}
+
+// A pruned older version above the base has no diff any more; the first
+// later version of it in the stack is copied whole instead.
+func TestPlanLayersCarriesAPrunedVersionByItsSuccessor(t *testing.T) {
+	dotnet := restorable("dotnet")
+	git := restorable("git")
+	claudeV1 := restorable("claude1", "git")
+	claudeV1.SupersededBy = "claude2"
+	pruned := time.Now()
+	claudeV1.SnapshotPrunedAt = &pruned
+	claudeV2 := restorable("claude2", "claude1")
+	credential := restorable("cred", "claude1")
+	composition := domain.Composition{Layers: []string{"dotnet", "git", "claude1", "claude2", "cred"}}
+	plan, err := PlanLayers(composition, []domain.Artifact{dotnet, git, claudeV1, claudeV2, credential})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(planIDs(plan), " "); got != "dotnet=base git=full claude2=full cred=diff" {
+		t.Fatalf("plan = %s", got)
+	}
+}
+
+// A composition from before stacks were recorded is planned in the order
+// its layers were resolved.
+func TestPlanLayersFallsBackToResolvedOrder(t *testing.T) {
+	tool, credential := restorable("tool"), restorable("credential", "tool")
+	composition := domain.Composition{ResolvedArtifacts: []domain.ResolvedArtifact{{ArtifactID: "tool"}, {ArtifactID: "credential"}}}
+	plan, err := PlanLayers(composition, []domain.Artifact{tool, credential})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Base.ID != "credential" || len(plan.Steps) != 0 {
+		t.Fatalf("plan = %v", planIDs(plan))
 	}
 }
 

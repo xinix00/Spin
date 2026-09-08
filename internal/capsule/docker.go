@@ -16,7 +16,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1714,118 +1713,18 @@ func (d *Docker) containerID(ctx context.Context, name string) (string, error) {
 	return strings.TrimSpace(id), err
 }
 
-func materializationRoot(composition domain.Composition, artifacts []domain.Artifact) (domain.Artifact, error) {
-	byID := make(map[string]domain.Artifact, len(artifacts))
-	for _, artifact := range artifacts {
-		byID[artifact.ID] = artifact
-	}
-	required := make([]string, 0, len(composition.SlotBindings))
-	for _, id := range composition.SlotBindings {
-		required = append(required, id)
-	}
-	for i := len(composition.ResolvedArtifacts) - 1; i >= 0; i-- {
-		candidate, ok := byID[composition.ResolvedArtifacts[i].ArtifactID]
-		if !ok || candidate.Snapshot.Driver != "docker" || !candidate.Snapshot.Restorable || candidate.Snapshot.Ref == "" {
-			continue
-		}
-		closure := map[string]bool{}
-		collectParents(candidate.ID, byID, closure)
-		if allContained(required, closure) {
-			return candidate, nil
-		}
-	}
-	selection := composition.Selector
-	if len(composition.WithSelectors) > 0 {
-		selection += " WITH " + strings.Join(composition.WithSelectors, " WITH ")
-	}
-	return domain.Artifact{}, fmt.Errorf("Docker cannot stack independent snapshots for %s; record the later layer with --from=<earlier-layer> or use an overlay-capable engine", selection)
-}
-
-func materializationLayers(composition domain.Composition, artifacts []domain.Artifact) ([]domain.Artifact, error) {
-	if root, err := materializationRoot(composition, artifacts); err == nil {
-		return []domain.Artifact{root}, nil
-	}
-	byID := make(map[string]domain.Artifact, len(artifacts))
-	for _, artifact := range artifacts {
-		byID[artifact.ID] = artifact
-	}
-	requested := append([]string{}, composition.RequestedArtifactIDs...)
-	if len(requested) == 0 {
-		bound := map[string]bool{}
-		for _, id := range composition.SlotBindings {
-			bound[id] = true
-		}
-		for _, resolved := range composition.ResolvedArtifacts {
-			if bound[resolved.ArtifactID] {
-				requested = append(requested, resolved.ArtifactID)
-			}
-		}
-	}
-	requested = uniqueIDs(requested)
-	needed := make([]domain.Artifact, 0, len(requested))
-	for _, id := range requested {
-		artifact, ok := byID[id]
-		if !ok {
-			return nil, fmt.Errorf("composition artifact %s is missing", id)
-		}
-		if artifact.Snapshot.Driver != "docker" || !artifact.Snapshot.Restorable || artifact.Snapshot.Ref == "" {
-			return nil, fmt.Errorf("artifact %s is not a restorable Docker snapshot", id)
-		}
-		isAncestor := false
-		for _, otherID := range requested {
-			if otherID == id {
-				continue
-			}
-			closure := map[string]bool{}
-			collectParents(otherID, byID, closure)
-			if closure[id] {
-				isAncestor = true
-				break
-			}
-		}
-		if !isAncestor {
-			needed = append(needed, artifact)
-		}
-	}
-	covered := map[string]bool{}
-	for _, artifact := range needed {
-		collectParents(artifact.ID, byID, covered)
-	}
-	required := make([]string, 0, len(composition.SlotBindings))
-	for _, id := range composition.SlotBindings {
-		required = append(required, id)
-	}
-	if len(needed) == 0 || !allContained(required, covered) {
-		return nil, fmt.Errorf("composition %s does not contain every bound snapshot", composition.ID)
-	}
-	return needed, nil
-}
-
-func uniqueIDs(values []string) []string {
-	out := make([]string, 0, len(values))
-	seen := map[string]bool{}
-	for _, value := range values {
-		if value != "" && !seen[value] {
-			seen[value] = true
-			out = append(out, value)
-		}
-	}
-	return out
-}
-
+// materializationArtifact is the image a composition runs from: the base
+// layer itself when nothing lies above it, otherwise an image built by
+// applying the layers above the base in stack order.
 func (d *Docker) materializationArtifact(ctx context.Context, composition domain.Composition, artifacts []domain.Artifact) (domain.Artifact, bool, error) {
-	layers, err := materializationLayers(composition, artifacts)
+	plan, err := PlanLayers(composition, artifacts)
 	if err != nil {
 		return domain.Artifact{}, false, err
 	}
-	if len(layers) == 1 {
-		return layers[0], false, nil
+	if len(plan.Steps) == 0 {
+		return plan.Base, false, nil
 	}
-	byID := make(map[string]domain.Artifact, len(artifacts))
-	for _, artifact := range artifacts {
-		byID[artifact.ID] = artifact
-	}
-	ref, err := d.mergeSnapshots(ctx, composition, layers, byID)
+	ref, err := d.buildComposition(ctx, composition, plan)
 	if err != nil {
 		return domain.Artifact{}, false, err
 	}
@@ -1836,19 +1735,17 @@ func (d *Docker) materializationArtifact(ctx context.Context, composition domain
 	}, true, nil
 }
 
-func (d *Docker) mergeSnapshots(ctx context.Context, composition domain.Composition, layers []domain.Artifact, byID map[string]domain.Artifact) (string, error) {
+func (d *Docker) buildComposition(ctx context.Context, composition domain.Composition, plan LayerPlan) (string, error) {
 	targetName := runtimeName("spin-compose-build", composition.ID)
 	imageRef := "spin/composition:" + safeName(composition.ID)
-	baseIndex, plan := compositionBase(layers, byID)
-	base := layers[baseIndex]
 	if d.logger != nil {
-		summary := make([]string, 0, len(layers))
-		for index, layer := range layers {
-			action := "base"
-			if index != baseIndex {
-				action = map[layerAction]string{layerFullCopy: "full copy", layerDiffOnly: "diff", layerContained: "contained"}[plan[layer.ID]]
+		summary := []string{plan.Base.ID + "=base"}
+		for _, step := range plan.Steps {
+			action := "diff"
+			if step.Full {
+				action = "full copy"
 			}
-			summary = append(summary, layer.ID+"="+action)
+			summary = append(summary, step.Artifact.ID+"="+action)
 		}
 		d.logger.Info("compose plan", "composition", composition.ID, "layers", strings.Join(summary, " "))
 	}
@@ -1860,27 +1757,21 @@ func (d *Docker) mergeSnapshots(ctx context.Context, composition domain.Composit
 		"--label", "spin.kind=composition-build",
 		"--label", "spin.composition_id="+composition.ID,
 		"--network", "none",
-		"--entrypoint", "sh", base.Snapshot.Ref, "-lc", "trap 'exit 0' TERM INT; while :; do sleep 3600; done",
+		"--entrypoint", "sh", plan.Base.Snapshot.Ref, "-lc", "trap 'exit 0' TERM INT; while :; do sleep 3600; done",
 	); err != nil {
-		return "", fmt.Errorf("create composition base from %s: %w", base.ID, err)
+		return "", fmt.Errorf("create composition base from %s: %w", plan.Base.ID, err)
 	}
 	defer func() { _ = d.removeContainer(context.Background(), targetName) }()
 
-	for index, layer := range layers {
-		if index == baseIndex {
-			continue
-		}
-		switch plan[layer.ID] {
-		case layerContained:
-			continue
-		case layerDiffOnly:
-			if err := d.applyLayerDiff(ctx, targetName, layer); err != nil {
+	for index, step := range plan.Steps {
+		if !step.Full {
+			if err := d.applyLayerDiff(ctx, targetName, step.Artifact); err != nil {
 				return "", err
 			}
 			continue
 		}
 		sourceName := runtimeName("spin-compose-source", composition.ID+"-"+strconv.Itoa(index+1))
-		if err := d.mergeSnapshot(ctx, targetName, sourceName, layer); err != nil {
+		if err := d.mergeSnapshot(ctx, targetName, sourceName, step.Artifact); err != nil {
 			return "", err
 		}
 	}
@@ -1955,20 +1846,6 @@ func (d *Docker) copyContainerRoot(ctx context.Context, sourceName, targetName s
 		return fmt.Errorf("docker export: %s: %w", strings.TrimSpace(exportError.String()), exportErr)
 	}
 	return nil
-}
-
-func collectParents(id string, artifacts map[string]domain.Artifact, found map[string]bool) {
-	if found[id] {
-		return
-	}
-	found[id] = true
-	for _, parentID := range artifacts[id].ParentArtifactIDs {
-		collectParents(parentID, artifacts, found)
-	}
-}
-
-func allContained(ids []string, found map[string]bool) bool {
-	return !slices.ContainsFunc(ids, func(id string) bool { return !found[id] })
 }
 
 func (d *Docker) control(ctx context.Context, args ...string) (string, error) {

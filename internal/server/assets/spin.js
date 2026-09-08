@@ -820,7 +820,8 @@ function renderComposition(){
   if(!composition){root.innerHTML='<div class="empty">Nog geen draaiende Composition.</div>';return;}
   const bindings=Object.entries(composition.slot_bindings||{}).map(([slot,id])=>{const artifact=byID(snapshot.artifacts,id);return `<div class="binding"><span>${esc(slot)}</span><span>${esc(artifact?artifactSelector(artifact):id)}</span></div>`;}).join('');
   const enabled=composition.enabled?.length?`<div class="binding"><span>ENABLED</span><span>${esc(enabledNames(composition.enabled))}</span></div>`:'';
-  const withLayers=composition.with_selectors?.length?`<div class="binding"><span>WITH</span><span>${composition.with_selectors.map(esc).join(' · ')}</span></div>`:'';
+  const stack=(composition.layers||[]).map(id=>{const artifact=byID(snapshot.artifacts,id);return artifact?artifactSelector(artifact):id;});
+  const withLayers=stack.length?`<div class="binding"><span>lagen</span><span title="Van onder naar boven">${stack.map(esc).join(' → ')}</span></div>`:'';
   const mcp=composition.mcp_server_ids?.length?`<div class="binding"><span>MCP</span><span>${composition.mcp_server_ids.map(id=>esc(byID(snapshot.mcp_servers,id)?.name||id)).join(', ')}</span></div>`:'';
   const git=composition.git?`<div class="binding"><span>GIT</span><span>${esc(composition.git.repository_name)} · ${esc(composition.git.head_ref)} → ${esc(composition.git.target_ref)} · ${esc(composition.git.credential_scope||'public')}${composition.git.login?' · '+esc(composition.git.provider+':'+composition.git.login):''}</span></div>`:'';
   const runtime=composition.runtime?`<div class="binding"><span>capsule</span><span>${esc(composition.runtime.status)} · ${esc(composition.runtime.attach_command||'')}</span></div>`:'';

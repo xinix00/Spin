@@ -84,9 +84,10 @@ func TestEditRecordsANewVersionThatEverythingFollows(t *testing.T) {
 	if used.SlotBindings["tool:codex"] != second.ID {
 		t.Fatalf("slot tool:codex bound to %s, want the edited version %s", used.SlotBindings["tool:codex"], second.ID)
 	}
-	requested := strings.Join(used.RequestedArtifactIDs, ",")
-	if !strings.Contains(requested, second.ID) || !strings.Contains(requested, credential.ID) {
-		t.Fatalf("requested artifacts = %s", requested)
+	// The stack holds the edited version right under the credential.
+	stack := strings.Join(used.Layers, ",")
+	if !strings.Contains(stack, second.ID+","+credential.ID) {
+		t.Fatalf("stack = %s, want %s right under %s", stack, second.ID, credential.ID)
 	}
 	if len(used.Enabled) != 1 || used.Enabled[0].Command != "codex-acp" {
 		t.Fatalf("enabled after edit = %+v", used.Enabled)

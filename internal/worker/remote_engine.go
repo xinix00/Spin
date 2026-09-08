@@ -207,8 +207,14 @@ func (e *RemoteEngine) MaterializeWithGitAuthentication(ctx context.Context, com
 }
 
 func (e *RemoteEngine) materialize(ctx context.Context, composition domain.Composition, artifacts []domain.Artifact, authentication *capsule.GitAuthentication) (domain.CapsuleRuntime, error) {
+	// Only the base and the layers above it have to reach the runner; a
+	// layer under the base is inside its image.
+	needed := artifacts
+	if plan, err := capsule.PlanLayers(composition, artifacts); err == nil {
+		needed = plan.Needed()
+	}
 	target, err := e.broker.choosePreferring(ctx, "", func(clientID string) bool {
-		return snapshotsAvailableOn(artifacts, clientID)
+		return snapshotsAvailableOn(needed, clientID)
 	})
 	if err != nil {
 		return domain.CapsuleRuntime{}, err
@@ -216,6 +222,9 @@ func (e *RemoteEngine) materialize(ctx context.Context, composition domain.Compo
 	e.reportPlacement(composition.SessionID, target.id)
 	for index := range artifacts {
 		artifact := &artifacts[index]
+		if !slices.ContainsFunc(needed, func(candidate domain.Artifact) bool { return candidate.ID == artifact.ID }) {
+			continue
+		}
 		// A pruned snapshot belongs to a superseded version: its newer
 		// version is in the list and carries its content, so it is never
 		// applied on its own and does not have to reach the runner.

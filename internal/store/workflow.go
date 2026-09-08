@@ -529,42 +529,61 @@ func workflowPhase(template domain.WorkflowTemplate, phaseID string) (domain.Wor
 // asking to run without one: the Job's environment stays the entry, which
 // is where a person chooses the model, and the phase's layer comes along
 // as an extra WITH layer.
-// phaseEnvironmentLocked is the layers a phase runs on, in order: the
-// Job's own layers first, then what the phase adds. A phase naming an agent
-// layer runs that agent as the worker (the worker's credential layer on it,
-// or the layer itself) with the Job's layers underneath; a phase naming a
-// layer without an agent adds that layer and keeps the Job's agent.
+// phaseEnvironmentLocked is the stack a phase runs: the Job's layers, then
+// what the phase adds on top. A phase layer with an agent goes on as the
+// worker's credential layer for that agent (or the layer itself), so the
+// topmost agent is the phase's; a layer the stack already holds, as itself
+// or as another version, is not added twice. A layer without an agent is
+// an extra toolset and leaves the Job's agent on top.
 func (s *Store) phaseEnvironmentLocked(operator string, phase domain.WorkflowPhase, jobSelector string, jobWith []string) (string, []string) {
-	selector, with := workflowPhaseEnvironment(phase, jobSelector, jobWith)
-	if phase.EnvironmentSelector == "" || selector == jobSelector {
+	selector, with := workflowPhaseLayers(phase, jobSelector, jobWith)
+	if phase.EnvironmentSelector == "" || phase.EnvironmentSelector == jobSelector {
 		return selector, with
 	}
-	artifact, err := s.resolveArtifactSelectorLocked(selector, operator, "default")
+	artifact, err := s.resolveArtifactSelectorLocked(phase.EnvironmentSelector, operator, "default")
 	if err != nil {
-		return selector, with
+		return selector, uniqueStrings(append(with, phase.EnvironmentSelector))
 	}
-	if !s.artifactEnablesLocked(artifact.ID, "acp") {
-		return jobSelector, uniqueStrings(append(with, selector))
+	layer := phase.EnvironmentSelector
+	if s.artifactEnablesLocked(artifact.ID, "acp") {
+		artifact = s.identityLayerLocked(artifact, operator)
+		layer = string(artifact.Kind) + ":" + artifact.Name
 	}
-	identity := s.identityLayerLocked(artifact, operator)
-	agentSelector := string(identity.Kind) + ":" + identity.Name
-	if agentSelector == jobSelector {
-		return jobSelector, with
+	for _, present := range append([]string{jobSelector}, with...) {
+		held, err := s.resolveArtifactSelectorLocked(present, operator, "default")
+		if err != nil {
+			continue
+		}
+		if held.ID == artifact.ID || s.sameLineageLocked(held, artifact) || s.dependsOnLineageLocked(held.ID, artifact) {
+			return selector, with
+		}
 	}
-	if jobArtifact, err := s.resolveArtifactSelectorLocked(jobSelector, operator, "default"); err == nil && s.sameLineageLocked(jobArtifact, identity) {
-		return jobSelector, with
-	}
-	return agentSelector, uniqueStrings(append([]string{jobSelector}, with...))
+	return selector, uniqueStrings(append(with, layer))
 }
 
-func workflowPhaseEnvironment(phase domain.WorkflowPhase, fallbackSelector string, fallbackWith []string) (string, []string) {
-	selector := phase.EnvironmentSelector
-	if selector == "" {
-		selector = fallbackSelector
-	}
-	with := append([]string(nil), fallbackWith...)
+// workflowPhaseLayers is the phase's stack before agents are considered:
+// the Job's layer, the Job's further layers, then the phase's own.
+func workflowPhaseLayers(phase domain.WorkflowPhase, jobSelector string, jobWith []string) (string, []string) {
+	with := append([]string(nil), jobWith...)
 	with = append(with, phase.WithSelectors...)
-	return selector, uniqueStrings(with)
+	return jobSelector, uniqueStrings(with)
+}
+
+// stackAgentToolLocked names the agent of a stack: the tool under the
+// topmost layer that enables acp, or the bottom layer's tool.
+func (s *Store) stackAgentToolLocked(operator, selector string, with []string) string {
+	selectors := append([]string{selector}, with...)
+	for index := len(selectors) - 1; index >= 0; index-- {
+		artifact, err := s.resolveArtifactSelectorLocked(selectors[index], operator, "default")
+		if err != nil {
+			continue
+		}
+		if enabling, ok := s.enablingLayerLocked(artifact.ID, "acp"); ok {
+			return enabling.Name
+		}
+	}
+	_, tool, _ := parseArtifactSelector(selector)
+	return tool
 }
 
 // RequeueWorkflowPhase puts a running phase back in the queue when its agent
@@ -1616,7 +1635,7 @@ func (s *Store) newWorkflowSessionLocked(job *domain.Job, template domain.Workfl
 	// takes effect from the next phase, never in the middle of one.
 	worker := job.Worker()
 	environmentSelector, withSelectors := s.phaseEnvironmentLocked(worker, phase, job.EnvironmentSelector, job.WithSelectors)
-	_, tool, _ := parseArtifactSelector(environmentSelector)
+	tool := s.stackAgentToolLocked(worker, environmentSelector, withSelectors)
 	// A pull request is control-plane API work and needs no workspace; a
 	// merge runs git in a workspace of the Job's environment.
 	if phase.Executor == domain.WorkflowExecutorAction && (phase.Action == nil || phase.Action.Type != domain.WorkflowActionGitMerge) {

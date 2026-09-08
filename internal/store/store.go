@@ -855,9 +855,36 @@ func (s *Store) Use(req domain.UseRequest) (domain.Composition, error) {
 		}
 		withSelectors = append([]string{}, session.WithSelectors...)
 	}
-	entry, err := s.resolveArtifactSelectorLocked(selector, operator, normalizeName(req.Profile))
+	profile := normalizeName(req.Profile)
+	entry, err := s.resolveArtifactSelectorLocked(selector, operator, profile)
 	if err != nil {
 		return domain.Composition{}, err
+	}
+	// The selections, in order: the entry first, every further layer above
+	// it. The stack expands each to its parents and lifts every layer in it
+	// to its newest usable version.
+	selections := []domain.Artifact{entry}
+	reasons := map[string]string{entry.ID: "selected " + selector}
+	for _, withSelector := range withSelectors {
+		artifact, err := s.resolveArtifactSelectorLocked(withSelector, operator, profile)
+		if err != nil {
+			return domain.Composition{}, fmt.Errorf("layer %s: %w", withSelector, err)
+		}
+		selections = append(selections, artifact)
+		if _, known := reasons[artifact.ID]; !known {
+			reasons[artifact.ID] = "layer " + withSelector
+		}
+	}
+	stack := s.layerStackLocked(selections, operator)
+	requested := make([]string, 0, len(selections))
+	for _, selection := range selections {
+		if !slices.Contains(requested, selection.ID) {
+			requested = append(requested, selection.ID)
+		}
+	}
+	layers := make([]string, 0, len(stack))
+	for _, layer := range stack {
+		layers = append(layers, layer.ID)
 	}
 
 	composition := domain.Composition{
@@ -866,9 +893,10 @@ func (s *Store) Use(req domain.UseRequest) (domain.Composition, error) {
 		Selector:             requestedSelector,
 		EntryArtifactID:      entry.ID,
 		SessionID:            sessionID,
-		Profile:              normalizeName(req.Profile),
+		Profile:              profile,
 		WithSelectors:        append([]string{}, withSelectors...),
-		RequestedArtifactIDs: []string{entry.ID},
+		RequestedArtifactIDs: requested,
+		Layers:               layers,
 		ResolvedArtifacts:    []domain.ResolvedArtifact{},
 		SlotBindings:         map[string]string{},
 		Enabled:              []domain.Enablement{},
@@ -876,83 +904,24 @@ func (s *Store) Use(req domain.UseRequest) (domain.Composition, error) {
 		Warnings:             []string{},
 		CreatedAt:            time.Now().UTC(),
 	}
-	if err := s.addArtifactLocked(&composition, entry, "selected "+selector); err != nil {
-		return domain.Composition{}, err
+	for _, layer := range stack {
+		reason := reasons[layer.ID]
+		if reason == "" {
+			reason = "under " + layerReasonAbove(stack, layer, reasons)
+		}
+		if err := s.addLayerLocked(&composition, layer, reason); err != nil {
+			return domain.Composition{}, err
+		}
 	}
-	// The entry chooses the agent/worker identity. WITH layers may contain other
-	// build tools, but must not silently change worker routing.
-	for i := len(composition.ResolvedArtifacts) - 1; i >= 0; i-- {
-		if composition.ResolvedArtifacts[i].Kind == string(domain.ArtifactTool) {
-			composition.Tool = composition.ResolvedArtifacts[i].Name
+	// The agent is the topmost layer that enables acp; the entry names the
+	// tool when none does.
+	composition.Tool = entry.Name
+	for index := len(stack) - 1; index >= 0; index-- {
+		if enablementsContain(stack[index].Enables, "acp") {
+			composition.Tool = stack[index].Name
 			break
 		}
 	}
-	for _, withSelector := range withSelectors {
-		artifact, err := s.resolveArtifactSelectorLocked(withSelector, operator, normalizeName(req.Profile))
-		if err != nil {
-			return domain.Composition{}, fmt.Errorf("WITH %s: %w", withSelector, err)
-		}
-		if !slices.Contains(composition.RequestedArtifactIDs, artifact.ID) {
-			composition.RequestedArtifactIDs = append(composition.RequestedArtifactIDs, artifact.ID)
-		}
-		if err := s.addArtifactLocked(&composition, artifact, "WITH "+withSelector); err != nil {
-			return domain.Composition{}, err
-		}
-	}
-	// An EDIT replaced a layer somewhere in this closure: bind the newest
-	// version in its slot. The engine unions it over whatever was recorded from
-	// the old one, so an edit reaches every layer built on top of it.
-	for _, resolved := range append([]domain.ResolvedArtifact{}, composition.ResolvedArtifacts...) {
-		current, ok := s.state.Artifacts[resolved.ArtifactID]
-		if !ok || current.SupersededBy == "" {
-			continue
-		}
-		newest, replaced := s.newestVersionLocked(current, operator)
-		if !replaced {
-			continue
-		}
-		if !slices.Contains(composition.RequestedArtifactIDs, newest.ID) {
-			composition.RequestedArtifactIDs = append(composition.RequestedArtifactIDs, newest.ID)
-		}
-		if err := s.addArtifactLocked(&composition, newest, "replaces "+current.ID); err != nil {
-			return domain.Composition{}, err
-		}
-	}
-	// The entry decides the agent. Its own lineage (parents, and the newest
-	// versions of them) is applied last, so a lower layer of the Job with
-	// another agent in it never supplies the command.
-	entryLineage := map[string]bool{}
-	var walk func(id string)
-	walk = func(id string) {
-		if entryLineage[id] {
-			return
-		}
-		entryLineage[id] = true
-		artifact, ok := s.state.Artifacts[id]
-		if !ok {
-			return
-		}
-		for _, parentID := range artifact.ParentArtifactIDs {
-			walk(parentID)
-		}
-		if newest, replaced := s.newestVersionLocked(artifact, operator); replaced {
-			walk(newest.ID)
-		}
-	}
-	walk(entry.ID)
-	var others, own []domain.Enablement
-	for _, resolved := range composition.ResolvedArtifacts {
-		artifact, ok := s.state.Artifacts[resolved.ArtifactID]
-		if !ok {
-			continue
-		}
-		if entryLineage[artifact.ID] {
-			own = mergeEnablements(own, artifact.Enables)
-		} else {
-			others = mergeEnablements(others, artifact.Enables)
-		}
-	}
-	composition.Enabled = mergeEnablements(others, own)
 	if err := validateRequirements(composition, s.state.Artifacts); err != nil {
 		return domain.Composition{}, err
 	}
@@ -3378,19 +3347,72 @@ func (s *Store) newestVersionLocked(artifact domain.Artifact, operator string) (
 	return newest, replaced
 }
 
-func (s *Store) addArtifactLocked(composition *domain.Composition, artifact domain.Artifact, reason string) error {
+// layerStackLocked orders a composition's layers, bottom to top: each
+// selection after its parents, selections in the order given, and every
+// layer lifted to its newest usable version, placed right above the version
+// it replaces so an EDIT reaches every layer built on the old one.
+func (s *Store) layerStackLocked(selections []domain.Artifact, operator string) []domain.Artifact {
+	var stack []domain.Artifact
+	present := map[string]bool{}
+	var add func(artifact domain.Artifact, into *[]domain.Artifact)
+	add = func(artifact domain.Artifact, into *[]domain.Artifact) {
+		if present[artifact.ID] {
+			return
+		}
+		for _, parentID := range artifact.ParentArtifactIDs {
+			if parent, ok := s.state.Artifacts[parentID]; ok {
+				add(parent, into)
+			}
+		}
+		present[artifact.ID] = true
+		*into = append(*into, artifact)
+	}
+	for _, selection := range selections {
+		add(selection, &stack)
+	}
+	for pass := 0; pass < 16; pass++ {
+		lifted := false
+		for index := 0; index < len(stack); index++ {
+			current := stack[index]
+			if current.SupersededBy == "" || present[current.SupersededBy] {
+				continue
+			}
+			next, ok := s.state.Artifacts[current.SupersededBy]
+			if !ok || !canUseArtifact(operator, next) {
+				continue
+			}
+			var insert []domain.Artifact
+			add(next, &insert)
+			stack = slices.Insert(stack, index+1, insert...)
+			lifted = true
+		}
+		if !lifted {
+			break
+		}
+	}
+	return stack
+}
+
+// layerReasonAbove names the first layer above a parent that it belongs to.
+func layerReasonAbove(stack []domain.Artifact, layer domain.Artifact, reasons map[string]string) string {
+	for _, candidate := range stack {
+		if slices.Contains(candidate.ParentArtifactIDs, layer.ID) {
+			if reason, ok := reasons[candidate.ID]; ok {
+				return strings.TrimPrefix(strings.TrimPrefix(reason, "selected "), "layer ")
+			}
+			return string(candidate.Kind) + ":" + candidate.Name
+		}
+	}
+	return "the stack"
+}
+
+// addLayerLocked puts one layer of an ordered stack on a composition: its
+// slot, its place in the resolved list, and its enablements over those of
+// the layers under it.
+func (s *Store) addLayerLocked(composition *domain.Composition, artifact domain.Artifact, reason string) error {
 	for _, existing := range composition.ResolvedArtifacts {
 		if existing.ArtifactID == artifact.ID {
 			return nil
-		}
-	}
-	for _, parentID := range artifact.ParentArtifactIDs {
-		parent, ok := s.state.Artifacts[parentID]
-		if !ok {
-			return fmt.Errorf("artifact %s parent %s: %w", artifact.ID, parentID, ErrNotFound)
-		}
-		if err := s.addArtifactLocked(composition, parent, "dependency of "+artifact.ID); err != nil {
-			return err
 		}
 	}
 	if current, exists := composition.SlotBindings[artifact.Slot]; artifact.Slot != "" && exists && current != artifact.ID {
@@ -3399,8 +3421,8 @@ func (s *Store) addArtifactLocked(composition *domain.Composition, artifact doma
 		}
 	}
 	if artifact.Slot != "" {
-		// A descendant with the same logical selector is a new immutable version
-		// of that layer. Replace its ancestor binding while preserving the graph.
+		// A higher layer with the same logical selector is a newer version
+		// of that layer: it takes the slot.
 		composition.SlotBindings[artifact.Slot] = artifact.ID
 	}
 	composition.ResolvedArtifacts = append(composition.ResolvedArtifacts, domain.ResolvedArtifact{
@@ -3424,6 +3446,10 @@ func (s *Store) addArtifactLocked(composition *domain.Composition, artifact doma
 func (s *Store) EnablingLayer(artifactID, capability string) (domain.Artifact, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.enablingLayerLocked(artifactID, capability)
+}
+
+func (s *Store) enablingLayerLocked(artifactID, capability string) (domain.Artifact, bool) {
 	visited := map[string]bool{}
 	var find func(string) (domain.Artifact, bool)
 	find = func(id string) (domain.Artifact, bool) {
