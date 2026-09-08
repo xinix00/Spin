@@ -1940,7 +1940,7 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 			if phase.Executor == domain.WorkflowExecutorAction {
 				continue
 			}
-			phaseSelector, phaseWith := workflowPhaseEnvironment(phase, selector, withSelectors)
+			phaseSelector, phaseWith := s.phaseEnvironmentLocked(operator, phase, selector, withSelectors)
 			if err := s.validateSessionEnvironmentLocked(operator, phaseSelector, phaseWith, "default"); err != nil {
 				return domain.CreateJobResponse{}, fmt.Errorf("phase %s environment: %w", phase.Name, err)
 			}

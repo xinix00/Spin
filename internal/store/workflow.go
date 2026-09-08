@@ -524,6 +524,23 @@ func workflowPhase(template domain.WorkflowTemplate, phaseID string) (domain.Wor
 	return domain.WorkflowPhase{}, false
 }
 
+// phaseEnvironmentLocked resolves a phase's environment against the Job's.
+// A phase that names a layer without an agent (a Git or tool layer) is not
+// asking to run without one: the Job's environment stays the entry, which
+// is where a person chooses the model, and the phase's layer comes along
+// as an extra WITH layer.
+func (s *Store) phaseEnvironmentLocked(operator string, phase domain.WorkflowPhase, jobSelector string, jobWith []string) (string, []string) {
+	selector, with := workflowPhaseEnvironment(phase, jobSelector, jobWith)
+	if phase.EnvironmentSelector == "" || selector == jobSelector {
+		return selector, with
+	}
+	artifact, err := s.resolveArtifactSelectorLocked(selector, operator, "default")
+	if err != nil || s.artifactEnablesLocked(artifact.ID, "acp") {
+		return selector, with
+	}
+	return jobSelector, uniqueStrings(append(with, selector))
+}
+
 func workflowPhaseEnvironment(phase domain.WorkflowPhase, fallbackSelector string, fallbackWith []string) (string, []string) {
 	selector := phase.EnvironmentSelector
 	if selector == "" {
@@ -1579,7 +1596,7 @@ func (s *Store) newWorkflowSessionLocked(job *domain.Job, template domain.Workfl
 			attempt = existing.Attempt + 1
 		}
 	}
-	environmentSelector, withSelectors := workflowPhaseEnvironment(phase, job.EnvironmentSelector, job.WithSelectors)
+	environmentSelector, withSelectors := s.phaseEnvironmentLocked(job.Owner, phase, job.EnvironmentSelector, job.WithSelectors)
 	_, tool, _ := parseArtifactSelector(environmentSelector)
 	// A pull request is control-plane API work and needs no workspace; a
 	// merge runs git in a workspace of the Job's environment.

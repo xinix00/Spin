@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -299,5 +300,38 @@ func TestJobReferenceNamespacesBranchAndCarriesToForks(t *testing.T) {
 	fork, err := st.CreateJob(domain.CreateJobRequest{Title: "Vervolg", Objective: "y", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID, ForkedFromJobID: created.Job.ID})
 	if err != nil || fork.Job.Reference != "#1234" || !strings.HasPrefix(fork.Job.Branch, "jobs/#1234/vervolg-") || !strings.HasSuffix(fork.Job.Branch, "/main") {
 		t.Fatalf("fork = %+v, error = %v", fork.Job, err)
+	}
+}
+
+// A Template step that names a Git or tool layer as its environment does
+// not lose the agent: the Job's environment (where the model is chosen)
+// stays the entry and the step's layer rides along as a WITH layer.
+func TestPhaseEnvironmentWithoutAgentKeepsTheJobsAgent(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "codex", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "codex-acp"}}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "claude", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "claude-agent-acp"}}})
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "env", RemoteURL: "https://example.com/env.git", DefaultRef: "develop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Ontwikkeling", Phases: []domain.WorkflowPhase{{
+		ID: "develop", Name: "Ontwikkeling", Instructions: "Bouw", AllowChanges: true, EnvironmentSelector: "tool:git",
+		Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range []string{"tool:codex", "tool:claude"} {
+		created, err := st.CreateJob(domain.CreateJobRequest{Title: "Job op " + agent, Objective: "x", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: agent, TemplateID: template.ID})
+		if err != nil {
+			t.Fatalf("job with %s: %v", agent, err)
+		}
+		if created.Session.EnvironmentSelector != agent || !slices.Contains(created.Session.WithSelectors, "tool:git") {
+			t.Fatalf("session environment for %s = %q with %v", agent, created.Session.EnvironmentSelector, created.Session.WithSelectors)
+		}
 	}
 }
