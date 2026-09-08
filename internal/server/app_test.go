@@ -295,3 +295,50 @@ func TestWorkspaceSyncPushesWorkInProgressAfterATurn(t *testing.T) {
 		}
 	}
 }
+
+// A Job handed to a colleague: the assignee can open its Session (the chat,
+// the changes), anyone else cannot.
+func TestAssigneeMayOpenAJobsSession(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &appTestEngine{}
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "assign", RemoteURL: "https://example.com/assign.git", DefaultRef: "develop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Kort", Phases: []domain.WorkflowPhase{{ID: "build", Name: "Bouw", Instructions: "Bouw", AllowChanges: true, Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: "SELF"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Assign", Objective: "x", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.launchQueuedWorkflowPhases("test")
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		if _, composition, err := srv.sessionComposition(created.Session.ID, "derek"); err == nil && composition.Runtime != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, _, err := srv.sessionComposition(created.Session.ID, "john"); err == nil || !strings.Contains(err.Error(), "belongs to derek") {
+		t.Fatalf("a stranger opened the session: %v", err)
+	}
+	admin, err := st.CreateInitialUser(domain.User{Username: "derek", PasswordHash: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateUser(admin.ID, domain.User{Username: "john", PasswordHash: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AssignJob(created.Job.ID, "derek", "john"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := srv.sessionComposition(created.Session.ID, "john"); err != nil {
+		t.Fatalf("the assignee could not open the session: %v", err)
+	}
+}

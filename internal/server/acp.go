@@ -1014,18 +1014,32 @@ func (s *Server) sessionComposition(sessionID, operator string) (domain.Session,
 	if session.ID == "" {
 		return domain.Session{}, domain.Composition{}, store.ErrNotFound
 	}
-	if normalizeOperator(session.Operator) != operator {
-		return domain.Session{}, domain.Composition{}, store.ErrConflict
+	// A Session belongs to whoever runs it, but a Job handed to a colleague
+	// is theirs to look at and talk to as well: the Job's assignee may open
+	// its Sessions.
+	if normalizeOperator(session.Operator) != operator && !jobAllowsOperator(snapshot, session.JobID, operator) {
+		return domain.Session{}, domain.Composition{}, fmt.Errorf("session belongs to %s; only its owner or the Job's assignee can open it: %w", session.Operator, store.ErrConflict)
 	}
 	for _, composition := range snapshot.Compositions {
 		if composition.ID == session.PreparedCompositionID {
-			if normalizeOperator(composition.Operator) != operator {
-				return domain.Session{}, domain.Composition{}, store.ErrConflict
+			if normalizeOperator(composition.Operator) != normalizeOperator(session.Operator) {
+				return domain.Session{}, domain.Composition{}, fmt.Errorf("session workspace belongs to %s: %w", composition.Operator, store.ErrConflict)
 			}
 			return session, composition, nil
 		}
 	}
 	return domain.Session{}, domain.Composition{}, fmt.Errorf("session has no prepared composition: %w", store.ErrConflict)
+}
+
+// jobAllowsOperator reports whether a Job is the operator's to work in: as
+// its owner or as the person it was assigned to.
+func jobAllowsOperator(snapshot domain.Snapshot, jobID, operator string) bool {
+	for _, job := range snapshot.Jobs {
+		if job.ID == jobID {
+			return normalizeOperator(job.Owner) == operator || normalizeOperator(job.Assignee) == operator
+		}
+	}
+	return false
 }
 
 func acpEnablement(composition domain.Composition) (domain.Enablement, error) {
