@@ -433,31 +433,49 @@ function closeDiff(){chatState.selectedDiffPath='';const drawer=document.getElem
 // The code browser: a Job's files straight from Git, folders as a tree,
 // one file at a time. Nothing is stored; it reads the latest running
 // workspace of the Job.
-const codeState={jobID:'',ref:'workspace',entries:[],path:''};
+// One browser, two sources: a Job's running workspace (the Code dialog) or
+// a repository through a runner's clone (Explore). A view names the DOM.
+const codeViews={
+  job:{tree:'code-tree',file:'code-file',name:'code-file-name',meta:'code-file-meta',ref:'code-ref',context:'code-context'},
+  repo:{tree:'explore-tree',file:'explore-file',name:'explore-file-name',meta:'explore-file-meta',ref:'explore-ref',context:''},
+};
+const codeState={source:null,ref:'',refs:[],entries:[],path:''};
+function codeURL(mode,params={}){const query=new URLSearchParams(params).toString();return codeState.source.type==='job'?`/api/jobs/${encodeURIComponent(codeState.source.id)}/code/${mode}?${query}`:`/api/git-repositories/${encodeURIComponent(codeState.source.id)}/code/${mode}?${query}`;}
+function codeView(){return codeViews[codeState.source?.type||'job'];}
+function codeEl(key){const id=codeView()[key];return id?document.getElementById(id):null;}
 async function openCode(jobID){
-  const job=byID(snapshot.jobs,jobID);if(!job)return;codeState.jobID=jobID;codeState.path='';
-  document.getElementById('code-title').textContent=job.title;document.getElementById('code-context').textContent='Bestanden laden…';document.getElementById('code-tree').innerHTML='<div class="empty">Bestanden laden…</div>';document.getElementById('code-file').innerHTML='<div class="diff-empty">Kies links een bestand.</div>';document.getElementById('code-file-name').textContent='Selecteer een bestand';
+  const job=byID(snapshot.jobs,jobID);if(!job)return;codeState.source={type:'job',id:jobID};codeState.ref='workspace';codeState.path='';
+  document.getElementById('code-title').textContent=job.title;codeEl('context').textContent='Bestanden laden…';codeEl('tree').innerHTML='<div class="empty">Bestanden laden…</div>';codeEl('file').innerHTML='<div class="diff-empty">Kies links een bestand.</div>';codeEl('name').textContent='Selecteer een bestand';
   openDialog('code-dialog');await loadCodeTree();
 }
+async function exploreRepository(repositoryID){
+  const repository=byID(snapshot.git_repositories,repositoryID);if(!repository)return;codeState.source={type:'repo',id:repositoryID};codeState.path='';codeState.ref=repository.default_ref||'';
+  codeEl('tree').innerHTML='<div class="empty">Branches ophalen…</div>';codeEl('file').innerHTML='<div class="diff-empty">Kies links een bestand.</div>';codeEl('name').textContent='Selecteer een bestand';codeEl('meta').textContent='Gelezen uit Git.';
+  try{const refs=await api(codeURL('refs'));codeState.refs=refs.refs||[];if(!codeState.refs.includes(codeState.ref))codeState.ref=refs.default_ref||codeState.refs[0]||'';}
+  catch(error){codeEl('tree').innerHTML=`<div class="empty">${esc(error.message||error)}</div>`;return;}
+  renderCodeRefs();await loadCodeTree();
+}
+function renderCodeRefs(){const select=codeEl('ref');if(!select)return;const refs=codeState.source.type==='job'?codeState.refs:codeState.refs;select.innerHTML=refs.map(ref=>`<option value="${esc(ref)}">${esc(ref==='workspace'?'workspace · werkbestanden':ref)}</option>`).join('');select.value=codeState.ref;select.onchange=()=>{codeState.ref=select.value;codeState.path='';loadCodeTree();};}
 async function loadCodeTree(){
-  try{const tree=await api(`/api/jobs/${encodeURIComponent(codeState.jobID)}/code/tree?ref=${encodeURIComponent(codeState.ref)}`);codeState.ref=tree.ref;codeState.entries=tree.entries||[];
-    const select=document.getElementById('code-ref');select.innerHTML=(tree.refs||[]).map(ref=>`<option value="${esc(ref)}">${esc(ref==='workspace'?'workspace · werkbestanden':ref)}</option>`).join('');select.value=tree.ref;select.onchange=()=>{codeState.ref=select.value;codeState.path='';loadCodeTree();};
-    document.getElementById('code-context').textContent=`${codeState.entries.length} bestanden · ${tree.ref}`;renderCodeTree();
-  }catch(error){document.getElementById('code-context').textContent=error.message||'Bestanden niet beschikbaar';document.getElementById('code-tree').innerHTML=`<div class="empty">${esc(error.message||error)}</div>`;}
+  codeEl('tree').innerHTML='<div class="empty">Bestanden laden…</div>';
+  try{const tree=await api(codeURL('tree',{ref:codeState.ref}));codeState.ref=tree.ref;codeState.entries=tree.entries||[];if(tree.refs){codeState.refs=tree.refs;renderCodeRefs();}
+    const context=codeEl('context');if(context)context.textContent=`${codeState.entries.length} bestanden · ${tree.ref}`;renderCodeTree();
+  }catch(error){const context=codeEl('context');if(context)context.textContent=error.message||'Bestanden niet beschikbaar';codeEl('tree').innerHTML=`<div class="empty">${esc(error.message||error)}</div>`;}
 }
 function codeTreeModel(entries){const root={dirs:new Map(),files:[]};entries.forEach(entry=>{const parts=entry.path.split('/');let node=root;parts.slice(0,-1).forEach(part=>{if(!node.dirs.has(part))node.dirs.set(part,{dirs:new Map(),files:[]});node=node.dirs.get(part);});node.files.push({name:parts.at(-1),path:entry.path,size:entry.size});});return root;}
 function renderCodeNode(node,depth){const dirs=[...node.dirs.entries()].sort((a,b)=>a[0].localeCompare(b[0])),files=node.files.sort((a,b)=>a.name.localeCompare(b.name));
   return dirs.map(([name,child])=>`<details ${depth<1?'open':''}><summary>${icon('folder')}${esc(name)}</summary><div class="tree-children">${renderCodeNode(child,depth+1)}</div></details>`).join('')+files.map(file=>`<button type="button" class="tree-file${codeState.path===file.path?' active':''}" data-code-path="${esc(file.path)}" title="${esc(file.path)}">${icon('description')}${esc(file.name)}${file.size?`<span class="tree-size">${esc(formatBytes(file.size))}</span>`:''}</button>`).join('');}
-function renderCodeTree(){const root=document.getElementById('code-tree');root.innerHTML=codeState.entries.length?renderCodeNode(codeTreeModel(codeState.entries),0):'<div class="empty">Geen bestanden in deze versie.</div>';root.querySelectorAll('[data-code-path]').forEach(button=>button.onclick=()=>openCodeFile(button.dataset.codePath));}
+function renderCodeTree(){const root=codeEl('tree');root.innerHTML=codeState.entries.length?renderCodeNode(codeTreeModel(codeState.entries),0):'<div class="empty">Geen bestanden in deze versie.</div>';root.querySelectorAll('[data-code-path]').forEach(button=>button.onclick=()=>openCodeFile(button.dataset.codePath));}
 async function openCodeFile(path){
-  codeState.path=path;document.querySelectorAll('[data-code-path]').forEach(button=>button.classList.toggle('active',button.dataset.codePath===path));
-  const name=document.getElementById('code-file-name'),meta=document.getElementById('code-file-meta'),view=document.getElementById('code-file');name.textContent=shortPath(path,72);name.title=path;meta.textContent='Laden…';
-  try{const file=await api(`/api/jobs/${encodeURIComponent(codeState.jobID)}/code/file?ref=${encodeURIComponent(codeState.ref)}&path=${encodeURIComponent(path)}`);
+  codeState.path=path;codeEl('tree').querySelectorAll('[data-code-path]').forEach(button=>button.classList.toggle('active',button.dataset.codePath===path));
+  const name=codeEl('name'),meta=codeEl('meta'),view=codeEl('file');name.textContent=shortPath(path,72);name.title=path;meta.textContent='Laden…';
+  try{const file=await api(codeURL('file',{ref:codeState.ref,path}));
     meta.textContent=`${formatBytes(file.size||0)} · ${file.ref}${file.truncated?' · afgekapt op 512 KiB':''}`;
     if(file.binary){view.innerHTML='<div class="diff-empty">Binair bestand.</div>';return;}
     view.innerHTML=`<pre class="code-listing">${String(file.content||'').split('\n').map(line=>`<span class="code-line">${highlightCode(line,path)||' '}</span>`).join('')}</pre>`;
   }catch(error){meta.textContent=error.message||'Niet beschikbaar';view.innerHTML=`<div class="diff-empty">${esc(error.message||error)}</div>`;}
 }
+function renderExploreOptions(){const select=document.getElementById('explore-repository'),current=select.value;select.innerHTML='<option value="">kies een repository</option>'+snapshot.git_repositories.map(repository=>`<option value="${esc(repository.id)}">${esc(repository.name)}</option>`).join('');if(snapshot.git_repositories.some(repository=>repository.id===current))select.value=current;}
 function bindCodeButtons(root=document){root.querySelectorAll('[data-open-code]').forEach(button=>button.onclick=()=>openCode(button.dataset.openCode));}
 async function openJobChanges(button){
   const job=byID(snapshot.jobs,button.dataset.jobChanges),sessionID=button.dataset.changeSession||'',live=button.dataset.changeLive==='true',run=sessionID?snapshot.phase_runs.find(item=>item.session_id===sessionID):null;
@@ -754,7 +772,7 @@ function render(){
   document.getElementById('runner-segment-count').textContent=`${onlineClients}/${snapshot.clients.length}`;
   const descriptions={jobs:`${snapshot.jobs.length} Jobs, ${snapshot.sessions.length} Sessions`,environments:`${snapshot.artifacts.length} lagen`,connections:`${snapshot.git_repositories.length} repositories, ${snapshot.git_accounts.length} Git-identities, ${myMCP().length} MCP-configuraties, ${onlineClients} runners online`,access:`${snapshot.users.length} gebruikers`};
   Object.entries(descriptions).forEach(([name,value])=>{const button=document.querySelector(`[data-tab="${name}"]`);button.title=value;button.setAttribute('aria-label',value);});
-  renderRecording(); renderComposition(); renderArtifacts(); renderGitOptions(); renderTemplateOptions(); renderEnvironmentOptions(); renderMCPOptions(); renderJobs(); renderTemplates(); renderGitAccounts(); renderGit(); renderMCP(); renderRunners(); renderAccess();
+  renderRecording(); renderComposition(); renderArtifacts(); renderGitOptions(); renderExploreOptions(); renderTemplateOptions(); renderEnvironmentOptions(); renderMCPOptions(); renderJobs(); renderTemplates(); renderGitAccounts(); renderGit(); renderMCP(); renderRunners(); renderAccess();
 }
 
 function renderRecording(){
@@ -1294,6 +1312,7 @@ document.getElementById('open-user-dialog').onclick=()=>openDialog('user-dialog'
 document.getElementById('download-backup').onclick=downloadPortableBackup;
 document.getElementById('choose-restore').onclick=()=>document.getElementById('restore-backup-input').click();
 document.getElementById('restore-backup-input').onchange=event=>restorePortableBackup(event.target.files[0]);
+document.getElementById('explore-repository').onchange=event=>{if(event.target.value)exploreRepository(event.target.value);};
 document.getElementById('add-snapshot').onclick=()=>openLayerDialog({scope:'user'});
 document.getElementById('record-git-tool').onclick=()=>openLayerDialog(recordPresets[0]);
 document.getElementById('list-snapshots').onclick=()=>refresh(true);

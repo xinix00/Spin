@@ -27,6 +27,7 @@ type appTestEngine struct {
 	sessions map[string]bool
 	merged   []capsule.WorkspaceMerge
 	synced   []capsule.WorkspaceSync
+	browsed  []capsule.RepositoryBrowse
 }
 
 func (e *appTestEngine) ListWorkspace(_ context.Context, _ domain.CapsuleRuntime, ref string) (capsule.WorkspaceTree, error) {
@@ -35,6 +36,19 @@ func (e *appTestEngine) ListWorkspace(_ context.Context, _ domain.CapsuleRuntime
 
 func (e *appTestEngine) ReadWorkspaceFile(_ context.Context, _ domain.CapsuleRuntime, ref, path string) (capsule.WorkspaceFile, error) {
 	return capsule.WorkspaceFile{Ref: ref, Path: path, Size: 13, Content: "package main\n"}, nil
+}
+
+func (e *appTestEngine) BrowseRepository(_ context.Context, browse capsule.RepositoryBrowse) (capsule.RepositoryBrowseResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.browsed = append(e.browsed, browse)
+	switch browse.Mode {
+	case "refs":
+		return capsule.RepositoryBrowseResult{Refs: []string{"develop", "feature"}}, nil
+	case "tree":
+		return capsule.RepositoryBrowseResult{Tree: &capsule.WorkspaceTree{Ref: browse.Ref, Entries: []capsule.WorkspaceEntry{{Path: "hello.txt", Size: 6}}}}, nil
+	}
+	return capsule.RepositoryBrowseResult{File: &capsule.WorkspaceFile{Ref: browse.Ref, Path: browse.Path, Size: 6, Content: "hello\n"}}, nil
 }
 
 func (e *appTestEngine) SyncWorkspace(_ context.Context, _ domain.CapsuleRuntime, sync capsule.WorkspaceSync) (capsule.WorkspaceSyncResult, error) {
@@ -402,5 +416,39 @@ func TestCodeBrowserReadsTheJobsRunningWorkspace(t *testing.T) {
 	code, body = get("/api/jobs/" + created.Job.ID + "/code/file?ref=HEAD&path=src/main.go")
 	if code != http.StatusOK || !strings.Contains(body, `"content":"package main\n"`) {
 		t.Fatalf("file: %d %s", code, body)
+	}
+}
+
+// Explore browses a repository without a Job: branches, a tree on the
+// default branch, and a file on a chosen branch, through the runner.
+func TestExploreBrowsesARepositoryThroughTheRunner(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &appTestEngine{}
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "explore", RemoteURL: "https://example.com/explore.git", DefaultRef: "develop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func(path string) (int, string) {
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		return recorder.Code, recorder.Body.String()
+	}
+	base := "/api/git-repositories/" + repository.Repository.ID + "/code/"
+	if code, body := get(base + "refs"); code != http.StatusOK || !strings.Contains(body, `"feature"`) || !strings.Contains(body, `"default_ref":"develop"`) {
+		t.Fatalf("refs: %d %s", code, body)
+	}
+	if code, body := get(base + "tree"); code != http.StatusOK || !strings.Contains(body, `"ref":"develop"`) || !strings.Contains(body, `"hello.txt"`) {
+		t.Fatalf("tree: %d %s", code, body)
+	}
+	if code, body := get(base + "file?ref=feature&path=hello.txt"); code != http.StatusOK || !strings.Contains(body, `"content":"hello\n"`) {
+		t.Fatalf("file: %d %s", code, body)
+	}
+	last := engine.browsed[len(engine.browsed)-1]
+	if last.RemoteURL != "https://example.com/explore.git" || last.CacheKey != repository.Repository.ID || last.Ref != "feature" {
+		t.Fatalf("browse request = %+v", last)
 	}
 }

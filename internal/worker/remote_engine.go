@@ -155,6 +155,17 @@ func (e *RemoteEngine) ReadWorkspaceFile(ctx context.Context, runtime domain.Cap
 	return result, err
 }
 
+// BrowseRepository runs on any connected runner; each keeps its own clone.
+func (e *RemoteEngine) BrowseRepository(ctx context.Context, browse capsule.RepositoryBrowse) (capsule.RepositoryBrowseResult, error) {
+	var result capsule.RepositoryBrowseResult
+	target, err := e.broker.choose(ctx, "")
+	if err != nil {
+		return result, err
+	}
+	_, err = e.broker.call(ctx, target.id, methodBrowseRepository, repositoryBrowsePayload{Browse: browse}, &result)
+	return result, err
+}
+
 // App services live on the runner that holds the Session's capsule; the
 // runtime's ClientID is the affinity for all four calls.
 func (e *RemoteEngine) StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService, hosts []string) ([]domain.AppServiceRuntime, error) {
@@ -669,6 +680,7 @@ var (
 	_ capsule.InteractiveEngine           = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceSyncer             = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceBrowser            = (*RemoteEngine)(nil)
+	_ capsule.RepositoryBrowser           = (*RemoteEngine)(nil)
 	_ capsule.EnabledEngine               = (*RemoteEngine)(nil)
 	_ capsule.EnabledProber               = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceInspector          = (*RemoteEngine)(nil)

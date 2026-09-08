@@ -40,6 +40,7 @@ const (
 	methodMergeWorkspace    = "workspace.merge"
 	methodSyncWorkspace     = "workspace.sync"
 	methodBrowseWorkspace   = "workspace.browse"
+	methodBrowseRepository  = "repository.browse"
 	methodRemoveSnapshot    = "snapshot.remove"
 	methodExportSnapshot    = "snapshot.export"
 	methodImportSnapshot    = "snapshot.import"
@@ -110,6 +111,10 @@ type browsePayload struct {
 	Runtime domain.CapsuleRuntime `json:"runtime"`
 	Ref     string                `json:"ref"`
 	Path    string                `json:"path,omitempty"` // empty lists the tree
+}
+
+type repositoryBrowsePayload struct {
+	Browse capsule.RepositoryBrowse `json:"browse"`
 }
 
 type appPayload struct {

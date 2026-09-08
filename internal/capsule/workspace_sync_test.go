@@ -153,3 +153,65 @@ func TestWorkspaceBrowseScriptsListAndReadFiles(t *testing.T) {
 		}
 	}
 }
+
+// The repository browse script keeps a shallow clone and lists branches, a
+// tree and a file from the remote.
+func TestRepositoryBrowseScriptReadsARemote(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	run(t, root, "git", "init", "-q", "--bare", remote)
+	seed := filepath.Join(root, "seed")
+	run(t, root, "git", "init", "-q", seed)
+	if err := os.WriteFile(filepath.Join(seed, "hello.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, seed, "git", "add", "-A")
+	run(t, seed, "git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one")
+	run(t, seed, "git", "branch", "-M", "develop")
+	run(t, seed, "git", "branch", "feature")
+	run(t, seed, "git", "remote", "add", "origin", remote)
+	run(t, seed, "git", "push", "-q", "origin", "develop", "feature")
+
+	clone := filepath.Join(root, "clone")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"SPIN_GIT_REMOTE=" + remote, "SPIN_LIMIT=1024"}
+	refs := browse(t, clone, append(env, "SPIN_MODE=refs", "SPIN_REF=", "SPIN_PATH="))
+	if !strings.Contains(refs, "develop\n") || !strings.Contains(refs, "feature\n") {
+		t.Fatalf("refs = %q", refs)
+	}
+	tree := browse(t, clone, append(env, "SPIN_MODE=tree", "SPIN_REF=develop", "SPIN_PATH="))
+	if !strings.Contains(tree, "6\thello.txt") {
+		t.Fatalf("tree = %q", tree)
+	}
+	file := browse(t, clone, append(env, "SPIN_MODE=file", "SPIN_REF=feature", "SPIN_PATH=hello.txt"))
+	if file != "SPIN_SIZE 6\nhello\n" {
+		t.Fatalf("file = %q", file)
+	}
+	// The clone is reused: a second tree read needs no fresh init.
+	if _, err := os.Stat(filepath.Join(clone, ".git")); err != nil {
+		t.Fatal("no clone was kept")
+	}
+	tree = browse(t, clone, append(env, "SPIN_MODE=tree", "SPIN_REF=feature", "SPIN_PATH="))
+	if !strings.Contains(tree, "hello.txt") {
+		t.Fatalf("second tree = %q", tree)
+	}
+}
+
+// browse runs the repository browse script with empty credentials.
+func browse(t *testing.T, dir string, env []string) string {
+	t.Helper()
+	command := exec.Command("sh", "-c", browseRepositoryScript)
+	command.Dir = dir
+	command.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)
+	command.Stdin = strings.NewReader("\n\n")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("browse script: %v\n%s", err, output)
+	}
+	return string(output)
+}

@@ -23,7 +23,7 @@
     "SPIN_WORKER_TOKEN": "REPLACE_WITH_WORKER_TOKEN",
     "SPIN_CLIENT_ID_FILE": "./var/spin-client.id",
     "SPIN_ENV_DIR": "./var/env",
-    "SPIN_MAX_WORKLOADS": "4"
+    "SPIN_MAX_WORKLOADS": "6"
   },
   "command": "set -e\nxattr -dr com.apple.quarantine . 2>/dev/null || true\nchmod +x ./spin-client\nmkdir -p var/env\nexec ./spin-client",
   "count": 1,

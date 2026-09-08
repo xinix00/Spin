@@ -201,6 +201,28 @@ type WorkspaceBrowser interface {
 	ReadWorkspaceFile(ctx context.Context, runtime domain.CapsuleRuntime, ref, path string) (WorkspaceFile, error)
 }
 
+// A repository can be explored without any Job: the runner keeps a shallow
+// clone per remote in a volume of its own and reads refs, trees and files
+// from it on demand, fetching the asked ref first.
+type RepositoryBrowse struct {
+	RemoteURL      string
+	CacheKey       string // names the runner's clone volume; stable per repository
+	Mode           string // refs, tree or file
+	Ref            string
+	Path           string
+	Authentication *GitAuthentication
+}
+
+type RepositoryBrowseResult struct {
+	Refs []string       `json:"refs,omitempty"`
+	Tree *WorkspaceTree `json:"tree,omitempty"`
+	File *WorkspaceFile `json:"file,omitempty"`
+}
+
+type RepositoryBrowser interface {
+	BrowseRepository(ctx context.Context, browse RepositoryBrowse) (RepositoryBrowseResult, error)
+}
+
 // WorkspaceMerger merges a Job branch into its base branch on the remote.
 type WorkspaceMerger interface {
 	MergeWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, merge WorkspaceMerge) (WorkspaceMergeResult, error)

@@ -556,6 +556,17 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		}
 		result, err := browser.ReadWorkspaceFile(ctx, payload.Runtime, payload.Ref, payload.Path)
 		return result, false, err
+	case methodBrowseRepository:
+		var payload repositoryBrowsePayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		browser, ok := w.engine.(capsule.RepositoryBrowser)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot browse repositories")
+		}
+		result, err := browser.BrowseRepository(ctx, payload.Browse)
+		return result, false, err
 	case methodStartApp, methodStopApp, methodAppStatus, methodAppLogs:
 		var payload appPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {

@@ -30,6 +30,7 @@
       <div class="brand-mark"><div class="eyebrow">EasyACP</div><div class="brand-name">Spin <span class="brand-version"></span></div></div>
       <nav class="tabs" aria-label="Hoofdnavigatie">
         <button class="tab-button active" data-tab="jobs"><span class="material-symbols-outlined nav-icon" aria-hidden="true">work</span><span class="nav-label">Jobs</span><span class="nav-count" id="nav-count-jobs">(0/0)</span></button>
+        <button class="tab-button" data-tab="explore"><span class="material-symbols-outlined nav-icon" aria-hidden="true">folder_open</span><span class="nav-label">Explore</span><span class="nav-count" id="nav-count-explore"></span></button>
         <button class="tab-button" data-tab="environments"><span class="material-symbols-outlined nav-icon" aria-hidden="true">layers</span><span class="nav-label">Environments</span><span class="nav-count" id="nav-count-environments">(0)</span></button>
         <button class="tab-button" data-tab="connections"><span class="material-symbols-outlined nav-icon" aria-hidden="true">link</span><span class="nav-label">Connections</span><span class="nav-count" id="nav-count-connections">(0)</span></button>
         <button class="tab-button" data-tab="access"><span class="material-symbols-outlined nav-icon" aria-hidden="true">admin_panel_settings</span><span class="nav-label">Access</span><span class="nav-count" id="nav-count-access">(0)</span></button>
@@ -52,6 +53,16 @@
         <section class="panel work-page" id="work-templates">
           <div class="panel-head"><div><h2>Workflow Templates</h2><small>Iedere flow is alleen een tabel van stappen, outputs en accept/reject-overgangen.</small></div><button class="primary" data-open-template><span class="material-symbols-outlined" aria-hidden="true">add</span>Template maken</button></div>
           <div class="templates" id="templates"></div>
+        </section>
+      </section>
+
+      <section class="tab-page" id="tab-explore">
+        <div class="page-header"><div><div class="eyebrow">Code</div><h1>Explore</h1><p class="subtitle">Blader door een repository zoals Git hem kent. Niets wordt opgeslagen; een runner leest het op het moment zelf.</p></div><div class="page-actions"><select id="explore-repository" title="Repository"></select><select id="explore-ref" title="Branch"></select></div></div>
+        <section class="panel explore-panel">
+          <div class="code-body">
+            <aside class="code-tree" id="explore-tree"><div class="empty">Kies een repository.</div></aside>
+            <section class="job-changes-view"><div class="diff-drawer-head"><div class="diff-file-copy"><strong id="explore-file-name">Selecteer een bestand</strong><small id="explore-file-meta">Gelezen uit Git.</small></div></div><div class="diff-scroll" id="explore-file"><div class="diff-empty">Kies links een bestand.</div></div></section>
+          </div>
         </section>
       </section>
 

@@ -1276,6 +1276,120 @@ else
   git show "$SPIN_REF:$SPIN_PATH" | head -c "$SPIN_LIMIT"
 fi`
 
+// browseImage has git and nothing else; the runner pulls it once.
+const browseImage = "alpine/git:latest"
+
+// BrowseRepository reads a remote repository through a shallow clone kept
+// in a runner volume named after the repository.
+func (d *Docker) BrowseRepository(ctx context.Context, browse RepositoryBrowse) (RepositoryBrowseResult, error) {
+	result := RepositoryBrowseResult{}
+	if strings.TrimSpace(browse.RemoteURL) == "" || !validRemoteURL(browse.RemoteURL) {
+		return result, errors.New("repository remote URL is required")
+	}
+	if browse.Mode != "refs" && browse.Mode != "tree" && browse.Mode != "file" {
+		return result, fmt.Errorf("unknown browse mode %q", browse.Mode)
+	}
+	if browse.Mode != "refs" && !validGitRef(browse.Ref) {
+		return result, fmt.Errorf("invalid Git ref %q", browse.Ref)
+	}
+	if browse.Mode == "file" && !validWorkspacePath(browse.Path) {
+		return result, fmt.Errorf("invalid repository path %q", browse.Path)
+	}
+	authentication := browse.Authentication
+	if authentication == nil {
+		authentication = &GitAuthentication{}
+	}
+	secretInput := []byte(strings.Join([]string{singleLine(authentication.Username), singleLine(authentication.Password)}, "\n") + "\n")
+	volume := runtimeName("spin-browse", browse.CacheKey)
+	output, err := d.controlInput(ctx, secretInput,
+		"run", "--rm", "-i",
+		"--label", "spin.managed=true", "--label", "spin.kind=browse",
+		"--mount", "type=volume,src="+volume+",dst=/repo",
+		"-w", "/repo",
+		"-e", "GIT_TERMINAL_PROMPT=0",
+		"-e", "SPIN_GIT_REMOTE="+browse.RemoteURL,
+		"-e", "SPIN_MODE="+browse.Mode,
+		"-e", "SPIN_REF="+browse.Ref,
+		"-e", "SPIN_PATH="+browse.Path,
+		"-e", "SPIN_LIMIT="+strconv.Itoa(WorkspaceFileLimit),
+		"--entrypoint", "sh", browseImage, "-c", browseRepositoryScript,
+	)
+	if err != nil {
+		return result, err
+	}
+	switch browse.Mode {
+	case "refs":
+		for _, line := range strings.Split(output, "\n") {
+			if ref := strings.TrimSpace(line); ref != "" {
+				result.Refs = append(result.Refs, ref)
+			}
+		}
+	case "tree":
+		tree := &WorkspaceTree{Ref: browse.Ref, Entries: []WorkspaceEntry{}}
+		for _, line := range strings.Split(output, "\n") {
+			size, path, ok := strings.Cut(line, "\t")
+			if !ok || path == "" {
+				continue
+			}
+			bytes, _ := strconv.ParseInt(strings.TrimSpace(size), 10, 64)
+			tree.Entries = append(tree.Entries, WorkspaceEntry{Path: path, Size: bytes})
+		}
+		result.Tree = tree
+	case "file":
+		header, content, ok := strings.Cut(output, "\n")
+		if !ok || !strings.HasPrefix(header, "SPIN_SIZE ") {
+			return result, fmt.Errorf("repository file read did not report a size: %s", strings.TrimSpace(output))
+		}
+		file := &WorkspaceFile{Ref: browse.Ref, Path: browse.Path}
+		file.Size, _ = strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(header, "SPIN_SIZE ")), 10, 64)
+		file.Truncated = file.Size > int64(len(content))
+		if strings.IndexByte(content, 0) >= 0 {
+			file.Binary, content = true, ""
+		}
+		file.Content = content
+		result.File = file
+	}
+	return result, nil
+}
+
+func validRemoteURL(value string) bool {
+	return !strings.ContainsAny(value, "\x00\r\n ") && (strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "ssh://") || strings.Contains(value, "@"))
+}
+
+// browseRepositoryScript keeps one shallow clone per repository and reads
+// refs, a tree or a file from it. Credentials arrive on stdin and live only
+// in this process.
+const browseRepositoryScript = `set -e
+IFS= read -r SPIN_GIT_USERNAME || true
+IFS= read -r SPIN_GIT_PASSWORD || true
+if [ -n "$SPIN_GIT_PASSWORD" ]; then
+  ` + gitCredentialEnvironmentScript + `
+fi
+if [ ! -d .git ]; then
+  git init -q
+  git remote add origin "$SPIN_GIT_REMOTE"
+else
+  git remote set-url origin "$SPIN_GIT_REMOTE"
+fi
+case "$SPIN_MODE" in
+  refs)
+    git ls-remote --heads origin | sed 's|.*refs/heads/||'
+    ;;
+  tree)
+    git fetch -q --depth=1 origin "+refs/heads/${SPIN_REF}:refs/remotes/origin/${SPIN_REF}"
+    git ls-tree -r -l "refs/remotes/origin/${SPIN_REF}" | while IFS= read -r line; do
+      meta="${line%%	*}"; path="${line#*	}"; size="${meta##* }"
+      printf '%s\t%s\n' "$size" "$path"
+    done
+    ;;
+  file)
+    git fetch -q --depth=1 origin "+refs/heads/${SPIN_REF}:refs/remotes/origin/${SPIN_REF}"
+    printf 'SPIN_SIZE %s\n' "$(git cat-file -s "refs/remotes/origin/${SPIN_REF}:${SPIN_PATH}")"
+    git show "refs/remotes/origin/${SPIN_REF}:${SPIN_PATH}" | head -c "$SPIN_LIMIT"
+    ;;
+esac
+unset SPIN_GIT_PASSWORD`
+
 // SyncWorkspace commits what is dirty as a WIP commit and pushes the
 // Session branch to the remote, force: ACCEPT rewrites it into one commit.
 func (d *Docker) SyncWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, sync WorkspaceSync) (WorkspaceSyncResult, error) {
