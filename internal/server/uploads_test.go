@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -115,5 +116,54 @@ func TestRunnerArchivesASnapshotThroughChunkedUploads(t *testing.T) {
 	}
 	if code, _ := send(http.MethodGet, "/api/uploads/"+upload.ID, nil, bearer); code != http.StatusNotFound {
 		t.Fatalf("completed upload still addressable: %d", code)
+	}
+}
+
+// A runner pulls an archived snapshot in aligned 1 MiB chunks, with its
+// bearer; the end is a 416 and a foreign offset is refused.
+func TestRunnerPullsArchivedSnapshotInChunks(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := persistence.Open(filepath.Join(t.TempDir(), "spin.db"), persistence.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), &testEngine{}, ServerOptions{WorkerToken: "worker-secret", Database: database, SnapshotArchive: database})
+	content := make([]byte, (1<<20)+512)
+	if _, err := rand.Read(content); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := domain.CapsuleSnapshot{Driver: "docker", Ref: "spin/artifact:rec_pull", Digest: "sha256:pulltest"}
+	if err := database.StoreSnapshot(context.Background(), snapshot, bytes.NewReader(content)); err != nil {
+		t.Fatal(err)
+	}
+	get := func(offset string, bearer bool) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, "/api/snapshots/sha256:pulltest?offset="+offset, nil)
+		if bearer {
+			request.Header.Set("Authorization", "Bearer worker-secret")
+		}
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, request)
+		return recorder
+	}
+	if code := get("0", false).Code; code != http.StatusUnauthorized {
+		t.Fatalf("without bearer: %d", code)
+	}
+	first := get("0", true)
+	if first.Code != http.StatusOK || first.Body.Len() != 1<<20 || first.Header().Get("X-Spin-Size") != strconv.Itoa(len(content)) || !bytes.Equal(first.Body.Bytes(), content[:1<<20]) {
+		t.Fatalf("first chunk: %d, %d bytes, size %s", first.Code, first.Body.Len(), first.Header().Get("X-Spin-Size"))
+	}
+	second := get(strconv.Itoa(1<<20), true)
+	if second.Code != http.StatusOK || !bytes.Equal(second.Body.Bytes(), content[1<<20:]) {
+		t.Fatalf("second chunk: %d, %d bytes", second.Code, second.Body.Len())
+	}
+	if code := get(strconv.Itoa(len(content)), true).Code; code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("past the end: %d", code)
+	}
+	if code := get("12345", true).Code; code == http.StatusOK {
+		t.Fatal("an unaligned offset was served")
 	}
 }

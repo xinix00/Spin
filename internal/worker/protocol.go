@@ -40,6 +40,7 @@ const (
 	methodMergeWorkspace    = "workspace.merge"
 	methodSyncWorkspace     = "workspace.sync"
 	methodBrowseRepository  = "repository.browse"
+	methodPullSnapshot      = "snapshot.pull"
 	methodRemoveSnapshot    = "snapshot.remove"
 	methodExportSnapshot    = "snapshot.export"
 	methodImportSnapshot    = "snapshot.import"
@@ -163,6 +164,16 @@ type acceptWorkspacePayload struct {
 type snapshotPayload struct {
 	Snapshot domain.CapsuleSnapshot `json:"snapshot"`
 }
+
+// snapshotPullPayload asks a runner to fetch an archived snapshot itself,
+// in resumable HTTP chunks; Size lets it report progress.
+type snapshotPullPayload struct {
+	Snapshot domain.CapsuleSnapshot `json:"snapshot"`
+	Size     int64                  `json:"size"`
+}
+
+// snapshotModePull is the capability a runner advertises for that.
+const snapshotModePull = "docker-image-pull"
 
 // presenceResult answers snapshot.has.
 type presenceResult struct {

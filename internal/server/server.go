@@ -453,6 +453,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/backup-ticket", s.createBackupTicket)
 	s.mux.HandleFunc("GET /api/backup", s.downloadBackupWithTicket)
 	s.mux.HandleFunc("POST /api/restore", s.restoreBackup)
+	s.mux.HandleFunc("GET /api/snapshots/{digest}", s.snapshotChunkHandler)
 	s.mux.HandleFunc("POST /api/uploads", s.createUpload)
 	s.mux.HandleFunc("GET /api/uploads/{uploadID}", s.getUpload)
 	s.mux.HandleFunc("PUT /api/uploads/{uploadID}", s.appendUpload)

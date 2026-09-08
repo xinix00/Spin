@@ -408,6 +408,44 @@ func (s *SQLite) WriteBlobTo(ctx context.Context, ref string, destination io.Wri
 	return info, nil
 }
 
+// ReadBlobChunk returns the stored chunk that starts at offset, which must
+// be a multiple of the chunk size: blobs are stored as aligned 1 MiB rows, so
+// a runner can pull a snapshot in resumable pieces without the server
+// reading anything it does not send.
+func (s *SQLite) ReadBlobChunk(ctx context.Context, ref string, offset int64) ([]byte, BlobInfo, error) {
+	info, err := s.BlobInfo(ctx, ref)
+	if err != nil {
+		return nil, BlobInfo{}, err
+	}
+	if offset < 0 {
+		return nil, info, fmt.Errorf("blob chunk offset %d is negative", offset)
+	}
+	if offset >= info.Size {
+		return nil, info, nil
+	}
+	if offset%blobChunkSize != 0 {
+		return nil, info, fmt.Errorf("blob chunk offset %d is not aligned to %d bytes", offset, blobChunkSize)
+	}
+	var chunk []byte
+	err = s.db.QueryRowContext(ctx, `SELECT c.data
+		FROM spin_object_refs r
+		JOIN spin_objects o ON o.id = r.object_id
+		JOIN spin_object_chunks c ON c.object_id = o.id
+		WHERE r.ref = ? AND o.complete = 1 AND c.sequence = ?`, ref, offset/blobChunkSize).Scan(&chunk)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, info, fmt.Errorf("blob %s has no chunk at %d: %w", ref, offset, fs.ErrNotExist)
+	}
+	if err != nil {
+		return nil, info, err
+	}
+	return chunk, info, nil
+}
+
+// ReadSnapshotChunk is ReadBlobChunk for an archived snapshot.
+func (s *SQLite) ReadSnapshotChunk(ctx context.Context, snapshot domain.CapsuleSnapshot, offset int64) ([]byte, BlobInfo, error) {
+	return s.ReadBlobChunk(ctx, snapshotRef(snapshot), offset)
+}
+
 func (s *SQLite) ReadBlob(ctx context.Context, ref string, limit int64) ([]byte, BlobInfo, error) {
 	info, err := s.BlobInfo(ctx, ref)
 	if err != nil {

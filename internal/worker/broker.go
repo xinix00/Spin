@@ -474,6 +474,15 @@ func (b *Broker) SetDraining(clientID string, draining bool) (domain.Client, err
 	return updated, nil
 }
 
+// supportsSnapshotMode reports whether a connected runner advertised a
+// snapshot transfer mode in its hello.
+func (b *Broker) supportsSnapshotMode(clientID, mode string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	peer, ok := b.peers[clientID]
+	return ok && slices.Contains(peer.capabilities.SnapshotModes, mode)
+}
+
 func (b *Broker) choose(ctx context.Context, affinity string) (*runnerPeer, error) {
 	for {
 		b.mu.Lock()

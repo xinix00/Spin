@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -433,15 +434,26 @@ func (e *RemoteEngine) ensureSnapshotOn(ctx context.Context, artifact domain.Art
 		}
 		return errors.New("snapshot is absent from the central archive and every known runner is offline")
 	}
-	process, err := e.broker.openStream(ctx, targetID, methodImportSnapshot, snapshotPayload{Snapshot: artifact.Snapshot})
-	if err != nil {
-		return errors.Join(replicaErr, err)
-	}
 	var total int64
 	if sizer, ok := e.archive.(snapshotSizer); ok {
 		if info, err := sizer.SnapshotInfo(ctx, artifact.Snapshot); err == nil {
 			total = info.Size
 		}
+	}
+	// A runner that can pull fetches the image itself in resumable HTTP
+	// chunks; the link only carries its progress. Older runners get the
+	// image pushed over the link.
+	_, archiveServesChunks := e.archive.(snapshotChunkArchive)
+	if archiveServesChunks && e.broker.supportsSnapshotMode(targetID, snapshotModePull) {
+		if err := e.pullSnapshotOn(ctx, artifact, targetID, total); err != nil {
+			return errors.Join(replicaErr, err)
+		}
+		_, replicaAddErr := e.broker.store.AddSnapshotReplica(artifact.ID, targetID)
+		return replicaAddErr
+	}
+	process, err := e.broker.openStream(ctx, targetID, methodImportSnapshot, snapshotPayload{Snapshot: artifact.Snapshot})
+	if err != nil {
+		return errors.Join(replicaErr, err)
 	}
 	process.bulk = true
 	capsule.ReportProgress(ctx, "parents", "Basisimage uit het archief naar de runner", 0, total)
@@ -456,6 +468,33 @@ func (e *RemoteEngine) ensureSnapshotOn(ctx context.Context, artifact domain.Art
 	}
 	_, err = e.broker.store.AddSnapshotReplica(artifact.ID, targetID)
 	return err
+}
+
+// snapshotChunkArchive is an archive the runner can pull from over HTTP.
+type snapshotChunkArchive interface {
+	ReadSnapshotChunk(context.Context, domain.CapsuleSnapshot, int64) ([]byte, persistence.BlobInfo, error)
+}
+
+// pullSnapshotOn asks the runner to fetch the archived snapshot and relays
+// its progress lines to whoever is watching the launch.
+func (e *RemoteEngine) pullSnapshotOn(ctx context.Context, artifact domain.Artifact, targetID string, total int64) error {
+	process, err := e.broker.openStream(ctx, targetID, methodPullSnapshot, snapshotPullPayload{Snapshot: artifact.Snapshot, Size: total})
+	if err != nil {
+		return err
+	}
+	capsule.ReportProgress(ctx, "parents", "Runner haalt de basisimage uit het archief", 0, total)
+	scanner := bufio.NewScanner(process)
+	for scanner.Scan() {
+		if received, size, ok := parsePullProgress(scanner.Text()); ok {
+			if size > 0 {
+				total = size
+			}
+			capsule.ReportProgress(ctx, "parents", "Runner haalt de basisimage uit het archief", received, total)
+		}
+	}
+	capsule.ReportProgress(ctx, "load", "Runner laadt de image in Docker", 0, 0)
+	execution, waitErr := process.Wait()
+	return errors.Join(waitErr, executionError("snapshot pull", execution))
 }
 
 func executionError(operation string, execution capsule.Execution) error {

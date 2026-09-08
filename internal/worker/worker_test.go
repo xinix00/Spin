@@ -281,7 +281,7 @@ func TestRemoteEngineRestoresRecordedParentBeforeStartingOnAnotherRunner(t *test
 	remote := worker.NewRemoteEngine(broker, database)
 	const token = "runner-test-token-with-enough-entropy"
 	handler := spinserver.NewWithOptions(st, logger, remote, spinserver.ServerOptions{
-		DisableAuthentication: true, WorkerToken: token, RunnerBroker: broker,
+		DisableAuthentication: true, WorkerToken: token, RunnerBroker: broker, Database: database, SnapshotArchive: database,
 	}).Handler()
 	server := httptest.NewServer(handler)
 	defer server.Close()

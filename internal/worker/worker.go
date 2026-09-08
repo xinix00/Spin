@@ -145,7 +145,7 @@ func (w *Worker) runConnection(ctx context.Context) error {
 	hello := wireMessage{
 		Version: ProtocolVersion, Type: messageHello, InstanceID: w.config.InstanceID, Name: w.config.Name,
 		Capabilities: domain.ClientCapabilities{
-			OS: runtime.GOOS, Arch: runtime.GOARCH, Tools: append([]string(nil), w.config.Tools...), SnapshotModes: []string{"docker-image"},
+			OS: runtime.GOOS, Arch: runtime.GOARCH, Tools: append([]string(nil), w.config.Tools...), SnapshotModes: []string{"docker-image", snapshotModePull},
 			Engine: w.engine.Info(), MaxWorkloads: w.config.MaxWorkloads,
 		},
 	}
@@ -574,6 +574,23 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 			output, err := host.AppServiceLogs(ctx, payload.SessionID, payload.Service, payload.Tail)
 			return appLogsResult{Output: output}, false, err
 		}
+	case methodPullSnapshot:
+		var payload snapshotPullPayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		importer, ok := w.engine.(capsule.SnapshotImporter)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot import snapshots")
+		}
+		client, err := newSnapshotClient(w.config.ServerURL, w.config.Token)
+		if err != nil {
+			return nil, false, err
+		}
+		process := newSnapshotPullProcess(ctx, importer, client, payload)
+		w.bindStream(request.ID, localStream{process: process})
+		go w.pumpStream(request.ID, process)
+		return streamResponse{StreamID: request.ID}, true, nil
 	case methodImportSnapshot:
 		var payload snapshotPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {
