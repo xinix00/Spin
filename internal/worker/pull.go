@@ -17,14 +17,18 @@ import (
 )
 
 // A runner pulls an archived snapshot itself: 1 MiB per request from
-// /api/snapshots/{digest}?offset=, each piece retried on its own, spooled
-// to a file and loaded into Docker once complete. The runner link only
+// /api/snapshots/{digest}?offset=, four pieces in flight, each retried on
+// its own, spooled to a file and loaded into Docker once complete. The runner link only
 // carries the progress lines; a broken line pauses the pull instead of
 // failing the launch.
 
 const (
 	pullChunkBytes = 1 << 20
 	pullAttempts   = 8
+	// pullParallelism is how many pieces a runner keeps in flight: the same
+	// as an upload, so one round trip's latency is paid once per four
+	// pieces instead of once per piece.
+	pullParallelism = 4
 )
 
 type snapshotClient struct {
@@ -142,7 +146,8 @@ func (p *snapshotPullProcess) report(received, total int64) {
 	_, _ = fmt.Fprintf(p.writer, "SPIN_PULL %d %d\n", received, total)
 }
 
-// pull downloads every chunk with retries, then loads the spool.
+// pull downloads every chunk with retries, four in flight, then loads the
+// spool. The first piece travels alone: its size header plans the rest.
 func (p *snapshotPullProcess) pull() error {
 	spool, err := os.CreateTemp("", "spin-pull-*.tar")
 	if err != nil {
@@ -158,24 +163,43 @@ func (p *snapshotPullProcess) pull() error {
 	}
 	total := p.payload.Size
 	var received int64
-	for {
-		data, size, done, err := p.fetch(digest, received)
-		if err != nil {
-			return err
-		}
-		if size > 0 {
-			total = size
-		}
-		if done {
-			break
-		}
-		if _, err := spool.Write(data); err != nil {
+	var progressMu sync.Mutex
+	store := func(offset int64, data []byte) error {
+		if _, err := spool.WriteAt(data, offset); err != nil {
 			return fmt.Errorf("spool snapshot chunk: %w", err)
 		}
+		progressMu.Lock()
 		received += int64(len(data))
 		p.report(received, total)
-		if total > 0 && received >= total {
-			break
+		progressMu.Unlock()
+		return nil
+	}
+	data, size, done, err := p.fetch(p.ctx, digest, 0)
+	if err != nil {
+		return err
+	}
+	if size > 0 {
+		total = size
+	}
+	switch {
+	case done:
+		total = 0
+	case total > 0:
+		if err := store(0, data); err != nil {
+			return err
+		}
+		if err := p.pullParallel(digest, int64(len(data)), total, store); err != nil {
+			return err
+		}
+	default:
+		// No size header: fetch the pieces one after another until the end.
+		for !done {
+			if err := store(received, data); err != nil {
+				return err
+			}
+			if data, _, done, err = p.fetch(p.ctx, digest, received); err != nil {
+				return err
+			}
 		}
 	}
 	if total > 0 && received != total {
@@ -190,18 +214,70 @@ func (p *snapshotPullProcess) pull() error {
 	return p.importer.ImportSnapshot(p.ctx, p.payload.Snapshot, spool)
 }
 
+// pullParallel fetches the pieces from first up to total with a few
+// requests in flight; the first failure stops the others.
+func (p *snapshotPullProcess) pullParallel(digest string, first, total int64, store func(int64, []byte) error) error {
+	ctx, cancel := context.WithCancel(p.ctx)
+	defer cancel()
+	offsets := make(chan int64)
+	go func() {
+		defer close(offsets)
+		for offset := first; offset < total; offset += pullChunkBytes {
+			select {
+			case offsets <- offset:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+	fail := func(err error) {
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		errMu.Unlock()
+		cancel()
+	}
+	for worker := 0; worker < pullParallelism; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for offset := range offsets {
+				data, _, done, err := p.fetch(ctx, digest, offset)
+				if err != nil {
+					fail(err)
+					return
+				}
+				if done {
+					fail(fmt.Errorf("snapshot ended at %d before its announced %d bytes", offset, total))
+					return
+				}
+				if err := store(offset, data); err != nil {
+					fail(err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return firstErr
+}
+
 // fetch retries one chunk with backoff; a server that pauses writes is
 // waited for rather than counted as an attempt.
-func (p *snapshotPullProcess) fetch(digest string, offset int64) ([]byte, int64, bool, error) {
+func (p *snapshotPullProcess) fetch(ctx context.Context, digest string, offset int64) ([]byte, int64, bool, error) {
 	var last error
 	pauseDeadline := time.Now().Add(uploadPauseLimit)
 	for attempt := 1; attempt <= pullAttempts; attempt++ {
-		data, total, done, err := p.client.chunk(p.ctx, digest, offset)
+		data, total, done, err := p.client.chunk(ctx, digest, offset)
 		if err == nil {
 			return data, total, done, nil
 		}
-		if p.ctx.Err() != nil {
-			return nil, 0, false, p.ctx.Err()
+		if ctx.Err() != nil {
+			return nil, 0, false, ctx.Err()
 		}
 		var permanent *permanentError
 		if errors.As(err, &permanent) {
@@ -217,8 +293,8 @@ func (p *snapshotPullProcess) fetch(digest string, offset int64) ([]byte, int64,
 			delay = 20 * time.Second
 		}
 		select {
-		case <-p.ctx.Done():
-			return nil, 0, false, p.ctx.Err()
+		case <-ctx.Done():
+			return nil, 0, false, ctx.Err()
 		case <-time.After(delay):
 		}
 	}
