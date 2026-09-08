@@ -143,18 +143,6 @@ func (e *RemoteEngine) SyncWorkspace(ctx context.Context, runtime domain.Capsule
 	return result, err
 }
 
-func (e *RemoteEngine) ListWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, ref string) (capsule.WorkspaceTree, error) {
-	var result capsule.WorkspaceTree
-	_, err := e.broker.call(ctx, runtime.ClientID, methodBrowseWorkspace, browsePayload{Runtime: runtime, Ref: ref}, &result)
-	return result, err
-}
-
-func (e *RemoteEngine) ReadWorkspaceFile(ctx context.Context, runtime domain.CapsuleRuntime, ref, path string) (capsule.WorkspaceFile, error) {
-	var result capsule.WorkspaceFile
-	_, err := e.broker.call(ctx, runtime.ClientID, methodBrowseWorkspace, browsePayload{Runtime: runtime, Ref: ref, Path: path}, &result)
-	return result, err
-}
-
 // BrowseRepository runs on any connected runner; each keeps its own clone.
 func (e *RemoteEngine) BrowseRepository(ctx context.Context, browse capsule.RepositoryBrowse) (capsule.RepositoryBrowseResult, error) {
 	var result capsule.RepositoryBrowseResult
@@ -679,7 +667,6 @@ var (
 	_ capsule.SecretMaterializer          = (*RemoteEngine)(nil)
 	_ capsule.InteractiveEngine           = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceSyncer             = (*RemoteEngine)(nil)
-	_ capsule.WorkspaceBrowser            = (*RemoteEngine)(nil)
 	_ capsule.RepositoryBrowser           = (*RemoteEngine)(nil)
 	_ capsule.EnabledEngine               = (*RemoteEngine)(nil)
 	_ capsule.EnabledProber               = (*RemoteEngine)(nil)

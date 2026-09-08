@@ -172,9 +172,7 @@ type WorkspaceSyncer interface {
 	SyncWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, sync WorkspaceSync) (WorkspaceSyncResult, error)
 }
 
-// A code browser reads a Session's workspace straight from Git: the tree
-// of a ref and one file at a time, nothing stored. "workspace" is the
-// working tree itself, any other ref is what Git holds for it.
+// What a repository browse returns: the files of a ref, and one file.
 type WorkspaceEntry struct {
 	Path string `json:"path"`
 	Size int64  `json:"size"`
@@ -196,11 +194,6 @@ type WorkspaceFile struct {
 
 // WorkspaceFileLimit is how much of a file the browser reads.
 const WorkspaceFileLimit = 512 << 10
-
-type WorkspaceBrowser interface {
-	ListWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, ref string) (WorkspaceTree, error)
-	ReadWorkspaceFile(ctx context.Context, runtime domain.CapsuleRuntime, ref, path string) (WorkspaceFile, error)
-}
 
 // A repository can be explored without any Job: the runner keeps a shallow
 // clone per remote in a volume of its own and reads refs, trees and files
