@@ -159,9 +159,9 @@ func (s *Server) createGitHubPullRequest(ctx context.Context, job domain.Job) (d
 	if workspace.CredentialScope == "" {
 		workspace.CredentialScope = repository.CredentialScope
 	}
-	account, authenticated, err := s.gitAccountForWorkspace(ctx, workspace, job.Owner)
+	account, authenticated, err := s.gitAccountForWorkspace(ctx, workspace, job.Worker())
 	if err != nil {
-		return domain.WorkflowActionResult{}, fmt.Errorf("resolve GitHub connection for user %s: %w", job.Owner, err)
+		return domain.WorkflowActionResult{}, fmt.Errorf("resolve GitHub connection for user %s: %w", job.Worker(), err)
 	}
 	if !authenticated {
 		return domain.WorkflowActionResult{}, fmt.Errorf("repository has no GitHub identity scope")

@@ -433,6 +433,7 @@ func (s *Server) acceptWorkflowWorkspace(ctx context.Context, sessionID, summary
 	if run.Status != domain.PhaseRunRunning && run.Status != domain.PhaseRunPending {
 		return capsule.WorkspaceAcceptanceResult{}, fmt.Errorf("phase is %s: %w", run.Status, store.ErrConflict)
 	}
+	// The owner may open every Session of the Job, also one the assignee runs.
 	_, composition, err := s.sessionComposition(sessionID, job.Owner)
 	if err != nil {
 		return capsule.WorkspaceAcceptanceResult{}, err

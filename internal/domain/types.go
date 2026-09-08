@@ -1088,6 +1088,22 @@ type SealStatus struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// Worker is who the Job is with: the assignee once it was handed over,
+// the owner before that. New phases run as the worker; a running phase
+// finishes as whoever started it.
+func (j Job) Worker() string {
+	if j.Assignee != "" {
+		return j.Assignee
+	}
+	return j.Owner
+}
+
+// AllowsOperator reports whether an operator may work in the Job: its
+// owner, or the person it was assigned to.
+func (j Job) AllowsOperator(operator string) bool {
+	return operator != "" && (j.Owner == operator || j.Assignee == operator)
+}
+
 type CreateJobRequest struct {
 	Title               string   `json:"title"`
 	Reference           string   `json:"reference,omitempty"`

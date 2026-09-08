@@ -617,8 +617,8 @@ func (s *Store) RetryWorkflowSession(sessionID, operator string) (domain.CreateJ
 	if err != nil {
 		return domain.CreateJobResponse{}, "", err
 	}
-	if operator == "" || job.Owner != operator {
-		return domain.CreateJobResponse{}, "", ErrConflict
+	if !job.AllowsOperator(operator) {
+		return domain.CreateJobResponse{}, "", fmt.Errorf("only the owner or assignee of the Job can retry it: %w", ErrConflict)
 	}
 	if job.CurrentPhaseRunID != run.ID || job.Status == domain.JobDone || job.Status == domain.JobCancelled {
 		return domain.CreateJobResponse{}, "", fmt.Errorf("only the active workflow Session can be retried: %w", ErrConflict)
@@ -1596,7 +1596,10 @@ func (s *Store) newWorkflowSessionLocked(job *domain.Job, template domain.Workfl
 			attempt = existing.Attempt + 1
 		}
 	}
-	environmentSelector, withSelectors := s.phaseEnvironmentLocked(job.Owner, phase, job.EnvironmentSelector, job.WithSelectors)
+	// The phase runs as whoever the Job is with now: handing a Job over
+	// takes effect from the next phase, never in the middle of one.
+	worker := job.Worker()
+	environmentSelector, withSelectors := s.phaseEnvironmentLocked(worker, phase, job.EnvironmentSelector, job.WithSelectors)
 	_, tool, _ := parseArtifactSelector(environmentSelector)
 	// A pull request is control-plane API work and needs no workspace; a
 	// merge runs git in a workspace of the Job's environment.
@@ -1609,7 +1612,7 @@ func (s *Store) newWorkflowSessionLocked(job *domain.Job, template domain.Workfl
 		SpawnedBySessionID: parentSessionID, ForkMode: domain.ForkRoot, Tool: tool,
 		Executor: phase.Executor, EnvironmentSelector: environmentSelector, WithSelectors: withSelectors,
 		MCPServerIDs: append([]string{}, job.MCPServerIDs...), Role: phase.Name, Model: job.Model,
-		Operator: job.Owner, ObjectiveDelta: phase.Instructions, GitRepositoryID: job.GitRepositoryID,
+		Operator: worker, ObjectiveDelta: phase.Instructions, GitRepositoryID: job.GitRepositoryID,
 		BaseRef: job.Branch, GitRef: namespace + "/sessions/" + sessionID, TargetBranch: job.Branch,
 		Status: domain.SessionQueued, TurnIDs: []string{}, CheckpointIDs: []string{},
 		ContinuityLevel: "workflow_phase", ContinuityScore: 10, CreatedAt: now, UpdatedAt: now,

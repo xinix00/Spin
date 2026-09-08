@@ -167,6 +167,21 @@ func TestAssignJobHandsItToAKnownUser(t *testing.T) {
 	if err != nil || assigned.Assignee != "john" {
 		t.Fatalf("assign = %+v, %v", assigned, err)
 	}
+	// The running phase finishes as derek; the next one runs as john, with
+	// john's environment and Git identity.
+	if _, err := st.MarkWorkflowPhaseRunning(created.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := st.CompleteWorkflowPhase(created.Session.ID, "reject", "nog niet af")
+	if err != nil || retry.NextSession == nil {
+		t.Fatalf("retry = %+v, %v", retry, err)
+	}
+	if retry.NextSession.Operator != "john" || created.Session.Operator != "derek" {
+		t.Fatalf("next session runs as %q, first ran as %q", retry.NextSession.Operator, created.Session.Operator)
+	}
+	if _, _, err := st.RetryWorkflowSession(retry.NextSession.ID, "john"); err != nil && !errors.Is(err, ErrConflict) {
+		t.Fatalf("assignee retry = %v", err)
+	}
 	back, err := st.AssignJob(created.Job.ID, "john", "derek")
 	if err != nil || back.Assignee != "derek" {
 		t.Fatalf("assign back = %+v, %v", back, err)
