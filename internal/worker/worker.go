@@ -530,6 +530,17 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		}
 		result, err := merger.MergeWorkspace(ctx, payload.Runtime, payload.Merge)
 		return result, false, err
+	case methodSyncWorkspace:
+		var payload syncPayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		syncer, ok := w.engine.(capsule.WorkspaceSyncer)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot sync workspaces")
+		}
+		result, err := syncer.SyncWorkspace(ctx, payload.Runtime, payload.Sync)
+		return result, false, err
 	case methodStartApp, methodStopApp, methodAppStatus, methodAppLogs:
 		var payload appPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {

@@ -52,6 +52,7 @@ type Server struct {
 	launchSweep     time.Duration            // cadence at which queued phases are offered a launch again
 	backupMu        sync.Mutex
 	paused          atomic.Bool // writes wait while a backup streams
+	workspaceSyncs  workspaceSyncs
 	backupTicketMu  sync.Mutex
 	backupTickets   map[string]backupTicket
 	uploadMu        sync.Mutex

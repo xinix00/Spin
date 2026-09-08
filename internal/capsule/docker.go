@@ -500,7 +500,16 @@ else
     git fetch -q --shallow-exclude="$SPIN_GIT_BOOTSTRAP" origin "+refs/heads/${SPIN_CONTEXT_REF}:refs/remotes/origin/${SPIN_CONTEXT_REF}" 2>/dev/null \
       || git fetch -q --depth=100 origin "+refs/heads/${SPIN_CONTEXT_REF}:refs/remotes/origin/${SPIN_CONTEXT_REF}" || true
   done
-  git checkout -q -B "$SPIN_GIT_HEAD" "refs/remotes/origin/${SPIN_GIT_BASE}"
+  # A Session whose work in progress was pushed continues from that branch
+  # (on any runner); its base stays the Job branch it started from.
+  if git ls-remote --exit-code origin "refs/heads/$SPIN_GIT_HEAD" >/dev/null 2>&1; then
+    git fetch -q --shallow-exclude="$SPIN_GIT_BOOTSTRAP" origin "+refs/heads/${SPIN_GIT_HEAD}:refs/remotes/origin/${SPIN_GIT_HEAD}" 2>/dev/null \
+      || git fetch -q --depth=100 origin "+refs/heads/${SPIN_GIT_HEAD}:refs/remotes/origin/${SPIN_GIT_HEAD}"
+    git checkout -q -B "$SPIN_GIT_HEAD" "refs/remotes/origin/${SPIN_GIT_HEAD}"
+    git config spin.baseCommit "$(git merge-base "refs/remotes/origin/${SPIN_GIT_BASE}" HEAD 2>/dev/null || git rev-parse "refs/remotes/origin/${SPIN_GIT_BASE}")"
+  else
+    git checkout -q -B "$SPIN_GIT_HEAD" "refs/remotes/origin/${SPIN_GIT_BASE}"
+  fi
 fi
 git config spin.targetRef "$SPIN_GIT_TARGET"
 if ! git config --get spin.baseCommit >/dev/null 2>&1; then
@@ -1163,7 +1172,88 @@ if [ "$SPIN_REMOTE_HEAD" != "$SPIN_PUBLISH" ]; then
   echo 'Remote Job branch does not match the accepted Session HEAD after push' >&2
   exit 44
 fi
+# The Session's work-in-progress branch on the remote has served; the Job
+# branch carries the result now.
+SPIN_SESSION_REF="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+if [ -n "$SPIN_SESSION_REF" ] && [ "$SPIN_SESSION_REF" != "HEAD" ] && [ "$SPIN_SESSION_REF" != "$SPIN_GIT_REF" ]; then
+  git push -q origin ":refs/heads/$SPIN_SESSION_REF" >/dev/null 2>&1 || true
+fi
 printf 'SPIN_ACCEPT committed=%s head=%s\n' "$SPIN_COMMITTED" "$SPIN_PUBLISH"
+unset SPIN_GIT_PASSWORD`
+
+// SyncWorkspace commits what is dirty as a WIP commit and pushes the
+// Session branch to the remote, force: ACCEPT rewrites it into one commit.
+func (d *Docker) SyncWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, sync WorkspaceSync) (WorkspaceSyncResult, error) {
+	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
+		return WorkspaceSyncResult{}, errors.New("composition has no live Docker capsule")
+	}
+	if !validGitRef(sync.SessionRef) {
+		return WorkspaceSyncResult{}, fmt.Errorf("invalid Session ref %q", sync.SessionRef)
+	}
+	authentication := sync.Authentication
+	if authentication == nil {
+		authentication = &GitAuthentication{}
+	}
+	authorName := strings.TrimSpace(authentication.AuthorName)
+	if authorName == "" {
+		authorName = "Spin Agent"
+	}
+	authorEmail := strings.TrimSpace(authentication.AuthorEmail)
+	if authorEmail == "" {
+		authorEmail = "spin@local.invalid"
+	}
+	secretInput := []byte(strings.Join([]string{
+		singleLine(authentication.Username),
+		singleLine(authentication.Password),
+		singleLine(authorName),
+		singleLine(authorEmail),
+	}, "\n") + "\n")
+	output, err := d.controlInput(ctx, secretInput,
+		"exec", "-i", "-w", "/workspace",
+		"-e", "GIT_TERMINAL_PROMPT=0",
+		"-e", "SPIN_SESSION_REF="+sync.SessionRef,
+		runtime.ContainerID, "sh", "-lc", syncWorkspaceScript,
+	)
+	if err != nil {
+		return WorkspaceSyncResult{}, err
+	}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) != 4 || fields[0] != "SPIN_SYNC" {
+			continue
+		}
+		return WorkspaceSyncResult{
+			Committed: strings.TrimPrefix(fields[1], "committed=") == "1",
+			Pushed:    strings.TrimPrefix(fields[2], "pushed=") == "1",
+			Head:      strings.TrimPrefix(fields[3], "head="),
+		}, nil
+	}
+	return WorkspaceSyncResult{}, fmt.Errorf("workspace sync did not report a result: %s", strings.TrimSpace(output))
+}
+
+const syncWorkspaceScript = gitCredentialEnvironmentScript + `
+set -e
+IFS= read -r SPIN_GIT_USERNAME || true
+IFS= read -r SPIN_GIT_PASSWORD || true
+IFS= read -r SPIN_GIT_AUTHOR_NAME || true
+IFS= read -r SPIN_GIT_AUTHOR_EMAIL || true
+if [ -n "$SPIN_GIT_PASSWORD" ]; then
+  export GIT_CONFIG_COUNT=1
+fi
+SPIN_COMMITTED=0
+git add -A
+if ! git diff --cached --quiet; then
+  git -c user.name="$SPIN_GIT_AUTHOR_NAME" -c user.email="$SPIN_GIT_AUTHOR_EMAIL" commit -q -m "WIP $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  SPIN_COMMITTED=1
+fi
+SPIN_HEAD="$(git rev-parse HEAD)"
+SPIN_PUSHED=0
+SPIN_REMOTE_HEAD="$(git ls-remote origin "refs/heads/${SPIN_SESSION_REF}" | cut -f1)"
+if [ "$SPIN_REMOTE_HEAD" != "$SPIN_HEAD" ]; then
+  git push -q -f origin "$SPIN_HEAD:refs/heads/${SPIN_SESSION_REF}"
+  SPIN_PUSHED=1
+fi
+printf 'SPIN_SYNC committed=%s pushed=%s head=%s\n' "$SPIN_COMMITTED" "$SPIN_PUSHED" "$SPIN_HEAD"
 unset SPIN_GIT_PASSWORD`
 
 // MergeWorkspace lands the Job: the Job branch merged into the base branch

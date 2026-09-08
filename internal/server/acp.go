@@ -484,6 +484,7 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 		if _, err := s.store.SettleWorkflowChatTurn(session.ID); err != nil {
 			s.logger.Warn("settle workflow phase after ACP turn", "session", session.ID, "error", err)
 		}
+		go s.syncWorkspace(session.ID)
 	}
 	active.mu.Unlock()
 	s.rememberAgentOptions(composition, active)

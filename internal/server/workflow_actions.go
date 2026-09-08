@@ -77,18 +77,10 @@ func (s *Server) launchWorkflowMerge(session domain.Session, operator string) {
 		s.finishWorkflowAction(session.ID, "reject", "de capsule engine kan geen branches mergen")
 		return
 	}
-	authentication := &capsule.GitAuthentication{}
-	if account, authenticated, accountErr := s.gitAccountForWorkspace(context.Background(), composition.Git, composition.Operator); accountErr != nil {
-		s.finishWorkflowAction(session.ID, "reject", "Git-account voor het mergen: "+accountErr.Error())
+	authentication, err := s.gitAuthenticationFor(context.Background(), composition)
+	if err != nil {
+		s.finishWorkflowAction(session.ID, "reject", "Git-account voor het mergen: "+err.Error())
 		return
-	} else if authenticated {
-		username := account.Login
-		if account.Provider == "gitlab" {
-			username = "oauth2"
-		}
-		authentication = &capsule.GitAuthentication{Username: username, Password: account.AccessToken, AuthorName: account.Name, AuthorEmail: account.Email}
-	} else if composition.Git != nil {
-		authentication.AuthorName, authentication.AuthorEmail = composition.Git.AuthorName, composition.Git.AuthorEmail
 	}
 	target := strings.TrimSpace(job.BaseRef)
 	if target == "" {

@@ -38,6 +38,7 @@ const (
 	methodInjectAttachments = "workspace.inject_attachments"
 	methodAcceptWorkspace   = "workspace.accept"
 	methodMergeWorkspace    = "workspace.merge"
+	methodSyncWorkspace     = "workspace.sync"
 	methodRemoveSnapshot    = "snapshot.remove"
 	methodExportSnapshot    = "snapshot.export"
 	methodImportSnapshot    = "snapshot.import"
@@ -97,6 +98,11 @@ type runtimePayload struct {
 type mergePayload struct {
 	Runtime domain.CapsuleRuntime  `json:"runtime"`
 	Merge   capsule.WorkspaceMerge `json:"merge"`
+}
+
+type syncPayload struct {
+	Runtime domain.CapsuleRuntime `json:"runtime"`
+	Sync    capsule.WorkspaceSync `json:"sync"`
 }
 
 type appPayload struct {

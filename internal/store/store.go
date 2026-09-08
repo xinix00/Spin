@@ -3990,3 +3990,17 @@ func (s *Store) SetSnapshotDigestForTest(artifactID, digest string) (domain.Arti
 	s.state.Artifacts[artifact.ID] = artifact
 	return artifact, s.saveLocked()
 }
+
+// SetSessionSync records the work-in-progress commit pushed for a Session.
+func (s *Store) SetSessionSync(sessionID, head string) (domain.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.state.Sessions[sessionID]
+	if !ok {
+		return domain.Session{}, ErrNotFound
+	}
+	now := time.Now().UTC()
+	session.SyncedHead, session.SyncedAt = head, &now
+	s.state.Sessions[session.ID] = session
+	return session, s.saveLocked()
+}

@@ -24,6 +24,14 @@ type appTestEngine struct {
 	stopped  int
 	sessions map[string]bool
 	merged   []capsule.WorkspaceMerge
+	synced   []capsule.WorkspaceSync
+}
+
+func (e *appTestEngine) SyncWorkspace(_ context.Context, _ domain.CapsuleRuntime, sync capsule.WorkspaceSync) (capsule.WorkspaceSyncResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.synced = append(e.synced, sync)
+	return capsule.WorkspaceSyncResult{Head: "wip1234", Committed: true, Pushed: true}, nil
 }
 
 func (e *appTestEngine) StartAppServices(_ context.Context, _ domain.CapsuleRuntime, sessionID string, services []domain.AppService, _ []string) ([]domain.AppServiceRuntime, error) {
@@ -216,5 +224,74 @@ func TestMergeFinalizerLandsTheJobOnTheBaseBranch(t *testing.T) {
 	}
 	if mergeRun.ActionResult == nil || mergeRun.ActionResult.Type != domain.WorkflowActionGitMerge || !strings.Contains(mergeRun.ActionResult.Detail, "merge-commit abc123") {
 		t.Fatalf("merge run = %+v", mergeRun)
+	}
+}
+
+// After an agent turn the Session's work in progress goes to the remote:
+// a phase that may change code pushes its Session branch, one that may not
+// pushes nothing, and calls closer together than the interval are dropped.
+func TestWorkspaceSyncPushesWorkInProgressAfterATurn(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &appTestEngine{}
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "sync", RemoteURL: "https://example.com/sync.git", DefaultRef: "develop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Sync", Phases: []domain.WorkflowPhase{
+		{ID: "design", Name: "Ontwerp", Instructions: "Denk", Accept: domain.WorkflowTransition{Target: "build"}, Reject: domain.WorkflowTransition{Target: "SELF"}},
+		{ID: "build", Name: "Bouw", Instructions: "Bouw", AllowChanges: true, Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: "SELF"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Sync", Objective: "Werkend", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.launchQueuedWorkflowPhases("test")
+	ready := func(sessionID string) bool {
+		_, composition, err := srv.sessionComposition(sessionID, "derek")
+		return err == nil && composition.Runtime != nil && composition.Runtime.Status == "ready"
+	}
+	for deadline := time.Now().Add(10 * time.Second); !ready(created.Session.ID) && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ready(created.Session.ID) {
+		t.Fatalf("design workspace never came up; failures=%+v", srv.sessionPreparations())
+	}
+	// The design phase may not change code: nothing is pushed.
+	srv.syncWorkspace(created.Session.ID)
+	if len(engine.synced) != 0 {
+		t.Fatalf("a read-only phase pushed: %+v", engine.synced)
+	}
+	if _, err := st.MarkWorkflowPhaseRunning(created.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	advance, err := st.CompleteWorkflowPhase(created.Session.ID, "accept", "ontwerp staat")
+	if err != nil || advance.NextSession == nil {
+		t.Fatalf("advance = %+v, error = %v", advance, err)
+	}
+	build := advance.NextSession.ID
+	srv.launchQueuedWorkflowPhases("test")
+	for deadline := time.Now().Add(10 * time.Second); !ready(build) && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ready(build) {
+		t.Fatalf("build workspace never came up; failures=%+v", srv.sessionPreparations())
+	}
+	srv.syncWorkspace(build)
+	srv.syncWorkspace(build)
+	if len(engine.synced) != 1 || !strings.HasSuffix(engine.synced[0].SessionRef, "/sessions/"+build) {
+		t.Fatalf("synced = %+v", engine.synced)
+	}
+	for _, session := range st.Snapshot().Sessions {
+		if session.ID == build && (session.SyncedHead != "wip1234" || session.SyncedAt == nil) {
+			t.Fatalf("session after sync = %+v", session)
+		}
 	}
 }

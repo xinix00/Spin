@@ -137,6 +137,12 @@ func (e *RemoteEngine) MergeWorkspace(ctx context.Context, runtime domain.Capsul
 	return result, err
 }
 
+func (e *RemoteEngine) SyncWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, sync capsule.WorkspaceSync) (capsule.WorkspaceSyncResult, error) {
+	var result capsule.WorkspaceSyncResult
+	_, err := e.broker.call(ctx, runtime.ClientID, methodSyncWorkspace, syncPayload{Runtime: runtime, Sync: sync}, &result)
+	return result, err
+}
+
 // App services live on the runner that holds the Session's capsule; the
 // runtime's ClientID is the affinity for all four calls.
 func (e *RemoteEngine) StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService, hosts []string) ([]domain.AppServiceRuntime, error) {
@@ -649,6 +655,7 @@ var (
 	_ capsule.Engine                      = (*RemoteEngine)(nil)
 	_ capsule.SecretMaterializer          = (*RemoteEngine)(nil)
 	_ capsule.InteractiveEngine           = (*RemoteEngine)(nil)
+	_ capsule.WorkspaceSyncer             = (*RemoteEngine)(nil)
 	_ capsule.EnabledEngine               = (*RemoteEngine)(nil)
 	_ capsule.EnabledProber               = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceInspector          = (*RemoteEngine)(nil)

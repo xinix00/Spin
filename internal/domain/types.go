@@ -686,19 +686,23 @@ type Session struct {
 	BaseRef               string           `json:"base_ref,omitempty"`
 	GitRef                string           `json:"git_ref"`
 	TargetBranch          string           `json:"target_branch"`
-	Status                SessionStatus    `json:"status"`
-	ClientID              string           `json:"client_id,omitempty"`
-	ActivationID          string           `json:"activation_id,omitempty"`
-	ActivationEpoch       int64            `json:"activation_epoch"`
-	LeaseExpiresAt        *time.Time       `json:"lease_expires_at,omitempty"`
-	CurrentCheckpointID   string           `json:"current_checkpoint_id,omitempty"`
-	TurnIDs               []string         `json:"turn_ids"`
-	CheckpointIDs         []string         `json:"checkpoint_ids"`
-	FinalResultID         string           `json:"final_result_id,omitempty"`
-	ContinuityLevel       string           `json:"continuity_level"`
-	ContinuityScore       int              `json:"continuity_score"`
-	CreatedAt             time.Time        `json:"created_at"`
-	UpdatedAt             time.Time        `json:"updated_at"`
+	// SyncedHead is the last commit pushed to the Session branch on the
+	// remote as work in progress, and SyncedAt when.
+	SyncedHead          string        `json:"synced_head,omitempty"`
+	SyncedAt            *time.Time    `json:"synced_at,omitempty"`
+	Status              SessionStatus `json:"status"`
+	ClientID            string        `json:"client_id,omitempty"`
+	ActivationID        string        `json:"activation_id,omitempty"`
+	ActivationEpoch     int64         `json:"activation_epoch"`
+	LeaseExpiresAt      *time.Time    `json:"lease_expires_at,omitempty"`
+	CurrentCheckpointID string        `json:"current_checkpoint_id,omitempty"`
+	TurnIDs             []string      `json:"turn_ids"`
+	CheckpointIDs       []string      `json:"checkpoint_ids"`
+	FinalResultID       string        `json:"final_result_id,omitempty"`
+	ContinuityLevel     string        `json:"continuity_level"`
+	ContinuityScore     int           `json:"continuity_score"`
+	CreatedAt           time.Time     `json:"created_at"`
+	UpdatedAt           time.Time     `json:"updated_at"`
 }
 
 type Turn struct {

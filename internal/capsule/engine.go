@@ -151,6 +151,26 @@ type WorkspaceMergeResult struct {
 	Head string
 }
 
+// WorkspaceSync pushes a Session's work in progress to its own branch on
+// the remote, so a Session can continue on any runner and nothing lives
+// only in one Docker volume. Dirty files become a WIP commit first; ACCEPT
+// folds those commits away later.
+type WorkspaceSync struct {
+	SessionRef     string // the Session branch on the remote
+	Authentication *GitAuthentication
+}
+
+type WorkspaceSyncResult struct {
+	Head      string
+	Committed bool // a WIP commit was made
+	Pushed    bool // the remote branch moved
+}
+
+// WorkspaceSyncer pushes work in progress.
+type WorkspaceSyncer interface {
+	SyncWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, sync WorkspaceSync) (WorkspaceSyncResult, error)
+}
+
 // WorkspaceMerger merges a Job branch into its base branch on the remote.
 type WorkspaceMerger interface {
 	MergeWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, merge WorkspaceMerge) (WorkspaceMergeResult, error)
