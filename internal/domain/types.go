@@ -411,12 +411,16 @@ type CapsuleSnapshot struct {
 	Driver string `json:"driver"`
 	// ClientID pins daemon-local images to the runner that created them. An
 	// empty value is legacy state and may be resolved by any compatible runner.
-	ClientID             string   `json:"client_id,omitempty"`
-	ReplicaClientIDs     []string `json:"replica_client_ids,omitempty"`
-	Ref                  string   `json:"ref,omitempty"`
-	Digest               string   `json:"digest"`
-	Restorable           bool     `json:"restorable"`
-	IncludesProcessState bool     `json:"includes_process_state"`
+	ClientID         string   `json:"client_id,omitempty"`
+	ReplicaClientIDs []string `json:"replica_client_ids,omitempty"`
+	Ref              string   `json:"ref,omitempty"`
+	Digest           string   `json:"digest"`
+	// RootFS identifies the image by its layer diff IDs, which every image
+	// store reports the same; Digest is the image ID, which the classic
+	// store and the containerd store compute differently.
+	RootFS               string `json:"rootfs,omitempty"`
+	Restorable           bool   `json:"restorable"`
+	IncludesProcessState bool   `json:"includes_process_state"`
 }
 
 type CapsuleRuntime struct {

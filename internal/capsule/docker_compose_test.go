@@ -114,3 +114,25 @@ func TestValidGitRefAcceptsTicketBranches(t *testing.T) {
 		}
 	}
 }
+
+// An imported image is accepted on its layers, which every image store
+// reports the same; the image ID differs between the classic and the
+// containerd store, so it decides nothing.
+func TestImportedImageVerifiesOnLayersNotID(t *testing.T) {
+	layers := `["sha256:aaa","sha256:bbb"]`
+	rootFS := rootFSDigest(layers)
+	if rootFS == "" || rootFS == rootFSDigest(`["sha256:aaa"]`) || rootFSDigest("not json") != "" {
+		t.Fatalf("rootFS digest = %q", rootFS)
+	}
+	recorded := domain.CapsuleSnapshot{Driver: "docker", Ref: "spin/artifact:rec_1", Digest: "sha256:classic-id", RootFS: rootFS}
+	if err := verifyImportedImage(recorded, "sha256:containerd-id", rootFS); err != nil {
+		t.Fatalf("same layers, other ID: %v", err)
+	}
+	if err := verifyImportedImage(recorded, "sha256:classic-id", rootFSDigest(`["sha256:zzz"]`)); err == nil {
+		t.Fatal("other layers were accepted")
+	}
+	legacy := domain.CapsuleSnapshot{Driver: "docker", Ref: "spin/artifact:rec_0", Digest: "sha256:classic-id"}
+	if err := verifyImportedImage(legacy, "sha256:containerd-id", rootFS); err != nil {
+		t.Fatalf("legacy snapshot without layers: %v", err)
+	}
+}

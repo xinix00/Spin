@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -268,6 +270,10 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 	if err != nil {
 		return domain.CapsuleSnapshot{}, err
 	}
+	rootFS, err := d.imageRootFS(ctx, tag)
+	if err != nil {
+		return domain.CapsuleSnapshot{}, err
+	}
 	// The immutable image is already safe when cleanup fails, so leave any
 	// stubborn container discoverable through its spin.* labels.
 	_, _, _ = d.run(ctx, "rm", "-f", recording.Runtime.ContainerID)
@@ -275,6 +281,7 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 		Driver:               "docker",
 		Ref:                  tag,
 		Digest:               strings.TrimSpace(digest),
+		RootFS:               rootFS,
 		Restorable:           true,
 		IncludesProcessState: false,
 	}, nil
@@ -573,6 +580,12 @@ func (d *Docker) HasSnapshot(ctx context.Context, snapshot domain.CapsuleSnapsho
 	if err != nil || strings.TrimSpace(id) == "" {
 		return false, nil
 	}
+	// The same image on another image store has another ID; its layers
+	// tell whether the cached image is the recorded one.
+	if snapshot.RootFS != "" {
+		rootFS, err := d.imageRootFS(ctx, snapshot.Ref)
+		return err == nil && rootFS == snapshot.RootFS, nil
+	}
 	if expected := strings.TrimSpace(snapshot.Digest); expected != "" && strings.TrimSpace(id) != expected {
 		return false, nil
 	}
@@ -595,8 +608,50 @@ func (d *Docker) ImportSnapshot(ctx context.Context, snapshot domain.CapsuleSnap
 	if err != nil {
 		return fmt.Errorf("verify imported image %s: %w", snapshot.Ref, err)
 	}
-	if expected := strings.TrimSpace(snapshot.Digest); expected != "" && strings.TrimSpace(loadedDigest) != expected {
-		return fmt.Errorf("imported image %s has digest %s, expected %s", snapshot.Ref, strings.TrimSpace(loadedDigest), expected)
+	loadedRootFS, err := d.imageRootFS(ctx, snapshot.Ref)
+	if err != nil {
+		return fmt.Errorf("verify imported image %s: %w", snapshot.Ref, err)
+	}
+	if err := verifyImportedImage(snapshot, strings.TrimSpace(loadedDigest), loadedRootFS); err != nil {
+		return err
+	}
+	if strings.TrimSpace(loadedDigest) != strings.TrimSpace(snapshot.Digest) && d.logger != nil {
+		d.logger.Info("imported image has another ID than recorded; its layers match", "ref", snapshot.Ref, "loaded", strings.TrimSpace(loadedDigest), "recorded", snapshot.Digest)
+	}
+	return nil
+}
+
+// imageRootFS digests an image's layer diff IDs: what the image is made
+// of, the same on every runner whatever image store its Docker uses.
+func (d *Docker) imageRootFS(ctx context.Context, ref string) (string, error) {
+	layers, err := d.control(ctx, "image", "inspect", "--format", "{{json .RootFS.Layers}}", ref)
+	if err != nil {
+		return "", err
+	}
+	return rootFSDigest(layers), nil
+}
+
+func rootFSDigest(layersJSON string) string {
+	var layers []string
+	if json.Unmarshal([]byte(strings.TrimSpace(layersJSON)), &layers) != nil || len(layers) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join(layers, "\n")))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// verifyImportedImage accepts a loaded image when its layers are the
+// recorded ones. The image ID alone is not enough: the classic store and
+// the containerd store give the same image different IDs, so a snapshot
+// recorded on one runner would never verify on the other. A snapshot from
+// before layers were recorded is accepted by ID, or, when the ID differs,
+// on the strength of the archive it came from.
+func verifyImportedImage(snapshot domain.CapsuleSnapshot, loadedID, loadedRootFS string) error {
+	if snapshot.RootFS != "" {
+		if loadedRootFS != snapshot.RootFS {
+			return fmt.Errorf("imported image %s has layers %s, expected %s", snapshot.Ref, loadedRootFS, snapshot.RootFS)
+		}
+		return nil
 	}
 	return nil
 }
