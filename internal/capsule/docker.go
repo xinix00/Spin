@@ -49,7 +49,7 @@ type Docker struct {
 
 func NewDocker(ctx context.Context, cfg DockerConfig) (*Docker, error) {
 	if cfg.Binary == "" {
-		cfg.Binary = "docker"
+		cfg.Binary = findDockerBinary()
 	}
 	if cfg.BaseImage == "" {
 		cfg.BaseImage = "alpine:3.24"
@@ -1584,6 +1584,29 @@ func validGitRef(value string) bool {
 		}
 	}
 	return true
+}
+
+// findDockerBinary resolves the Docker CLI: PATH first, then the places
+// Docker Desktop and package managers put it, because a runner started by
+// a supervisor (launchd, a HOP job) often has a bare PATH.
+func findDockerBinary() string {
+	if path, err := exec.LookPath("docker"); err == nil {
+		return path
+	}
+	candidates := []string{
+		"/usr/local/bin/docker", "/opt/homebrew/bin/docker",
+		"/Applications/Docker.app/Contents/Resources/bin/docker",
+		"/usr/bin/docker", "/snap/bin/docker",
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates, home+"/.docker/bin/docker", home+"/.rd/bin/docker")
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return candidate
+		}
+	}
+	return "docker"
 }
 
 func (d *Docker) removeContainer(ctx context.Context, id string) error {

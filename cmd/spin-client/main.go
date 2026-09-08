@@ -58,7 +58,7 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	probeCtx, probeCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	engine, err := capsule.NewDocker(probeCtx, capsule.DockerConfig{BaseImage: *capsuleBase, Network: *capsuleNetwork, EnvDir: *envDir, AdvertiseHost: *advertiseHost, Logger: logger})
+	engine, err := capsule.NewDocker(probeCtx, capsule.DockerConfig{Binary: strings.TrimSpace(os.Getenv("SPIN_DOCKER")), BaseImage: *capsuleBase, Network: *capsuleNetwork, EnvDir: *envDir, AdvertiseHost: *advertiseHost, Logger: logger})
 	probeCancel()
 	if err != nil {
 		logger.Error("start Docker capsule engine", "error", err)

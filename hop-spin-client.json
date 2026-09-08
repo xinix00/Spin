@@ -19,6 +19,7 @@
     }
   ],
   "env": {
+    "PATH": "/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     "SPIN_SERVER": "https://bollenloods.getspin.app",
     "SPIN_WORKER_TOKEN": "REPLACE_WITH_WORKER_TOKEN",
     "SPIN_CLIENT_ID_FILE": "./var/spin-client.id",
@@ -26,9 +27,9 @@
     "SPIN_MAX_WORKLOADS": "6"
   },
   "command": "set -e\nxattr -dr com.apple.quarantine . 2>/dev/null || true\nchmod +x ./spin-client\nmkdir -p var/env\nexec ./spin-client",
-  "count": 1,
-  "cpu_shares": 500,
+  "count": 2,
+  "cpu_shares": 1000,
   "memory_limit": 1000000000,
   "max_restarts": -1,
-  "priority": 3
+  "priority": 100
 }
