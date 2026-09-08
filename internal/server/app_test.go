@@ -437,7 +437,7 @@ func TestExploreBrowsesARepositoryThroughTheRunner(t *testing.T) {
 		srv.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 		return recorder.Code, recorder.Body.String()
 	}
-	base := "/api/git-repositories/" + repository.Repository.ID + "/code/"
+	base := "/api/git/repositories/" + repository.Repository.ID + "/code/"
 	if code, body := get(base + "refs"); code != http.StatusOK || !strings.Contains(body, `"feature"`) || !strings.Contains(body, `"default_ref":"develop"`) {
 		t.Fatalf("refs: %d %s", code, body)
 	}

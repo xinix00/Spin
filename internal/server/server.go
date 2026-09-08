@@ -490,7 +490,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/jobs/{jobID}/changes", s.jobChanges)
 	s.mux.HandleFunc("GET /api/jobs/{jobID}/code/tree", s.codeTreeHandler)
 	s.mux.HandleFunc("GET /api/jobs/{jobID}/code/file", s.codeFileHandler)
-	s.mux.HandleFunc("GET /api/git-repositories/{repositoryID}/code/{mode}", s.exploreHandler)
+	s.mux.HandleFunc("GET /api/git/repositories/{repositoryID}/code/{mode}", s.exploreHandler)
 	s.mux.HandleFunc("POST /api/jobs/{jobID}/code-reviews", s.createCodeReview)
 	s.mux.HandleFunc("GET /api/code-reviews/{revisionID}", s.getCodeReview)
 	s.mux.HandleFunc("POST /api/code-reviews/{revisionID}/comments", s.createCodeReviewComment)

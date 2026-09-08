@@ -440,7 +440,7 @@ const codeViews={
   repo:{tree:'explore-tree',file:'explore-file',name:'explore-file-name',meta:'explore-file-meta',ref:'explore-ref',context:''},
 };
 const codeState={source:null,ref:'',refs:[],entries:[],path:''};
-function codeURL(mode,params={}){const query=new URLSearchParams(params).toString();return codeState.source.type==='job'?`/api/jobs/${encodeURIComponent(codeState.source.id)}/code/${mode}?${query}`:`/api/git-repositories/${encodeURIComponent(codeState.source.id)}/code/${mode}?${query}`;}
+function codeURL(mode,params={}){const query=new URLSearchParams(params).toString();return codeState.source.type==='job'?`/api/jobs/${encodeURIComponent(codeState.source.id)}/code/${mode}?${query}`:`/api/git/repositories/${encodeURIComponent(codeState.source.id)}/code/${mode}?${query}`;}
 function codeView(){return codeViews[codeState.source?.type||'job'];}
 function codeEl(key){const id=codeView()[key];return id?document.getElementById(id):null;}
 async function openCode(jobID){
