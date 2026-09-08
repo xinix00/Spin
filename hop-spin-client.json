@@ -1,0 +1,27 @@
+{
+  "name": "spin-client",
+  "driver": "exec",
+  "artifacts": [
+    {
+      "url": "https://github.com/xinix00/Spin/releases/download/rolling/spin-client-darwin-arm64",
+      "match": { "node.arch": "arm64", "node.os": "darwin" },
+      "filename": "spin-client"
+    },
+    {
+      "url": "https://github.com/xinix00/Spin/releases/download/rolling/spin-client-linux-amd64",
+      "match": { "node.arch": "amd64", "node.os": "linux" },
+      "filename": "spin-client"
+    },
+    {
+      "url": "https://github.com/xinix00/Spin/releases/download/rolling/spin-client-linux-arm64",
+      "match": { "node.arch": "arm64", "node.os": "linux" },
+      "filename": "spin-client"
+    }
+  ],
+  "command": "set -e\nxattr -dr com.apple.quarantine . 2>/dev/null || true\nchmod +x ./spin-client\nmkdir -p var/env\nexport SPIN_WORKER_TOKEN=\"REPLACE_WITH_WORKER_TOKEN\"\nexec ./spin-client -server https://bollenloods.getspin.app -name \"spin-$(hostname -s)\" -id-file ./var/spin-client.id -env-dir ./var/env -max-workloads 4",
+  "count": 1,
+  "cpu_shares": 500,
+  "memory_limit": 1000000000,
+  "max_restarts": -1,
+  "priority": 3
+}

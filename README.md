@@ -195,6 +195,10 @@ Opname starten, EDIT en End & save zijn jobs, geen requests: de opname of het ar
 
 End & save maakt het resultaat de nieuwe versie en zet de oude opzij: die verschijnt niet meer in lijsten en selectors, maar haar snapshot blijft bestaan voor lopende Sessions en voor lagen die ervan zijn afgeleid. Die afgeleide lagen volgen de bewerking vanzelf: een compositie die de oude versie in haar closure aantreft (bijvoorbeeld via `credential:codex --from=tool:codex`) bindt de nieuwste versie in dat slot. De Docker-engine neemt die nieuwste versie als basis en past iedere laag die erop gebouwd is toe als haar eigen Docker-diff, dus alleen wat die opname toevoegde, wijzigde of verwijderde (whiteouts); wat de EDIT weghaalde komt zo niet via een oudere afgeleide laag terug. Alleen een laag uit een onafhankelijke keten wordt nog als geheel gekopieerd. Een EDIT van `tool:codex` bereikt zo ook iedere credential- en toolinglaag die erop is gebouwd, zonder die opnieuw op te nemen.
 
+## Runner als HOP-job
+
+`hop-spin-client.json` in de root is een kant-en-klare exec-job voor een HOP-cluster: hij haalt de runner uit de `rolling` release voor macOS arm64, Linux amd64 en Linux arm64 (een redeploy is dus een upgrade), zet het worker-token uit de job in de omgeving en start de runner met een vaste client-id in de jobmap, zodat een herstart dezelfde runner blijft. Vul `REPLACE_WITH_WORKER_TOKEN` in het cluster in, nooit in git. De node heeft de Docker CLI en socket nodig; app-services lezen hun env-bestanden uit `var/env` in de jobmap.
+
 ## Server, client en opslag
 
 - `cmd/spin-server`: HTTP-server, web-GUI, state, Git/OAuth en orchestrator; deze container heeft geen Docker-socket.
