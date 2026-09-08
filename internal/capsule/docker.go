@@ -1225,8 +1225,8 @@ func (d *Docker) ReadWorkspaceFile(ctx context.Context, runtime domain.CapsuleRu
 	if err != nil {
 		return file, err
 	}
-	header, content, ok := strings.Cut(output, "\n")
-	if !ok || !strings.HasPrefix(header, "SPIN_SIZE ") {
+	header, content, ok := splitSizeHeader(output)
+	if !ok {
 		return file, fmt.Errorf("workspace file read did not report a size: %s", strings.TrimSpace(output))
 	}
 	file.Size, _ = strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(header, "SPIN_SIZE ")), 10, 64)
@@ -1237,6 +1237,17 @@ func (d *Docker) ReadWorkspaceFile(ctx context.Context, runtime domain.CapsuleRu
 	}
 	file.Content = content
 	return file, nil
+}
+
+// splitSizeHeader finds the "SPIN_SIZE n" line a read script prints before
+// the content; git may have printed a warning before it.
+func splitSizeHeader(output string) (header, content string, ok bool) {
+	index := strings.Index(output, "SPIN_SIZE ")
+	if index < 0 || (index > 0 && output[index-1] != '\n') {
+		return "", "", false
+	}
+	header, content, ok = strings.Cut(output[index:], "\n")
+	return header, content, ok
 }
 
 // validWorkspacePath keeps a browser path inside the workspace.
@@ -1320,9 +1331,12 @@ func (d *Docker) BrowseRepository(ctx context.Context, browse RepositoryBrowse) 
 	switch browse.Mode {
 	case "refs":
 		for _, line := range strings.Split(output, "\n") {
-			if ref := strings.TrimSpace(line); ref != "" {
-				result.Refs = append(result.Refs, ref)
+			stamp, name, ok := strings.Cut(strings.TrimSpace(line), "\t")
+			if !ok || name == "" || name == "HEAD" {
+				continue
 			}
+			unix, _ := strconv.ParseInt(strings.TrimSpace(stamp), 10, 64)
+			result.Refs = append(result.Refs, RepositoryRef{Name: name, CommittedAt: time.Unix(unix, 0).UTC()})
 		}
 	case "tree":
 		tree := &WorkspaceTree{Ref: browse.Ref, Entries: []WorkspaceEntry{}}
@@ -1336,8 +1350,8 @@ func (d *Docker) BrowseRepository(ctx context.Context, browse RepositoryBrowse) 
 		}
 		result.Tree = tree
 	case "file":
-		header, content, ok := strings.Cut(output, "\n")
-		if !ok || !strings.HasPrefix(header, "SPIN_SIZE ") {
+		header, content, ok := splitSizeHeader(output)
+		if !ok {
 			return result, fmt.Errorf("repository file read did not report a size: %s", strings.TrimSpace(output))
 		}
 		file := &WorkspaceFile{Ref: browse.Ref, Path: browse.Path}
@@ -1373,17 +1387,22 @@ else
 fi
 case "$SPIN_MODE" in
   refs)
-    git ls-remote --heads origin | sed 's|.*refs/heads/||'
+    # Every branch tip, commits and trees only (no blobs), so the branches
+    # can be ordered by their last commit; blobs come lazily when a file is
+    # read. An old git without partial clone fetches the tips whole.
+    git fetch -q --prune --depth=1 --filter=blob:none origin '+refs/heads/*:refs/remotes/origin/*' 2>/dev/null \
+      || git fetch -q --prune --depth=1 origin '+refs/heads/*:refs/remotes/origin/*'
+    git for-each-ref --sort=-committerdate --count=300 --format='%(committerdate:unix)%09%(refname:strip=3)' refs/remotes/origin
     ;;
   tree)
-    git fetch -q --depth=1 origin "+refs/heads/${SPIN_REF}:refs/remotes/origin/${SPIN_REF}"
+    git fetch -q --depth=1 origin "+refs/heads/${SPIN_REF}:refs/remotes/origin/${SPIN_REF}" 2>/dev/null
     git ls-tree -r -l "refs/remotes/origin/${SPIN_REF}" | while IFS= read -r line; do
       meta="${line%%	*}"; path="${line#*	}"; size="${meta##* }"
       printf '%s\t%s\n' "$size" "$path"
     done
     ;;
   file)
-    git fetch -q --depth=1 origin "+refs/heads/${SPIN_REF}:refs/remotes/origin/${SPIN_REF}"
+    git fetch -q --depth=1 origin "+refs/heads/${SPIN_REF}:refs/remotes/origin/${SPIN_REF}" 2>/dev/null
     printf 'SPIN_SIZE %s\n' "$(git cat-file -s "refs/remotes/origin/${SPIN_REF}:${SPIN_PATH}")"
     git show "refs/remotes/origin/${SPIN_REF}:${SPIN_PATH}" | head -c "$SPIN_LIMIT"
     ;;

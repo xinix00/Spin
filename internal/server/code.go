@@ -168,7 +168,11 @@ func (s *Server) exploreHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	switch mode {
 	case "refs":
-		writeJSON(w, http.StatusOK, map[string]any{"refs": result.Refs, "default_ref": repository.DefaultRef})
+		refs := result.Refs
+		if refs == nil {
+			refs = []capsule.RepositoryRef{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"refs": refs, "default_ref": repository.DefaultRef})
 	case "tree":
 		if result.Tree == nil {
 			result.Tree = &capsule.WorkspaceTree{Ref: ref, Entries: []capsule.WorkspaceEntry{}}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"time"
 
 	"easyacp/internal/domain"
 )
@@ -213,10 +214,17 @@ type RepositoryBrowse struct {
 	Authentication *GitAuthentication
 }
 
+// RepositoryRef is a branch with the time of its last commit; refs come
+// newest first, which in practice is "least stale".
+type RepositoryRef struct {
+	Name        string    `json:"name"`
+	CommittedAt time.Time `json:"committed_at"`
+}
+
 type RepositoryBrowseResult struct {
-	Refs []string       `json:"refs,omitempty"`
-	Tree *WorkspaceTree `json:"tree,omitempty"`
-	File *WorkspaceFile `json:"file,omitempty"`
+	Refs []RepositoryRef `json:"refs,omitempty"`
+	Tree *WorkspaceTree  `json:"tree,omitempty"`
+	File *WorkspaceFile  `json:"file,omitempty"`
 }
 
 type RepositoryBrowser interface {

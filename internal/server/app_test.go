@@ -44,7 +44,7 @@ func (e *appTestEngine) BrowseRepository(_ context.Context, browse capsule.Repos
 	e.browsed = append(e.browsed, browse)
 	switch browse.Mode {
 	case "refs":
-		return capsule.RepositoryBrowseResult{Refs: []string{"develop", "feature"}}, nil
+		return capsule.RepositoryBrowseResult{Refs: []capsule.RepositoryRef{{Name: "feature", CommittedAt: time.Unix(1700000000, 0)}, {Name: "develop", CommittedAt: time.Unix(1600000000, 0)}}}, nil
 	case "tree":
 		return capsule.RepositoryBrowseResult{Tree: &capsule.WorkspaceTree{Ref: browse.Ref, Entries: []capsule.WorkspaceEntry{{Path: "hello.txt", Size: 6}}}}, nil
 	}
@@ -438,7 +438,7 @@ func TestExploreBrowsesARepositoryThroughTheRunner(t *testing.T) {
 		return recorder.Code, recorder.Body.String()
 	}
 	base := "/api/git/repositories/" + repository.Repository.ID + "/code/"
-	if code, body := get(base + "refs"); code != http.StatusOK || !strings.Contains(body, `"feature"`) || !strings.Contains(body, `"default_ref":"develop"`) {
+	if code, body := get(base + "refs"); code != http.StatusOK || !strings.Contains(body, `"name":"feature"`) || !strings.Contains(body, `"default_ref":"develop"`) {
 		t.Fatalf("refs: %d %s", code, body)
 	}
 	if code, body := get(base + "tree"); code != http.StatusOK || !strings.Contains(body, `"ref":"develop"`) || !strings.Contains(body, `"hello.txt"`) {

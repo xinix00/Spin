@@ -451,11 +451,17 @@ async function openCode(jobID){
 async function exploreRepository(repositoryID){
   const repository=byID(snapshot.git_repositories,repositoryID);if(!repository)return;codeState.source={type:'repo',id:repositoryID};codeState.path='';codeState.ref=repository.default_ref||'';
   codeEl('tree').innerHTML='<div class="empty">Branches ophalen…</div>';codeEl('file').innerHTML='<div class="diff-empty">Kies links een bestand.</div>';codeEl('name').textContent='Selecteer een bestand';codeEl('meta').textContent='Gelezen uit Git.';
-  try{const refs=await api(codeURL('refs'));codeState.refs=refs.refs||[];if(!codeState.refs.includes(codeState.ref))codeState.ref=refs.default_ref||codeState.refs[0]||'';}
+  try{const refs=await api(codeURL('refs')),named=(refs.refs||[]).map(ref=>typeof ref==='string'?{name:ref}:ref);named.sort((a,b)=>(a.name===refs.default_ref?-1:b.name===refs.default_ref?1:0));codeState.refs=named;if(!named.some(ref=>ref.name===codeState.ref))codeState.ref=refs.default_ref||named[0]?.name||'';}
   catch(error){codeEl('tree').innerHTML=`<div class="empty">${esc(error.message||error)}</div>`;return;}
   renderCodeRefs();await loadCodeTree();
 }
-function renderCodeRefs(){const select=codeEl('ref');if(!select)return;const refs=codeState.source.type==='job'?codeState.refs:codeState.refs;select.innerHTML=refs.map(ref=>`<option value="${esc(ref)}">${esc(ref==='workspace'?'workspace · werkbestanden':ref)}</option>`).join('');select.value=codeState.ref;select.onchange=()=>{codeState.ref=select.value;codeState.path='';loadCodeTree();};}
+// Branches grouped by their prefix (feature/, fix/, …), each group newest
+// first; branches without a prefix stay at the top, the default first.
+function renderCodeRefs(){const select=codeEl('ref');if(!select)return;
+  const items=codeState.refs.map(ref=>typeof ref==='string'?{name:ref}:ref),option=item=>{const age=item.committed_at?` · ${elapsedSince(item.committed_at)}`:'';return `<option value="${esc(item.name)}">${esc(item.name==='workspace'?'workspace · werkbestanden':item.name)}${esc(age)}</option>`;};
+  const plain=items.filter(item=>!item.name.includes('/')),groups=new Map();items.filter(item=>item.name.includes('/')).forEach(item=>{const prefix=item.name.slice(0,item.name.indexOf('/'));if(!groups.has(prefix))groups.set(prefix,[]);groups.get(prefix).push(item);});
+  select.innerHTML=plain.map(option).join('')+[...groups.entries()].map(([prefix,members])=>`<optgroup label="${esc(prefix)}/ · ${members.length}">${members.map(option).join('')}</optgroup>`).join('');
+  select.value=codeState.ref;select.onchange=()=>{codeState.ref=select.value;codeState.path='';loadCodeTree();};}
 async function loadCodeTree(){
   codeEl('tree').innerHTML='<div class="empty">Bestanden laden…</div>';
   try{const tree=await api(codeURL('tree',{ref:codeState.ref}));codeState.ref=tree.ref;codeState.entries=tree.entries||[];if(tree.refs){codeState.refs=tree.refs;renderCodeRefs();}
@@ -463,8 +469,14 @@ async function loadCodeTree(){
   }catch(error){const context=codeEl('context');if(context)context.textContent=error.message||'Bestanden niet beschikbaar';codeEl('tree').innerHTML=`<div class="empty">${esc(error.message||error)}</div>`;}
 }
 function codeTreeModel(entries){const root={dirs:new Map(),files:[]};entries.forEach(entry=>{const parts=entry.path.split('/');let node=root;parts.slice(0,-1).forEach(part=>{if(!node.dirs.has(part))node.dirs.set(part,{dirs:new Map(),files:[]});node=node.dirs.get(part);});node.files.push({name:parts.at(-1),path:entry.path,size:entry.size});});return root;}
+// fileIcon picks a Material Symbol for a file by its name.
+function fileIcon(name){const lower=String(name).toLowerCase(),ext=lower.includes('.')?lower.slice(lower.lastIndexOf('.')+1):'';
+  if(/^(readme|changelog|license|licence|contributing)/.test(lower))return 'article';
+  if(lower==='dockerfile'||lower.startsWith('dockerfile.'))return 'deployed_code';
+  if(lower==='makefile'||lower==='justfile')return 'build';
+  return {js:'javascript',mjs:'javascript',cjs:'javascript',ts:'javascript',tsx:'javascript',jsx:'javascript',html:'html',htm:'html',css:'css',scss:'css',less:'css',json:'data_object',yaml:'data_object',yml:'data_object',toml:'data_object',xml:'data_object',md:'article',txt:'notes',go:'code',rs:'code',py:'code',rb:'code',php:'code',java:'code',kt:'code',swift:'code',c:'code',h:'code',cpp:'code',cs:'code',cshtml:'html',razor:'html',sql:'database',sh:'terminal',bash:'terminal',zsh:'terminal',ps1:'terminal',bat:'terminal',png:'image',jpg:'image',jpeg:'image',gif:'image',webp:'image',svg:'image',ico:'image',pdf:'picture_as_pdf',zip:'folder_zip',gz:'folder_zip',tar:'folder_zip',env:'key',lock:'lock',csproj:'settings',sln:'settings',mod:'settings',sum:'lock',gitignore:'visibility_off',editorconfig:'settings'}[ext]||'description';}
 function renderCodeNode(node,depth){const dirs=[...node.dirs.entries()].sort((a,b)=>a[0].localeCompare(b[0])),files=node.files.sort((a,b)=>a.name.localeCompare(b.name));
-  return dirs.map(([name,child])=>`<details ${depth<1?'open':''}><summary>${icon('folder')}${esc(name)}</summary><div class="tree-children">${renderCodeNode(child,depth+1)}</div></details>`).join('')+files.map(file=>`<button type="button" class="tree-file${codeState.path===file.path?' active':''}" data-code-path="${esc(file.path)}" title="${esc(file.path)}">${icon('description')}${esc(file.name)}${file.size?`<span class="tree-size">${esc(formatBytes(file.size))}</span>`:''}</button>`).join('');}
+  return dirs.map(([name,child])=>`<details ${depth<1?'open':''}><summary title="${esc(name)}"><span class="material-symbols-outlined tree-slot" aria-hidden="true">chevron_right</span><span class="material-symbols-outlined tree-icon" aria-hidden="true">folder</span><span class="tree-name">${esc(name)}</span></summary><div class="tree-children">${renderCodeNode(child,depth+1)}</div></details>`).join('')+files.map(file=>`<button type="button" class="tree-file${codeState.path===file.path?' active':''}" data-code-path="${esc(file.path)}" title="${esc(file.path)}"><span class="tree-slot"></span><span class="material-symbols-outlined tree-icon" aria-hidden="true">${fileIcon(file.name)}</span><span class="tree-name">${esc(file.name)}</span>${file.size?`<span class="tree-size">${esc(formatBytes(file.size))}</span>`:''}</button>`).join('');}
 function renderCodeTree(){const root=codeEl('tree');root.innerHTML=codeState.entries.length?renderCodeNode(codeTreeModel(codeState.entries),0):'<div class="empty">Geen bestanden in deze versie.</div>';root.querySelectorAll('[data-code-path]').forEach(button=>button.onclick=()=>openCodeFile(button.dataset.codePath));}
 async function openCodeFile(path){
   codeState.path=path;codeEl('tree').querySelectorAll('[data-code-path]').forEach(button=>button.classList.toggle('active',button.dataset.codePath===path));

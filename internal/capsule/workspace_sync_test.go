@@ -181,7 +181,7 @@ func TestRepositoryBrowseScriptReadsARemote(t *testing.T) {
 	}
 	env := []string{"SPIN_GIT_REMOTE=" + remote, "SPIN_LIMIT=1024"}
 	refs := browse(t, clone, append(env, "SPIN_MODE=refs", "SPIN_REF=", "SPIN_PATH="))
-	if !strings.Contains(refs, "develop\n") || !strings.Contains(refs, "feature\n") {
+	if !strings.Contains(refs, "\tdevelop\n") || !strings.Contains(refs, "\tfeature\n") || !strings.HasPrefix(strings.TrimSpace(refs), "1") {
 		t.Fatalf("refs = %q", refs)
 	}
 	tree := browse(t, clone, append(env, "SPIN_MODE=tree", "SPIN_REF=develop", "SPIN_PATH="))
