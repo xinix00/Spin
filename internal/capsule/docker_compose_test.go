@@ -80,6 +80,21 @@ func TestCompositionBasePrefersTheWidestClosure(t *testing.T) {
 	}
 }
 
+// A credential recorded on an older tool becomes the base of a stack of the
+// two; the tool's EDIT (a newer install) is not inside that base and must go
+// over it as a diff, or the edit never reaches the composition.
+func TestCompositionBaseAppliesANewerVersionOfAnAncestorAsDiff(t *testing.T) {
+	git := domain.Artifact{ID: "git"}
+	claudeV1 := domain.Artifact{ID: "claude1", ParentArtifactIDs: []string{"git"}, SupersededBy: "claude2"}
+	claudeV2 := domain.Artifact{ID: "claude2", ParentArtifactIDs: []string{"claude1"}}
+	credential := domain.Artifact{ID: "cred", ParentArtifactIDs: []string{"claude1"}}
+	byID := map[string]domain.Artifact{"git": git, "claude1": claudeV1, "claude2": claudeV2, "cred": credential}
+	base, plan := compositionBase([]domain.Artifact{credential, claudeV2}, byID)
+	if plan[[]string{"cred", "claude2"}[1-base]] != layerDiffOnly {
+		t.Fatalf("base = %d, plan = %v; the newer tool version was left out", base, plan)
+	}
+}
+
 // Paths a running container owns are never copied into it.
 func TestFilterExportDropsDockerManagedPaths(t *testing.T) {
 	export := tarWith(map[string]string{"proc/1/status": "x", "sys/kernel": "x", "dev/null": "", "etc/hosts": "x", "etc/passwd": "root", "usr/bin/tool": "bin"})

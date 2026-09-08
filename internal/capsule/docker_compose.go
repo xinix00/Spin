@@ -90,12 +90,15 @@ func compositionBase(layers []domain.Artifact, byID map[string]domain.Artifact) 
 		if index == best {
 			continue
 		}
-		if inBase(best, layer.ID) {
-			// Already part of the base (an ancestor, or an older version
-			// of one): copying it again would put older files over newer.
+		if layer.ID == layers[best].ID || closures[best][layer.ID] {
+			// Already part of the base, this exact version: copying it
+			// again would put older files over newer.
 			plan[layer.ID] = layerContained
 			continue
 		}
+		// A newer version of one of the base's ancestors is not inside the
+		// base: the base was recorded on the older one. Its own top layer,
+		// the EDIT, goes over the base like any layer built on it.
 		parentsCovered := len(layer.ParentArtifactIDs) > 0
 		for _, parentID := range layer.ParentArtifactIDs {
 			parentsCovered = parentsCovered && inBase(best, parentID)
