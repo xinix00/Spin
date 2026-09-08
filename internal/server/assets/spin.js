@@ -6,6 +6,9 @@ const spawnDrafts = new Map();
 let templateStepSequence = 0, editingTemplateID = '', editingGitRepositoryID = '';
 let jobSubmitting = false, pendingJobSubmission = null, attachmentTargetJobID = '', forkingJobID = '';
 let jobStateFilter = ['mine','all','closed'].includes(localStorage.getItem('spin-job-state'))?localStorage.getItem('spin-job-state'):'mine';
+let jobSearch = '';
+// Closed work is found by name or reference: title, ticket, branch.
+const jobMatchesSearch = (job,query) => !query||[job.title,job.reference,job.branch].some(value=>String(value||'').toLowerCase().includes(query));
 let pendingRejectQuestionID = '';
 const detailStates = new Map();
 const terminalSessions = new Map();
@@ -624,7 +627,7 @@ function setConnection(name){
 function setWorkView(name){if(!document.getElementById(`work-${name}`))name='jobs';document.querySelectorAll('[data-work-view]').forEach(button=>button.classList.toggle('active',button.dataset.workView===name));document.querySelectorAll('.work-page').forEach(page=>page.classList.toggle('active',page.id===`work-${name}`));localStorage.setItem('spin-work-view',name);}
 function jobIsClosed(job){return job.status==='done'||job.status==='cancelled'||job.workflow_status==='done';}
 function jobAssignee(job){return job.assignee||job.owner||'';}
-function setJobState(name){jobStateFilter=['mine','all','closed'].includes(name)?name:'mine';document.querySelectorAll('[data-job-state]').forEach(button=>button.classList.toggle('active',button.dataset.jobState===jobStateFilter));const copy={mine:['Mijn werk','Jobs die bij jou liggen: van jou, of aan jou toegewezen om naar te kijken.'],all:['Actief werk','Alle open Jobs van het team; wijs een Job toe om hem bij iemand neer te leggen.'],closed:['Afgerond werk','Afgeronde en handmatig gesloten Jobs blijven volledig terugleesbaar.']}[jobStateFilter];document.getElementById('jobs-list-title').textContent=copy[0];document.getElementById('jobs-list-copy').textContent=copy[1];localStorage.setItem('spin-job-state',jobStateFilter);renderJobs();}
+function setJobState(name){jobStateFilter=['mine','all','closed'].includes(name)?name:'mine';document.querySelectorAll('[data-job-state]').forEach(button=>button.classList.toggle('active',button.dataset.jobState===jobStateFilter));const copy={mine:['Mijn werk','Jobs die bij jou liggen: van jou, of aan jou toegewezen om naar te kijken.'],all:['Actief werk','Alle open Jobs van het team; wijs een Job toe om hem bij iemand neer te leggen.'],closed:['Afgerond werk','Afgeronde en handmatig gesloten Jobs blijven volledig terugleesbaar.']}[jobStateFilter];document.getElementById('jobs-list-title').textContent=copy[0];document.getElementById('jobs-list-copy').textContent=copy[1];localStorage.setItem('spin-job-state',jobStateFilter);document.getElementById('job-search-row').hidden=jobStateFilter!=='closed';renderJobs();}
 function activeRecording(){return snapshot.recordings.find(recording=>recording.actor===currentOperator()&&recording.status==='recording');}
 // PTY sessions render in xterm.js: a real terminal in the browser, with raw
 // keystrokes, colours, cursor movement and resizing, so login flows and
@@ -782,7 +785,7 @@ function patchKeyed(root,entries){
 function render(){
   if(chatState.sessionID&&document.getElementById('chat-dialog').open&&!workflowSessionIsActive(chatState.sessionID))closeDialog('chat-dialog');
   const onlineClients=snapshot.clients.filter(client=>client.status==='online').length,connections=snapshot.git_repositories.length+snapshot.git_accounts.length+myMCP().length+onlineClients;
-  const counts={jobs:`(${snapshot.jobs.length}/${snapshot.sessions.length})`,environments:`(${snapshot.artifacts.length})`,connections:`(${connections})`,access:`(${snapshot.users.length})`};
+  const counts={jobs:`(${snapshot.jobs.length}/${snapshot.sessions.length})`,explore:`(${snapshot.git_repositories.length})`,environments:`(${snapshot.artifacts.length})`,connections:`(${connections})`,access:`(${snapshot.users.length})`};
   Object.entries(counts).forEach(([name,value])=>document.getElementById(`nav-count-${name}`).textContent=value);
   document.getElementById('runner-segment-count').textContent=`${onlineClients}/${snapshot.clients.length}`;
   const descriptions={jobs:`${snapshot.jobs.length} Jobs, ${snapshot.sessions.length} Sessions`,environments:`${snapshot.artifacts.length} lagen`,connections:`${snapshot.git_repositories.length} repositories, ${snapshot.git_accounts.length} Git-identities, ${myMCP().length} MCP-configuraties, ${onlineClients} runners online`,access:`${snapshot.users.length} gebruikers`};
@@ -896,9 +899,9 @@ function sessionPresenceHTML(session){if(!session)return '';
 
 function assigneeOptions(job){const users=(snapshot.users||[]).filter(user=>!user.archived_at).map(user=>user.username);const names=[...new Set([jobAssignee(job),job.owner,currentOperator(),...users].filter(Boolean))];return names.map(name=>{const user=(snapshot.users||[]).find(item=>item.username===name);return `<option value="${esc(name)}" ${name===jobAssignee(job)?'selected':''}>${esc(user?.display_name||name)}</option>`;}).join('');}
 function renderJobs(){
-  const root=document.getElementById('jobs'),open=snapshot.jobs.filter(job=>!jobIsClosed(job)),closed=snapshot.jobs.filter(jobIsClosed),mine=open.filter(job=>jobAssignee(job)===currentOperator()),jobs=jobStateFilter==='closed'?closed:jobStateFilter==='all'?open:mine;
+  const root=document.getElementById('jobs'),open=snapshot.jobs.filter(job=>!jobIsClosed(job)),closed=snapshot.jobs.filter(jobIsClosed),mine=open.filter(job=>jobAssignee(job)===currentOperator()),query=jobStateFilter==='closed'?jobSearch.trim().toLowerCase():'',jobs=(jobStateFilter==='closed'?closed:jobStateFilter==='all'?open:mine).filter(job=>jobMatchesSearch(job,query));
   document.getElementById('job-count-mine').textContent=mine.length;document.getElementById('job-count-all').textContent=open.length;document.getElementById('job-count-closed').textContent=closed.length;
-  if(!jobs.length){root.innerHTML=`<div class="empty">${jobStateFilter==='closed'?'Nog geen afgeronde of gesloten Jobs.':jobStateFilter==='mine'?'Niets ligt bij jou. Kijk onder Alle, of start een nieuwe Job.':'Geen open Jobs. Start een nieuwe Job zodra er werk klaarstaat.'}</div>`;return;}
+  if(!jobs.length){root.innerHTML=`<div class="empty">${query?`Geen gesloten Job met “${esc(jobSearch.trim())}” in naam, referentie of branch.`:jobStateFilter==='closed'?'Nog geen afgeronde of gesloten Jobs.':jobStateFilter==='mine'?'Niets ligt bij jou. Kijk onder Alle, of start een nieuwe Job.':'Geen open Jobs. Start een nieuwe Job zodra er werk klaarstaat.'}</div>`;return;}
   const cards=jobs.map(job=>{
     const sessions=snapshot.sessions.filter(session=>session.job_id===job.id),repository=byID(snapshot.git_repositories,job.git_repository_id),template=jobTemplate(job),runs=snapshot.phase_runs.filter(run=>run.job_id===job.id),hasComparisonWorkspace=sessions.some(session=>Boolean(byID(snapshot.compositions,session.prepared_composition_id)?.runtime));
     const workflowStatus=job.status==='cancelled'?'GESLOTEN':job.workflow_status==='pending'?`PENDING · ${job.pending_reason==='ask'?'ASK':'USER'}`:job.workflow_status==='busy'?'BEZIG':job.workflow_status==='done'?'KLAAR':String(job.status||'').toUpperCase();
@@ -1300,6 +1303,7 @@ document.querySelectorAll('.tab-button').forEach(button=>button.onclick=()=>setT
 document.querySelectorAll('[data-connection]').forEach(button=>button.onclick=()=>setConnection(button.dataset.connection));
 document.querySelectorAll('[data-work-view]').forEach(button=>button.onclick=()=>setWorkView(button.dataset.workView));
 document.querySelectorAll('[data-job-state]').forEach(button=>button.onclick=()=>setJobState(button.dataset.jobState));
+document.getElementById('job-search').oninput=event=>{jobSearch=event.target.value;renderJobs();};
 document.querySelectorAll('[data-close-dialog]').forEach(button=>button.onclick=()=>closeDialog(button.dataset.closeDialog));
 document.querySelectorAll('dialog').forEach(dialog=>dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close();}));
 document.getElementById('deliverable-dialog').addEventListener('close',closeDeliverable);
