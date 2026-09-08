@@ -730,7 +730,11 @@ func enabledLaunchCommand(enabled domain.Enablement, pidFile string) (string, er
 		return "", fmt.Errorf("invalid enabled capability name %q", enabled.Name)
 	}
 	environmentFile := "/etc/spin/enabled/" + name + ".env"
-	return "set -a; if [ -f " + environmentFile + " ]; then . " + environmentFile + "; fi; set +a; echo $$ > " + pidFile + "; exec " + enabled.Command, nil
+	// Agents that spawn shells (Claude Code refuses to start without one)
+	// read SHELL, which docker exec leaves unset: point it at the best
+	// shell the layer has unless the environment file already did.
+	shell := `if [ -z "${SHELL:-}" ]; then for candidate in /bin/bash /usr/bin/bash /bin/zsh /bin/sh; do if [ -x "$candidate" ]; then export SHELL="$candidate"; break; fi; done; fi; `
+	return "set -a; if [ -f " + environmentFile + " ]; then . " + environmentFile + "; fi; set +a; " + shell + "echo $$ > " + pidFile + "; exec " + enabled.Command, nil
 }
 
 func validEnabledName(value string) bool {
