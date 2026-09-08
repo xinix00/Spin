@@ -27,7 +27,7 @@
   </section>
   <div class="app-layout" id="app-shell" hidden>
     <aside class="sidebar">
-      <div class="brand-mark"><div class="eyebrow">EasyACP</div><div class="brand-name">Spin <span class="brand-version"></span></div></div>
+      <div class="brand-mark"><div class="brand-copy"><div class="eyebrow">EasyACP</div><div class="brand-name">Spin <span class="brand-version"></span></div></div><button class="icon-button nav-toggle" id="nav-toggle" type="button" title="Menu inklappen" aria-label="Menu inklappen"><span class="material-symbols-outlined" aria-hidden="true">left_panel_close</span></button></div>
       <nav class="tabs" aria-label="Hoofdnavigatie">
         <button class="tab-button active" data-tab="jobs"><span class="material-symbols-outlined nav-icon" aria-hidden="true">work</span><span class="nav-label">Jobs</span><span class="nav-count" id="nav-count-jobs">(0/0)</span></button>
         <button class="tab-button" data-tab="explore"><span class="material-symbols-outlined nav-icon" aria-hidden="true">folder_open</span><span class="nav-label">Explore</span><span class="nav-count" id="nav-count-explore"></span></button>
@@ -57,7 +57,7 @@
       </section>
 
       <section class="tab-page" id="tab-explore">
-        <div class="page-header"><div><div class="eyebrow">Code</div><h1>Explore</h1><p class="subtitle">Blader door een repository zoals Git hem kent. Niets wordt opgeslagen; een runner leest het op het moment zelf.</p></div><div class="page-actions"><select id="explore-repository" title="Repository"></select><select id="explore-ref" title="Branch"></select></div></div>
+        <div class="explore-bar"><span class="material-symbols-outlined" aria-hidden="true">folder_open</span><select id="explore-repository" title="Repository"></select><select id="explore-ref" title="Branch"></select><span class="hint" title="Niets wordt opgeslagen; een runner leest het op het moment zelf uit Git">uit Git</span></div>
         <section class="panel explore-panel">
           <div class="code-body">
             <aside class="code-tree" id="explore-tree"><div class="empty">Kies een repository.</div></aside>

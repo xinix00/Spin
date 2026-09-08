@@ -616,6 +616,7 @@ function setTab(name){
   if(!document.getElementById(`tab-${name}`))name='jobs';
   document.querySelectorAll('.tab-button').forEach(button=>button.classList.toggle('active',button.dataset.tab===name));
   document.querySelectorAll('.tab-page').forEach(page=>page.classList.toggle('active',page.id===`tab-${name}`));
+  document.querySelector('main.workspace')?.classList.toggle('explore',name==='explore');
   localStorage.setItem('spin-tab',name);
 }
 function setConnection(name){
@@ -1331,6 +1332,11 @@ document.getElementById('download-backup').onclick=downloadPortableBackup;
 document.getElementById('choose-restore').onclick=()=>document.getElementById('restore-backup-input').click();
 document.getElementById('restore-backup-input').onchange=event=>restorePortableBackup(event.target.files[0]);
 document.getElementById('explore-repository').onchange=event=>{if(event.target.value)exploreRepository(event.target.value);};
+// The menu collapses to icons; the choice sticks. Explore starts collapsed
+// unless the person opened the menu again: code wants the width.
+function setNavCollapsed(collapsed){document.getElementById('app-shell').classList.toggle('nav-collapsed',collapsed);const toggle=document.getElementById('nav-toggle');toggle.querySelector('span').textContent=collapsed?'left_panel_open':'left_panel_close';toggle.title=collapsed?'Menu uitklappen':'Menu inklappen';try{localStorage.setItem('spin-nav',collapsed?'collapsed':'open');}catch(_){}requestAnimationFrame(()=>fitTerminal(activeTerminal()));}
+document.getElementById('nav-toggle').onclick=()=>setNavCollapsed(!document.getElementById('app-shell').classList.contains('nav-collapsed'));
+try{setNavCollapsed(localStorage.getItem('spin-nav')==='collapsed');}catch(_){}
 document.getElementById('add-snapshot').onclick=()=>openLayerDialog({scope:'user'});
 document.getElementById('record-git-tool').onclick=()=>openLayerDialog(recordPresets[0]);
 document.getElementById('list-snapshots').onclick=()=>refresh(true);
