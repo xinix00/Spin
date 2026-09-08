@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"context"
 	"errors"
 	"flag"
@@ -19,12 +20,12 @@ import (
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
-	serverURL := flag.String("server", "http://127.0.0.1:8080", "Spin server URL")
-	name := flag.String("name", defaultName(), "client name")
+	serverURL := flag.String("server", envOr("SPIN_SERVER", "http://127.0.0.1:8080"), "Spin server URL")
+	name := flag.String("name", envOr("SPIN_CLIENT_NAME", defaultName()), "client name")
 	instanceID := flag.String("id", strings.TrimSpace(os.Getenv("SPIN_CLIENT_ID")), "stable client ID (generated when empty)")
 	instanceIDFile := flag.String("id-file", envOr("SPIN_CLIENT_ID_FILE", "./var/spin-client.id"), "persistent client ID file")
 	tools := flag.String("tools", "docker", "comma-separated advertised tools")
-	maxWorkloads := flag.Int("max-workloads", 4, "maximum concurrently materialized runtimes")
+	maxWorkloads := flag.Int("max-workloads", envInt("SPIN_MAX_WORKLOADS", 4), "maximum concurrently materialized runtimes")
 	capsuleBase := flag.String("capsule-base", "alpine:3.24", "clean substrate image for root Docker recordings")
 	capsuleNetwork := flag.String("capsule-network", "bridge", "Docker network for capsule containers")
 	envDir := flag.String("env-dir", envOr("SPIN_ENV_DIR", "./var/env"), "directory with <name>.env files that app services may use")
@@ -74,6 +75,13 @@ func main() {
 		logger.Error("client stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func envInt(name string, fallback int) int {
+	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name))); err == nil && value > 0 {
+		return value
+	}
+	return fallback
 }
 
 func envOr(name, fallback string) string {
