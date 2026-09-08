@@ -3,3 +3,6 @@
 /spin-server
 /spin-client
 .DS_Store
+
+# Local HOP job with the real worker token; the example next to it is the template.
+hop-spin-client.json
