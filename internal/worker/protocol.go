@@ -40,6 +40,7 @@ const (
 	methodMergeWorkspace    = "workspace.merge"
 	methodSyncWorkspace     = "workspace.sync"
 	methodBrowseRepository  = "repository.browse"
+	methodCompareRepository = "repository.compare"
 	methodPullSnapshot      = "snapshot.pull"
 	methodRemoveSnapshot    = "snapshot.remove"
 	methodExportSnapshot    = "snapshot.export"
@@ -109,6 +110,10 @@ type syncPayload struct {
 
 type repositoryBrowsePayload struct {
 	Browse capsule.RepositoryBrowse `json:"browse"`
+}
+
+type repositoryComparePayload struct {
+	Comparison capsule.RepositoryComparison `json:"comparison"`
 }
 
 type appPayload struct {

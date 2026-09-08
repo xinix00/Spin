@@ -937,14 +937,7 @@ func (d *Docker) InspectWorkspaceRange(ctx context.Context, runtime domain.Capsu
 	if err != nil {
 		return changes, fmt.Errorf("prepare Job comparison: %w", err)
 	}
-	baseCommit, headCommit := "", ""
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) == 3 && fields[0] == "SPIN_COMPARE" {
-			baseCommit = strings.TrimPrefix(fields[1], "base=")
-			headCommit = strings.TrimPrefix(fields[2], "head=")
-		}
-	}
+	baseCommit, headCommit := parseCompareLine(output)
 	if len(baseCommit) < 7 {
 		return changes, errors.New("Git comparison did not resolve a base commit")
 	}
@@ -953,6 +946,100 @@ func (d *Docker) InspectWorkspaceRange(ctx context.Context, runtime domain.Capsu
 	}
 	return d.inspectWorkspace(ctx, runtime, baseCommit, headCommit)
 }
+
+// CompareRepository compares two branches on the runner's own clone of the
+// repository: what the Job pushed against its base, or one Session's commit.
+// Nothing of the composition is needed, only git and the remote.
+func (d *Docker) CompareRepository(ctx context.Context, request RepositoryComparison) (WorkspaceChanges, error) {
+	changes := WorkspaceChanges{Files: []WorkspaceFileChange{}}
+	if strings.TrimSpace(request.RemoteURL) == "" || !validRemoteURL(request.RemoteURL) {
+		return changes, errors.New("repository remote URL is required")
+	}
+	comparison := request.Comparison
+	if !validGitRef(comparison.BaseRef) || !validGitRef(comparison.HeadRef) {
+		return changes, fmt.Errorf("invalid Git comparison %q...%q", comparison.BaseRef, comparison.HeadRef)
+	}
+	comparison.CommitMessageMatch = strings.TrimSpace(comparison.CommitMessageMatch)
+	if strings.ContainsAny(comparison.CommitMessageMatch, "\r\n\x00") || len(comparison.CommitMessageMatch) > 256 {
+		return changes, errors.New("invalid Git commit match")
+	}
+	key := strings.TrimSpace(request.CacheKey)
+	if key == "" {
+		sum := sha256.Sum256([]byte(request.RemoteURL))
+		key = hex.EncodeToString(sum[:6])
+	}
+	authentication := comparison.Authentication
+	if authentication == nil {
+		authentication = &GitAuthentication{}
+	}
+	secretInput := []byte(strings.Join([]string{singleLine(authentication.Username), singleLine(authentication.Password)}, "\n") + "\n")
+	// Its own volume, apart from Explore's blobless clone: a diff needs the
+	// blobs, and git would not fetch again what it believes it has.
+	volume := runtimeName("spin-compare", key)
+	output, err := d.controlInput(ctx, secretInput,
+		"run", "--rm", "-i",
+		"--label", "spin.managed=true", "--label", "spin.kind=compare",
+		"--mount", "type=volume,src="+volume+",dst=/repo",
+		"-w", "/repo",
+		"-e", "GIT_TERMINAL_PROMPT=0",
+		"-e", "SPIN_GIT_REMOTE="+request.RemoteURL,
+		"-e", "SPIN_COMPARE_BASE="+comparison.BaseRef,
+		"-e", "SPIN_COMPARE_HEAD="+comparison.HeadRef,
+		"-e", "SPIN_COMPARE_COMMIT_MATCH="+comparison.CommitMessageMatch,
+		"--entrypoint", "sh", browseImage, "-c", compareRepositoryScript,
+	)
+	if err != nil {
+		return changes, fmt.Errorf("prepare Job comparison: %w", err)
+	}
+	baseCommit, headCommit := parseCompareLine(output)
+	if len(baseCommit) < 7 {
+		return changes, errors.New("Git comparison did not resolve a base commit")
+	}
+	if len(headCommit) < 7 {
+		return changes, nil
+	}
+	return d.inspectChanges(ctx, d.volumeGit(volume), baseCommit, headCommit)
+}
+
+func parseCompareLine(output string) (base, head string) {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) == 3 && fields[0] == "SPIN_COMPARE" {
+			base = strings.TrimPrefix(fields[1], "base=")
+			head = strings.TrimPrefix(fields[2], "head=")
+		}
+	}
+	return base, head
+}
+
+const compareRepositoryScript = `set -e
+IFS= read -r SPIN_GIT_USERNAME || true
+IFS= read -r SPIN_GIT_PASSWORD || true
+if [ -n "$SPIN_GIT_PASSWORD" ]; then
+  ` + gitCredentialEnvironmentScript + `
+fi
+if [ ! -d .git ]; then
+  git init -q
+  git remote add origin "$SPIN_GIT_REMOTE"
+else
+  git remote set-url origin "$SPIN_GIT_REMOTE"
+fi
+git fetch -q --depth=256 origin "+refs/heads/$SPIN_COMPARE_BASE:refs/remotes/spin/base" "+refs/heads/$SPIN_COMPARE_HEAD:refs/remotes/spin/head"
+SPIN_COMPARE_BASE_COMMIT="$(git merge-base refs/remotes/spin/base refs/remotes/spin/head || true)"
+if [ -z "$SPIN_COMPARE_BASE_COMMIT" ]; then
+  git fetch -q --deepen=1024 origin "+refs/heads/$SPIN_COMPARE_BASE:refs/remotes/spin/base" "+refs/heads/$SPIN_COMPARE_HEAD:refs/remotes/spin/head"
+  SPIN_COMPARE_BASE_COMMIT="$(git merge-base refs/remotes/spin/base refs/remotes/spin/head || true)"
+fi
+test -n "$SPIN_COMPARE_BASE_COMMIT"
+SPIN_COMPARE_HEAD_COMMIT="$(git rev-parse refs/remotes/spin/head)"
+if [ -n "$SPIN_COMPARE_COMMIT_MATCH" ]; then
+  SPIN_COMPARE_HEAD_COMMIT="$(git log refs/remotes/spin/head --fixed-strings --grep="$SPIN_COMPARE_COMMIT_MATCH" -1 --format=%H)"
+  if [ -n "$SPIN_COMPARE_HEAD_COMMIT" ]; then
+    SPIN_COMPARE_BASE_COMMIT="$(git rev-parse "$SPIN_COMPARE_HEAD_COMMIT^")"
+  fi
+fi
+printf 'SPIN_COMPARE base=%s head=%s\n' "$SPIN_COMPARE_BASE_COMMIT" "$SPIN_COMPARE_HEAD_COMMIT"
+unset SPIN_GIT_PASSWORD`
 
 const compareWorkspaceScript = `set -eu
 IFS= read -r SPIN_GIT_USERNAME || true
@@ -977,14 +1064,38 @@ fi
 printf 'SPIN_COMPARE base=%s head=%s\n' "$SPIN_COMPARE_BASE_COMMIT" "$SPIN_COMPARE_HEAD_COMMIT"
 unset SPIN_GIT_PASSWORD`
 
+// gitRunner runs one command in a checkout: in a composition's capsule, or
+// in a one-shot git container on a clone volume.
+type gitRunner func(ctx context.Context, args ...string) (string, int, error)
+
+func (d *Docker) containerGit(runtime domain.CapsuleRuntime) gitRunner {
+	return func(ctx context.Context, args ...string) (string, int, error) {
+		return d.run(ctx, append([]string{"exec", "-w", "/workspace", runtime.ContainerID}, args...)...)
+	}
+}
+
+func (d *Docker) volumeGit(volume string) gitRunner {
+	return func(ctx context.Context, args ...string) (string, int, error) {
+		return d.run(ctx, append([]string{
+			"run", "--rm", "--label", "spin.managed=true", "--label", "spin.kind=compare",
+			"--mount", "type=volume,src=" + volume + ",dst=/repo", "-w", "/repo",
+			"--entrypoint", args[0], browseImage,
+		}, args[1:]...)...)
+	}
+}
+
 func (d *Docker) inspectWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, diffBase, diffHead string) (WorkspaceChanges, error) {
+	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
+		return WorkspaceChanges{Files: []WorkspaceFileChange{}}, errors.New("composition has no live Docker capsule")
+	}
+	return d.inspectChanges(ctx, d.containerGit(runtime), diffBase, diffHead)
+}
+
+func (d *Docker) inspectChanges(ctx context.Context, git gitRunner, diffBase, diffHead string) (WorkspaceChanges, error) {
 	const maxPatchBytes = 512 << 10
 	const maxTotalPatchBytes = 2 << 20
 	changes := WorkspaceChanges{Files: []WorkspaceFileChange{}}
-	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
-		return changes, errors.New("composition has no live Docker capsule")
-	}
-	branch, code, err := d.run(ctx, "exec", "-w", "/workspace", runtime.ContainerID, "git", "branch", "--show-current")
+	branch, code, err := git(ctx, "git", "branch", "--show-current")
 	if err != nil && code < 0 {
 		return changes, err
 	}
@@ -993,18 +1104,18 @@ func (d *Docker) inspectWorkspace(ctx context.Context, runtime domain.CapsuleRun
 	if diffHead == "" {
 		var statusCode int
 		var statusErr error
-		statusOutput, statusCode, statusErr = d.run(ctx, "exec", "-w", "/workspace", runtime.ContainerID, "git", "status", "--porcelain=v1", "--untracked-files=all", "-z")
+		statusOutput, statusCode, statusErr = git(ctx, "git", "status", "--porcelain=v1", "--untracked-files=all", "-z")
 		if statusErr != nil && statusCode != 0 {
 			return changes, fmt.Errorf("git status failed (exit %d): %s", statusCode, strings.TrimSpace(statusOutput))
 		}
 	}
 	byPath := map[string]int{}
 	if diffBase != "HEAD" || diffHead != "" {
-		nameArgs := []string{"exec", "-w", "/workspace", runtime.ContainerID, "git", "diff", "--name-only", "-z", diffBase}
+		nameArgs := []string{"git", "diff", "--name-only", "-z", diffBase}
 		if diffHead != "" {
 			nameArgs = append(nameArgs, diffHead)
 		}
-		nameOutput, nameCode, nameErr := d.run(ctx, nameArgs...)
+		nameOutput, nameCode, nameErr := git(ctx, nameArgs...)
 		if nameErr != nil && nameCode != 0 {
 			return changes, fmt.Errorf("git range names failed (exit %d): %s", nameCode, strings.TrimSpace(nameOutput))
 		}
@@ -1033,11 +1144,11 @@ func (d *Docker) inspectWorkspace(ctx context.Context, runtime domain.CapsuleRun
 		byPath[path] = len(changes.Files)
 		changes.Files = append(changes.Files, WorkspaceFileChange{Path: path, Status: status})
 	}
-	numstatArgs := []string{"exec", "-w", "/workspace", runtime.ContainerID, "git", "diff", "--numstat", diffBase}
+	numstatArgs := []string{"git", "diff", "--numstat", diffBase}
 	if diffHead != "" {
 		numstatArgs = append(numstatArgs, diffHead)
 	}
-	diffOutput, _, _ := d.run(ctx, numstatArgs...)
+	diffOutput, _, _ := git(ctx, numstatArgs...)
 	for _, line := range strings.Split(diffOutput, "\n") {
 		parts := strings.SplitN(line, "\t", 3)
 		if len(parts) != 3 {
@@ -1062,7 +1173,7 @@ func (d *Docker) inspectWorkspace(ctx context.Context, runtime domain.CapsuleRun
 		if file.Status != "??" || file.Added != 0 || file.Deleted != 0 {
 			continue
 		}
-		lineOutput, lineCode, _ := d.run(ctx, "exec", "-w", "/workspace", runtime.ContainerID, "wc", "-l", "--", file.Path)
+		lineOutput, lineCode, _ := git(ctx, "wc", "-l", "--", file.Path)
 		if lineCode != 0 {
 			continue
 		}
@@ -1082,17 +1193,17 @@ func (d *Docker) inspectWorkspace(ctx context.Context, runtime domain.CapsuleRun
 		}
 		var patch string
 		if file.Status == "??" {
-			output, exitCode, _ := d.run(ctx, "exec", "-w", "/workspace", runtime.ContainerID, "git", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", "--", "/dev/null", file.Path)
+			output, exitCode, _ := git(ctx, "git", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", "--", "/dev/null", file.Path)
 			if exitCode == 0 || exitCode == 1 {
 				patch = output
 			}
 		} else {
-			patchArgs := []string{"exec", "-w", "/workspace", runtime.ContainerID, "git", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", diffBase}
+			patchArgs := []string{"git", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", diffBase}
 			if diffHead != "" {
 				patchArgs = append(patchArgs, diffHead)
 			}
 			patchArgs = append(patchArgs, "--", file.Path)
-			output, exitCode, _ := d.run(ctx, patchArgs...)
+			output, exitCode, _ := git(ctx, patchArgs...)
 			if exitCode == 0 {
 				patch = output
 			}

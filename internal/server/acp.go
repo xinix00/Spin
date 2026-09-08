@@ -394,12 +394,39 @@ func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, session
 		authentication.Username = username
 		authentication.Password = account.AccessToken
 	}
+	comparison := capsule.WorkspaceComparison{
+		BaseRef: job.BaseRef, HeadRef: job.Branch, Authentication: authentication,
+	}
+	if sessionID != "" {
+		comparison.CommitMessageMatch = "Spin-Session: " + sessionID
+	}
+	label := func(changes capsule.WorkspaceChanges) capsule.WorkspaceChanges {
+		switch {
+		case sessionID == "":
+			changes.Branch = job.Branch + " ← " + job.BaseRef
+		case phaseName != "":
+			changes.Branch = phaseName + " · " + sessionID
+		default:
+			changes.Branch = sessionID
+		}
+		return changes
+	}
 	runtime := composition.Runtime
 	if runtime.Status == "stopped" {
-		// Under the proxy's request limit; a runner still fetching images
-		// keeps fetching after this gives up, and the next look finds them.
+		// Under the proxy's request limit either way.
 		comparisonContext, cancel := context.WithTimeout(ctx, 85*time.Second)
 		defer cancel()
+		// Everything the Job did is on the remote; a stopped composition is
+		// compared on the runner's own clone, without restoring its images.
+		if comparer, ok := s.engine.(capsule.RepositoryComparer); ok && strings.TrimSpace(composition.Git.RemoteURL) != "" {
+			changes, err := comparer.CompareRepository(comparisonContext, capsule.RepositoryComparison{
+				RemoteURL: composition.Git.RemoteURL, CacheKey: composition.Git.RepositoryID, Comparison: comparison,
+			})
+			if err != nil {
+				return capsule.WorkspaceChanges{}, fmt.Errorf("compare Job branches: %w", err)
+			}
+			return label(changes), nil
+		}
 		var restored domain.CapsuleRuntime
 		if authenticated {
 			materializer, supported := s.engine.(capsule.SecretMaterializer)
@@ -422,26 +449,13 @@ func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, session
 			}
 		}()
 	}
-	comparison := capsule.WorkspaceComparison{
-		BaseRef: job.BaseRef, HeadRef: job.Branch, Authentication: authentication,
-	}
-	if sessionID != "" {
-		comparison.CommitMessageMatch = "Spin-Session: " + sessionID
-	}
 	inspectContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	changes, err := inspector.InspectWorkspaceRange(inspectContext, *runtime, comparison)
 	if err != nil {
 		return capsule.WorkspaceChanges{}, err
 	}
-	if sessionID == "" {
-		changes.Branch = job.Branch + " ← " + job.BaseRef
-	} else if phaseName != "" {
-		changes.Branch = phaseName + " · " + sessionID
-	} else {
-		changes.Branch = sessionID
-	}
-	return changes, nil
+	return label(changes), nil
 }
 
 func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {

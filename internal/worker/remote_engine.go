@@ -158,6 +158,18 @@ func (e *RemoteEngine) BrowseRepository(ctx context.Context, browse capsule.Repo
 	return result, err
 }
 
+// CompareRepository runs on any runner: the clone is the runner's own and
+// the remote is the source of truth.
+func (e *RemoteEngine) CompareRepository(ctx context.Context, comparison capsule.RepositoryComparison) (capsule.WorkspaceChanges, error) {
+	var changes capsule.WorkspaceChanges
+	target, err := e.broker.choose(ctx, "")
+	if err != nil {
+		return changes, err
+	}
+	_, err = e.broker.call(ctx, target.id, methodCompareRepository, repositoryComparePayload{Comparison: comparison}, &changes)
+	return changes, err
+}
+
 // App services live on the runner that holds the Session's capsule; the
 // runtime's ClientID is the affinity for all four calls.
 func (e *RemoteEngine) StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService, hosts []string) ([]domain.AppServiceRuntime, error) {
@@ -773,6 +785,7 @@ var (
 	_ capsule.InteractiveEngine           = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceSyncer             = (*RemoteEngine)(nil)
 	_ capsule.RepositoryBrowser           = (*RemoteEngine)(nil)
+	_ capsule.RepositoryComparer          = (*RemoteEngine)(nil)
 	_ capsule.EnabledEngine               = (*RemoteEngine)(nil)
 	_ capsule.EnabledProber               = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceInspector          = (*RemoteEngine)(nil)

@@ -552,6 +552,17 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		}
 		result, err := browser.BrowseRepository(ctx, payload.Browse)
 		return result, false, err
+	case methodCompareRepository:
+		var payload repositoryComparePayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		comparer, ok := w.engine.(capsule.RepositoryComparer)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot compare repositories")
+		}
+		result, err := comparer.CompareRepository(ctx, payload.Comparison)
+		return result, false, err
 	case methodStartApp, methodStopApp, methodAppStatus, methodAppLogs:
 		var payload appPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {

@@ -64,7 +64,12 @@ async function api(path,options={}) {
   const method=String(options.method||'GET').toUpperCase(),multipart=typeof FormData!=='undefined'&&options.body instanceof FormData,headers={...(options.body&&!multipart?{'Content-Type':'application/json'}:{}),...(options.headers||{})};
   if(csrfToken&&['POST','PUT','PATCH','DELETE'].includes(method))headers['X-Spin-CSRF']=csrfToken;
   const response=await fetch(path,{...options,headers,credentials:'same-origin'});
-  if(!response.ok){const body=await response.json().catch(()=>({error:response.statusText}));const error=new Error(body.error||response.statusText);error.status=response.status;throw error;}
+  if(!response.ok){
+    const body=await response.json().catch(()=>({error:response.statusText}));
+    // A restarted server rotates the CSRF token; pick the new one up once and retry.
+    if(response.status===403&&/CSRF/.test(body.error||'')&&!options.retried){const status=await api('/api/auth/status');if(status?.csrf_token){authState=status;csrfToken=status.csrf_token;return api(path,{...options,retried:true});}}
+    const error=new Error(body.error||response.statusText);error.status=response.status;throw error;
+  }
   return response.status===204?null:response.json();
 }
 function openDialog(id){const dialog=document.getElementById(id);if(dialog&&!dialog.open)dialog.showModal();}
@@ -1230,7 +1235,7 @@ function connectStateStream(){
   stateStream.stopped=false;clearTimeout(stateStream.timer);if(stateStream.socket&&[WebSocket.OPEN,WebSocket.CONNECTING].includes(stateStream.socket.readyState))return;
   const socket=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/state/ws`);stateStream.socket=socket;
   socket.onmessage=event=>{let next;try{next=JSON.parse(event.data);}catch(_){return;}stateStream.failures=0;applyState(next,false);};
-  socket.onclose=()=>{if(stateStream.socket===socket)stateStream.socket=null;if(stateStream.stopped)return;document.getElementById('server-status').textContent='verbinding herstellen…';const delay=Math.min(15000,500*2**Math.min(stateStream.failures++,5));stateStream.timer=setTimeout(async()=>{if(stateStream.stopped)return;try{await api('/api/auth/status');connectStateStream();}catch(error){if(error.status===401){stopStateStream();authState.authenticated=false;csrfToken='';showAuthGate('Je sessie is verlopen. Log opnieuw in.');return;}connectStateStream();}},delay);};
+  socket.onclose=()=>{if(stateStream.socket===socket)stateStream.socket=null;if(stateStream.stopped)return;document.getElementById('server-status').textContent='verbinding herstellen…';const delay=Math.min(15000,500*2**Math.min(stateStream.failures++,5));stateStream.timer=setTimeout(async()=>{if(stateStream.stopped)return;try{const status=await api('/api/auth/status');if(status?.authenticated){authState=status;csrfToken=status.csrf_token||csrfToken;}connectStateStream();}catch(error){if(error.status===401){stopStateStream();authState.authenticated=false;csrfToken='';showAuthGate('Je sessie is verlopen. Log opnieuw in.');return;}connectStateStream();}},delay);};
   socket.onerror=()=>socket.close();
 }
 function stopStateStream(){stateStream.stopped=true;clearTimeout(stateStream.timer);if(stateStream.socket){const socket=stateStream.socket;stateStream.socket=null;socket.close();}}

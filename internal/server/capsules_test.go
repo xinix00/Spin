@@ -32,6 +32,7 @@ type testEngine struct {
 	gitAuth        *capsule.GitAuthentication
 	accepted       []capsule.WorkspaceAcceptance
 	comparisons    []capsule.WorkspaceComparison
+	repositories   []capsule.RepositoryComparison
 	injected       []capsule.WorkspaceAttachment
 }
 
@@ -151,6 +152,12 @@ func (e *testEngine) InspectWorkspace(_ context.Context, _ domain.CapsuleRuntime
 func (e *testEngine) InspectWorkspaceRange(_ context.Context, _ domain.CapsuleRuntime, comparison capsule.WorkspaceComparison) (capsule.WorkspaceChanges, error) {
 	e.comparisons = append(e.comparisons, comparison)
 	return capsule.WorkspaceChanges{Branch: comparison.HeadRef, Added: 1, Files: []capsule.WorkspaceFileChange{{Path: "result.go", Status: "M ", Added: 1, Patch: "@@ -1 +1,2 @@\n old\n+new\n"}}}, nil
+}
+
+func (e *testEngine) CompareRepository(_ context.Context, comparison capsule.RepositoryComparison) (capsule.WorkspaceChanges, error) {
+	e.repositories = append(e.repositories, comparison)
+	e.comparisons = append(e.comparisons, comparison.Comparison)
+	return capsule.WorkspaceChanges{Branch: comparison.Comparison.HeadRef, Added: 1, Files: []capsule.WorkspaceFileChange{{Path: "result.go", Status: "M ", Added: 1, Patch: "@@ -1 +1,2 @@\n old\n+new\n"}}}, nil
 }
 
 func (e *testEngine) InjectWorkspaceAttachments(_ context.Context, _ domain.CapsuleRuntime, attachments []capsule.WorkspaceAttachment) error {

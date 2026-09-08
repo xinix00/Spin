@@ -220,6 +220,19 @@ type RepositoryBrowseResult struct {
 	File *WorkspaceFile  `json:"file,omitempty"`
 }
 
+// RepositoryComparison compares two branches of a repository on the runner's
+// own clone: no composition, no images, only git. CacheKey names the clone
+// volume, stable per repository.
+type RepositoryComparison struct {
+	RemoteURL  string
+	CacheKey   string
+	Comparison WorkspaceComparison
+}
+
+type RepositoryComparer interface {
+	CompareRepository(ctx context.Context, comparison RepositoryComparison) (WorkspaceChanges, error)
+}
+
 type RepositoryBrowser interface {
 	BrowseRepository(ctx context.Context, browse RepositoryBrowse) (RepositoryBrowseResult, error)
 }

@@ -120,8 +120,13 @@ func TestWorkflowAcceptOwnsCommitAndPublishesSessionToJobBranch(t *testing.T) {
 	historicalRequest := httptest.NewRequest(http.MethodGet, "/api/jobs/"+created.Job.ID+"/changes?operator=derek&session_id="+created.Session.ID, nil)
 	historicalResponse := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(historicalResponse, historicalRequest)
-	if historicalResponse.Code != http.StatusOK || engine.materialized != materializedBefore+1 || len(engine.comparisons) != 3 {
-		t.Fatalf("historical changes status=%d body=%s materialized=%d comparisons=%d", historicalResponse.Code, historicalResponse.Body.String(), engine.materialized, len(engine.comparisons))
+	// A stopped composition is compared on the runner's clone of the remote:
+	// nothing is restored, no image travels.
+	if historicalResponse.Code != http.StatusOK || engine.materialized != materializedBefore || len(engine.comparisons) != 3 || len(engine.repositories) != 1 {
+		t.Fatalf("historical changes status=%d body=%s materialized=%d comparisons=%d repositories=%d", historicalResponse.Code, historicalResponse.Body.String(), engine.materialized, len(engine.comparisons), len(engine.repositories))
+	}
+	if compared := engine.repositories[0]; compared.RemoteURL == "" || compared.CacheKey != repository.Repository.ID || compared.Comparison.CommitMessageMatch != "Spin-Session: "+created.Session.ID || compared.Comparison.Authentication == nil || compared.Comparison.Authentication.Password != "github-secret" {
+		t.Fatalf("repository comparison = %+v", compared)
 	}
 	acceptance := engine.accepted[0]
 	if !acceptance.AllowChanges || acceptance.RemoteRef != created.Job.Branch || !strings.Contains(acceptance.RemoteRef, "/main") {
