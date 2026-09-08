@@ -616,7 +616,11 @@ func (d *Docker) ImportSnapshot(ctx context.Context, snapshot domain.CapsuleSnap
 		return err
 	}
 	if strings.TrimSpace(loadedDigest) != strings.TrimSpace(snapshot.Digest) && d.logger != nil {
-		d.logger.Info("imported image has another ID than recorded; its layers match", "ref", snapshot.Ref, "loaded", strings.TrimSpace(loadedDigest), "recorded", snapshot.Digest)
+		how := "its layers match the recorded ones"
+		if snapshot.RootFS == "" {
+			how = "recorded before layers were kept; accepted from the archive"
+		}
+		d.logger.Info("imported image has another ID than recorded (another image store); "+how, "ref", snapshot.Ref)
 	}
 	return nil
 }
