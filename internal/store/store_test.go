@@ -958,3 +958,62 @@ func TestRunnerDrainSurvivesReconnectAndBlocksNewClaims(t *testing.T) {
 		t.Fatalf("resumed runner cannot claim queued work: %v", err)
 	}
 }
+
+// Offline runners nothing hangs on are forgotten after a day; one with a
+// Session pinned to it stays, and a connected one is never touched.
+func TestPruneClientsForgetsIdleOfflineRunners(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities := domain.ClientCapabilities{Tools: []string{"demo"}}
+	stale, err := st.RegisterClient(domain.RegisterClientRequest{InstanceID: "deploy-1", Name: "Minivan", Capabilities: capabilities})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := st.RegisterClient(domain.RegisterClientRequest{InstanceID: "deploy-2", Name: "Minivan", Capabilities: capabilities})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.RegisterClient(domain.RegisterClientRequest{InstanceID: "deploy-3", Name: "Minivan", Capabilities: capabilities})
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "demo", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "demo"}}})
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "pinned", RemoteURL: "https://example.com/pinned.git"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Pinned", Objective: "Stay", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.BindSessionClient(created.Session.ID, pinned.ID); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-48 * time.Hour)
+	st.mu.Lock()
+	for _, id := range []string{stale.ID, pinned.ID} {
+		client := st.state.Clients[id]
+		client.Status, client.LastSeenAt = "offline", old
+		st.state.Clients[id] = client
+	}
+	st.mu.Unlock()
+	if err := st.RemoveClient(current.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("removing an online runner: %v", err)
+	}
+	removed, err := st.PruneClients(24 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != stale.ID {
+		t.Fatalf("pruned %v, want only %s", removed, stale.ID)
+	}
+	if _, err := st.Client(pinned.ID); err != nil {
+		t.Fatalf("pinned runner was pruned: %v", err)
+	}
+	if err := st.RemoveClient(pinned.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("removing a runner with a Session: %v", err)
+	}
+}

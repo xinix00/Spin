@@ -168,6 +168,7 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 	s.resumeStartingRecordings()
 	s.pruneLater()
 	s.cleanTemporaryFiles()
+	s.pruneClients()
 	go s.sweepQueuedWorkflowPhases()
 	return s
 }
@@ -179,8 +180,15 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 func (s *Server) sweepQueuedWorkflowPhases() {
 	ticker := time.NewTicker(s.launchSweep)
 	defer ticker.Stop()
-	for range ticker.C {
-		s.launchQueuedWorkflowPhases("sweep")
+	clients := time.NewTicker(time.Hour)
+	defer clients.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.launchQueuedWorkflowPhases("sweep")
+		case <-clients.C:
+			s.pruneClients()
+		}
 	}
 }
 
@@ -523,6 +531,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/git/oauth/{provider}/configuration", s.deleteGitOAuthConfiguration)
 	s.mux.HandleFunc("POST /api/clients/register", s.registerClient)
 	s.mux.HandleFunc("POST /api/clients/{clientID}/drain", s.drainClient)
+	s.mux.HandleFunc("DELETE /api/clients/{clientID}", s.removeClient)
 	s.mux.HandleFunc("POST /api/clients/{clientID}/resume", s.resumeClient)
 	s.mux.HandleFunc("POST /api/sessions/claim", s.claim)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/start", s.startSession)
@@ -665,6 +674,43 @@ func (s *Server) setClientDraining(w http.ResponseWriter, r *http.Request, drain
 		return
 	}
 	writeJSON(w, http.StatusOK, client)
+}
+
+// removeClient forgets an offline runner nothing hangs on.
+func (s *Server) removeClient(w http.ResponseWriter, r *http.Request) {
+	identity, ok := identityFromRequest(r)
+	if !s.authDisabled && (!ok || identity.User.Role != domain.UserAdmin) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin role required"})
+		return
+	}
+	clientID := r.PathValue("clientID")
+	if s.runnerBroker != nil {
+		if err := s.runnerBroker.Forget(clientID); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+	if err := s.store.RemoveClient(clientID); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// pruneClients forgets runners offline for a day that nothing hangs on:
+// every redeploy of a stateless runner used to leave a card behind.
+func (s *Server) pruneClients() {
+	removed, err := s.store.PruneClients(24 * time.Hour)
+	if err != nil {
+		s.logger.Warn("prune offline runners", "error", err)
+		return
+	}
+	for _, id := range removed {
+		if s.runnerBroker != nil {
+			_ = s.runnerBroker.Forget(id)
+		}
+		s.logger.Info("forgot offline runner", "client", id)
+	}
 }
 
 func (s *Server) dashboard(w http.ResponseWriter, _ *http.Request) {

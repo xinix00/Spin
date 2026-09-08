@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -2471,6 +2472,67 @@ func (s *Store) SetClientDraining(clientID string, draining, connected bool) (do
 
 // SetClientStatus updates connection presence without changing a Session's
 // runner affinity. A WebSocket outage is not evidence that local work died.
+// clientBusyLocked tells whether anything still hangs on a client: a Session
+// pinned to it that has not ended, or a capsule or recording running there.
+func (s *Store) clientBusyLocked(clientID string) bool {
+	for _, session := range s.state.Sessions {
+		if session.ClientID == clientID && session.Status != domain.SessionCompleted && session.Status != domain.SessionCancelled {
+			return true
+		}
+	}
+	for _, composition := range s.state.Compositions {
+		if composition.Runtime != nil && composition.Runtime.ClientID == clientID && composition.Runtime.Status != "stopped" {
+			return true
+		}
+	}
+	for _, recording := range s.state.Recordings {
+		if recording.Runtime != nil && recording.Runtime.ClientID == clientID && recording.Runtime.Status != "stopped" {
+			return true
+		}
+	}
+	return false
+}
+
+// RemoveClient forgets an offline runner nothing hangs on. A runner that
+// comes back registers again under its own identity.
+func (s *Store) RemoveClient(clientID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	client, ok := s.state.Clients[strings.TrimSpace(clientID)]
+	if !ok {
+		return ErrNotFound
+	}
+	if client.Status == "online" || client.Status == "draining" {
+		return fmt.Errorf("runner %s is online: %w", client.Name, ErrConflict)
+	}
+	if s.clientBusyLocked(client.ID) {
+		return fmt.Errorf("runner %s still has Sessions or capsules: %w", client.Name, ErrConflict)
+	}
+	delete(s.state.Clients, client.ID)
+	return s.saveLocked()
+}
+
+// PruneClients removes runners offline for longer than the given age that
+// nothing hangs on, and returns their IDs.
+func (s *Store) PruneClients(olderThan time.Duration) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cutoff := time.Now().UTC().Add(-olderThan)
+	var removed []string
+	for id, client := range s.state.Clients {
+		if client.Status == "online" || client.Status == "draining" || !client.LastSeenAt.Before(cutoff) || s.clientBusyLocked(id) {
+			continue
+		}
+		delete(s.state.Clients, id)
+		removed = append(removed, id)
+	}
+	if len(removed) == 0 {
+		return nil, nil
+	}
+	sort.Strings(removed)
+	return removed, s.saveLocked()
+}
+
 func (s *Store) SetClientStatus(clientID, status string) (domain.Client, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -298,7 +298,7 @@ docker run --restart unless-stopped \
   -id-file /client-data/client.id -capsule-network bridge
 ```
 
-Connections → Runners toont online/offline/draining, engine, capaciteit, last-seen en hoeveel Sessions duurzaam aan iedere client hangen. Admins kunnen daar nieuwe plaatsing per runner drainen en hervatten.
+Connections → Runners toont online/offline/draining, engine, capaciteit, last-seen en hoeveel Sessions duurzaam aan iedere client hangen. Admins kunnen daar nieuwe plaatsing per runner drainen en hervatten, en een offline runner zonder werk verwijderen. Een runner is dezelfde runner over herstarts heen: zijn identiteit volgt de machine en de naam (of een identiteitsbestand van een oudere installatie), ook wanneer hij als HOP-job telkens uit een lege map start. Offline runners waar niets meer aan hangt (geen Session, geen draaiende capsule of opname) ruimt de server na een dag zelf op; een runner die terugkomt meldt zich onder dezelfde identiteit opnieuw aan.
 
 ### Releases
 

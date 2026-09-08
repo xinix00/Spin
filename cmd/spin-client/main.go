@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"log/slog"
@@ -47,12 +49,19 @@ func main() {
 		}
 	}
 	if *instanceID == "" {
-		var err error
-		*instanceID, err = security.LoadOrCreateToken(*instanceIDFile)
-		if err != nil {
-			logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-			logger.Error("load client identity", "error", err)
-			os.Exit(1)
+		// An identity file from an earlier install is honoured. Without one the
+		// identity follows the machine and the name: a runner redeployed from a
+		// fresh directory (a HOP job) is the same runner, not a new card.
+		if _, err := os.Stat(*instanceIDFile); err == nil {
+			var loadErr error
+			*instanceID, loadErr = security.LoadOrCreateToken(*instanceIDFile)
+			if loadErr != nil {
+				logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+				logger.Error("load client identity", "error", loadErr)
+				os.Exit(1)
+			}
+		} else {
+			*instanceID = machineIdentity(*name)
 		}
 	}
 
@@ -89,6 +98,13 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// machineIdentity is a stable instance ID for this host and runner name.
+func machineIdentity(name string) string {
+	host, _ := os.Hostname()
+	sum := sha256.Sum256([]byte("spin-client\x00" + strings.ToLower(strings.TrimSpace(host)) + "\x00" + strings.TrimSpace(name)))
+	return "host-" + hex.EncodeToString(sum[:12])
 }
 
 func defaultName() string {

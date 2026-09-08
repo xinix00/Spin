@@ -474,6 +474,24 @@ func (b *Broker) SetDraining(clientID string, draining bool) (domain.Client, err
 	return updated, nil
 }
 
+// Forget drops the peer of a removed client unless it is connected.
+func (b *Broker) Forget(clientID string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	peer := b.peers[clientID]
+	if peer != nil && peer.connectedForAffinity() {
+		return fmt.Errorf("runner %s is connected: %w", clientID, store.ErrConflict)
+	}
+	delete(b.peers, clientID)
+	b.order = slices.DeleteFunc(b.order, func(id string) bool { return id == clientID })
+	if len(b.order) > 0 {
+		b.cursor %= len(b.order)
+	} else {
+		b.cursor = 0
+	}
+	return nil
+}
+
 // supportsSnapshotMode reports whether a connected runner advertised a
 // snapshot transfer mode in its hello.
 func (b *Broker) supportsSnapshotMode(clientID, mode string) bool {
