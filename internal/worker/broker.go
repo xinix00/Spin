@@ -21,10 +21,15 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// Keepalive for the runner link. The link carries whole images in 1 MiB
+// messages, through Cloudflare, to runners on office lines: one message
+// may take a while to get through, and while a side is busy shipping bulk
+// it pings late. The deadlines leave room for that; a dead peer is still
+// noticed within a minute and a half.
 const (
-	pingEvery = 10 * time.Second
-	pongWait  = 35 * time.Second
-	writeWait = 10 * time.Second
+	pingEvery = 15 * time.Second
+	pongWait  = 90 * time.Second
+	writeWait = 60 * time.Second
 )
 
 var errNoRunner = errors.New("no compatible runner connected")
