@@ -408,7 +408,9 @@ func TestWorkflowPhaseOwnsItsEnvironmentRecipe(t *testing.T) {
 	}
 	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
 	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "developer", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "developer-acp"}}})
-	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "reviewer", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "reviewer-acp"}}})
+	reviewer := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "reviewer", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "reviewer-acp"}}})
+	// Derek's login for the reviewer: the review phase runs as this layer.
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactCredential, Name: "reviewer", Scope: domain.ScopeUser, ParentArtifactIDs: []string{reviewer.ID}})
 	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "phase-env", RemoteURL: "https://example.com/phase-env.git"})
 	if err != nil {
 		t.Fatal(err)
@@ -434,8 +436,11 @@ func TestWorkflowPhaseOwnsItsEnvironmentRecipe(t *testing.T) {
 	if err != nil || advance.NextSession == nil {
 		t.Fatalf("advance = %+v, error = %v", advance, err)
 	}
-	if advance.NextSession.EnvironmentSelector != "tool:reviewer" || advance.NextSession.Tool != "reviewer" {
-		t.Fatalf("review Session recipe = %+v", advance.NextSession)
+	// Layers in order: the Job's own layer underneath, the reviewer on top
+	// as the worker's credential layer for it.
+	next := advance.NextSession
+	if next.EnvironmentSelector != "credential:reviewer" || next.Tool != "reviewer" || len(next.WithSelectors) != 2 || next.WithSelectors[0] != "tool:developer" || next.WithSelectors[1] != "tool:git" {
+		t.Fatalf("review Session layers = %s + %v, tool %s", next.EnvironmentSelector, next.WithSelectors, next.Tool)
 	}
 }
 

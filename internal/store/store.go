@@ -918,6 +918,41 @@ func (s *Store) Use(req domain.UseRequest) (domain.Composition, error) {
 			return domain.Composition{}, err
 		}
 	}
+	// The entry decides the agent. Its own lineage (parents, and the newest
+	// versions of them) is applied last, so a lower layer of the Job with
+	// another agent in it never supplies the command.
+	entryLineage := map[string]bool{}
+	var walk func(id string)
+	walk = func(id string) {
+		if entryLineage[id] {
+			return
+		}
+		entryLineage[id] = true
+		artifact, ok := s.state.Artifacts[id]
+		if !ok {
+			return
+		}
+		for _, parentID := range artifact.ParentArtifactIDs {
+			walk(parentID)
+		}
+		if newest, replaced := s.newestVersionLocked(artifact, operator); replaced {
+			walk(newest.ID)
+		}
+	}
+	walk(entry.ID)
+	var others, own []domain.Enablement
+	for _, resolved := range composition.ResolvedArtifacts {
+		artifact, ok := s.state.Artifacts[resolved.ArtifactID]
+		if !ok {
+			continue
+		}
+		if entryLineage[artifact.ID] {
+			own = mergeEnablements(own, artifact.Enables)
+		} else {
+			others = mergeEnablements(others, artifact.Enables)
+		}
+	}
+	composition.Enabled = mergeEnablements(others, own)
 	if err := validateRequirements(composition, s.state.Artifacts); err != nil {
 		return domain.Composition{}, err
 	}
@@ -3460,6 +3495,10 @@ func (s *Store) IdentityLayerFor(artifactID, operator string) (domain.Artifact, 
 	if !ok {
 		return domain.Artifact{}, ErrNotFound
 	}
+	return s.identityLayerLocked(artifact, operator), nil
+}
+
+func (s *Store) identityLayerLocked(artifact domain.Artifact, operator string) domain.Artifact {
 	var identity *domain.Artifact
 	for _, candidate := range s.state.Artifacts {
 		if candidate.Kind != domain.ArtifactCredential || candidate.Scope != domain.ScopeUser || candidate.Subject != operator || candidate.SupersededBy != "" {
@@ -3474,9 +3513,9 @@ func (s *Store) IdentityLayerFor(artifactID, operator string) (domain.Artifact, 
 		}
 	}
 	if identity != nil {
-		return *identity, nil
+		return *identity
 	}
-	return artifact, nil
+	return artifact
 }
 
 func (s *Store) artifactDependsOnLocked(artifactID, ancestorID string) bool {

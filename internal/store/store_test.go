@@ -1017,3 +1017,29 @@ func TestPruneClientsForgetsIdleOfflineRunners(t *testing.T) {
 		t.Fatalf("removing a runner with a Session: %v", err)
 	}
 }
+
+// Two agents in one stack: the entry's agent supplies the command, however
+// the layers are ordered underneath it.
+func TestUseEntryAgentWinsOverAgentsLowerInTheStack(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "codex", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "codex-acp"}}})
+	claude := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "claude", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "claude-agent-acp"}}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactCredential, Name: "claude", Scope: domain.ScopeUser, ParentArtifactIDs: []string{claude.ID}})
+	composition, err := st.Use(domain.UseRequest{Selector: "credential:claude", WithSelectors: []string{"tool:codex"}, Operator: "derek"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var acp string
+	for _, enabled := range composition.Enabled {
+		if enabled.Name == "acp" {
+			acp = enabled.Command
+		}
+	}
+	if acp != "claude-agent-acp" || composition.Tool != "claude" {
+		t.Fatalf("acp command = %q, tool = %q; the layer underneath took over", acp, composition.Tool)
+	}
+}

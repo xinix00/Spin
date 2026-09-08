@@ -529,16 +529,32 @@ func workflowPhase(template domain.WorkflowTemplate, phaseID string) (domain.Wor
 // asking to run without one: the Job's environment stays the entry, which
 // is where a person chooses the model, and the phase's layer comes along
 // as an extra WITH layer.
+// phaseEnvironmentLocked is the layers a phase runs on, in order: the
+// Job's own layers first, then what the phase adds. A phase naming an agent
+// layer runs that agent as the worker (the worker's credential layer on it,
+// or the layer itself) with the Job's layers underneath; a phase naming a
+// layer without an agent adds that layer and keeps the Job's agent.
 func (s *Store) phaseEnvironmentLocked(operator string, phase domain.WorkflowPhase, jobSelector string, jobWith []string) (string, []string) {
 	selector, with := workflowPhaseEnvironment(phase, jobSelector, jobWith)
 	if phase.EnvironmentSelector == "" || selector == jobSelector {
 		return selector, with
 	}
 	artifact, err := s.resolveArtifactSelectorLocked(selector, operator, "default")
-	if err != nil || s.artifactEnablesLocked(artifact.ID, "acp") {
+	if err != nil {
 		return selector, with
 	}
-	return jobSelector, uniqueStrings(append(with, selector))
+	if !s.artifactEnablesLocked(artifact.ID, "acp") {
+		return jobSelector, uniqueStrings(append(with, selector))
+	}
+	identity := s.identityLayerLocked(artifact, operator)
+	agentSelector := string(identity.Kind) + ":" + identity.Name
+	if agentSelector == jobSelector {
+		return jobSelector, with
+	}
+	if jobArtifact, err := s.resolveArtifactSelectorLocked(jobSelector, operator, "default"); err == nil && s.sameLineageLocked(jobArtifact, identity) {
+		return jobSelector, with
+	}
+	return agentSelector, uniqueStrings(append([]string{jobSelector}, with...))
 }
 
 func workflowPhaseEnvironment(phase domain.WorkflowPhase, fallbackSelector string, fallbackWith []string) (string, []string) {
