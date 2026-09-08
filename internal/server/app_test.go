@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +27,14 @@ type appTestEngine struct {
 	sessions map[string]bool
 	merged   []capsule.WorkspaceMerge
 	synced   []capsule.WorkspaceSync
+}
+
+func (e *appTestEngine) ListWorkspace(_ context.Context, _ domain.CapsuleRuntime, ref string) (capsule.WorkspaceTree, error) {
+	return capsule.WorkspaceTree{Ref: ref, Entries: []capsule.WorkspaceEntry{{Path: "src/main.go", Size: 13}, {Path: "README.md", Size: 7}}}, nil
+}
+
+func (e *appTestEngine) ReadWorkspaceFile(_ context.Context, _ domain.CapsuleRuntime, ref, path string) (capsule.WorkspaceFile, error) {
+	return capsule.WorkspaceFile{Ref: ref, Path: path, Size: 13, Content: "package main\n"}, nil
 }
 
 func (e *appTestEngine) SyncWorkspace(_ context.Context, _ domain.CapsuleRuntime, sync capsule.WorkspaceSync) (capsule.WorkspaceSyncResult, error) {
@@ -340,5 +350,57 @@ func TestAssigneeMayOpenAJobsSession(t *testing.T) {
 	}
 	if _, _, err := srv.sessionComposition(created.Session.ID, "john"); err != nil {
 		t.Fatalf("the assignee could not open the session: %v", err)
+	}
+}
+
+// The code browser reads the Job's latest running workspace; refs outside
+// the Job's own fall back to the working tree, and without a workspace it
+// says so.
+func TestCodeBrowserReadsTheJobsRunningWorkspace(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &appTestEngine{}
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "code", RemoteURL: "https://example.com/code.git", DefaultRef: "develop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Kort", Phases: []domain.WorkflowPhase{{ID: "build", Name: "Bouw", Instructions: "Bouw", AllowChanges: true, Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: "SELF"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Code", Objective: "x", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func(path string) (int, string) {
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		return recorder.Code, recorder.Body.String()
+	}
+	if code, body := get("/api/jobs/" + created.Job.ID + "/code/tree"); code != http.StatusConflict || !strings.Contains(body, "geen draaiende workspace") {
+		t.Fatalf("tree without workspace: %d %s", code, body)
+	}
+	srv.launchQueuedWorkflowPhases("test")
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		if _, _, err := srv.codeWorkspace(created.Job.ID); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	code, body := get("/api/jobs/" + created.Job.ID + "/code/tree?ref=origin/" + created.Job.Branch)
+	if code != http.StatusOK || !strings.Contains(body, `"src/main.go"`) || !strings.Contains(body, `"ref":"origin/`+created.Job.Branch+`"`) || !strings.Contains(body, `"origin/develop"`) {
+		t.Fatalf("tree: %d %s", code, body)
+	}
+	code, body = get("/api/jobs/" + created.Job.ID + "/code/tree?ref=refs/heads/nonsense")
+	if code != http.StatusOK || !strings.Contains(body, `"ref":"workspace"`) {
+		t.Fatalf("tree with a foreign ref: %d %s", code, body)
+	}
+	code, body = get("/api/jobs/" + created.Job.ID + "/code/file?ref=HEAD&path=src/main.go")
+	if code != http.StatusOK || !strings.Contains(body, `"content":"package main\n"`) {
+		t.Fatalf("file: %d %s", code, body)
 	}
 }

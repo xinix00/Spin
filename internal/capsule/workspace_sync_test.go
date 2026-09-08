@@ -111,3 +111,45 @@ func script(t *testing.T, dir string, env []string, body string) string {
 	}
 	return string(output)
 }
+
+// The browser scripts list a ref's files with sizes and read one file, for
+// the working tree and for a Git ref.
+func TestWorkspaceBrowseScriptsListAndReadFiles(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	dir := t.TempDir()
+	run(t, dir, "git", "init", "-q")
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "src", "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one")
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	listing := script(t, dir, []string{"SPIN_REF=workspace"}, listWorkspaceScript)
+	if !strings.Contains(listing, "0\tsrc/main.go") || !strings.Contains(listing, "0\tnotes.txt") {
+		t.Fatalf("working tree listing = %q", listing)
+	}
+	listing = script(t, dir, []string{"SPIN_REF=HEAD"}, listWorkspaceScript)
+	if !strings.Contains(listing, "13\tsrc/main.go") || strings.Contains(listing, "notes.txt") {
+		t.Fatalf("HEAD listing = %q", listing)
+	}
+	content := script(t, dir, []string{"SPIN_REF=HEAD", "SPIN_PATH=src/main.go", "SPIN_LIMIT=5"}, readWorkspaceFileScript)
+	if content != "SPIN_SIZE 13\npacka" {
+		t.Fatalf("HEAD read = %q", content)
+	}
+	content = script(t, dir, []string{"SPIN_REF=workspace", "SPIN_PATH=notes.txt", "SPIN_LIMIT=1024"}, readWorkspaceFileScript)
+	if content != "SPIN_SIZE 10\nuntracked\n" {
+		t.Fatalf("working tree read = %q", content)
+	}
+	for _, path := range []string{"../x", "/etc/passwd", "a/../b", "-flag"} {
+		if validWorkspacePath(path) {
+			t.Fatalf("%q was accepted as a workspace path", path)
+		}
+	}
+}

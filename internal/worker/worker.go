@@ -541,6 +541,21 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		}
 		result, err := syncer.SyncWorkspace(ctx, payload.Runtime, payload.Sync)
 		return result, false, err
+	case methodBrowseWorkspace:
+		var payload browsePayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		browser, ok := w.engine.(capsule.WorkspaceBrowser)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot browse workspaces")
+		}
+		if payload.Path == "" {
+			result, err := browser.ListWorkspace(ctx, payload.Runtime, payload.Ref)
+			return result, false, err
+		}
+		result, err := browser.ReadWorkspaceFile(ctx, payload.Runtime, payload.Ref, payload.Path)
+		return result, false, err
 	case methodStartApp, methodStopApp, methodAppStatus, methodAppLogs:
 		var payload appPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {

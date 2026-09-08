@@ -39,6 +39,7 @@ const (
 	methodAcceptWorkspace   = "workspace.accept"
 	methodMergeWorkspace    = "workspace.merge"
 	methodSyncWorkspace     = "workspace.sync"
+	methodBrowseWorkspace   = "workspace.browse"
 	methodRemoveSnapshot    = "snapshot.remove"
 	methodExportSnapshot    = "snapshot.export"
 	methodImportSnapshot    = "snapshot.import"
@@ -103,6 +104,12 @@ type mergePayload struct {
 type syncPayload struct {
 	Runtime domain.CapsuleRuntime `json:"runtime"`
 	Sync    capsule.WorkspaceSync `json:"sync"`
+}
+
+type browsePayload struct {
+	Runtime domain.CapsuleRuntime `json:"runtime"`
+	Ref     string                `json:"ref"`
+	Path    string                `json:"path,omitempty"` // empty lists the tree
 }
 
 type appPayload struct {

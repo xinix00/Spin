@@ -162,6 +162,8 @@ Onder Access kan een admin een gebruiker een nieuw tijdelijk wachtwoord geven (*
 
 De browser vraagt de staat niet, hij krijgt hem. Eén WebSocket (`/api/state/ws`) stuurt de volledige staat bij verbinden, daarna opnieuw zodra de store een keer is opgeslagen (opeenvolgende opslagen binnen 150 ms worden één bericht) en elke drie seconden zolang er iets alleen in het geheugen beweegt: een launch, een seal, een start, het ophalen van agent-opties, een test-app. Ieder bericht draagt een versienummer dat alleen oploopt. Valt de verbinding weg, dan herstelt de browser die met oplopende wachttijd; na een actie haalt hij de staat één keer direct op.
 
+**Code** op een Job-kaart opent een leesbare boom van de bestanden van die Job, rechtstreeks uit Git gelezen in de laatste draaiende workspace van de Job: de werkbestanden, `HEAD`, de Job-branch of de basisbranch zoals de workspace ze kent. Spin slaat er niets van op; zonder draaiende workspace zegt de kiezer dat je een stap moet starten of hervatten. Mappen klappen open, een bestand toont met regelnummers en syntaxkleuring, tot 512 KiB.
+
 Renderen blijft idempotent en volledig, maar de DOM wordt alleen aangeraakt waar de HTML echt verschilt: de Job-lijst per kaart op sleutel, de andere lijsten per regio. Een regio of kaart waarin je bezig bent (een open dropdown, een veld waarin je typt) wordt pas bijgewerkt als de focus die verlaat. Opengeklapte panelen onthouden hun stand.
 
 ## API van lagen en capsules

@@ -171,6 +171,36 @@ type WorkspaceSyncer interface {
 	SyncWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, sync WorkspaceSync) (WorkspaceSyncResult, error)
 }
 
+// A code browser reads a Session's workspace straight from Git: the tree
+// of a ref and one file at a time, nothing stored. "workspace" is the
+// working tree itself, any other ref is what Git holds for it.
+type WorkspaceEntry struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+}
+
+type WorkspaceTree struct {
+	Ref     string           `json:"ref"`
+	Entries []WorkspaceEntry `json:"entries"`
+}
+
+type WorkspaceFile struct {
+	Ref       string `json:"ref"`
+	Path      string `json:"path"`
+	Size      int64  `json:"size"`
+	Content   string `json:"content"`
+	Binary    bool   `json:"binary"`
+	Truncated bool   `json:"truncated"`
+}
+
+// WorkspaceFileLimit is how much of a file the browser reads.
+const WorkspaceFileLimit = 512 << 10
+
+type WorkspaceBrowser interface {
+	ListWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, ref string) (WorkspaceTree, error)
+	ReadWorkspaceFile(ctx context.Context, runtime domain.CapsuleRuntime, ref, path string) (WorkspaceFile, error)
+}
+
 // WorkspaceMerger merges a Job branch into its base branch on the remote.
 type WorkspaceMerger interface {
 	MergeWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, merge WorkspaceMerge) (WorkspaceMergeResult, error)

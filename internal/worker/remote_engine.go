@@ -143,6 +143,18 @@ func (e *RemoteEngine) SyncWorkspace(ctx context.Context, runtime domain.Capsule
 	return result, err
 }
 
+func (e *RemoteEngine) ListWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, ref string) (capsule.WorkspaceTree, error) {
+	var result capsule.WorkspaceTree
+	_, err := e.broker.call(ctx, runtime.ClientID, methodBrowseWorkspace, browsePayload{Runtime: runtime, Ref: ref}, &result)
+	return result, err
+}
+
+func (e *RemoteEngine) ReadWorkspaceFile(ctx context.Context, runtime domain.CapsuleRuntime, ref, path string) (capsule.WorkspaceFile, error) {
+	var result capsule.WorkspaceFile
+	_, err := e.broker.call(ctx, runtime.ClientID, methodBrowseWorkspace, browsePayload{Runtime: runtime, Ref: ref, Path: path}, &result)
+	return result, err
+}
+
 // App services live on the runner that holds the Session's capsule; the
 // runtime's ClientID is the affinity for all four calls.
 func (e *RemoteEngine) StartAppServices(ctx context.Context, runtime domain.CapsuleRuntime, sessionID string, services []domain.AppService, hosts []string) ([]domain.AppServiceRuntime, error) {
@@ -656,6 +668,7 @@ var (
 	_ capsule.SecretMaterializer          = (*RemoteEngine)(nil)
 	_ capsule.InteractiveEngine           = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceSyncer             = (*RemoteEngine)(nil)
+	_ capsule.WorkspaceBrowser            = (*RemoteEngine)(nil)
 	_ capsule.EnabledEngine               = (*RemoteEngine)(nil)
 	_ capsule.EnabledProber               = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceInspector          = (*RemoteEngine)(nil)

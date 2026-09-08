@@ -1185,6 +1185,97 @@ fi
 printf 'SPIN_ACCEPT committed=%s head=%s\n' "$SPIN_COMMITTED" "$SPIN_PUBLISH"
 unset SPIN_GIT_PASSWORD`
 
+// ListWorkspace lists every file of a ref in the Session's workspace.
+func (d *Docker) ListWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, ref string) (WorkspaceTree, error) {
+	tree := WorkspaceTree{Ref: ref, Entries: []WorkspaceEntry{}}
+	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
+		return tree, errors.New("composition has no live Docker capsule")
+	}
+	if ref != "workspace" && !validGitRef(ref) {
+		return tree, fmt.Errorf("invalid Git ref %q", ref)
+	}
+	output, err := d.control(ctx, "exec", "-w", "/workspace", "-e", "SPIN_REF="+ref, runtime.ContainerID, "sh", "-c", listWorkspaceScript)
+	if err != nil {
+		return tree, err
+	}
+	for _, line := range strings.Split(output, "\n") {
+		size, path, ok := strings.Cut(line, "\t")
+		if !ok || path == "" {
+			continue
+		}
+		bytes, _ := strconv.ParseInt(strings.TrimSpace(size), 10, 64)
+		tree.Entries = append(tree.Entries, WorkspaceEntry{Path: path, Size: bytes})
+	}
+	return tree, nil
+}
+
+// ReadWorkspaceFile reads one file of a ref, up to WorkspaceFileLimit.
+func (d *Docker) ReadWorkspaceFile(ctx context.Context, runtime domain.CapsuleRuntime, ref, path string) (WorkspaceFile, error) {
+	file := WorkspaceFile{Ref: ref, Path: path}
+	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
+		return file, errors.New("composition has no live Docker capsule")
+	}
+	if ref != "workspace" && !validGitRef(ref) {
+		return file, fmt.Errorf("invalid Git ref %q", ref)
+	}
+	if !validWorkspacePath(path) {
+		return file, fmt.Errorf("invalid workspace path %q", path)
+	}
+	output, err := d.control(ctx, "exec", "-w", "/workspace", "-e", "SPIN_REF="+ref, "-e", "SPIN_PATH="+path, "-e", "SPIN_LIMIT="+strconv.Itoa(WorkspaceFileLimit), runtime.ContainerID, "sh", "-c", readWorkspaceFileScript)
+	if err != nil {
+		return file, err
+	}
+	header, content, ok := strings.Cut(output, "\n")
+	if !ok || !strings.HasPrefix(header, "SPIN_SIZE ") {
+		return file, fmt.Errorf("workspace file read did not report a size: %s", strings.TrimSpace(output))
+	}
+	file.Size, _ = strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(header, "SPIN_SIZE ")), 10, 64)
+	file.Truncated = file.Size > int64(len(content))
+	if strings.IndexByte(content, 0) >= 0 {
+		file.Binary = true
+		content = ""
+	}
+	file.Content = content
+	return file, nil
+}
+
+// validWorkspacePath keeps a browser path inside the workspace.
+func validWorkspacePath(value string) bool {
+	if value == "" || strings.HasPrefix(value, "/") || strings.HasPrefix(value, "-") || strings.ContainsAny(value, "\x00\r\n") {
+		return false
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// listWorkspaceScript prints "size<TAB>path" per file: the working tree
+// (tracked and untracked, ignored files left out; sizes unknown, git does
+// not know them and stat differs per libc) or a ref's tree with sizes.
+const listWorkspaceScript = `set -e
+if [ "$SPIN_REF" = workspace ]; then
+  git ls-files -co --exclude-standard | while IFS= read -r path; do printf '0\t%s\n' "$path"; done
+else
+  git ls-tree -r -l "$SPIN_REF" | while IFS= read -r line; do
+    meta="${line%%	*}"; path="${line#*	}"; size="${meta##* }"
+    printf '%s\t%s\n' "$size" "$path"
+  done
+fi`
+
+// readWorkspaceFileScript prints the size on the first line, then up to
+// SPIN_LIMIT bytes of the file.
+const readWorkspaceFileScript = `set -e
+if [ "$SPIN_REF" = workspace ]; then
+  printf 'SPIN_SIZE %s\n' "$(wc -c < "$SPIN_PATH" | tr -d ' ')"
+  head -c "$SPIN_LIMIT" -- "$SPIN_PATH"
+else
+  printf 'SPIN_SIZE %s\n' "$(git cat-file -s "$SPIN_REF:$SPIN_PATH")"
+  git show "$SPIN_REF:$SPIN_PATH" | head -c "$SPIN_LIMIT"
+fi`
+
 // SyncWorkspace commits what is dirty as a WIP commit and pushes the
 // Session branch to the remote, force: ACCEPT rewrites it into one commit.
 func (d *Docker) SyncWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, sync WorkspaceSync) (WorkspaceSyncResult, error) {
