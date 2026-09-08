@@ -72,3 +72,47 @@ func TestDrainingRunnerKeepsAffinityButLeavesRoundRobin(t *testing.T) {
 		t.Fatalf("resumed runner did not rejoin round robin: got %s want %s", placed.id, first.ID)
 	}
 }
+
+// A workspace starts on a runner that already holds its images when one is
+// available, even when the round-robin points elsewhere.
+func TestChoosePrefersARunnerThatHoldsTheImages(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities := domain.ClientCapabilities{Engine: domain.CapsuleEngineInfo{Driver: "docker", Available: true}}
+	first, err := st.RegisterClient(domain.RegisterClientRequest{InstanceID: "first", Name: "Laptop", Capabilities: capabilities})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.RegisterClient(domain.RegisterClientRequest{InstanceID: "second", Name: "Server", Capabilities: capabilities})
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := NewBroker(st, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, client := range []domain.Client{first, second} {
+		peer := broker.peer(client)
+		peer.mu.Lock()
+		peer.connected = true
+		peer.mu.Unlock()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	holds := func(clientID string) bool { return clientID == second.ID }
+	for round := 0; round < 3; round++ {
+		placed, err := broker.choosePreferring(ctx, "", holds)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if placed.id != second.ID {
+			t.Fatalf("round %d chose %s, which has to fetch the images, over %s", round, placed.id, second.ID)
+		}
+	}
+	placed, err := broker.choosePreferring(ctx, "", func(string) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if placed.id == "" {
+		t.Fatal("no runner without a preferred one")
+	}
+}

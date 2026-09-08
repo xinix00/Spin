@@ -484,6 +484,13 @@ func (b *Broker) supportsSnapshotMode(clientID, mode string) bool {
 }
 
 func (b *Broker) choose(ctx context.Context, affinity string) (*runnerPeer, error) {
+	return b.choosePreferring(ctx, affinity, nil)
+}
+
+// choosePreferring picks a runner like choose; without affinity, an
+// available runner the caller prefers (one that already holds the images a
+// workspace needs, so nothing has to be shipped) wins over the round-robin.
+func (b *Broker) choosePreferring(ctx context.Context, affinity string, preferred func(clientID string) bool) (*runnerPeer, error) {
 	for {
 		b.mu.Lock()
 		if affinity != "" {
@@ -494,6 +501,17 @@ func (b *Broker) choose(ctx context.Context, affinity string) (*runnerPeer, erro
 			}
 		} else {
 			count := len(b.order)
+			if preferred != nil {
+				for offset := 0; offset < count; offset++ {
+					index := (b.cursor + offset) % count
+					peer := b.peers[b.order[index]]
+					if peer != nil && peer.available() && preferred(peer.id) {
+						b.cursor = (index + 1) % count
+						b.mu.Unlock()
+						return peer, nil
+					}
+				}
+			}
 			for offset := 0; offset < count; offset++ {
 				index := (b.cursor + offset) % count
 				peer := b.peers[b.order[index]]

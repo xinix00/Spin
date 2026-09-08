@@ -23,6 +23,9 @@ import (
 // every Docker operation behind the runner broker. Runtime and snapshot
 // ClientIDs are the only placement knowledge that leaks into durable state.
 type RemoteEngine struct {
+	pullMu sync.Mutex
+	pulls  map[string]*pullState
+
 	broker  *Broker
 	archive capsule.SnapshotArchive
 
@@ -192,7 +195,9 @@ func (e *RemoteEngine) MaterializeWithGitAuthentication(ctx context.Context, com
 }
 
 func (e *RemoteEngine) materialize(ctx context.Context, composition domain.Composition, artifacts []domain.Artifact, authentication *capsule.GitAuthentication) (domain.CapsuleRuntime, error) {
-	target, err := e.broker.choose(ctx, "")
+	target, err := e.broker.choosePreferring(ctx, "", func(clientID string) bool {
+		return snapshotsAvailableOn(artifacts, clientID)
+	})
 	if err != nil {
 		return domain.CapsuleRuntime{}, err
 	}
@@ -475,24 +480,71 @@ type snapshotChunkArchive interface {
 	ReadSnapshotChunk(context.Context, domain.CapsuleSnapshot, int64) ([]byte, persistence.BlobInfo, error)
 }
 
-// pullSnapshotOn asks the runner to fetch the archived snapshot and relays
-// its progress lines to whoever is watching the launch.
+// pullState is one image being fetched by one runner. Callers join it and
+// wait with their own deadline; the fetch itself runs on, so a caller that
+// gives up (a comparison request under a proxy limit) does not throw away
+// minutes of download, and the next caller finds the image there.
+type pullState struct {
+	done chan struct{}
+	err  error
+}
+
+// pullSnapshotOn has the runner fetch the archived snapshot, once per
+// runner and image at a time, and relays progress to the first caller.
 func (e *RemoteEngine) pullSnapshotOn(ctx context.Context, artifact domain.Artifact, targetID string, total int64) error {
-	process, err := e.broker.openStream(ctx, targetID, methodPullSnapshot, snapshotPullPayload{Snapshot: artifact.Snapshot, Size: total})
+	key := targetID + " " + artifact.Snapshot.Digest
+	e.pullMu.Lock()
+	if e.pulls == nil {
+		e.pulls = map[string]*pullState{}
+	}
+	state, joined := e.pulls[key]
+	if !joined {
+		state = &pullState{done: make(chan struct{})}
+		e.pulls[key] = state
+	}
+	e.pullMu.Unlock()
+	if !joined {
+		go func() {
+			background, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+			defer cancel()
+			state.err = e.runPull(background, ctx, artifact, targetID, total)
+			e.pullMu.Lock()
+			delete(e.pulls, key)
+			e.pullMu.Unlock()
+			close(state.done)
+		}()
+	}
+	select {
+	case <-state.done:
+		return state.err
+	case <-ctx.Done():
+		return fmt.Errorf("runner %s is still fetching %s from the archive; the fetch continues and the next attempt finds it: %w", targetID, artifact.Snapshot.Ref, ctx.Err())
+	}
+}
+
+// runPull is the fetch itself: the stream lives on the background context,
+// progress goes to the caller that started it for as long as it listens.
+func (e *RemoteEngine) runPull(background, caller context.Context, artifact domain.Artifact, targetID string, total int64) error {
+	process, err := e.broker.openStream(background, targetID, methodPullSnapshot, snapshotPullPayload{Snapshot: artifact.Snapshot, Size: total})
 	if err != nil {
 		return err
 	}
-	capsule.ReportProgress(ctx, "parents", "Runner haalt de basisimage uit het archief", 0, total)
+	report := func(stage, message string, current, size int64) {
+		if caller.Err() == nil {
+			capsule.ReportProgress(caller, stage, message, current, size)
+		}
+	}
+	report("parents", "Runner haalt de basisimage uit het archief", 0, total)
 	scanner := bufio.NewScanner(process)
 	for scanner.Scan() {
 		if received, size, ok := parsePullProgress(scanner.Text()); ok {
 			if size > 0 {
 				total = size
 			}
-			capsule.ReportProgress(ctx, "parents", "Runner haalt de basisimage uit het archief", received, total)
+			report("parents", "Runner haalt de basisimage uit het archief", received, total)
 		}
 	}
-	capsule.ReportProgress(ctx, "load", "Runner laadt de image in Docker", 0, 0)
+	report("load", "Runner laadt de image in Docker", 0, 0)
 	execution, waitErr := process.Wait()
 	return errors.Join(waitErr, executionError("snapshot pull", execution))
 }
@@ -502,6 +554,20 @@ func executionError(operation string, execution capsule.Execution) error {
 		return nil
 	}
 	return fmt.Errorf("%s exited with %d: %s", operation, execution.ExitCode, execution.Output)
+}
+
+// snapshotsAvailableOn tells whether a runner already holds every image a
+// workspace needs, so starting there ships nothing.
+func snapshotsAvailableOn(artifacts []domain.Artifact, clientID string) bool {
+	for _, artifact := range artifacts {
+		if !artifact.Snapshot.Restorable || artifact.Snapshot.Ref == "" || artifact.SnapshotPrunedAt != nil {
+			continue
+		}
+		if !snapshotAvailableOn(artifact.Snapshot, clientID) {
+			return false
+		}
+	}
+	return true
 }
 
 func snapshotAvailableOn(snapshot domain.CapsuleSnapshot, clientID string) bool {

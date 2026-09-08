@@ -1,8 +1,8 @@
 package worker
 
 import (
-	"errors"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"

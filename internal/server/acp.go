@@ -396,7 +396,9 @@ func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, session
 	}
 	runtime := composition.Runtime
 	if runtime.Status == "stopped" {
-		comparisonContext, cancel := context.WithTimeout(ctx, 45*time.Second)
+		// Under the proxy's request limit; a runner still fetching images
+		// keeps fetching after this gives up, and the next look finds them.
+		comparisonContext, cancel := context.WithTimeout(ctx, 85*time.Second)
 		defer cancel()
 		var restored domain.CapsuleRuntime
 		if authenticated {

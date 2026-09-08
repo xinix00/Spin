@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +26,9 @@ type fakeRunnerEngine struct {
 	calls   []string
 	images  map[string][]byte
 	imports int
+	// importGate, when set, holds every import until it is closed: the
+	// slow office line in a test.
+	importGate chan struct{}
 }
 
 // HasSnapshot answers the way a Docker daemon would: the image is there or not.
@@ -105,6 +109,9 @@ func (e *fakeRunnerEngine) ImportSnapshot(_ context.Context, snapshot domain.Cap
 	if err != nil {
 		return err
 	}
+	if e.importGate != nil {
+		<-e.importGate
+	}
 	e.mu.Lock()
 	e.imports++
 	if e.images == nil {
@@ -183,12 +190,20 @@ func TestRemoteEngineRoundRobinsAndRetainsAffinityAcrossReconnect(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The holder of an image is preferred for new workspaces; drain it so
+	// the placement has to go to A and the image travels runner to runner.
+	if _, err := broker.SetDraining(runtimeB.ClientID, true); err != nil {
+		t.Fatal(err)
+	}
 	materialized, err := remote.Materialize(callCtx, domain.Composition{ID: "portable-composition"}, []domain.Artifact{artifact})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if materialized.ClientID != runtimeA.ClientID {
-		t.Fatalf("next round-robin target = %s, want %s", materialized.ClientID, runtimeA.ClientID)
+		t.Fatalf("placement while B drains = %s, want %s", materialized.ClientID, runtimeA.ClientID)
+	}
+	if _, err := broker.SetDraining(runtimeB.ClientID, false); err != nil {
+		t.Fatal(err)
 	}
 	storedArtifact, err := st.Artifact(artifact.ID)
 	if err != nil {
@@ -431,5 +446,72 @@ func TestRemoteEngineAsksTheRunnerBeforeShippingAnImageItAlreadyHolds(t *testing
 	}
 	if len(stored.Snapshot.ReplicaClientIDs) != 1 || stored.Snapshot.ReplicaClientIDs[0] != runtime.ClientID {
 		t.Fatalf("replica after asking = %+v, want %s", stored.Snapshot.ReplicaClientIDs, runtime.ClientID)
+	}
+}
+
+// A comparison under a proxy limit gives up on a slow fetch; the fetch keeps
+// going on the runner and the next attempt finds the image there instead of
+// starting the download over.
+func TestRemoteEngineKeepsPullingAfterTheCallerGivesUp(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := persistence.Open(t.TempDir()+"/spin.db", persistence.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	broker := worker.NewBroker(st, logger)
+	remote := worker.NewRemoteEngine(broker, database)
+	const token = "runner-test-token-with-enough-entropy"
+	handler := spinserver.NewWithOptions(st, logger, remote, spinserver.ServerOptions{
+		DisableAuthentication: true, WorkerToken: token, RunnerBroker: broker, Database: database, SnapshotArchive: database,
+	}).Handler()
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	gate := make(chan struct{})
+	target := &fakeRunnerEngine{name: "office", images: map[string][]byte{}, importGate: gate}
+	runnerCtx, cancelRunner := context.WithCancel(context.Background())
+	defer cancelRunner()
+	runWorker(t, runnerCtx, worker.Config{ServerURL: server.URL, InstanceID: "office", Name: "Office", Token: token, Engine: target})
+	waitFor(t, func() bool { return onlineClients(st) == 1 })
+
+	recording, err := st.CreateRecording(domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "parent", Scope: domain.ScopeGlobal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := domain.CapsuleSnapshot{Driver: "fake", ClientID: "gone-runner", Ref: "fake:parent", Digest: "sha256:parent", Restorable: true}
+	parent, err := st.EndRecording(recording.ID, domain.EndRecordingRequest{Actor: "derek", Snapshot: snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StoreSnapshot(context.Background(), snapshot, bytes.NewReader([]byte("large image"))); err != nil {
+		t.Fatal(err)
+	}
+
+	shortCtx, cancelShort := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancelShort()
+	_, err = remote.Materialize(shortCtx, domain.Composition{ID: "compare"}, []domain.Artifact{parent})
+	if err == nil || !strings.Contains(err.Error(), "still fetching") {
+		t.Fatalf("first attempt error = %v", err)
+	}
+	close(gate)
+	retryCtx, cancelRetry := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRetry()
+	runtime, err := remote.Materialize(retryCtx, domain.Composition{ID: "compare"}, []domain.Artifact{parent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.ClientID == "" {
+		t.Fatalf("runtime = %+v", runtime)
+	}
+	target.mu.Lock()
+	imports, got := target.imports, string(target.images[snapshot.Ref])
+	target.mu.Unlock()
+	if imports != 1 || got != "large image" {
+		t.Fatalf("imports = %d, image = %q; the abandoned fetch was not reused", imports, got)
 	}
 }
