@@ -191,7 +191,8 @@ function appendThought(update){
   if(!node){node=document.createElement('details');node.className='chat-event chat-thought';node.innerHTML='<summary>Thinking</summary><div class="chat-event-body md"></div>';chatAppend(node);chatState.thoughtNodes.set(key,node);}
   const body=node.querySelector('.chat-event-body');body.dataset.source=(body.dataset.source||'')+text;setMarkdown(body,body.dataset.source);
 }
-function toolIcon(kind){return ({execute:'›',read:'R',edit:'±',delete:'−',move:'→',search:'⌕',think:'…',fetch:'↓',switch_mode:'↻'})[kind]||'•';}
+function toolIcon(kind){return ({execute:'terminal',read:'description',edit:'edit_note',delete:'delete',move:'drive_file_move',search:'search',think:'psychology',fetch:'download',switch_mode:'swap_horiz'})[kind]||'build';}
+function toolStateIcon(status){return ({completed:'check',failed:'error',pending:'more_horiz',in_progress:'more_horiz'})[status]||'more_horiz';}
 function toolCommand(tool){
   const input=tool.rawInput;if(typeof input==='string')return input;if(!input||typeof input!=='object')return '';
   const command=input.command??input.cmd??input.script;if(Array.isArray(command))return command.join(' ');if(typeof command==='string')return command;
@@ -235,7 +236,7 @@ function upsertTool(update){
   if(!node){node=document.createElement('details');node.className='chat-event tool-card';chatAppend(node);}
   const wasOpen=node.open,status=tool.status||'pending',kind=tool.kind||'other',title=tool.title||kind||'Tool call',command=toolCommand(tool),subtitle=command&&command!==title?command:'';
   const startedAt=existing?.startedAt||chatEventAt,updatedAt=chatEventAt;
-  node.className=`chat-event tool-card ${esc(kind)} ${esc(status)}`;node.innerHTML=`<summary><span class="tool-icon">${esc(toolIcon(kind))}</span><span class="tool-summary"><strong class="tool-title">${esc(title)}</strong>${subtitle?`<small class="tool-subtitle">${esc(subtitle)}</small>`:''}</span><time class="chat-time" title="gestart ${esc(chatClock(startedAt))}${updatedAt&&updatedAt!==startedAt?` · laatste update ${esc(chatClock(updatedAt))}`:''}">${esc(chatClock(updatedAt||startedAt))}</time><span class="tag">${esc(kind)}</span><span class="tool-state ${esc(status)}">${esc(status.replaceAll('_',' '))}</span></summary><div class="tool-body">${renderToolBody(tool)}</div>`;
+  node.className=`chat-event tool-card ${esc(kind)} ${esc(status)}`;node.innerHTML=`<summary><span class="tool-icon material-symbols-outlined" title="${esc(kind)}" aria-label="${esc(kind)}">${esc(toolIcon(kind))}</span><span class="tool-summary"><strong class="tool-title">${esc(title)}</strong>${subtitle?`<small class="tool-subtitle">${esc(subtitle)}</small>`:''}</span><span class="tool-state ${esc(status)}" title="${esc(status.replaceAll('_',' '))}"><span class="material-symbols-outlined" aria-hidden="true">${esc(toolStateIcon(status))}</span>${status==='failed'?'<span class="tool-state-label">mislukt</span>':''}</span><time class="chat-time" title="gestart ${esc(chatClock(startedAt))}${updatedAt&&updatedAt!==startedAt?` · laatste update ${esc(chatClock(updatedAt))}`:''}">${esc(chatClock(updatedAt||startedAt))}</time></summary><div class="tool-body">${renderToolBody(tool)}</div>`;
   node.open=status==='failed'||wasOpen;node.querySelectorAll('[data-open-change]').forEach(button=>button.onclick=()=>openDiff(button.dataset.openChange));renderMermaid(node);chatState.toolNodes.set(id,{node,tool,startedAt});if(status==='completed'||status==='failed')scheduleChatChanges();
 }
 function renderPlan(update){
