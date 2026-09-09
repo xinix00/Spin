@@ -232,11 +232,19 @@ func (s *Server) sessionACP(w http.ResponseWriter, r *http.Request) {
 	active, err := s.getOrStartACP(r.PathValue("sessionID"), operator)
 	viewer := false
 	if err != nil {
-		// Another operator's Session that is running: watch along. Only
-		// its operator talks to the agent.
-		if running := s.runningACP(r.PathValue("sessionID")); running != nil && errors.Is(err, store.ErrConflict) {
-			active, viewer = running, true
-		} else {
+		// Another operator's Session: watch along, on the agent as it runs
+		// for that operator (started for them when it is not up yet). Only
+		// the operator talks to it.
+		if errors.Is(err, store.ErrConflict) {
+			if record, recordErr := s.sessionRecord(r.PathValue("sessionID")); recordErr == nil && normalizeOperator(record.Operator) != normalizeOperator(operator) {
+				if running, startErr := s.getOrStartACP(r.PathValue("sessionID"), record.Operator); startErr == nil {
+					active, viewer, err = running, true, nil
+				} else {
+					err = startErr
+				}
+			}
+		}
+		if err != nil {
 			_ = connection.WriteJSON(acpBrowserEvent{Type: "error", Error: err.Error(), Fatal: true})
 			return
 		}
@@ -345,7 +353,13 @@ func (s *Server) jobChanges(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) inspectSessionChanges(ctx context.Context, sessionID, operator string) (capsule.WorkspaceChanges, error) {
-	session, composition, err := s.sessionComposition(sessionID, operator)
+	// Reading the diff is watching along: anyone signed in sees it, as the
+	// Session's own operator.
+	record, err := s.sessionRecord(sessionID)
+	if err != nil {
+		return capsule.WorkspaceChanges{}, err
+	}
+	session, composition, err := s.sessionComposition(sessionID, record.Operator)
 	if err != nil {
 		return capsule.WorkspaceChanges{}, err
 	}
@@ -485,6 +499,16 @@ func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, session
 		return capsule.WorkspaceChanges{}, err
 	}
 	return label(changes), nil
+}
+
+// sessionRecord is the Session itself, whoever runs it.
+func (s *Server) sessionRecord(sessionID string) (domain.Session, error) {
+	for _, candidate := range s.store.Snapshot().Sessions {
+		if candidate.ID == sessionID {
+			return candidate, nil
+		}
+	}
+	return domain.Session{}, store.ErrNotFound
 }
 
 // runningACP is the live agent of a Session, whoever runs it, or nil.
