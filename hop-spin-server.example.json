@@ -4,15 +4,23 @@
   "artifacts": [
     {
       "url": "https://github.com/xinix00/Spin/releases/download/rolling/spin-server-arm64-tamago.elf",
-      "match": { "node.arch": "arm64" }
+      "match": {
+        "node.arch": "arm64"
+      }
     },
     {
       "url": "https://github.com/xinix00/Spin/releases/download/rolling/spin-server-riscv64-tamago.elf",
-      "match": { "node.arch": "riscv64" }
+      "match": {
+        "node.arch": "riscv64"
+      }
     }
   ],
-  "ports": { "http": 8080 },
-  "volumes": { "/scratch/spin": "/data" },
+  "ports": {
+    "http": 8080
+  },
+  "volumes": {
+    "/scratch/spin": "/data"
+  },
   "env": {
     "SPIN_DATA_DIR": "/data",
     "SPIN_MASTER_KEY": "REPLACE_WITH_BASE64_32_BYTE_KEY",
@@ -25,9 +33,7 @@
     "SPIN_S3_PREFIX": "spin",
     "SPIN_REPLICA_SCHEDULE": "15m:2h,1h:24h,24h:168h",
     "SPIN_REPLICA_GENERATION": "168h",
-    "SPIN_REPLICA_RETENTION": "672h",
-    "SPIN_GITHUB_CLIENT_ID": "REPLACE_OR_REMOVE",
-    "SPIN_GITHUB_CLIENT_SECRET": "REPLACE_OR_REMOVE"
+    "SPIN_REPLICA_RETENTION": "672h"
   },
   "memory_limit": 2147483648,
   "cpu_shares": 1024,
