@@ -1158,3 +1158,30 @@ func TestPruneKeepsTheParentOfADeltaLayer(t *testing.T) {
 		t.Fatalf("prunable = %+v, want the old version", prunable)
 	}
 }
+
+// Removing a layer takes every version of it and everything built on any
+// version: a layer recorded on the old tool:node is built on tool:node.
+func TestDeleteArtifactTreeTakesEveryVersionAndWhatIsBuiltOnThem(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeV1 := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "node", Scope: domain.ScopeGlobal})
+	codex := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "john", Kind: domain.ArtifactTool, Name: "codex", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{nodeV1.ID}})
+	johnLogin := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "john", Kind: domain.ArtifactCredential, Name: "codex", Scope: domain.ScopeUser, ParentArtifactIDs: []string{codex.ID}})
+	nodeV2 := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "node", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{nodeV1.ID}, ReplacesArtifactID: nodeV1.ID})
+	tree := st.ArtifactTree(nodeV2.ID)
+	ids := map[string]bool{}
+	for _, member := range tree {
+		ids[member.ID] = true
+	}
+	if len(tree) != 4 || !ids[nodeV1.ID] || !ids[codex.ID] || !ids[johnLogin.ID] || !ids[nodeV2.ID] {
+		t.Fatalf("tree = %+v", tree)
+	}
+	if _, err := st.DeleteArtifactTree(nodeV2.ID, "derek", true); err != nil {
+		t.Fatal(err)
+	}
+	if left := st.Snapshot().Artifacts; len(left) != 0 {
+		t.Fatalf("left after delete: %+v", left)
+	}
+}

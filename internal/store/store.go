@@ -692,8 +692,10 @@ func (s *Store) PrepareArtifactDeletion(artifactID, operator string, admin bool)
 	return artifact, nil
 }
 
-// artifactTreeLocked is a layer with everything built on it, deepest
-// first, so removal can take the top layers before their parents.
+// artifactTreeLocked is a layer with every version of it and everything
+// built on any of those, deepest first, so removal can take the top layers
+// before their parents. A layer built on an older version of tool:node is
+// built on tool:node.
 func (s *Store) artifactTreeLocked(artifactID string) []domain.Artifact {
 	var tree []domain.Artifact
 	seen := map[string]bool{}
@@ -703,6 +705,11 @@ func (s *Store) artifactTreeLocked(artifactID string) []domain.Artifact {
 			return
 		}
 		seen[id] = true
+		for _, version := range s.lineageLocked(id) {
+			if version != id {
+				walk(version)
+			}
+		}
 		for _, candidate := range s.state.Artifacts {
 			if slices.Contains(candidate.ParentArtifactIDs, id) {
 				walk(candidate.ID)
@@ -714,6 +721,31 @@ func (s *Store) artifactTreeLocked(artifactID string) []domain.Artifact {
 	}
 	walk(artifactID)
 	return tree
+}
+
+// lineageLocked is every version of a layer: the ones it replaced and the
+// ones that replaced it.
+func (s *Store) lineageLocked(artifactID string) []string {
+	members := map[string]bool{artifactID: true}
+	for changed := true; changed; {
+		changed = false
+		for id, artifact := range s.state.Artifacts {
+			if members[id] && artifact.SupersededBy != "" && !members[artifact.SupersededBy] {
+				members[artifact.SupersededBy] = true
+				changed = true
+			}
+			if !members[id] && artifact.SupersededBy != "" && members[artifact.SupersededBy] {
+				members[id] = true
+				changed = true
+			}
+		}
+	}
+	ids := make([]string, 0, len(members))
+	for id := range members {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // ArtifactTree is the layer with everything built on it, deepest first.
