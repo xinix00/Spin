@@ -39,9 +39,12 @@ type SQLite struct {
 }
 
 type OpenOptions struct {
-	// VFS selects an already registered ncruces SQLite VFS. It is empty on
-	// normal operating systems and set by the HopOS entrypoint.
+	// VFS selects an already registered ncruces SQLite VFS: the HopOS
+	// volume, or a replica's tracking VFS over either storage.
 	VFS string
+	// FSPath is the database's path on an ordinary filesystem when the VFS
+	// wraps one; empty when the VFS is the only way to the bytes (HopOS).
+	FSPath string
 }
 
 type BlobInfo struct {
@@ -68,6 +71,8 @@ func Open(path string, options OpenOptions) (*SQLite, error) {
 	store := &SQLite{db: db, dsn: dsn, path: path, vfs: options.VFS}
 	if options.VFS == "" {
 		store.fsPath = path
+	} else if options.FSPath != "" {
+		store.fsPath = options.FSPath
 	}
 	if err := store.initialize(context.Background()); err != nil {
 		_ = db.Close()
@@ -234,6 +239,21 @@ func (s *SQLite) rebuildWithoutRowid(ctx context.Context) error {
 // Migrations reports what Open changed about an existing database, for the
 // startup log.
 func (s *SQLite) Migrations() []string { return s.migrations }
+
+// WithReadTransaction runs fn while the single connection sits in a read
+// transaction: no write can be half way, which is what a page-level
+// replica needs to read a consistent set.
+func (s *SQLite) WithReadTransaction(ctx context.Context, fn func() error) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT 1`); err != nil {
+		return err
+	}
+	return fn()
+}
 
 func (s *SQLite) Close() error { return s.db.Close() }
 

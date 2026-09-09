@@ -18,23 +18,27 @@ import (
 	"easyacp/internal/buildinfo"
 	"easyacp/internal/capsule"
 	"easyacp/internal/persistence"
+	"easyacp/internal/replica"
 	"easyacp/internal/security"
 	spinserver "easyacp/internal/server"
 	"easyacp/internal/store"
+	"easyacp/internal/tenancy"
 	"easyacp/internal/worker"
 )
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
-	databasePath := flag.String("database", envOr("SPIN_DATABASE", "./var/spin.db"), "persistent Spin SQLite database")
-	legacyStatePath := flag.String("state", "./var/spin-state.json", "legacy JSON state to import once")
-	legacyAttachmentDir := flag.String("attachments", "./var/job-attachments", "legacy Job attachment directory to import once")
+	dataDir := flag.String("data-dir", envOr("SPIN_DATA_DIR", "./var"), "directory with one database per domain (<domain>.db)")
+	databasePath := flag.String("database", envOr("SPIN_DATABASE", ""), "serve every host from this one database instead of one per domain")
+	domains := flag.String("domains", envOr("SPIN_DOMAINS", ""), "comma-separated domains this Spin answers on; empty admits any host")
+	legacyStatePath := flag.String("state", "./var/spin-state.json", "legacy JSON state to import once (single database)")
+	legacyAttachmentDir := flag.String("attachments", "./var/job-attachments", "legacy Job attachment directory to import once (single database)")
 	capsuleDriver := flag.String("capsule-driver", "runner", "capsule engine: runner, docker or journal")
 	capsuleBase := flag.String("capsule-base", "alpine:3.24", "clean substrate image for root Docker recordings")
 	capsuleNetwork := flag.String("capsule-network", "bridge", "Docker network for capsule containers")
 	masterKeyFile := flag.String("master-key-file", envOr("SPIN_MASTER_KEY_FILE", "./var/spin-master.key"), "AES master-key file for encrypted state secrets")
-	workerTokenFile := flag.String("worker-token-file", envOr("SPIN_WORKER_TOKEN_FILE", "./var/spin-worker.token"), "shared worker bearer-token file")
+	workerTokenFile := flag.String("worker-token-file", envOr("SPIN_WORKER_TOKEN_FILE", "./var/spin-worker.token"), "worker token of an earlier deployment, seeds a database that has none")
 	flag.Parse()
 	if *showVersion {
 		buildinfo.Print("spin-server")
@@ -42,72 +46,88 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	database, err := persistence.Open(*databasePath, persistence.OpenOptions{})
+	replication, enabled, err := replica.ConfigFromEnvironment(os.Getenv)
 	if err != nil {
-		logger.Error("open database", "error", err)
+		logger.Error("replication", "error", err)
 		os.Exit(1)
 	}
-	defer database.Close()
-	for _, line := range database.Migrations() {
-		logger.Info("database", "migration", line)
+	if !enabled {
+		logger.Warn("replication is off; the databases live on this machine only")
 	}
-	if imported, err := database.ImportFileIfMissing("state", *legacyStatePath); err != nil {
-		logger.Error("import legacy JSON state", "error", err)
-		os.Exit(1)
-	} else if imported {
-		logger.Info("imported legacy JSON state", "source", *legacyStatePath, "database", *databasePath)
-	}
-	st, err := store.OpenWithBackend("state", store.OpenOptions{MasterKey: os.Getenv("SPIN_MASTER_KEY"), MasterKeyFile: *masterKeyFile}, database)
-	if err != nil {
-		logger.Error("open store", "error", err)
-		os.Exit(1)
-	}
-	attachmentFiles := database.Files("attachment:", "job-attachment", 15<<20)
-	if err := importLegacyAttachments(st, attachmentFiles, *legacyAttachmentDir); err != nil {
-		logger.Error("import legacy Job attachments", "error", err)
-		os.Exit(1)
-	}
-	workerToken := strings.TrimSpace(os.Getenv("SPIN_WORKER_TOKEN"))
-	if workerToken == "" {
-		workerToken, err = security.LoadOrCreateToken(*workerTokenFile)
-		if err != nil {
-			logger.Error("load worker token", "error", err)
-			os.Exit(1)
+	seed := strings.TrimSpace(os.Getenv("SPIN_WORKER_TOKEN"))
+	if seed == "" {
+		if token, err := security.ReadToken(*workerTokenFile); err == nil {
+			seed = token
 		}
 	}
-	var engine capsule.Engine = capsule.Journal{}
-	var runnerBroker *worker.Broker
-	if *capsuleDriver == "runner" {
-		runnerBroker = worker.NewBroker(st, logger)
-		engine = worker.NewRemoteEngine(runnerBroker, database)
-	} else if *capsuleDriver == "docker" {
-		probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		engine, err = capsule.NewDocker(probeCtx, capsule.DockerConfig{BaseImage: *capsuleBase, Network: *capsuleNetwork})
-		if err != nil {
-			logger.Error("start Docker capsule engine", "error", err)
-			os.Exit(1)
+	single := strings.TrimSpace(*databasePath)
+	config := tenancy.Config{
+		DataDir: *dataDir, SingleDatabase: single,
+		MasterKey: os.Getenv("SPIN_MASTER_KEY"), MasterKeyFile: *masterKeyFile,
+		Domains: splitList(*domains), WorkerTokenSeed: seed, Logger: logger,
+		Options: func(domain string) spinserver.ServerOptions {
+			options := spinserver.ServerOptionsFromEnvironment()
+			if options.PublicURL == "" && single == "" {
+				options.PublicURL = "https://" + domain
+			}
+			return options
+		},
+	}
+	if enabled {
+		config.Replication = &replication
+	}
+	switch *capsuleDriver {
+	case "runner":
+	case "docker":
+		config.Engine = func(*store.Store, *persistence.SQLite, *slog.Logger) (capsule.Engine, *worker.Broker, error) {
+			probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			engine, err := capsule.NewDocker(probeCtx, capsule.DockerConfig{BaseImage: *capsuleBase, Network: *capsuleNetwork})
+			return engine, nil, err
 		}
-	} else if *capsuleDriver != "journal" {
+	case "journal":
+		config.Engine = func(*store.Store, *persistence.SQLite, *slog.Logger) (capsule.Engine, *worker.Broker, error) {
+			return capsule.Journal{}, nil, nil
+		}
+	default:
 		logger.Error("unknown capsule driver", "driver", *capsuleDriver)
 		os.Exit(1)
 	}
+	if single != "" {
+		config.BeforeStore = func(_ string, database *persistence.SQLite) error {
+			imported, err := database.ImportFileIfMissing("state", *legacyStatePath)
+			if imported {
+				logger.Info("imported legacy JSON state", "source", *legacyStatePath, "database", single)
+			}
+			return err
+		}
+		config.AfterStore = func(_ string, st *store.Store, attachments *persistence.FileStore) error {
+			return importLegacyAttachments(st, attachments, *legacyAttachmentDir)
+		}
+	}
+	tenants := tenancy.New(config)
+	defer tenants.Close()
+	// Every known tenant opens at start: its replica restores and syncs
+	// from the first minute, not from the first visitor.
+	if single != "" {
+		if _, err := tenants.Open(context.Background(), "spin"); err != nil {
+			logger.Error("open database", "error", err)
+			os.Exit(1)
+		}
+	}
+	for _, domain := range config.Domains {
+		if _, err := tenants.Open(context.Background(), domain); err != nil {
+			logger.Error("open tenant", "domain", domain, "error", err)
+			os.Exit(1)
+		}
+	}
 
 	httpServer := &http.Server{
-		Addr: *addr,
-		Handler: func() http.Handler {
-			options := spinserver.ServerOptionsFromEnvironment()
-			options.WorkerToken = workerToken
-			options.AttachmentStorage = attachmentFiles
-			options.SnapshotArchive = database
-			options.Database = database
-			options.RunnerBroker = runnerBroker
-			return spinserver.NewWithOptions(st, logger, engine, options).Handler()
-		}(),
+		Addr:              *addr,
+		Handler:           tenants,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
@@ -117,7 +137,7 @@ func main() {
 		_ = httpServer.Shutdown(shutdownCtx)
 	}()
 
-	logger.Info("Spin server listening", "addr", *addr, "database", *databasePath, "capsule_driver", engine.Info().Driver, "capsule_base", engine.Info().BaseImage)
+	logger.Info("Spin server listening", "addr", *addr, "data_dir", *dataDir, "single_database", single, "domains", config.Domains, "capsule_driver", *capsuleDriver, "replication", enabled)
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("serve", "error", err)
 		os.Exit(1)
@@ -153,4 +173,14 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func splitList(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

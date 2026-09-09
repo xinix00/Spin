@@ -38,6 +38,7 @@ type Server struct {
 	attachments     AttachmentStorage
 	snapshotArchive capsule.SnapshotArchive
 	database        *persistence.SQLite
+	replica         ReplicaStatus
 	loginLimiter    loginLimiter
 	csrfTokens      csrfTokenCache
 	terminalMu      sync.Mutex
@@ -144,7 +145,7 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 	}
 	s := &Server{
 		store: st, logger: logger, mux: http.NewServeMux(), engine: engine, httpClient: httpClient,
-		authDisabled: options.DisableAuthentication, workerToken: strings.TrimSpace(options.WorkerToken),
+		authDisabled: options.DisableAuthentication, workerToken: strings.TrimSpace(options.WorkerToken), replica: options.Replica,
 		runnerBroker: options.RunnerBroker,
 		internalURL:  strings.TrimRight(strings.TrimSpace(options.InternalURL), "/"),
 		attachments:  attachmentStorage, snapshotArchive: options.SnapshotArchive, database: options.Database,
@@ -532,6 +533,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/clients/register", s.registerClient)
 	s.mux.HandleFunc("POST /api/clients/{clientID}/drain", s.drainClient)
 	s.mux.HandleFunc("DELETE /api/clients/{clientID}", s.removeClient)
+	s.mux.HandleFunc("GET /api/runners/token", s.workerTokenHandler)
+	s.mux.HandleFunc("POST /api/runners/token", s.workerTokenHandler)
 	s.mux.HandleFunc("POST /api/clients/{clientID}/resume", s.resumeClient)
 	s.mux.HandleFunc("POST /api/sessions/claim", s.claim)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/start", s.startSession)

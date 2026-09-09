@@ -7,6 +7,7 @@ import (
 
 	"easyacp/internal/domain"
 	"easyacp/internal/persistence"
+	"easyacp/internal/replica"
 )
 
 // Storage on the server is finite and Spin cannot ask the volume how much is
@@ -27,10 +28,16 @@ type storageInfo struct {
 	Objects       int    `json:"objects"`
 	Prunable      int    `json:"prunable"`
 	Error         string `json:"error,omitempty"`
+	// Replication is the replica's state, absent when the server has none.
+	Replication *replica.Status `json:"replication,omitempty"`
 }
 
 func (s *Server) storageInfo(ctx context.Context) storageInfo {
 	info := storageInfo{Prunable: len(s.store.PrunableArtifacts())}
+	if s.replica != nil {
+		status := s.replica.Status()
+		info.Replication = &status
+	}
 	reporter, ok := s.snapshotArchive.(storageUsage)
 	if !ok {
 		return info

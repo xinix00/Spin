@@ -1075,17 +1075,39 @@ function renderMCP(){
 
 // The runner is a single binary per platform, taken from the release this
 // server runs, so a downloaded client always matches the server.
+let runnerToken='';
+async function showRunnerToken(){try{const result=await api('/api/runners/token');runnerToken=result.token||'';renderRunnerToken();}catch(error){showError(error);}}
+async function rotateRunnerToken(){if(!confirm('Nieuw worker-token maken? Alle runners moeten daarna met het nieuwe token opnieuw starten.'))return;try{const result=await api('/api/runners/token',{method:'POST'});runnerToken=result.token||'';renderRunnerToken();showNotice('Nieuw worker-token gemaakt; geef het aan de runners.');}catch(error){showError(error);}}
+function renderRunnerToken(){
+  const root=document.getElementById('runner-token');if(!root)return;
+  if(authState.user?.role!=='admin'){root.innerHTML='';return;}
+  root.innerHTML=runnerToken?`<code class="runner-token-value">${esc(runnerToken)}</code><button class="small-button" id="hide-runner-token">${icon('visibility_off')}Verberg</button><button class="small-button" id="rotate-runner-token">${icon('autorenew')}Vernieuw</button>`:`<button class="small-button" id="show-runner-token">${icon('key')}Toon worker-token</button>`;
+  const show=document.getElementById('show-runner-token');if(show)show.onclick=showRunnerToken;
+  const hide=document.getElementById('hide-runner-token');if(hide)hide.onclick=()=>{runnerToken='';renderRunnerToken();};
+  const rotate=document.getElementById('rotate-runner-token');if(rotate)rotate.onclick=rotateRunnerToken;
+}
 function renderRunnerDownloads(){
   const root=region('runner-downloads');if(!root)return;
   const version=authState.version&&authState.version!=='dev'?authState.version:'',base=version?`https://github.com/xinix00/Spin/releases/download/${encodeURIComponent(version)}`:'https://github.com/xinix00/Spin/releases/latest/download';
   const builds=[['spin-client-darwin-arm64','macOS · Apple Silicon','laptop_mac'],['spin-client-linux-arm64','Linux · arm64','memory'],['spin-client-linux-amd64','Linux · amd64','memory']];
   root.innerHTML=`<div class="runner-download-row">${builds.map(([asset,label,glyph])=>`<a class="small-button" href="${base}/${asset}" download="${asset}">${icon(glyph)}${esc(label)}</a>`).join('')}<small>${version?`versie ${esc(version)}`:'laatste release'} · Docker Desktop of Docker Engine vereist</small></div><details class="runner-howto"><summary>Zo start je de runner</summary><pre>chmod +x spin-client-*
 mkdir -p var && printf '%s' '&lt;worker-token&gt;' &gt; var/spin-worker.token
-./spin-client-&lt;platform&gt; -server ${esc(location.origin)} -name $(hostname)</pre><small>Het worker-token staat bij de server (<code>SPIN_WORKER_TOKEN</code>); een Spin-admin geeft het je. Opties: <code>-env-dir</code> voor de env-bestanden van de test-app, <code>-advertise-host</code> voor het adres in de test-app-links, <code>-max-workloads</code> voor het aantal gelijktijdige capsules.</small></details>`;
+./spin-client-&lt;platform&gt; -server ${esc(location.origin)} -name $(hostname)</pre><div class="runner-token" id="runner-token"></div><small>Het worker-token hoort bij deze Spin en staat in zijn database; een admin ziet het hierboven en kan het vernieuwen. Opties: <code>-env-dir</code> voor de env-bestanden van de test-app, <code>-advertise-host</code> voor het adres in de test-app-links, <code>-max-workloads</code> voor het aantal gelijktijdige capsules.</small></details>`;
+  renderRunnerToken();
 }
 // renderStorage shows what the server's database occupies; the volume under
 // it is finite and Spin cannot see how much is left.
-function renderStorage(){const root=region('storage-line'),storage=snapshot.storage||{};if(!root)return;if(storage.error){root.innerHTML=`<span class="hint">Opslag · ${esc(storage.error)}</span>`;return;}if(!storage.database_bytes){root.innerHTML='';return;}root.innerHTML=`<span class="hint">${icon('database')} Opslag op de server · database ${esc(formatBytes(storage.database_bytes))} · ${storage.objects} snapshots en bijlagen ${esc(formatBytes(storage.object_bytes))}${storage.prunable?` · ${storage.prunable} oude versie${storage.prunable===1?'':'s'} wacht op opruimen`:''}</span>`;}
+function replicationLine(replication){
+  if(!replication)return `<span class="hint warning-text">${icon('cloud_off')} Geen replica: deze Spin staat alleen op zijn eigen volume.</span>`;
+  const parts=[`${icon('cloud_done')} Replica in ${esc(replication.bucket||'S3')}`];
+  parts.push(replication.complete?'generatie compleet':replication.generation?'snapshot loopt':'nog geen generatie');
+  if(replication.last_sync_at&&!replication.last_sync_at.startsWith('0001'))parts.push(`laatste sync ${esc(elapsedSince(replication.last_sync_at))} geleden`);
+  if(replication.pending_pages)parts.push(`${replication.pending_pages} pagina${replication.pending_pages===1?'':"'s"} wacht${replication.pending_pages===1?'':'en'}`);
+  if(replication.restored)parts.push('bij het opstarten hersteld uit de replica');
+  if(replication.last_error)parts.push(`fout: ${esc(replication.last_error)}`);
+  return `<span class="hint ${replication.last_error?'warning-text':''}">${parts.join(' · ')}</span>`;
+}
+function renderStorage(){const root=region('storage-line'),storage=snapshot.storage||{};if(!root)return;if(storage.error){root.innerHTML=`<span class="hint">Opslag · ${esc(storage.error)}</span>`;return;}if(!storage.database_bytes){root.innerHTML='';return;}root.innerHTML=`<span class="hint">${icon('database')} Opslag op de server · database ${esc(formatBytes(storage.database_bytes))} · ${storage.objects} snapshots en bijlagen ${esc(formatBytes(storage.object_bytes))}${storage.prunable?` · ${storage.prunable} oude versie${storage.prunable===1?'':'s'} wacht op opruimen`:''}</span>${replicationLine(storage.replication)}`;}
 function renderRunners(){
   renderRunnerDownloads();renderStorage();
   const root=region('runner-list');

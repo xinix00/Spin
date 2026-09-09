@@ -148,12 +148,46 @@ func (s *Server) requestUserID(r *http.Request) string {
 	return ""
 }
 
+// currentWorkerToken is the runner bearer token: the one in the database
+// (rotatable, backed up with the data), or the static one from the options
+// when the database has none yet.
+func (s *Server) currentWorkerToken() string {
+	if token := s.store.WorkerToken(); token != "" {
+		return token
+	}
+	return s.workerToken
+}
+
 func (s *Server) validWorkerBearer(header string) bool {
-	if s.workerToken == "" || !strings.HasPrefix(header, "Bearer ") {
+	token := s.currentWorkerToken()
+	if token == "" || !strings.HasPrefix(header, "Bearer ") {
 		return false
 	}
 	provided := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
-	return subtle.ConstantTimeCompare([]byte(secretHash(provided)), []byte(secretHash(s.workerToken))) == 1
+	return subtle.ConstantTimeCompare([]byte(secretHash(provided)), []byte(secretHash(token))) == 1
+}
+
+// workerTokenHandler shows an admin the runner token, and rotates it on
+// POST: runners connected with the old one drop at their next reconnect.
+func (s *Server) workerTokenHandler(w http.ResponseWriter, r *http.Request) {
+	identity, ok := identityFromRequest(r)
+	if !s.authDisabled && (!ok || identity.User.Role != domain.UserAdmin) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin role required"})
+		return
+	}
+	if r.Method == http.MethodPost {
+		token, err := s.store.RotateWorkerToken()
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if s.runnerBroker != nil {
+			s.runnerBroker.DisconnectAll("worker token rotated")
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"token": token})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"token": s.currentWorkerToken()})
 }
 
 func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -15,9 +16,10 @@ import (
 
 	"easyacp/internal/buildinfo"
 	"easyacp/internal/persistence"
+	"easyacp/internal/replica"
 	spinserver "easyacp/internal/server"
 	"easyacp/internal/store"
-	"easyacp/internal/worker"
+	"easyacp/internal/tenancy"
 
 	"github.com/xinix00/HopOS/metal/v2/app/applib"
 	"github.com/xinix00/HopOS/metal/v2/app/applib/appnet"
@@ -44,64 +46,85 @@ func main() {
 		"SPIN_PUBLIC_URL", "SPIN_INTERNAL_URL", "SPIN_GITHUB_CLIENT_ID", "SPIN_GITHUB_CLIENT_SECRET",
 		"SPIN_GITLAB_CLIENT_ID", "SPIN_GITLAB_CLIENT_SECRET", "SPIN_WORKER_TOKEN",
 	)
-	workerToken := strings.TrimSpace(app.Env("SPIN_WORKER_TOKEN"))
-	if workerToken == "" {
-		app.Logf("spin-server: SPIN_WORKER_TOKEN is required so remote clients can authenticate")
-		app.Exit(1)
-	}
 	masterKey := strings.TrimSpace(app.Env("SPIN_MASTER_KEY"))
 	if masterKey == "" {
 		masterKey = ephemeralMasterKey()
 		app.Logf("spin-server: WARNING: SPIN_MASTER_KEY is empty; encrypted credentials cannot survive a restart")
 	}
-	databasePath := strings.TrimSpace(app.Env("SPIN_DATABASE"))
-	if databasePath == "" {
-		databasePath = "/data/spin.db"
-	}
-	database, err := persistence.Open(databasePath, persistence.OpenOptions{VFS: persistence.RegisterHopVFS(app)})
+	replication, enabled, err := replica.ConfigFromEnvironment(app.Env)
 	if err != nil {
-		app.Logf("spin-server: open database: %v", err)
+		app.Logf("spin-server: %v", err)
 		app.Exit(1)
 	}
-	defer database.Close()
-	for _, line := range database.Migrations() {
-		app.Logf("spin-server: database: %s", line)
+	if !enabled {
+		app.Logf("spin-server: WARNING: replication is off; the databases live on this volume only")
 	}
-	if _, err := database.ReadFile("state"); errors.Is(err, fs.ErrNotExist) {
-		if legacy, legacyErr := app.ReadFile("/data/spin-state.json"); legacyErr == nil {
+	dataDir := strings.TrimSpace(app.Env("SPIN_DATA_DIR"))
+	if dataDir == "" {
+		dataDir = "/data"
+	}
+	single := strings.TrimSpace(app.Env("SPIN_DATABASE"))
+	config := tenancy.Config{
+		DataDir: dataDir, SingleDatabase: single, StorageVFS: persistence.RegisterHopVFS(app),
+		MasterKey: masterKey, Domains: splitList(app.Env("SPIN_DOMAINS")),
+		WorkerTokenSeed: strings.TrimSpace(app.Env("SPIN_WORKER_TOKEN")), Logger: logger,
+		Options: func(domain string) spinserver.ServerOptions {
+			options := spinserver.ServerOptionsFromEnvironment()
+			if options.PublicURL == "" && single == "" {
+				options.PublicURL = "https://" + domain
+			}
+			return options
+		},
+		BeforeStore: func(_ string, database *persistence.SQLite) error {
+			if single == "" {
+				return nil
+			}
+			if _, err := database.ReadFile("state"); !errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			legacy, legacyErr := app.ReadFile("/data/spin-state.json")
+			if legacyErr != nil {
+				return nil
+			}
 			if err := database.WriteFile("state", legacy); err != nil {
-				app.Logf("spin-server: import legacy state: %v", err)
-				app.Exit(1)
+				return err
 			}
-			app.Logf("spin-server: imported /data/spin-state.json into %s", databasePath)
-		}
-	}
-	st, err := store.OpenWithBackend("state", store.OpenOptions{MasterKey: masterKey}, database)
-	if err != nil {
-		app.Logf("spin-server: open state: %v", err)
-		app.Exit(1)
-	}
-	attachmentFiles := database.Files("attachment:", "job-attachment", 15<<20)
-	for _, attachment := range st.Snapshot().JobAttachments {
-		if _, err := attachmentFiles.ReadFile(attachment.ID); err == nil {
-			continue
-		}
-		if legacy, legacyErr := app.ReadFile("/data/job-attachments/" + attachment.ID); legacyErr == nil {
-			if err := attachmentFiles.WriteFile(attachment.ID, legacy); err != nil {
-				app.Logf("spin-server: import attachment %s: %v", attachment.ID, err)
-				app.Exit(1)
+			app.Logf("spin-server: imported /data/spin-state.json into %s", single)
+			return nil
+		},
+		AfterStore: func(_ string, st *store.Store, attachments *persistence.FileStore) error {
+			if single == "" {
+				return nil
 			}
+			for _, attachment := range st.Snapshot().JobAttachments {
+				if _, err := attachments.ReadFile(attachment.ID); err == nil {
+					continue
+				}
+				if legacy, legacyErr := app.ReadFile("/data/job-attachments/" + attachment.ID); legacyErr == nil {
+					if err := attachments.WriteFile(attachment.ID, legacy); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}
+	if enabled {
+		config.Replication = &replication
+	}
+	tenants := tenancy.New(config)
+	if single != "" {
+		if _, err := tenants.Open(context.Background(), "spin"); err != nil {
+			app.Logf("spin-server: open database: %v", err)
+			app.Exit(1)
 		}
 	}
-
-	broker := worker.NewBroker(st, logger)
-	engine := worker.NewRemoteEngine(broker, database)
-	options := spinserver.ServerOptionsFromEnvironment()
-	options.WorkerToken = workerToken
-	options.RunnerBroker = broker
-	options.AttachmentStorage = attachmentFiles
-	options.SnapshotArchive = database
-	options.Database = database
+	for _, domain := range config.Domains {
+		if _, err := tenants.Open(context.Background(), domain); err != nil {
+			app.Logf("spin-server: open tenant %s: %v", domain, err)
+			app.Exit(1)
+		}
+	}
 
 	port := strings.TrimSpace(app.Env("ER_PORT_HTTP"))
 	if port == "" {
@@ -109,12 +132,12 @@ func main() {
 	}
 	server := &http.Server{
 		Addr:              ":" + port,
-		Handler:           spinserver.NewWithOptions(st, logger, engine, options).Handler(),
+		Handler:           tenants,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 	app.Logf("%s", buildinfo.String("spin-server"))
-	app.Logf("spin-server: listening on :%s; database=%s", port, databasePath)
+	app.Logf("spin-server: listening on :%s; data=%s single=%q domains=%v replication=%v", port, dataDir, single, config.Domains, enabled)
 	app.Logf("spin-server: http: %v", server.ListenAndServe())
 	app.Exit(1)
 }
@@ -125,6 +148,16 @@ func bridgeEnvironment(app *applib.App, names ...string) {
 			_ = os.Setenv(name, value)
 		}
 	}
+}
+
+func splitList(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func ephemeralMasterKey() string {

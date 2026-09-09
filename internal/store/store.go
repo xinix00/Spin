@@ -55,6 +55,10 @@ type persistedState struct {
 	Users                    map[string]domain.User                  `json:"users"`
 	AuthSessions             map[string]domain.AuthSession           `json:"auth_sessions"`
 	GitOAuthConfigurations   map[string]domain.GitOAuthConfiguration `json:"git_oauth_configurations"`
+	// WorkerToken is the bearer token runners of this Spin present. It lives
+	// in the database, encrypted like every other secret, so it travels with
+	// a backup and can be rotated without a restart.
+	WorkerToken string `json:"worker_token,omitempty"`
 }
 
 // legacyGitAccountBinding exists only to read pre-scope state. ensureMaps uses

@@ -180,6 +180,11 @@ func (s *Store) encryptedStateLocked() (persistedState, error) {
 		}
 		out.GitAccounts[id] = account
 	}
+	workerToken, err := s.secrets.encrypt(s.state.WorkerToken, "runners:worker-token")
+	if err != nil {
+		return persistedState{}, err
+	}
+	out.WorkerToken = workerToken
 	out.GitOAuthConfigurations = make(map[string]domain.GitOAuthConfiguration, len(s.state.GitOAuthConfigurations))
 	for provider, configuration := range s.state.GitOAuthConfigurations {
 		var err error
@@ -193,6 +198,11 @@ func (s *Store) encryptedStateLocked() (persistedState, error) {
 }
 
 func (s *Store) decryptSecretsLocked() error {
+	workerToken, err := s.secrets.decrypt(s.state.WorkerToken, "runners:worker-token")
+	if err != nil {
+		return fmt.Errorf("worker token: %w", err)
+	}
+	s.state.WorkerToken = workerToken
 	for id, server := range s.state.MCPServers {
 		for index := range server.Env {
 			value, err := s.secrets.decrypt(server.Env[index].Value, "mcp:"+id+":env:"+server.Env[index].Name)
@@ -231,4 +241,45 @@ func (s *Store) decryptSecretsLocked() error {
 		s.state.GitOAuthConfigurations[provider] = configuration
 	}
 	return nil
+}
+
+// WorkerToken is the runner bearer token of this Spin, empty until one is
+// ensured or rotated.
+func (s *Store) WorkerToken() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state.WorkerToken
+}
+
+// EnsureWorkerToken makes sure a token exists: the one in the database, else
+// the seed (the token a deployment used to pass through the environment, so
+// its runners keep working), else a fresh one.
+func (s *Store) EnsureWorkerToken(seed string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.WorkerToken != "" {
+		return s.state.WorkerToken, nil
+	}
+	token := strings.TrimSpace(seed)
+	if token == "" {
+		token = newWorkerToken()
+	}
+	s.state.WorkerToken = token
+	return token, s.saveLocked()
+}
+
+// RotateWorkerToken replaces the runner token; runners must restart with it.
+func (s *Store) RotateWorkerToken() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.WorkerToken = newWorkerToken()
+	return s.state.WorkerToken, s.saveLocked()
+}
+
+func newWorkerToken() string {
+	raw := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+		panic(err)
+	}
+	return "spw_" + base64.RawURLEncoding.EncodeToString(raw)
 }

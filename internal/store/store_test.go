@@ -1091,3 +1091,42 @@ func TestUseLiftsEditedLayersIntoTheStack(t *testing.T) {
 		}
 	}
 }
+
+// The worker token lives in the database: seeded once from the environment,
+// then rotated there; a reopened store reads it back decrypted.
+func TestWorkerTokenLivesInTheStore(t *testing.T) {
+	path := t.TempDir() + "/state.json"
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.WorkerToken() != "" {
+		t.Fatalf("fresh store has a token %q", st.WorkerToken())
+	}
+	seeded, err := st.EnsureWorkerToken("env-token-from-the-old-deployment")
+	if err != nil || seeded != "env-token-from-the-old-deployment" {
+		t.Fatalf("seeded token = %q, %v", seeded, err)
+	}
+	again, err := st.EnsureWorkerToken("another-seed")
+	if err != nil || again != seeded {
+		t.Fatalf("ensure changed the token: %q", again)
+	}
+	rotated, err := st.RotateWorkerToken()
+	if err != nil || rotated == seeded || !strings.HasPrefix(rotated, "spw_") {
+		t.Fatalf("rotated token = %q, %v", rotated, err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), rotated) {
+		t.Fatal("the token is stored in plaintext")
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.WorkerToken() != rotated {
+		t.Fatalf("reopened token = %q, want %q", reopened.WorkerToken(), rotated)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"easyacp/internal/replica"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -47,6 +48,13 @@ type ServerOptions struct {
 	SnapshotArchive       capsule.SnapshotArchive
 	Database              *persistence.SQLite
 	RunnerBroker          *worker.Broker
+	// Replica reports the state of the database's replica, when there is one.
+	Replica ReplicaStatus
+}
+
+// ReplicaStatus is what a replica tells about itself.
+type ReplicaStatus interface {
+	Status() replica.Status
 }
 
 func ServerOptionsFromEnvironment() ServerOptions {
