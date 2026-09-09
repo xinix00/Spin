@@ -454,6 +454,9 @@ func (r *Replica) compactionDue(current marker) bool {
 	return r.now().Sub(current.StartedAt) > r.config.Generation
 }
 
+// readPages reads the pages that still exist, contiguous ones in one read:
+// on HopOS every read is a call into the system, and a snapshot is
+// hundreds of thousands of pages.
 func (r *Replica) readPages(pageSize int, pages []uint32) (segment, error) {
 	file, err := r.files.Open(r.path, false)
 	if err != nil {
@@ -465,24 +468,36 @@ func (r *Replica) readPages(pageSize int, pages []uint32) (segment, error) {
 		return segment{}, err
 	}
 	seg := segment{PageSize: pageSize, DBSize: size}
-	for _, page := range pages {
-		offset := int64(page-1) * int64(pageSize)
-		if offset >= size {
+	last := uint32(size / int64(pageSize))
+	for index := 0; index < len(pages); {
+		first := pages[index]
+		if first == 0 || first > last {
+			index++
 			continue
 		}
-		data := make([]byte, pageSize)
-		count, err := file.ReadAt(data, offset)
+		count := 1
+		for index+count < len(pages) && pages[index+count] == first+uint32(count) && first+uint32(count) <= last && count*pageSize < readRunBytes {
+			count++
+		}
+		data := make([]byte, count*pageSize)
+		read, err := file.ReadAt(data, int64(first-1)*int64(pageSize))
 		if err != nil && !errors.Is(err, io.EOF) {
 			return segment{}, err
 		}
-		if count != pageSize {
+		if read != len(data) {
 			return segment{}, io.ErrUnexpectedEOF
 		}
-		seg.Pages = append(seg.Pages, page)
-		seg.Data = append(seg.Data, data)
+		for page := 0; page < count; page++ {
+			seg.Pages = append(seg.Pages, first+uint32(page))
+			seg.Data = append(seg.Data, data[page*pageSize:(page+1)*pageSize])
+		}
+		index += count
 	}
 	return seg, nil
 }
+
+// readRunBytes bounds one read of contiguous pages.
+const readRunBytes = 4 << 20
 
 func (r *Replica) fileSize() (int64, error) {
 	file, err := r.files.Open(r.path, false)

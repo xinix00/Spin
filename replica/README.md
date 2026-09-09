@@ -33,10 +33,13 @@ serializes all writers through the supplied Database adapter.
 
 ## Commit and recovery protocol
 
-- A sync takes the entire dirty set **inside one read transaction**, including
-  database size, and spools its segments locally. SQLite's writer is released
-  before any network transfer. A generation starts with all pages; a page-size
-  change starts a new generation.
+- A sync takes the dirty set in **short read transactions**, one per segment,
+  and spools the segments locally; queries run in between, and the processor
+  is given up after every segment. Pages written while the copy ran are read
+  again at the end, in one transaction with the check that finds them, until
+  a round finds none: the batch equals the database as of that last
+  transaction. SQLite's writer is released before any network transfer. A
+  generation starts with all pages; a page-size change starts a new generation.
 - Parts use fresh random object names. Only a final manifest PUT publishes a
   batch. An upload failure exposes either the previous complete state or the
   new complete state, never a subset. An uncertain manifest acknowledgment

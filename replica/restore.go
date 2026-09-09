@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"time"
 )
 
@@ -102,6 +103,7 @@ func (r *Replica) restoreInto(ctx context.Context, generation string, at time.Ti
 			return marker{}, err
 		}
 		offset += int64(count)
+		runtime.Gosched()
 	}
 	if err := destination.Truncate(result.Size); err != nil {
 		return marker{}, err
