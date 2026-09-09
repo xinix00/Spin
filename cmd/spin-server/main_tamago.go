@@ -39,8 +39,7 @@ func main() {
 	app.Logf("%s", buildinfo.String("spin-server"))
 	logger := slog.New(slog.NewTextHandler(ringWriter{app: app}, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	if _, err := appnet.Up(app); err != nil {
-		app.Logf("spin-server: net: %v", err)
-		app.Exit(1)
+		fatal(app, "spin-server: net: %v", err)
 	}
 	app.Logf("spin-server: network up")
 
@@ -55,8 +54,7 @@ func main() {
 	}
 	replication, enabled, err := replicaconfig.FromEnvironment(app.Env)
 	if err != nil {
-		app.Logf("spin-server: %v", err)
-		app.Exit(1)
+		fatal(app, "spin-server: %v", err)
 	}
 	if !enabled {
 		app.Logf("spin-server: WARNING: replication is off; the databases live on this volume only")
@@ -146,7 +144,14 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 	app.Logf("spin-server: listening on :%s; data=%s single=%q domains=%v replication=%v", port, dataDir, single, config.Domains, enabled)
-	app.Logf("spin-server: http: %v", server.ListenAndServe())
+	fatal(app, "spin-server: http: %v", server.ListenAndServe())
+}
+
+// fatal logs the reason and leaves; the pause lets the line reach the
+// task log, an exit right after a write loses it.
+func fatal(app *applib.App, format string, args ...any) {
+	app.Logf(format, args...)
+	time.Sleep(time.Second)
 	app.Exit(1)
 }
 
