@@ -267,6 +267,9 @@ func (e *RemoteEngine) ExportSnapshot(ctx context.Context, snapshot domain.Capsu
 }
 
 func (e *RemoteEngine) Stop(ctx context.Context, runtime domain.CapsuleRuntime) error {
+	if !e.broker.Connected(runtime.ClientID) {
+		return fmt.Errorf("stop on %s: %w", runtime.ClientID, ErrRunnerOffline)
+	}
 	peer, err := e.broker.call(ctx, runtime.ClientID, methodStop, runtimePayload{Runtime: runtime}, nil)
 	if err == nil {
 		peer.addWorkload(-1)
@@ -303,17 +306,26 @@ func (e *RemoteEngine) InspectWorkspaceRange(ctx context.Context, runtime domain
 
 func (e *RemoteEngine) CaptureCapsuleChanges(ctx context.Context, runtime domain.CapsuleRuntime) (domain.LayerContents, error) {
 	var changes domain.LayerContents
+	if !e.broker.Connected(runtime.ClientID) {
+		return changes, fmt.Errorf("inspect on %s: %w", runtime.ClientID, ErrRunnerOffline)
+	}
 	_, err := e.broker.call(ctx, runtime.ClientID, methodCapsuleChanges, runtimePayload{Runtime: runtime}, &changes)
 	return changes, err
 }
 
 func (e *RemoteEngine) ReadTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, paths []string) (map[string][]byte, error) {
 	var files map[string][]byte
+	if !e.broker.Connected(runtime.ClientID) {
+		return nil, fmt.Errorf("read on %s: %w", runtime.ClientID, ErrRunnerOffline)
+	}
 	_, err := e.broker.call(ctx, runtime.ClientID, methodReadTracked, trackedFilesPayload{Runtime: runtime, Paths: paths}, &files)
 	return files, err
 }
 
 func (e *RemoteEngine) WriteTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, files map[string][]byte) error {
+	if !e.broker.Connected(runtime.ClientID) {
+		return fmt.Errorf("write on %s: %w", runtime.ClientID, ErrRunnerOffline)
+	}
 	_, err := e.broker.call(ctx, runtime.ClientID, methodWriteTracked, trackedFilesPayload{Runtime: runtime, Files: files}, nil)
 	return err
 }
@@ -351,16 +363,25 @@ func (e *RemoteEngine) AcceptWorkspace(ctx context.Context, runtime domain.Capsu
 	return result, err
 }
 
+// RemoveSnapshot drops the image on every connected runner that holds it,
+// and from the archive. A runner that is offline keeps its copy as a cache;
+// waiting for it would hold the removal for as long as it stays away.
 func (e *RemoteEngine) RemoveSnapshot(ctx context.Context, snapshot domain.CapsuleSnapshot) error {
 	clientIDs := append([]string{snapshot.ClientID}, snapshot.ReplicaClientIDs...)
 	seen := map[string]bool{}
 	for _, clientID := range clientIDs {
 		clientID = strings.TrimSpace(clientID)
-		if seen[clientID] {
+		if clientID == "" || seen[clientID] {
 			continue
 		}
 		seen[clientID] = true
-		if _, err := e.broker.call(ctx, clientID, methodRemoveSnapshot, snapshotPayload{Snapshot: snapshot}, nil); err != nil {
+		if !e.broker.Connected(clientID) {
+			continue
+		}
+		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		_, err := e.broker.call(callCtx, clientID, methodRemoveSnapshot, snapshotPayload{Snapshot: snapshot}, nil)
+		cancel()
+		if err != nil {
 			return err
 		}
 	}

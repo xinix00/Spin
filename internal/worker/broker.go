@@ -34,6 +34,18 @@ const (
 
 var errNoRunner = errors.New("no compatible runner connected")
 
+// ErrRunnerOffline is a call that would have to wait for a runner that is
+// not connected now, where the caller would rather not wait.
+var ErrRunnerOffline = errors.New("runner is not connected")
+
+// Connected reports whether a runner holds a live connection.
+func (b *Broker) Connected(clientID string) bool {
+	b.mu.Lock()
+	peer := b.peers[clientID]
+	b.mu.Unlock()
+	return peer != nil && peer.connectedForAffinity()
+}
+
 type pendingCall struct {
 	request wireMessage
 	result  chan wireMessage

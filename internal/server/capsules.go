@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"easyacp/internal/worker"
 	"errors"
 	"fmt"
 	"io"
@@ -263,9 +264,16 @@ func (s *Server) stopCapsule(ctx context.Context, compositionID, operator string
 	}
 	s.stopACPComposition(composition.ID)
 	s.stopAppServicesForComposition(ctx, composition)
-	s.captureLoginState(ctx, composition)
+	if s.engineConnected(composition.Runtime.ClientID) {
+		s.captureLoginState(ctx, composition)
+	}
 	if err := s.engine.Stop(ctx, *composition.Runtime); err != nil {
-		return domain.Composition{}, fmt.Errorf("stop composition capsule: %w", err)
+		if !errors.Is(err, worker.ErrRunnerOffline) {
+			return domain.Composition{}, fmt.Errorf("stop composition capsule: %w", err)
+		}
+		// The runner is away; its capsule cannot be reached and is done
+		// here. Comes it back, cleanup of stopped runtimes takes it.
+		s.logger.Warn("composition stopped without its runner", "composition", composition.ID, "runner", composition.Runtime.ClientID)
 	}
 	runtime := *composition.Runtime
 	runtime.Status = "stopped"
@@ -286,4 +294,13 @@ func (s *Server) recordingParents(recording domain.Recording) ([]domain.Artifact
 		parents = append(parents, parent)
 	}
 	return parents, nil
+}
+
+// engineConnected reports whether the runner of a runtime is reachable now;
+// a local engine always is.
+func (s *Server) engineConnected(clientID string) bool {
+	if s.runnerBroker == nil {
+		return true
+	}
+	return s.runnerBroker.Connected(clientID)
 }
