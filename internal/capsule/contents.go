@@ -120,5 +120,14 @@ func summarize(entries []contentEntry) domain.LayerContents {
 		contents.Kinds = append(contents.Kinds, *kind)
 	}
 	sort.Slice(contents.Kinds, func(i, j int) bool { return contents.Kinds[i].Bytes > contents.Kinds[j].Bytes })
+	for index, entry := range sorted {
+		if index >= ManifestEntryLimit {
+			break
+		}
+		contents.Entries = append(contents.Entries, domain.ContentEntry{Path: entry.Path, Bytes: entry.Size, Kind: entry.Kind})
+	}
 	return contents
 }
+
+// ManifestEntryLimit bounds the listing a manifest carries.
+const ManifestEntryLimit = 50000

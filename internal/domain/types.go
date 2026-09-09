@@ -417,6 +417,15 @@ type LayerContents struct {
 	// below, and caches.
 	DroppedIdentical ContentTotal `json:"dropped_identical,omitempty"`
 	DroppedCache     ContentTotal `json:"dropped_cache,omitempty"`
+	// Entries is the full listing, largest first. The runner fills it; the
+	// server keeps it as a file next to the state, not in the state.
+	Entries []ContentEntry `json:"entries,omitempty"`
+}
+
+type ContentEntry struct {
+	Path  string `json:"path"`
+	Bytes int64  `json:"bytes"`
+	Kind  string `json:"kind"`
 }
 
 type ContentKind struct {

@@ -120,6 +120,10 @@ func (s *Server) runSeal(job *sealJob, recording domain.Recording, req domain.En
 		status.Message = "Artifact wordt vastgelegd"
 		status.Current, status.Total = 0, 0
 	})
+	var listing []domain.ContentEntry
+	if snapshot.Contents != nil {
+		listing, snapshot.Contents.Entries = snapshot.Contents.Entries, nil
+	}
 	req.Snapshot = snapshot
 	artifact, err := s.store.EndRecording(recording.ID, req)
 	if err != nil {
@@ -128,6 +132,9 @@ func (s *Server) runSeal(job *sealJob, recording domain.Recording, req domain.En
 		}
 		fail(err)
 		return
+	}
+	if len(listing) > 0 {
+		s.detachManifest("artifact:"+artifact.ID, &domain.LayerContents{Entries: listing})
 	}
 	job.finish(func(status *domain.SealStatus) {
 		status.Status = "done"

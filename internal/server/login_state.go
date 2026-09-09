@@ -70,8 +70,11 @@ func (s *Server) captureLoginState(ctx context.Context, composition domain.Compo
 		changes, err := inspector.CaptureCapsuleChanges(ctx, *composition.Runtime)
 		if err != nil {
 			s.logger.Warn("inspect capsule changes", "composition", composition.ID, "error", err)
-		} else if err := s.store.SetCompositionChanges(composition.ID, changes); err != nil {
-			s.logger.Warn("record capsule changes", "composition", composition.ID, "error", err)
+		} else {
+			s.detachManifest("composition:"+composition.ID, &changes)
+			if err := s.store.SetCompositionChanges(composition.ID, changes); err != nil {
+				s.logger.Warn("record capsule changes", "composition", composition.ID, "error", err)
+			}
 		}
 	}
 	login, ok := s.engine.(capsule.LoginState)

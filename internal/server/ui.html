@@ -229,6 +229,10 @@
         </form>
       </dialog>
 
+      <dialog id="contents-dialog" class="fullscreen-dialog">
+        <div class="dialog-head"><div class="chat-head-main"><h2><span class="material-symbols-outlined" aria-hidden="true">inventory_2</span><span id="contents-title">Inhoud</span></h2><p id="contents-summary"></p></div><div class="panel-actions"><input id="contents-filter" type="search" placeholder="Filter op pad" autocomplete="off"><select id="contents-kind"><option value="">alle soorten</option></select><button class="icon-button" type="button" data-close-dialog="contents-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div></div>
+        <div class="contents-body" id="contents-body"></div>
+      </dialog>
       <dialog id="layer-dialog">
         <div class="dialog-head"><div><h2>Nieuwe laag</h2><p>Een laag is één opname: kies wat hij is en waarop hij bouwt, werk daarna in de shell van de capsule en sluit af met End &amp; save.</p></div><button class="icon-button" type="button" data-close-dialog="layer-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
         <form id="record-form" class="form-grid" autocomplete="off">
