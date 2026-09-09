@@ -4,23 +4,33 @@
   "artifacts": [
     {
       "url": "https://github.com/xinix00/Spin/releases/download/rolling/spin-client-darwin-arm64",
-      "match": { "node.arch": "arm64", "node.os": "darwin" },
+      "match": {
+        "node.arch": "arm64",
+        "node.os": "darwin"
+      },
       "filename": "spin-client"
     },
     {
       "url": "https://github.com/xinix00/Spin/releases/download/rolling/spin-client-linux-amd64",
-      "match": { "node.arch": "amd64", "node.os": "linux" },
+      "match": {
+        "node.arch": "amd64",
+        "node.os": "linux"
+      },
       "filename": "spin-client"
     },
     {
       "url": "https://github.com/xinix00/Spin/releases/download/rolling/spin-client-linux-arm64",
-      "match": { "node.arch": "arm64", "node.os": "linux" },
+      "match": {
+        "node.arch": "arm64",
+        "node.os": "linux"
+      },
       "filename": "spin-client"
     }
   ],
   "env": {
     "PATH": "/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     "SPIN_SERVER": "https://bollenloods.getspin.app",
+    "SPIN_CLIENT_NAME": "REPLACE_WITH_RUNNER_NAME",
     "SPIN_WORKER_TOKEN": "REPLACE_WITH_WORKER_TOKEN",
     "SPIN_CLIENT_ID_FILE": "./var/spin-client.id",
     "SPIN_ENV_DIR": "./var/env",
