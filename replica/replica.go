@@ -321,11 +321,18 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 			return err
 		}
 	}
+	started := r.now()
+	if fresh {
+		r.logger.Info("replica: snapshot copy starts; the database is usable meanwhile", "domain", r.domain, "generation", current.Generation)
+	}
 	captured, err := r.capture(ctx, db, fresh)
 	if err != nil {
 		return err
 	}
 	defer captured.close(r.files)
+	if captured.snapshot {
+		r.logger.Info("replica: snapshot copied; the upload starts", "domain", r.domain, "pages", len(captured.pages), "bytes", captured.size, "took", r.now().Sub(started).Round(time.Millisecond))
+	}
 	if captured.snapshot && !fresh {
 		fresh = true
 		current = marker{Version: formatVersion, Generation: newGenerationID(r.now()), StartedAt: r.now()}
@@ -400,6 +407,9 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 			return err
 		}
 		committed = true
+		if captured.snapshot {
+			r.logger.Info("replica: snapshot uploaded", "domain", r.domain, "segments", len(m.Parts), "bytes", current.Bytes, "took", r.now().Sub(started).Round(time.Millisecond))
+		}
 		r.mu.Lock()
 		r.status.Generation = current.Generation
 		r.status.Complete = true
