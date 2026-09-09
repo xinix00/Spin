@@ -20,6 +20,11 @@ func TestEnvironmentConfiguration(t *testing.T) {
 	if err != nil || !enabled || c.Prefix != "spin" || len(c.Schedule) != 3 {
 		t.Fatalf("config %+v, %v", c, err)
 	}
+	values["SPIN_S3_PREFIX"] = "/custom/"
+	c, _, err = FromEnvironment(get)
+	if err != nil || c.Prefix != "custom" {
+		t.Fatalf("custom prefix = %q, %v", c.Prefix, err)
+	}
 	values["SPIN_REPLICA_SCHEDULE"] = "15m:2h,20m:1h"
 	if _, _, err := FromEnvironment(get); err == nil {
 		t.Fatal("non-nested windows accepted")

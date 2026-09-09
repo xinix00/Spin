@@ -44,17 +44,18 @@ type Status struct {
 // means every write reached a segment; a start with an unclean marker knows
 // pages may be missing and begins a new generation.
 type marker struct {
-	PageSize   int       `json:"page_size"`
-	Version    int       `json:"version"`
-	At         time.Time `json:"at"`
-	SealedAt   time.Time `json:"sealed_at"`
-	Generation string    `json:"generation"`
-	Seq        int64     `json:"seq"`
-	Size       int64     `json:"size"`
-	Bytes      int64     `json:"bytes"`
-	Complete   bool      `json:"complete"`
-	Clean      bool      `json:"clean"`
-	StartedAt  time.Time `json:"started_at"`
+	Destination string    `json:"destination"`
+	PageSize    int       `json:"page_size"`
+	Version     int       `json:"version"`
+	At          time.Time `json:"at"`
+	SealedAt    time.Time `json:"sealed_at"`
+	Generation  string    `json:"generation"`
+	Seq         int64     `json:"seq"`
+	Size        int64     `json:"size"`
+	Bytes       int64     `json:"bytes"`
+	Complete    bool      `json:"complete"`
+	Clean       bool      `json:"clean"`
+	StartedAt   time.Time `json:"started_at"`
 }
 
 type Replica struct {
@@ -213,6 +214,8 @@ func (r *Replica) Prepare(ctx context.Context) error {
 		r.logger.Warn("replica: no usable marker next to the database; a new generation starts", "domain", r.domain, "error", err)
 	case stored.Version != formatVersion:
 		r.logger.Warn("replica: legacy local marker; starting a generation with commit manifests", "domain", r.domain)
+	case stored.Destination != r.destinationID():
+		r.logger.Info("replica: object-store destination changed; starting a fresh generation", "domain", r.domain)
 	case !stored.Clean:
 		r.logger.Warn("replica: the database changed after its last sync; a new generation starts", "domain", r.domain, "generation", stored.Generation)
 	default:
@@ -569,7 +572,13 @@ func (r *Replica) getMarker() marker {
 	return r.marker
 }
 
+// A local clean marker only applies to the object-store namespace it synced.
+func (r *Replica) destinationID() string {
+	return sha256hex([]byte(strings.Join([]string{r.config.Endpoint, r.config.Bucket, r.config.Prefix, r.domain}, "\x00")))
+}
+
 func (r *Replica) setMarker(value marker) error {
+	value.Destination = r.destinationID()
 	r.markerMu.Lock()
 	defer r.markerMu.Unlock()
 	// A failed clean write must never leave a clean in-memory state.

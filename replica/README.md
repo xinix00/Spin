@@ -81,20 +81,17 @@ spool name, so crashes cannot accumulate one local spool per attempt. Failed
 remote attempts may leave unreferenced parts; generation pruning removes these
 along with the rest of the generation. They never influence restore planning.
 
-## Migration from the original Spin format
+## Spin integration
 
-Version 1 has no complete-batch or complete-window proof. It cannot be promoted
-to version 2 safely by relabeling its objects. An existing local database with an
-old marker automatically starts a version 2 generation, leaving the old objects
-subject to normal retention. Old generations are omitted from the new point list;
-explicit restoration returns `ErrLegacyFormat`.
+Spin uses its existing `SPIN_S3_PREFIX` setting (default `spin`) without adding a
+version namespace. Both server entrypoints instantiate this library through the
+tenant lifecycle; health status and the restore-point API use the same instance.
+A backup imported through Spin's normal restore interface writes through the
+tracking VFS and is replicated on the next sync.
 
-If only a version 1 bucket remains, first restore it with the previous Spin
-version and validate/export the recovered SQLite database. Start the new version
-with that local database and wait for a complete version 2 snapshot before
-relying on bucket-only recovery. This matters on HopOS, whose scratch volume may
-be empty after restarting. Do not deploy the new version to an empty scratch
-volume backed only by version 1 objects.
+Local clean markers are bound to their destination: changing the endpoint,
+bucket or prefix forces a new snapshot. The library rejects legacy manifests
+with `ErrLegacyFormat` because they cannot prove complete batches or windows.
 
 ## Tests and extraction
 

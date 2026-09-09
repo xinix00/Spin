@@ -907,3 +907,43 @@ func TestMissingBatchCannotBeHiddenByLaterCommits(t *testing.T) {
 		t.Fatal("restore accepted missing batch")
 	}
 }
+
+func TestCleanMarkerCannotResumeInDifferentBucketNamespace(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, []byte("kept locally"))
+	f.sync(t)
+	previous := f.rep.getMarker()
+	if err := f.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.rep.Close()
+	config := f.rep.config
+	config.Prefix += "/new-destination"
+	next, err := NewWithOptions(config, f.rep.domain, f.rep.path, vfs.Find(""), nil, Options{Objects: f.objects, Now: f.clock.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	if err := next.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openTestDatabase(next.path, next.VFSName())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	next.Attach(db)
+	if err := next.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if next.getMarker().Generation == previous.Generation || !next.Status().Complete {
+		t.Fatal("clean marker from old namespace resumed without a snapshot")
+	}
+	current, err := f.objects.Get(context.Background(), next.currentKey())
+	if err != nil || string(current) != next.Status().Generation {
+		t.Fatalf("new namespace has no current generation: %q %v", current, err)
+	}
+	f.rep = next
+	f.db = db
+	f.check(t, next.Status().Generation, time.Time{}, []byte("kept locally"))
+}
