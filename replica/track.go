@@ -23,9 +23,10 @@ type tracker struct {
 	pending [][2]int64
 	size    int64
 	clean   bool
-	// onUnclean runs, without the lock, when the first write after a sync
+	// onUnclean runs under the lock when the first write after a sync
 	// arrives; it records the unclean state on storage before the write.
-	onUnclean func()
+	onUnclean func() error
+	revision  uint64
 }
 
 func newTracker() *tracker {
@@ -40,7 +41,7 @@ func (t *tracker) learnHeader(header []byte) {
 	if size == 1 {
 		size = 65536
 	}
-	if size < 512 || size > 65536 {
+	if size < 512 || size > 65536 || size&(size-1) != 0 {
 		return
 	}
 	t.mu.Lock()
@@ -68,34 +69,45 @@ func (t *tracker) markLocked(offset, length int64) {
 }
 
 // write records a write; the first one after a sync reports unclean first.
-func (t *tracker) write(offset int64, data []byte) {
+func (t *tracker) write(offset int64, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
 	if len(data) >= 18 && offset == 0 {
 		t.learnHeader(data)
 	}
 	t.mu.Lock()
-	wasClean := t.clean
-	t.clean = false
-	t.markLocked(offset, int64(len(data)))
-	callback := t.onUnclean
-	t.mu.Unlock()
-	if wasClean && callback != nil {
-		callback()
+	defer t.mu.Unlock()
+	if err := t.uncleanLocked(); err != nil {
+		return err
 	}
+	t.markLocked(offset, int64(len(data)))
+	return nil
 }
 
-func (t *tracker) truncate(size int64) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.size = size
-	if t.pageSize == 0 {
-		return
-	}
-	keep := uint32((size + int64(t.pageSize) - 1) / int64(t.pageSize))
-	for page := range t.dirty {
-		if page > keep {
-			delete(t.dirty, page)
+// The callback must become durable before SQLite is allowed to change storage.
+// Keeping the tracker lock also serializes this transition with settle.
+func (t *tracker) uncleanLocked() error {
+	if t.clean && t.onUnclean != nil {
+		if err := t.onUnclean(); err != nil {
+			return err
 		}
 	}
+	t.clean = false
+	t.revision++
+	return nil
+}
+
+func (t *tracker) truncate(size int64) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.uncleanLocked(); err != nil {
+		return err
+	}
+	t.size = size
+	// A size-only change must be shipped too. Page 1 carries SQLite's size.
+	t.dirty[1] = struct{}{}
+	return nil
 }
 
 // markAll marks every page of a database of the given size: the start of a
@@ -148,14 +160,26 @@ func (t *tracker) pendingPages() int {
 
 // settle marks the tracker clean when nothing is dirty; it reports whether
 // it did, so the caller can record the clean state on storage.
-func (t *tracker) settle() bool {
+func (t *tracker) settle(revision uint64, persist func() error) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if len(t.dirty) > 0 || len(t.pending) > 0 {
-		return false
+	if t.revision != revision || len(t.dirty) > 0 || len(t.pending) > 0 {
+		return nil
+	}
+	if err := persist(); err != nil {
+		// A failed fsync may still have written Clean=true. Force the next write
+		// through onUnclean even when its durability acknowledgment was lost.
+		t.clean = true
+		return err
 	}
 	t.clean = true
-	return true
+	return nil
+}
+
+func (t *tracker) version() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.revision
 }
 
 func (t *tracker) currentPageSize() int {
@@ -228,12 +252,16 @@ type trackedFile struct {
 }
 
 func (f *trackedFile) WriteAt(data []byte, offset int64) (int, error) {
-	f.tracker.write(offset, data)
+	if err := f.tracker.write(offset, data); err != nil {
+		return 0, err
+	}
 	return f.File.WriteAt(data, offset)
 }
 
 func (f *trackedFile) Truncate(size int64) error {
-	f.tracker.truncate(size)
+	if err := f.tracker.truncate(size); err != nil {
+		return err
+	}
 	return f.File.Truncate(size)
 }
 

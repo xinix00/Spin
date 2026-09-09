@@ -249,7 +249,7 @@ func (s *SQLite) WithReadTransaction(ctx context.Context, fn func() error) error
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `SELECT 1`); err != nil {
+	if _, err := tx.ExecContext(ctx, `SELECT count(*) FROM sqlite_schema`); err != nil {
 		return err
 	}
 	return fn()

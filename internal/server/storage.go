@@ -7,7 +7,7 @@ import (
 
 	"easyacp/internal/domain"
 	"easyacp/internal/persistence"
-	"easyacp/internal/replica"
+	"easyacp/replica"
 )
 
 // Storage on the server is finite and Spin cannot ask the volume how much is

@@ -18,7 +18,7 @@ import (
 	"easyacp/internal/buildinfo"
 	"easyacp/internal/capsule"
 	"easyacp/internal/persistence"
-	"easyacp/internal/replica"
+	"easyacp/internal/replicaconfig"
 	"easyacp/internal/security"
 	spinserver "easyacp/internal/server"
 	"easyacp/internal/store"
@@ -46,7 +46,7 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	replication, enabled, err := replica.ConfigFromEnvironment(os.Getenv)
+	replication, enabled, err := replicaconfig.FromEnvironment(os.Getenv)
 	if err != nil {
 		logger.Error("replication", "error", err)
 		os.Exit(1)

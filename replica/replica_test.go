@@ -15,7 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"easyacp/internal/persistence"
+	"database/sql"
+	_ "github.com/ncruces/go-sqlite3/driver"
+	"net/url"
 
 	"github.com/ncruces/go-sqlite3/vfs"
 )
@@ -84,7 +86,7 @@ func testConfig(server *httptest.Server) Config {
 	return Config{Endpoint: server.URL, Bucket: "bucket", AccessKey: "access", SecretKey: "secret", Prefix: "spin", SegmentBytes: 256 << 10}
 }
 
-func openReplicated(t *testing.T, config Config, domain, path string) (*Replica, *persistence.SQLite) {
+func openReplicated(t *testing.T, config Config, domain, path string) (*Replica, *testDatabase) {
 	t.Helper()
 	replica, err := New(config, domain, path, vfs.Find(""), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
@@ -93,7 +95,7 @@ func openReplicated(t *testing.T, config Config, domain, path string) (*Replica,
 	if err := replica.Prepare(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	database, err := persistence.Open(path, persistence.OpenOptions{VFS: replica.VFSName(), FSPath: path})
+	database, err := openTestDatabase(path, replica.VFSName())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,12 +210,12 @@ func TestReplicaShipsPagesAndRestoresTheDatabase(t *testing.T) {
 	if err := again.Fetch(context.Background(), oldest.Generation, oldest.At, dir+"/point.db"); err != nil {
 		t.Fatal(err)
 	}
-	point, err := persistence.Open(dir+"/point.db", persistence.OpenOptions{})
+	point, err := openTestDatabase(dir+"/point.db", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer point.Close()
-	if state, err := point.ReadFile("state"); err != nil || string(state) != `{"version":3}` {
+	if state, err := point.ReadFile("state"); err != nil || string(state) != `{"version":1}` {
 		t.Fatalf("fetched point in time = %q, %v", state, err)
 	}
 	// Outside the retention it goes.
@@ -284,7 +286,7 @@ func TestReplicaMergesWindowsIntoTieredRestorePoints(t *testing.T) {
 	if err := rep.Fetch(context.Background(), rep.Status().Generation, quarter, dir+"/quarter.db"); err != nil {
 		t.Fatal(err)
 	}
-	quarterDB, err := persistence.Open(dir+"/quarter.db", persistence.OpenOptions{})
+	quarterDB, err := openTestDatabase(dir+"/quarter.db", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +298,7 @@ func TestReplicaMergesWindowsIntoTieredRestorePoints(t *testing.T) {
 	if err := rep.Fetch(context.Background(), rep.Status().Generation, hour, dir+"/hour.db"); err != nil {
 		t.Fatal(err)
 	}
-	hourDB, err := persistence.Open(dir+"/hour.db", persistence.OpenOptions{})
+	hourDB, err := openTestDatabase(dir+"/hour.db", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +320,7 @@ func TestReplicaMergesWindowsIntoTieredRestorePoints(t *testing.T) {
 	if err := rep.Fetch(context.Background(), rep.Status().Generation, time.Time{}, dir+"/latest.db"); err != nil {
 		t.Fatal(err)
 	}
-	latest, err := persistence.Open(dir+"/latest.db", persistence.OpenOptions{})
+	latest, err := openTestDatabase(dir+"/latest.db", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,3 +345,47 @@ func TestSegmentRoundTrip(t *testing.T) {
 		t.Fatal("a damaged segment decoded")
 	}
 }
+
+// testDatabase deliberately has no dependency on Spin's schema or persistence.
+type testDatabase struct{ db *sql.DB }
+
+func openTestDatabase(path, vfsName string) (*testDatabase, error) {
+	u := url.URL{Scheme: "file", Path: path}
+	q := url.Values{}
+	if vfsName != "" {
+		q.Set("vfs", vfsName)
+	}
+	u.RawQuery = q.Encode()
+	db, err := sql.Open("sqlite3", u.String())
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if _, err = db.Exec(`PRAGMA journal_mode=DELETE; CREATE TABLE IF NOT EXISTS spin_kv(key TEXT PRIMARY KEY, value BLOB)`); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &testDatabase{db: db}, nil
+}
+func (d *testDatabase) WithReadTransaction(ctx context.Context, fn func() error) error {
+	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT count(*) FROM sqlite_schema`); err != nil {
+		return err
+	}
+	return fn()
+}
+func (d *testDatabase) ReadFile(key string) ([]byte, error) {
+	var data []byte
+	err := d.db.QueryRow(`SELECT value FROM spin_kv WHERE key=?`, key).Scan(&data)
+	return data, err
+}
+func (d *testDatabase) WriteFile(key string, data []byte) error {
+	_, err := d.db.Exec(`INSERT INTO spin_kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, data)
+	return err
+}
+func (d *testDatabase) Close() error { return d.db.Close() }

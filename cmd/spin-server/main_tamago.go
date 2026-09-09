@@ -16,7 +16,7 @@ import (
 
 	"easyacp/internal/buildinfo"
 	"easyacp/internal/persistence"
-	"easyacp/internal/replica"
+	"easyacp/internal/replicaconfig"
 	spinserver "easyacp/internal/server"
 	"easyacp/internal/store"
 	"easyacp/internal/tenancy"
@@ -51,7 +51,7 @@ func main() {
 		masterKey = ephemeralMasterKey()
 		app.Logf("spin-server: WARNING: SPIN_MASTER_KEY is empty; encrypted credentials cannot survive a restart")
 	}
-	replication, enabled, err := replica.ConfigFromEnvironment(app.Env)
+	replication, enabled, err := replicaconfig.FromEnvironment(app.Env)
 	if err != nil {
 		app.Logf("spin-server: %v", err)
 		app.Exit(1)

@@ -18,10 +18,10 @@ import (
 	"easyacp/internal/buildinfo"
 	"easyacp/internal/capsule"
 	"easyacp/internal/persistence"
-	"easyacp/internal/replica"
 	spinserver "easyacp/internal/server"
 	"easyacp/internal/store"
 	"easyacp/internal/worker"
+	"easyacp/replica"
 
 	"github.com/ncruces/go-sqlite3/vfs"
 )

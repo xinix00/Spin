@@ -28,7 +28,10 @@ import (
 //	current                       the id of the complete generation
 //	generations/<id>/<seq>.seg    the segments, in order
 
-// Database lets the replica read pages while no write is in flight.
+// Database must exclude ALL writers for the duration of fn, including writes
+// through other connections. Use rollback-journal mode: WAL is not supported.
+// The callback must read a database table to acquire SQLite's shared lock.
+// The single-connection adapter in the example also works with a lockless VFS.
 type Database interface {
 	WithReadTransaction(ctx context.Context, fn func() error) error
 }
@@ -49,6 +52,10 @@ type Status struct {
 // means every write reached a segment; a start with an unclean marker knows
 // pages may be missing and begins a new generation.
 type marker struct {
+	PageSize   int       `json:"page_size"`
+	Version    int       `json:"version"`
+	At         time.Time `json:"at"`
+	SealedAt   time.Time `json:"sealed_at"`
 	Generation string    `json:"generation"`
 	Seq        int64     `json:"seq"`
 	Size       int64     `json:"size"`
@@ -60,21 +67,27 @@ type marker struct {
 
 type Replica struct {
 	config  Config
-	s3      *S3
+	s3      ObjectStore
 	domain  string
 	path    string
 	inner   vfs.VFS
-	files   storage
+	files   Storage
 	tracker *tracker
 	vfsName string
 	logger  *slog.Logger
 
-	markerMu sync.Mutex
-	marker   marker
+	restoreMu sync.Mutex
+	archiveMu sync.RWMutex
+	markerMu  sync.Mutex
+	marker    marker
 
 	mu          sync.Mutex
 	db          Database
 	syncing     bool
+	closed      bool
+	active      sync.WaitGroup
+	lifetime    context.Context
+	cancel      context.CancelFunc
 	status      Status
 	stop        chan struct{}
 	stopOnce    sync.Once
@@ -85,18 +98,33 @@ type Replica struct {
 
 var registered sync.Map
 
-// New prepares a replica for the database at path on the given storage VFS
-// and registers the tracking VFS SQLite must open the database with.
+// Options supplies host dependencies. Zero fields select the standard adapters.
+type Options struct {
+	Objects ObjectStore
+	Storage Storage
+	Now     func() time.Time
+}
+
+// New prepares a replica and registers the VFS that SQLite must use.
 func New(config Config, domain, path string, inner vfs.VFS, logger *slog.Logger) (*Replica, error) {
+	return NewWithOptions(config, domain, path, inner, logger, Options{})
+}
+
+// NewWithOptions accepts replacement storage, object storage and clock adapters.
+func NewWithOptions(config Config, domain, path string, inner vfs.VFS, logger *slog.Logger, options Options) (*Replica, error) {
 	config = config.withDefaults()
-	if strings.TrimSpace(config.Endpoint) == "" || strings.TrimSpace(config.Bucket) == "" {
+	if err := config.validate(); err != nil {
+		return nil, err
+	}
+	config.Schedule = append([]Level(nil), config.Schedule...)
+	if options.Objects == nil && (strings.TrimSpace(config.Endpoint) == "" || strings.TrimSpace(config.Bucket) == "") {
 		return nil, errors.New("replica needs an S3 endpoint and bucket")
 	}
 	if inner == nil {
 		return nil, errors.New("replica needs a storage VFS")
 	}
 	full := fullPath(inner, path)
-	name := "spin-replica-" + safeName(domain)
+	name := "replica-" + safeName(domain)
 	if _, taken := registered.LoadOrStore(name, true); taken {
 		return nil, fmt.Errorf("replica for %s is already registered", domain)
 	}
@@ -109,6 +137,16 @@ func New(config Config, domain, path string, inner vfs.VFS, logger *slog.Logger)
 		status: Status{Enabled: true, Bucket: config.Bucket}, stop: make(chan struct{}),
 		now: func() time.Time { return time.Now().UTC() },
 	}
+	if options.Objects != nil {
+		replica.s3 = options.Objects
+	}
+	if options.Storage != nil {
+		replica.files = options.Storage
+	}
+	if options.Now != nil {
+		replica.now = options.Now
+	}
+	replica.lifetime, replica.cancel = context.WithCancel(context.Background())
 	replica.tracker.onUnclean = replica.markUnclean
 	vfs.Register(name, &trackingVFS{inner: inner, main: full, tracker: replica.tracker})
 	return replica, nil
@@ -147,9 +185,16 @@ func (r *Replica) Prepare(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !exists {
+	interrupted, err := r.files.Exists(r.path + ".replica-restoring")
+	if err != nil {
+		return err
+	}
+	if !exists || interrupted {
 		current, err := r.s3.Get(ctx, r.currentKey())
 		if errors.Is(err, ErrNotFound) {
+			if interrupted {
+				return errors.New("interrupted restore has no current generation")
+			}
 			r.logger.Info("replica: no generation in the bucket; the database starts empty", "domain", r.domain)
 			return nil
 		}
@@ -174,10 +219,14 @@ func (r *Replica) Prepare(ctx context.Context) error {
 	switch {
 	case err != nil:
 		r.logger.Warn("replica: no usable marker next to the database; a new generation starts", "domain", r.domain, "error", err)
+	case stored.Version != formatVersion:
+		r.logger.Warn("replica: legacy local marker; starting a generation with commit manifests", "domain", r.domain)
 	case !stored.Clean:
 		r.logger.Warn("replica: the database changed after its last sync; a new generation starts", "domain", r.domain, "generation", stored.Generation)
 	default:
-		r.setMarker(stored)
+		if err := r.setMarker(stored); err != nil {
+			return err
+		}
 		r.mu.Lock()
 		r.status.Generation, r.status.Complete = stored.Generation, stored.Complete
 		r.mu.Unlock()
@@ -215,7 +264,12 @@ func (r *Replica) Start(ctx context.Context) {
 // again in the same process.
 func (r *Replica) Close() {
 	r.stopOnce.Do(func() {
+		r.mu.Lock()
+		r.closed = true
+		r.cancel()
 		close(r.stop)
+		r.mu.Unlock()
+		r.active.Wait()
 		vfs.Unregister(r.vfsName)
 		registered.Delete(r.vfsName)
 	})
@@ -232,13 +286,22 @@ func (r *Replica) Status() Status {
 // Sync ships what changed: one pass, segments of at most SegmentBytes.
 func (r *Replica) Sync(ctx context.Context) error {
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return errors.New("replica is closed")
+	}
 	if r.syncing || r.db == nil {
 		r.mu.Unlock()
 		return nil
 	}
 	r.syncing = true
+	r.active.Add(1)
+	defer r.active.Done()
 	db := r.db
 	r.mu.Unlock()
+	ctx, cancel := context.WithCancel(ctx)
+	stopCancel := context.AfterFunc(r.lifetime, cancel)
+	defer func() { stopCancel(); cancel() }()
 	err := r.sync(ctx, db)
 	r.mu.Lock()
 	r.syncing = false
@@ -246,105 +309,140 @@ func (r *Replica) Sync(ctx context.Context) error {
 		r.status.LastError = err.Error()
 	} else {
 		r.status.LastError = ""
-		r.status.LastSyncAt = time.Now().UTC()
+		r.status.LastSyncAt = r.now()
 	}
 	r.mu.Unlock()
 	return err
 }
 
 func (r *Replica) sync(ctx context.Context, db Database) error {
-	pageSize := r.tracker.currentPageSize()
-	if pageSize == 0 {
-		return nil
-	}
 	current := r.getMarker()
-	if current.Generation == "" || r.compactionDue(current) {
-		size, err := r.fileSize()
-		if err != nil {
-			return err
-		}
-		generation := newGenerationID(r.now())
-		r.tracker.markAll(size)
-		current = marker{Generation: generation, StartedAt: r.now()}
+	// An incomplete attempt is never resumed: a fresh snapshot and fresh keys
+	// also make a timeout after a successful PUT safe to retry.
+	fresh := !current.Complete || r.compactionDue(current)
+	if fresh {
+		current = marker{Version: formatVersion, Generation: newGenerationID(r.now()), StartedAt: r.now()}
 		if err := r.setMarker(current); err != nil {
 			return err
 		}
-		r.mu.Lock()
-		r.status.Generation, r.status.Complete = generation, false
-		r.mu.Unlock()
-		r.logger.Info("replica: new generation", "domain", r.domain, "generation", generation, "bytes", size)
 	}
-	limit := max(1, r.config.SegmentBytes/pageSize)
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		pages := r.tracker.take(limit)
-		if len(pages) == 0 {
-			break
-		}
-		var seg segment
-		err := db.WithReadTransaction(ctx, func() error {
-			var readErr error
-			seg, readErr = r.readPages(pageSize, pages)
-			return readErr
-		})
-		if err != nil {
-			r.tracker.putBack(pages)
-			return err
-		}
-		current = r.getMarker()
-		if len(seg.Pages) == 0 && seg.DBSize == current.Size {
-			continue
-		}
-		encoded := encodeSegment(seg)
-		if err := r.s3.Put(ctx, r.rawKey(current.Generation, current.Seq+1, r.now()), encoded); err != nil {
-			r.tracker.putBack(pages)
-			return err
-		}
-		current.Seq++
-		current.Size = seg.DBSize
-		current.Bytes += int64(len(encoded))
+	captured, err := r.capture(ctx, db, fresh)
+	if err != nil {
+		return err
+	}
+	defer captured.close(r.files)
+	if captured.snapshot && !fresh {
+		fresh = true
+		current = marker{Version: formatVersion, Generation: newGenerationID(r.now()), StartedAt: r.now()}
 		if err := r.setMarker(current); err != nil {
-			return err
-		}
-		r.mu.Lock()
-		r.status.UploadedBytes += int64(len(encoded))
-		r.mu.Unlock()
-	}
-	if r.tracker.settle() {
-		r.markerMu.Lock()
-		r.marker.Clean = true
-		clean := r.marker
-		r.markerMu.Unlock()
-		if err := r.writeMarker(clean); err != nil {
+			r.tracker.putBack(captured.pages)
 			return err
 		}
 	}
-	current = r.getMarker()
-	if !current.Complete && r.tracker.pendingPages() == 0 && current.Seq > 0 {
-		note, _ := json.Marshal(snapshotNote{Seq: current.Seq, At: r.now().Truncate(time.Second)})
-		if err := r.s3.Put(ctx, r.snapshotKey(current.Generation), note); err != nil {
+	if len(captured.parts) > 0 {
+		// Monotone times keep new batches out of already sealed time windows.
+		at := r.now().UTC()
+		if !at.After(current.At) {
+			at = current.At.Add(time.Nanosecond)
+		}
+		if at.Before(current.SealedAt) {
+			at = current.SealedAt
+		}
+		m := manifest{MinSize: captured.size, Version: formatVersion, FirstSeq: current.Seq + 1, Seq: current.Seq + 1, At: at}
+		prefix := r.generationPrefix(current.Generation) + "data/" + newGenerationID(r.now()) + "/"
+		committed, publishing := false, false
+		defer func() {
+			if !committed {
+				r.tracker.putBack(captured.pages)
+				if publishing {
+					r.markerMu.Lock()
+					r.marker.Complete = false
+					r.marker.Clean = false
+					_ = r.writeMarker(r.marker)
+					r.markerMu.Unlock()
+				}
+			}
+		}()
+		for index, part := range captured.parts {
+			data, err := r.readSpool(captured.path, part)
+			if err != nil {
+				return err
+			}
+			ref := partRef{Key: fmt.Sprintf("%s%06d.seg", prefix, index+1), Size: int64(len(data)), Hash: sha256hex(data)}
+			if err := r.s3.Put(ctx, ref.Key, data); err != nil {
+				return err
+			}
+			m.Parts = append(m.Parts, ref)
+		}
+		key := r.rawKey(current.Generation, m.Seq, m.At)
+		if fresh {
+			key = r.snapshotKey(current.Generation)
+		}
+		publishing = true
+		if err := r.putManifest(ctx, key, m); err != nil {
+			// The server may have accepted the commit despite a lost response. Never
+			// reuse its sequence for different data on the next attempt.
+			current.Complete = false
+			current.Clean = false
+			_ = r.setMarker(current)
 			return err
 		}
-		if err := r.s3.Put(ctx, r.currentKey(), []byte(current.Generation)); err != nil {
-			return err
+		if fresh {
+			if err := r.s3.Put(ctx, r.currentKey(), []byte(current.Generation)); err != nil {
+				return err
+			}
 		}
+		current.Seq = m.Seq
+		current.At = m.At
+		current.Size = captured.size
+		current.PageSize = captured.pageSize
 		current.Complete = true
+		current.Clean = false
+		for _, part := range m.Parts {
+			current.Bytes += part.Size
+		}
 		if err := r.setMarker(current); err != nil {
 			return err
 		}
+		committed = true
 		r.mu.Lock()
+		r.status.Generation = current.Generation
 		r.status.Complete = true
+		for _, part := range m.Parts {
+			r.status.UploadedBytes += part.Size
+		}
 		r.mu.Unlock()
-		r.logger.Info("replica: generation complete", "domain", r.domain, "generation", current.Generation, "segments", current.Seq, "bytes", current.Bytes)
+		if err := r.tracker.settle(captured.revision, func() error { current.Clean = true; return r.setMarker(current) }); err != nil {
+			return err
+		}
+	}
+	if len(captured.parts) == 0 && current.Complete {
+		if err := r.tracker.settle(captured.revision, func() error { current = r.getMarker(); current.Clean = true; return r.setMarker(current) }); err != nil {
+			return err
+		}
+	}
+	if fresh && current.Complete {
 		r.pruneGenerations(current.Generation)
 	}
 	if current.Complete && r.now().Sub(r.lastCompact) >= time.Minute {
-		r.lastCompact = r.now()
+		// Persist the frontier before merging; after restart no commit can land in
+		// a window which may already have been published.
+		frontier := r.now()
+		r.markerMu.Lock()
+		next := r.marker
+		next.SealedAt = frontier
+		err := r.writeMarker(next)
+		if err == nil {
+			r.marker = next
+		}
+		r.markerMu.Unlock()
+		if err != nil {
+			return err
+		}
 		if err := r.compact(ctx, current.Generation); err != nil {
 			return fmt.Errorf("compact: %w", err)
 		}
+		r.lastCompact = frontier
 	}
 	return nil
 }
@@ -382,8 +480,8 @@ func (r *Replica) readPages(pageSize int, pages []uint32) (segment, error) {
 		if err != nil && !errors.Is(err, io.EOF) {
 			return segment{}, err
 		}
-		if count == 0 {
-			continue
+		if count != pageSize {
+			return segment{}, io.ErrUnexpectedEOF
 		}
 		seg.Pages = append(seg.Pages, page)
 		seg.Data = append(seg.Data, data)
@@ -421,6 +519,8 @@ func generationTime(id string) time.Time {
 // ones older than a day that are not this one (a snapshot another start
 // never completed). The one kept always stays.
 func (r *Replica) pruneGenerations(keep string) {
+	r.archiveMu.Lock()
+	defer r.archiveMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	objects, err := r.s3.List(ctx, r.key("generations")+"/")
@@ -462,7 +562,7 @@ func (r *Replica) pruneGenerations(keep string) {
 }
 
 func newGenerationID(now time.Time) string {
-	var random [3]byte
+	var random [16]byte
 	_, _ = rand.Read(random[:])
 	return now.UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(random[:])
 }
@@ -479,21 +579,26 @@ func (r *Replica) getMarker() marker {
 
 func (r *Replica) setMarker(value marker) error {
 	r.markerMu.Lock()
+	defer r.markerMu.Unlock()
+	// A failed clean write must never leave a clean in-memory state.
+	if err := r.writeMarker(value); err != nil {
+		r.marker.Clean = false
+		return err
+	}
 	r.marker = value
-	r.markerMu.Unlock()
-	return r.writeMarker(value)
+	return nil
 }
 
-// markUnclean runs on the first write after a sync: the marker on storage
-// says so before the write lands.
-func (r *Replica) markUnclean() {
+func (r *Replica) markUnclean() error {
 	r.markerMu.Lock()
-	r.marker.Clean = false
+	defer r.markerMu.Unlock()
 	value := r.marker
-	r.markerMu.Unlock()
+	value.Clean = false
 	if err := r.writeMarker(value); err != nil {
-		r.logger.Warn("replica: mark unclean", "domain", r.domain, "error", err)
+		return err
 	}
+	r.marker = value
+	return nil
 }
 
 func (r *Replica) writeMarker(value marker) error {
@@ -501,23 +606,7 @@ func (r *Replica) writeMarker(value marker) error {
 	if err != nil {
 		return err
 	}
-	file, err := r.files.Open(r.markerPath(), true)
-	if err != nil {
-		return err
-	}
-	if _, err := file.WriteAt(data, 0); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Truncate(int64(len(data))); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return err
-	}
-	return file.Close()
+	return r.writeLocal(r.markerPath(), data)
 }
 
 func (r *Replica) readMarker() (marker, error) {

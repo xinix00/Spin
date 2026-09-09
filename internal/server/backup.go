@@ -2,7 +2,7 @@ package server
 
 import (
 	"context"
-	"easyacp/internal/replica"
+	"easyacp/replica"
 	"encoding/json"
 	"errors"
 	"fmt"

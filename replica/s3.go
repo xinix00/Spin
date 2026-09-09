@@ -121,8 +121,11 @@ func (c *S3) List(ctx context.Context, prefix string) ([]Object, error) {
 		for _, item := range listing.Contents {
 			objects = append(objects, Object{Key: item.Key, Size: item.Size})
 		}
-		if !listing.IsTruncated || listing.NextContinuationToken == "" {
+		if !listing.IsTruncated {
 			break
+		}
+		if listing.NextContinuationToken == "" || listing.NextContinuationToken == token {
+			return nil, errors.New("truncated S3 listing did not advance its continuation token")
 		}
 		token = listing.NextContinuationToken
 	}
@@ -143,13 +146,13 @@ func (c *S3) do(ctx context.Context, method, key string, query url.Values, body 
 	if err != nil || endpoint.Host == "" {
 		return nil, fmt.Errorf("invalid S3 endpoint %q", c.Endpoint)
 	}
-	canonicalPath := strings.TrimRight(endpoint.Path, "/") + "/" + escapePath(c.Bucket)
+	canonicalPath := escapePath(strings.TrimRight(endpoint.Path, "/")) + "/" + escapePath(c.Bucket)
 	if key != "" {
 		canonicalPath += "/" + escapePath(key)
 	}
 	canonicalQuery := ""
 	if len(query) > 0 {
-		canonicalQuery = query.Encode()
+		canonicalQuery = strings.ReplaceAll(query.Encode(), "+", "%20")
 	}
 	target := endpoint.Scheme + "://" + endpoint.Host + canonicalPath
 	if canonicalQuery != "" {

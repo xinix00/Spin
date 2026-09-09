@@ -225,3 +225,84 @@ func TestACPWebSocketCarriesACompleteTurn(t *testing.T) {
 		}
 	}
 }
+
+// A permission request is answered with allow by Spin itself, so a run
+// keeps going; with the switch off it reaches the viewer instead.
+func TestActiveACPAnswersPermissionRequestsItself(t *testing.T) {
+	process := newScriptedACPProcess()
+	_, cancel := context.WithCancel(context.Background())
+	active := &activeACP{
+		sessionID: "spin-session", agentSessionID: "agent-session", protocolVersion: 1,
+		process: process, cancel: cancel, done: make(chan struct{}), pending: map[string]chan acpRPCResponse{},
+		permissions: map[string]bool{}, subscribers: map[chan acpBrowserEvent]struct{}{}, history: []acpBrowserEvent{}, autoAccept: true,
+	}
+	defer active.close()
+	go active.readLoop(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	answers := make(chan acpEnvelope, 4)
+	go func() {
+		scanner := bufio.NewScanner(process.inputReader)
+		for scanner.Scan() {
+			var envelope acpEnvelope
+			if json.Unmarshal(scanner.Bytes(), &envelope) == nil && envelope.Method == "" {
+				answers <- envelope
+			}
+		}
+	}()
+	events, initial := active.subscribe()
+	defer active.unsubscribe(events)
+	if len(initial) != 1 || initial[0].Type != "auto_accept" || initial[0].Enabled == nil || !*initial[0].Enabled {
+		t.Fatalf("initial events = %+v", initial)
+	}
+	request := map[string]any{
+		"jsonrpc": "2.0", "id": 7, "method": "session/request_permission",
+		"params": map[string]any{"sessionId": "agent-session", "toolCall": map[string]any{"title": "Run tests"}, "options": []map[string]any{
+			{"optionId": "no", "name": "Reject", "kind": "reject_once"},
+			{"optionId": "once", "name": "Allow once", "kind": "allow_once"},
+			{"optionId": "always", "name": "Allow always", "kind": "allow_always"},
+		}},
+	}
+	process.send(request)
+	select {
+	case answer := <-answers:
+		var result struct {
+			Outcome struct {
+				Outcome  string `json:"outcome"`
+				OptionID string `json:"optionId"`
+			} `json:"outcome"`
+		}
+		if string(answer.ID) != "7" || json.Unmarshal(answer.Result, &result) != nil || result.Outcome.Outcome != "selected" || result.Outcome.OptionID != "always" {
+			t.Fatalf("answer = %s %s", answer.ID, answer.Result)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the permission request was not answered")
+	}
+	select {
+	case event := <-events:
+		if event.Type != "permission" || !event.Auto || event.Choice != "Allow always" {
+			t.Fatalf("event = %+v", event)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no permission event reached the viewer")
+	}
+
+	active.setAutoAccept(false)
+	<-events // the switch event
+	request["id"] = 8
+	process.send(request)
+	select {
+	case event := <-events:
+		if event.Type != "permission" || event.Auto {
+			t.Fatalf("event with auto-accept off = %+v", event)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no permission event reached the viewer")
+	}
+	select {
+	case answer := <-answers:
+		t.Fatalf("answered although auto-accept is off: %s", answer.Result)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := active.resolvePermission("8", "once"); err != nil {
+		t.Fatal(err)
+	}
+}

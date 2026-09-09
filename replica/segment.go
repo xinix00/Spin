@@ -61,8 +61,11 @@ func decodeSegment(data []byte) (segment, error) {
 		DBSize:   int64(binary.BigEndian.Uint64(header[4:12])),
 	}
 	count := int(binary.BigEndian.Uint32(header[12:16]))
-	if out.PageSize < 512 || out.PageSize > 65536 {
+	if out.PageSize < 512 || out.PageSize > 65536 || out.PageSize&(out.PageSize-1) != 0 {
 		return segment{}, fmt.Errorf("segment page size %d", out.PageSize)
+	}
+	if out.DBSize < 0 || out.DBSize%int64(out.PageSize) != 0 {
+		return segment{}, errors.New("invalid segment database size")
 	}
 	rest := body[24:]
 	if len(rest) != count*(4+out.PageSize) {
@@ -70,9 +73,15 @@ func decodeSegment(data []byte) (segment, error) {
 	}
 	out.Pages = make([]uint32, count)
 	out.Data = make([][]byte, count)
+	seen := map[uint32]bool{}
 	for index := 0; index < count; index++ {
 		record := rest[index*(4+out.PageSize):]
 		out.Pages[index] = binary.BigEndian.Uint32(record[:4])
+		page := out.Pages[index]
+		if page == 0 || int64(page)*int64(out.PageSize) > out.DBSize || seen[page] {
+			return segment{}, errors.New("invalid or duplicate segment page")
+		}
+		seen[page] = true
 		out.Data[index] = record[4 : 4+out.PageSize]
 	}
 	return out, nil

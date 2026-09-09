@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"easyacp/internal/replica"
+	"easyacp/replica"
 	"encoding/base64"
 	"encoding/json"
 	"errors"

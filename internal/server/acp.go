@@ -68,6 +68,7 @@ type acpBrowserMessage struct {
 	Text      string `json:"text,omitempty"`
 	RequestID string `json:"request_id,omitempty"`
 	OptionID  string `json:"option_id,omitempty"`
+	Enabled   *bool  `json:"enabled,omitempty"`
 }
 
 type acpBrowserEvent struct {
@@ -84,6 +85,11 @@ type acpBrowserEvent struct {
 	Busy           bool            `json:"busy,omitempty"`
 	Fatal          bool            `json:"fatal,omitempty"`
 	Error          string          `json:"error,omitempty"`
+	// Auto marks a permission Spin answered itself, with the chosen option
+	// in Choice; an "auto_accept" event carries the switch in Enabled.
+	Auto    bool   `json:"auto,omitempty"`
+	Choice  string `json:"choice,omitempty"`
+	Enabled *bool  `json:"enabled,omitempty"`
 }
 
 type acpRPCResponse struct {
@@ -122,6 +128,10 @@ type activeACP struct {
 	nextID          int64
 	pending         map[string]chan acpRPCResponse
 	permissions     map[string]bool
+	// autoAccept answers the agent's permission requests with allow, so a
+	// run keeps going; an agent's own full-access mode still asks now and
+	// then, this does not. Off per Session from the chat.
+	autoAccept      bool
 	subscribers     map[chan acpBrowserEvent]struct{}
 	history         []acpBrowserEvent
 	sentAttachments map[string]bool
@@ -283,6 +293,10 @@ func (s *Server) sessionACP(w http.ResponseWriter, r *http.Request) {
 			case "permission":
 				if err := active.resolvePermission(message.RequestID, message.OptionID); err != nil {
 					_ = connection.WriteJSON(acpBrowserEvent{Type: "error", Error: err.Error()})
+				}
+			case "auto_accept":
+				if message.Enabled != nil {
+					active.setAutoAccept(*message.Enabled)
 				}
 			}
 		case <-clientErrors:
@@ -531,7 +545,7 @@ func (s *Server) openACP(composition domain.Composition, operator string, mcpSer
 		compositionID: composition.ID, operator: normalizeOperator(operator),
 		protocolVersion: enabled.ProtocolVersion, process: process, cancel: cancel, done: make(chan struct{}),
 		pending: map[string]chan acpRPCResponse{}, permissions: map[string]bool{}, sentAttachments: map[string]bool{},
-		subscribers: map[chan acpBrowserEvent]struct{}{}, history: []acpBrowserEvent{},
+		subscribers: map[chan acpBrowserEvent]struct{}{}, history: []acpBrowserEvent{}, autoAccept: true,
 	}
 	if active.protocolVersion == 0 {
 		active.protocolVersion = 1
@@ -1140,7 +1154,14 @@ func (a *activeACP) receiveMethod(envelope acpEnvelope) {
 		key := string(envelope.ID)
 		a.mu.Lock()
 		a.permissions[key] = true
+		auto := a.autoAccept
 		a.mu.Unlock()
+		if option, ok := allowOption(envelope.Params); auto && ok {
+			if err := a.resolvePermission(key, option.ID); err == nil {
+				a.broadcast(acpBrowserEvent{Type: "permission", RequestID: key, Params: envelope.Params, Auto: true, Choice: option.Name}, true)
+				return
+			}
+		}
 		a.broadcast(acpBrowserEvent{Type: "permission", RequestID: key, Params: envelope.Params}, true)
 	default:
 		if len(envelope.ID) != 0 {
@@ -1415,6 +1436,44 @@ func (a *activeACP) cancelPrompt() error {
 	return a.notify("session/cancel", map[string]string{"sessionId": a.agentSessionID})
 }
 
+type permissionOption struct {
+	ID   string `json:"optionId"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+// allowOption picks the option that lets the agent go on: allow always
+// before allow once, never a rejection.
+func allowOption(params json.RawMessage) (permissionOption, bool) {
+	var request struct {
+		Options []permissionOption `json:"options"`
+	}
+	if err := json.Unmarshal(params, &request); err != nil {
+		return permissionOption{}, false
+	}
+	for _, kind := range []string{"allow_always", "allow_once"} {
+		for _, option := range request.Options {
+			if option.Kind == kind && option.ID != "" {
+				return option, true
+			}
+		}
+	}
+	for _, option := range request.Options {
+		if option.ID != "" && !strings.HasPrefix(option.Kind, "reject") {
+			return option, true
+		}
+	}
+	return permissionOption{}, false
+}
+
+// setAutoAccept flips the switch and tells every viewer.
+func (a *activeACP) setAutoAccept(enabled bool) {
+	a.mu.Lock()
+	a.autoAccept = enabled
+	a.mu.Unlock()
+	a.broadcast(acpBrowserEvent{Type: "auto_accept", Enabled: &enabled}, true)
+}
+
 func (a *activeACP) resolvePermission(requestID, optionID string) error {
 	requestID = strings.TrimSpace(requestID)
 	optionID = strings.TrimSpace(optionID)
@@ -1444,7 +1503,8 @@ func (a *activeACP) subscribe() (chan acpBrowserEvent, []acpBrowserEvent) {
 	defer a.mu.Unlock()
 	events := make(chan acpBrowserEvent, 256)
 	a.subscribers[events] = struct{}{}
-	return events, append([]acpBrowserEvent{}, a.history...)
+	enabled := a.autoAccept
+	return events, append([]acpBrowserEvent{{Type: "auto_accept", Enabled: &enabled}}, a.history...)
 }
 
 func (a *activeACP) unsubscribe(events chan acpBrowserEvent) {
