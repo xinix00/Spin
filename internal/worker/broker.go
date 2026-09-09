@@ -49,6 +49,8 @@ type runnerPeer struct {
 	connection *websocket.Conn
 	generation uint64
 	connected  bool
+	process    string
+	lastSeen   time.Time
 	draining   bool
 	workloads  int
 	outbox     []wireMessage
@@ -64,7 +66,26 @@ func newRunnerPeer(client domain.Client) *runnerPeer {
 	}
 }
 
-func (p *runnerPeer) attach(connection *websocket.Conn, client domain.Client) uint64 {
+// takenBy reports whether another live process holds this identity.
+func (p *runnerPeer) takenBy(process string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.connected || p.process == "" || process == "" || p.process == process {
+		return "", false
+	}
+	if time.Since(p.lastSeen) > pongWait {
+		return "", false
+	}
+	return p.process, true
+}
+
+func (p *runnerPeer) touch() {
+	p.mu.Lock()
+	p.lastSeen = time.Now()
+	p.mu.Unlock()
+}
+
+func (p *runnerPeer) attach(connection *websocket.Conn, client domain.Client, process string) uint64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.connection != nil {
@@ -73,6 +94,8 @@ func (p *runnerPeer) attach(connection *websocket.Conn, client domain.Client) ui
 	p.connection = connection
 	p.generation++
 	p.connected = true
+	p.process = process
+	p.lastSeen = time.Now()
 	p.draining = client.Draining
 	p.instanceID = client.InstanceID
 	p.name = client.Name
@@ -260,10 +283,18 @@ func (b *Broker) Handler(w http.ResponseWriter, r *http.Request) {
 	defer connection.Close()
 	connection.SetReadLimit(24 << 20)
 	_ = connection.SetReadDeadline(time.Now().Add(pongWait))
+	var peer *runnerPeer
+	touch := func() {
+		if peer != nil {
+			peer.touch()
+		}
+	}
 	connection.SetPongHandler(func(string) error {
+		touch()
 		return connection.SetReadDeadline(time.Now().Add(pongWait))
 	})
 	connection.SetPingHandler(func(payload string) error {
+		touch()
 		_ = connection.SetReadDeadline(time.Now().Add(pongWait))
 		return connection.WriteControl(websocket.PongMessage, []byte(payload), time.Now().Add(writeWait))
 	})
@@ -278,11 +309,19 @@ func (b *Broker) Handler(w http.ResponseWriter, r *http.Request) {
 		_ = connection.WriteJSON(wireMessage{Version: ProtocolVersion, Type: messageResponse, Error: err.Error()})
 		return
 	}
-	peer := b.peer(client)
+	peer = b.peer(client)
+	if other, taken := peer.takenBy(hello.Process); taken {
+		// Two processes with one identity (two runners on one host with
+		// the same name) would replace each other's socket every second.
+		message := fmt.Sprintf("runner identity %s is already connected from another process (%s); give each runner its own name or stop the other one", client.InstanceID, other)
+		_ = connection.WriteJSON(wireMessage{Version: ProtocolVersion, Type: messageResponse, Error: message})
+		b.logger.Warn("runner refused: identity in use", "client_id", client.ID, "instance_id", client.InstanceID, "name", client.Name)
+		return
+	}
 	if err := connection.WriteJSON(wireMessage{Version: ProtocolVersion, Type: messageWelcome, Client: &client}); err != nil {
 		return
 	}
-	generation := peer.attach(connection, client)
+	generation := peer.attach(connection, client, hello.Process)
 	b.notifyAvailable()
 	b.logger.Info("runner connected", "client_id", client.ID, "instance_id", client.InstanceID, "name", client.Name)
 	b.announceConnected()
@@ -324,6 +363,7 @@ func (b *Broker) readLoop(ctx context.Context, peer *runnerPeer, connection *web
 			return err
 		}
 		_ = connection.SetReadDeadline(time.Now().Add(pongWait))
+		peer.touch()
 		switch message.Type {
 		case messageResponse:
 			peer.mu.Lock()

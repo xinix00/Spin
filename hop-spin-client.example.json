@@ -27,7 +27,7 @@
     "SPIN_MAX_WORKLOADS": "6"
   },
   "command": "set -e\nxattr -dr com.apple.quarantine . 2>/dev/null || true\nchmod +x ./spin-client\nmkdir -p var/env\nexec ./spin-client",
-  "count": 2,
+  "count": 1,
   "cpu_shares": 1000,
   "memory_limit": 1000000000,
   "max_restarts": -1,

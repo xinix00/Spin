@@ -116,3 +116,46 @@ func TestOnRunnerConnectedFiresForEveryHello(t *testing.T) {
 		connection.Close()
 	}
 }
+
+// Two runner processes with one identity are not allowed to replace each
+// other's socket every second: the second is refused while the first is
+// alive, and a reconnect of the first still goes through.
+func TestSecondProcessWithSameIdentityIsRefused(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := NewBroker(st, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := httptest.NewServer(http.HandlerFunc(broker.Handler))
+	defer server.Close()
+	address := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/runner/ws"
+	dial := func(process string) (*websocket.Conn, wireMessage) {
+		connection, _, err := websocket.DefaultDialer.Dial(address, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := connection.WriteJSON(wireMessage{Version: ProtocolVersion, Type: messageHello, InstanceID: "host-1", Name: "Minivan", Process: process}); err != nil {
+			t.Fatal(err)
+		}
+		var answer wireMessage
+		if err := connection.ReadJSON(&answer); err != nil {
+			t.Fatal(err)
+		}
+		return connection, answer
+	}
+	first, welcome := dial("process-a")
+	defer first.Close()
+	if welcome.Type != messageWelcome {
+		t.Fatalf("first process = %+v", welcome)
+	}
+	second, refused := dial("process-b")
+	second.Close()
+	if refused.Type == messageWelcome || !strings.Contains(refused.Error, "already connected from another process") {
+		t.Fatalf("second process = %+v", refused)
+	}
+	again, replaced := dial("process-a")
+	defer again.Close()
+	if replaced.Type != messageWelcome {
+		t.Fatalf("reconnect of the first process = %+v", replaced)
+	}
+}

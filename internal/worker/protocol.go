@@ -60,11 +60,15 @@ const (
 // both directions. JSON keeps the protocol inspectable; []byte fields are
 // encoded as base64 and therefore remain safe for arbitrary PTY/stdio data.
 type wireMessage struct {
-	Version      int                       `json:"version,omitempty"`
-	Type         string                    `json:"type"`
-	ID           string                    `json:"id,omitempty"`
-	Method       string                    `json:"method,omitempty"`
-	InstanceID   string                    `json:"instance_id,omitempty"`
+	Version    int    `json:"version,omitempty"`
+	Type       string `json:"type"`
+	ID         string `json:"id,omitempty"`
+	Method     string `json:"method,omitempty"`
+	InstanceID string `json:"instance_id,omitempty"`
+	// Process tells one runner process from another with the same
+	// identity: a reconnect of the same process replaces its socket, a
+	// second process is refused while the first is alive.
+	Process      string                    `json:"process,omitempty"`
 	Name         string                    `json:"name,omitempty"`
 	Capabilities domain.ClientCapabilities `json:"capabilities,omitempty"`
 	Client       *domain.Client            `json:"client,omitempty"`

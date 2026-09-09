@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,6 +51,7 @@ type Worker struct {
 
 	mu            sync.Mutex
 	clientID      string
+	process       string
 	outbox        []wireMessage
 	wake          chan struct{}
 	space         chan struct{}
@@ -73,16 +76,22 @@ func New(config Config, logger *slog.Logger) *Worker {
 	if config.MaxWorkloads <= 0 {
 		config.MaxWorkloads = 4
 	}
+	nonce := make([]byte, 6)
+	_, _ = cryptorand.Read(nonce)
 	dialer := config.Dialer
 	if dialer == nil {
 		copyOfDefault := *websocket.DefaultDialer
 		dialer = &copyOfDefault
 	}
-	return &Worker{
+	return &Worker{process: hex.EncodeToString(nonce),
 		config: config, logger: logger, engine: config.Engine, dialer: dialer,
 		wake: make(chan struct{}, 1), space: make(chan struct{}, 1), cached: map[string]wireMessage{}, inFlight: map[string]context.CancelFunc{}, streams: map[string]localStream{},
 	}
 }
+
+// errIdentityInUse is the server refusing a second process with the same
+// runner identity while the first is alive.
+var errIdentityInUse = errors.New("runner identity in use")
 
 func (w *Worker) Run(ctx context.Context) error {
 	if w.engine == nil {
@@ -103,6 +112,10 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 		if w.connectionCount() > before {
 			delay = w.config.ReconnectMin
+		}
+		if errors.Is(err, errIdentityInUse) {
+			// Another process holds this identity; do not fight it.
+			delay = max(w.config.ReconnectMax, time.Minute)
 		}
 		w.logger.Warn("runner connection lost; local workloads retained", "error", err, "retry_in", delay)
 		jitter := time.Duration(rand.Int64N(max(int64(delay/3), 1)))
@@ -143,7 +156,7 @@ func (w *Worker) runConnection(ctx context.Context) error {
 	})
 
 	hello := wireMessage{
-		Version: ProtocolVersion, Type: messageHello, InstanceID: w.config.InstanceID, Name: w.config.Name,
+		Version: ProtocolVersion, Type: messageHello, InstanceID: w.config.InstanceID, Name: w.config.Name, Process: w.process,
 		Capabilities: domain.ClientCapabilities{
 			OS: runtime.GOOS, Arch: runtime.GOARCH, Tools: append([]string(nil), w.config.Tools...), SnapshotModes: []string{"docker-image", snapshotModePull},
 			Engine: w.engine.Info(), MaxWorkloads: w.config.MaxWorkloads,
@@ -157,6 +170,9 @@ func (w *Worker) runConnection(ctx context.Context) error {
 		return err
 	}
 	if welcome.Type != messageWelcome || welcome.Client == nil {
+		if strings.Contains(welcome.Error, "already connected from another process") {
+			return fmt.Errorf("%w: %s", errIdentityInUse, welcome.Error)
+		}
 		return fmt.Errorf("runner handshake rejected: %s", welcome.Error)
 	}
 	w.mu.Lock()
