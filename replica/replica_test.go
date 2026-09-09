@@ -165,8 +165,9 @@ func TestReplicaShipsPagesAndRestoresTheDatabase(t *testing.T) {
 	if restoredReplica.Status().Generation != status.Generation {
 		t.Fatalf("restored server started a new generation: %+v", restoredReplica.Status())
 	}
-	// A write that never synced before a stop: the next start knows and
-	// begins a new generation, which again holds everything.
+	// A write that never synced before a stop: the next start compares the
+	// database with the page index and continues the generation with the
+	// pages that differ.
 	if err := restored.WriteFile("state", []byte(`{"version":4}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -174,12 +175,51 @@ func TestReplicaShipsPagesAndRestoresTheDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	restoredReplica.Close()
+	continued, continuedDB := openReplicated(t, config, "one.example.test", dir+"/restored/one.db")
+	if continued.Status().Generation != status.Generation || continued.Status().PendingPages == 0 || continued.Status().PendingPages > 8 {
+		t.Fatalf("unclean start did not continue the generation with the difference: %+v", continued.Status())
+	}
+	if err := continued.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if continued.Status().Generation != status.Generation || continued.Status().PendingPages != 0 {
+		t.Fatalf("status after continuing = %+v", continued.Status())
+	}
+	if err := continuedDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	continued.Close()
+	if err := os.MkdirAll(dir+"/check", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	checkReplica, check := openReplicated(t, config, "one.example.test", dir+"/check/one.db")
+	if state, err := check.ReadFile("state"); err != nil || string(state) != `{"version":4}` {
+		t.Fatalf("state restored after the continued generation = %q, %v", state, err)
+	}
+	_ = check.Close()
+	checkReplica.Close()
+	// Without a usable page index the start cannot compare: a new
+	// generation holds everything again.
+	clean, cleanDB := openReplicated(t, config, "one.example.test", dir+"/restored/one.db")
+	if clean.Status().Generation != status.Generation {
+		t.Fatalf("clean start did not continue the generation: %+v", clean.Status())
+	}
+	if err := cleanDB.WriteFile("state", []byte(`{"version":5}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	clean.Close()
+	if err := os.Remove(dir + "/restored/one.db.replica-index"); err != nil {
+		t.Fatal(err)
+	}
 	again, againDB := openReplicated(t, config, "one.example.test", dir+"/restored/one.db")
 	if err := again.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if again.Status().Generation == status.Generation || !again.Status().Complete {
-		t.Fatalf("unclean start did not begin a new generation: %+v", again.Status())
+		t.Fatalf("start without an index did not begin a new generation: %+v", again.Status())
 	}
 	_ = againDB.Close()
 	again.Close()

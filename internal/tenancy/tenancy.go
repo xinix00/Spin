@@ -403,6 +403,14 @@ func (t *Tenants) open(domain string) (*Tenant, error) {
 	tenant := &Tenant{Domain: domain, Path: path, Database: database, Store: st, Broker: broker, Server: server, Handler: server.Handler(), Replica: rep}
 	if rep != nil {
 		rep.Attach(database)
+		// A whole-database copy holds the database; it runs before the
+		// Spin opens, not while it serves.
+		if rep.SnapshotDue() {
+			t.setStage(domain, "snapshot", "Volledige kopie van de database naar de bucket")
+			if err := rep.Sync(t.ctx); err != nil {
+				logger.Warn("replica: first snapshot", "error", err)
+			}
+		}
 		rep.Start(t.ctx)
 	}
 	logger.Info("tenant open", "database", path, "replicated", rep != nil)

@@ -9,8 +9,7 @@
 // Object replacement and listings must be strongly consistent. All SQLite
 // database writes must pass through VFSName; direct file writes are unsupported.
 //
-// Sync captures one complete state into a local spool before uploading, in
-// short read transactions so the database stays usable meanwhile. It
+// Sync captures one complete state into a local spool before uploading. It
 // bounds page data in memory by SegmentBytes, plus dirty-page/part metadata,
 // and requires local scratch space for the captured pages. Readers only follow
 // published manifests. The generation's full snapshot is retained separately

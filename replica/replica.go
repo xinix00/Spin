@@ -86,7 +86,9 @@ type Replica struct {
 	stopOnce    sync.Once
 	lastCompact time.Time
 	// now is the clock; tests move it.
-	now func() time.Time
+	now     func() time.Time
+	indexMu sync.Mutex
+	index   pageIndex
 }
 
 var registered sync.Map
@@ -202,6 +204,9 @@ func (r *Replica) Prepare(ctx context.Context) error {
 		if err := r.setMarker(restored); err != nil {
 			return err
 		}
+		if err := r.rebuildIndex(restored.PageSize); err != nil {
+			return fmt.Errorf("index the restored database: %w", err)
+		}
 		r.mu.Lock()
 		r.status.Restored, r.status.Generation, r.status.Complete = true, generation, true
 		r.mu.Unlock()
@@ -217,16 +222,52 @@ func (r *Replica) Prepare(ctx context.Context) error {
 	case stored.Destination != r.destinationID():
 		r.logger.Info("replica: object-store destination changed; starting a fresh generation", "domain", r.domain)
 	case !stored.Clean:
-		r.logger.Warn("replica: the database changed after its last sync; a new generation starts", "domain", r.domain, "generation", stored.Generation)
+		// Writes after the last sync: compare with what the bucket holds
+		// and continue with the difference.
+		index, err := r.readIndex()
+		if err != nil || index.pageSize != stored.PageSize {
+			r.logger.Warn("replica: the database changed after its last sync and the page index is unusable; a new generation starts", "domain", r.domain, "generation", stored.Generation, "error", err)
+			return nil
+		}
+		pages, total, err := r.differingPages(index)
+		if err != nil {
+			r.logger.Warn("replica: the database changed after its last sync and could not be compared; a new generation starts", "domain", r.domain, "generation", stored.Generation, "error", err)
+			return nil
+		}
+		if err := r.setMarker(stored); err != nil {
+			return err
+		}
+		r.indexMu.Lock()
+		r.index = index
+		r.indexMu.Unlock()
+		r.tracker.markPages(pages)
+		r.mu.Lock()
+		r.status.Generation, r.status.Complete = stored.Generation, stored.Complete
+		r.mu.Unlock()
+		r.logger.Info("replica: the database changed after its last sync; the generation continues with the pages that differ", "domain", r.domain, "generation", stored.Generation, "pages", len(pages), "of", total)
 	default:
 		if err := r.setMarker(stored); err != nil {
 			return err
+		}
+		if index, err := r.readIndex(); err == nil && index.pageSize == stored.PageSize {
+			r.indexMu.Lock()
+			r.index = index
+			r.indexMu.Unlock()
+		} else if err := r.rebuildIndex(stored.PageSize); err != nil {
+			r.logger.Warn("replica: page index rebuilt with an error; the next unclean stop costs a full snapshot", "domain", r.domain, "error", err)
 		}
 		r.mu.Lock()
 		r.status.Generation, r.status.Complete = stored.Generation, stored.Complete
 		r.mu.Unlock()
 	}
 	return nil
+}
+
+// SnapshotDue reports whether the next sync copies the whole database: a
+// Spin runs that copy before it opens, because it holds the database.
+func (r *Replica) SnapshotDue() bool {
+	current := r.getMarker()
+	return current.Generation == "" || !current.Complete || r.compactionDue(current)
 }
 
 // Attach supplies the database adapter. Start or Sync drives replication.
@@ -407,6 +448,12 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 			return err
 		}
 		committed = true
+		r.indexMu.Lock()
+		r.index.apply(captured.pageSize, captured.size, captured.shipped, captured.hashes)
+		r.indexMu.Unlock()
+		if err := r.writeIndex(); err != nil {
+			r.logger.Warn("replica: write page index", "domain", r.domain, "error", err)
+		}
 		if captured.snapshot {
 			r.logger.Info("replica: snapshot uploaded", "domain", r.domain, "segments", len(m.Parts), "bytes", current.Bytes, "took", r.now().Sub(started).Round(time.Millisecond))
 		}

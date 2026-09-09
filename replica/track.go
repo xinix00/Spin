@@ -144,6 +144,17 @@ func (t *tracker) take(limit int) []uint32 {
 	return pages
 }
 
+// markPages marks pages found to differ from the bucket at a start after
+// an unclean stop; the tracker is unclean from then on.
+func (t *tracker) markPages(pages []uint32) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, page := range pages {
+		t.dirty[page] = struct{}{}
+	}
+	t.clean = false
+}
+
 func (t *tracker) putBack(pages []uint32) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
