@@ -463,7 +463,7 @@ func TestArtifactDeletionIsOwnedAndDependencySafe(t *testing.T) {
 	if len(tree) != 3 || tree[0].ID != johnLogin.ID || tree[2].ID != parent.ID {
 		t.Fatalf("tree = %+v", tree)
 	}
-	deleted, err := st.DeleteArtifactTree(parent.ID, "derek")
+	deleted, err := st.DeleteArtifactTree(parent.ID, "derek", false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -776,14 +776,60 @@ func filterSlice[T any](items []T, keep func(T) bool) []T {
 
 func (s *Server) deleteArtifact(w http.ResponseWriter, r *http.Request) {
 	operator := s.requestOperator(r, r.URL.Query().Get("operator"))
-	artifact, err := s.store.PrepareArtifactDeletion(r.PathValue("artifactID"), operator)
+	identity, ok := identityFromRequest(r)
+	admin := s.authDisabled || (ok && identity.User.Role == domain.UserAdmin)
+	artifact, err := s.store.Artifact(r.PathValue("artifactID"))
 	if err != nil {
+		writeError(w, err)
+		return
+	}
+	// Whatever still runs on the layer or on a layer above it stops first:
+	// capsules of Sessions and open recordings of anyone.
+	tree := s.store.ArtifactTree(artifact.ID)
+	inTree := map[string]bool{}
+	for _, member := range tree {
+		inTree[member.ID] = true
+	}
+	snapshot := s.store.Snapshot()
+	for _, composition := range snapshot.Compositions {
+		if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+			continue
+		}
+		uses := false
+		for _, layerID := range capsule.CompositionLayers(composition) {
+			if inTree[layerID] {
+				uses = true
+				break
+			}
+		}
+		if uses {
+			if _, err := s.stopCapsule(r.Context(), composition.ID, composition.Operator); err != nil {
+				writeError(w, fmt.Errorf("stop composition %s before removing the layer: %w", composition.ID, err))
+				return
+			}
+		}
+	}
+	for _, recording := range snapshot.Recordings {
+		if recording.Status != domain.RecordingOpen {
+			continue
+		}
+		for _, parentID := range recording.ParentArtifactIDs {
+			if inTree[parentID] {
+				if _, err := s.cancelCapsuleRecording(r.Context(), recording.ID, domain.CancelRecordingRequest{Actor: recording.Actor}); err != nil {
+					writeError(w, fmt.Errorf("cancel recording %s before removing the layer: %w", recording.ID, err))
+					return
+				}
+				break
+			}
+		}
+	}
+	if _, err := s.store.PrepareArtifactDeletion(artifact.ID, operator, admin); err != nil {
 		writeError(w, err)
 		return
 	}
 	// The top layers go first, then their parents: a runner rebuilds a
 	// delta from its parent, never the other way round.
-	for _, member := range s.store.ArtifactTree(artifact.ID) {
+	for _, member := range tree {
 		if remover, ok := s.engine.(capsule.SnapshotRemover); ok {
 			if err := remover.RemoveSnapshot(r.Context(), member.Snapshot); err != nil {
 				writeError(w, fmt.Errorf("remove snapshot of %s:%s: %w", member.Kind, member.Name, err))
@@ -796,7 +842,7 @@ func (s *Server) deleteArtifact(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	deleted, err := s.store.DeleteArtifactTree(artifact.ID, operator)
+	deleted, err := s.store.DeleteArtifactTree(artifact.ID, operator, admin)
 	if err != nil {
 		writeError(w, err)
 		return

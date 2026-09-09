@@ -885,7 +885,7 @@ function renderArtifacts(){
     const identity=artifact.subject?`${artifact.scope}:${artifact.subject}`:artifact.scope;
     const use=canUse(artifact)?`<button class="small-button" data-action="use" data-selector="${esc(artifactSelector(artifact))}">${icon('arrow_forward')}Start</button>`:'';
     const next=`<button class="small-button" data-record-from="${esc(artifactSelector(artifact))}">${icon('add')}Laag</button><button class="small-button" data-edit-artifact="${esc(artifactSelector(artifact))}" title="Neem deze laag opnieuw op met al haar instellingen en voeg toe wat ontbreekt; End &amp; save vervangt de huidige versie, ook voor lagen die erop gebouwd zijn">${icon('edit')}Bewerk</button>`;
-    const remove=artifact.created_by===currentOperator()?`<button class="danger" data-remove-artifact="${esc(artifact.id)}" data-artifact-label="${esc(artifactSelector(artifact))}">${icon('delete')}Verwijder</button>`:'';
+    const remove=artifact.created_by===currentOperator()||authState.user?.role==='admin'?`<button class="danger" data-remove-artifact="${esc(artifact.id)}" data-artifact-label="${esc(artifactSelector(artifact))}">${icon('delete')}Verwijder</button>`:'';
     // The agent's options live on the layer that ENABLES acp; a credential
     // layer built on it shows and refreshes the same options, probed as the
     // operator's own identity.

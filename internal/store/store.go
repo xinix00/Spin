@@ -654,7 +654,9 @@ func (s *Store) Artifact(artifactID string) (domain.Artifact, error) {
 	return artifact, nil
 }
 
-func (s *Store) PrepareArtifactDeletion(artifactID, operator string) (domain.Artifact, error) {
+// PrepareArtifactDeletion checks that a layer, with everything built on
+// it, may go: its recorder or an admin asks, and nothing of it is in use.
+func (s *Store) PrepareArtifactDeletion(artifactID, operator string, admin bool) (domain.Artifact, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	artifact, ok := s.state.Artifacts[artifactID]
@@ -662,8 +664,11 @@ func (s *Store) PrepareArtifactDeletion(artifactID, operator string) (domain.Art
 		return domain.Artifact{}, ErrNotFound
 	}
 	operator = normalizeSubject(operator)
-	if operator == "" || !canUseArtifact(operator, artifact) || (artifact.CreatedBy != "" && artifact.CreatedBy != operator) {
-		return domain.Artifact{}, ErrConflict
+	if operator == "" {
+		return domain.Artifact{}, fmt.Errorf("operator is required: %w", ErrConflict)
+	}
+	if !admin && artifact.CreatedBy != "" && artifact.CreatedBy != operator {
+		return domain.Artifact{}, fmt.Errorf("%s:%s was recorded by %s; only they or an admin remove it: %w", artifact.Kind, artifact.Name, artifact.CreatedBy, ErrConflict)
 	}
 	// Everything built on the layer goes with it, other users' logins
 	// included; nothing of that may be in use.
@@ -720,8 +725,8 @@ func (s *Store) ArtifactTree(artifactID string) []domain.Artifact {
 
 // DeleteArtifactTree removes a layer and everything built on it, and
 // returns what went, deepest first.
-func (s *Store) DeleteArtifactTree(artifactID, operator string) ([]domain.Artifact, error) {
-	if _, err := s.PrepareArtifactDeletion(artifactID, operator); err != nil {
+func (s *Store) DeleteArtifactTree(artifactID, operator string, admin bool) ([]domain.Artifact, error) {
+	if _, err := s.PrepareArtifactDeletion(artifactID, operator, admin); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -756,7 +761,7 @@ func (s *Store) DeleteArtifactTree(artifactID, operator string) ([]domain.Artifa
 // DeleteArtifact removes a layer with everything built on it and returns
 // the layer itself.
 func (s *Store) DeleteArtifact(artifactID, operator string) (domain.Artifact, error) {
-	tree, err := s.DeleteArtifactTree(artifactID, operator)
+	tree, err := s.DeleteArtifactTree(artifactID, operator, false)
 	if err != nil {
 		return domain.Artifact{}, err
 	}
