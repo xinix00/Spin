@@ -46,6 +46,8 @@ serializes all writers through the supplied Database adapter.
   before touching the database; invalidation failure rejects the SQLite write.
 - The snapshot has its own permanent manifest and parts. Compaction merges only
   incremental batches, using their contiguous sequence ranges and checksums.
+  Each manifest also records the minimum database size reached, so merging a
+  shrink followed by growth cannot resurrect pages from the original snapshot.
   A window becomes visible only after its completion manifest. Expiration
   removes a finer manifest before its parts, and only under complete coverage.
 - Restore begins at the snapshot and follows contiguous committed sequence

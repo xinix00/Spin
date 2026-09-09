@@ -177,24 +177,36 @@ func (r *Replica) mergeWindow(ctx context.Context, generation string, level int,
 	}
 	winner := map[uint32]int{}
 	pageSize, dbSize := 0, int64(0)
-	for index, ref := range refs {
-		seg, err := r.readPart(ctx, ref)
-		if err != nil {
-			return err
-		}
-		if pageSize != 0 && pageSize != seg.PageSize {
-			return errors.New("page size changed within generation")
-		}
-		for _, page := range seg.Pages {
-			winner[page] = index
-		}
-		// Truncations invalidate old pages, even if a later batch grows again.
-		for page := range winner {
-			if int64(page)*int64(seg.PageSize) > seg.DBSize {
-				delete(winner, page)
+	index := 0
+	for _, input := range inputs {
+		// Honor truncation history at every tier, including a finer window that
+		// already merged a shrink followed by growth.
+		if pageSize > 0 && input.MinSize < dbSize {
+			for page := range winner {
+				if int64(page)*int64(pageSize) > input.MinSize {
+					delete(winner, page)
+				}
 			}
 		}
-		pageSize, dbSize = seg.PageSize, seg.DBSize
+		var inputSize int64 = -1
+		for _, ref := range input.Parts {
+			seg, err := r.readPart(ctx, ref)
+			if err != nil {
+				return err
+			}
+			if pageSize != 0 && pageSize != seg.PageSize {
+				return errors.New("page size changed within generation")
+			}
+			if input.MinSize > seg.DBSize || input.MinSize%int64(seg.PageSize) != 0 || (inputSize >= 0 && inputSize != seg.DBSize) {
+				return errors.New("inconsistent database size in manifest")
+			}
+			for _, page := range seg.Pages {
+				winner[page] = index
+			}
+			pageSize, dbSize = seg.PageSize, seg.DBSize
+			inputSize = seg.DBSize
+			index++
+		}
 	}
 	m := manifest{MinSize: inputs[0].MinSize, Version: formatVersion, FirstSeq: inputs[0].FirstSeq, Seq: seq, At: inputs[len(inputs)-1].At, Level: level, Start: start, End: end}
 	for _, input := range inputs {

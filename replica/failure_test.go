@@ -804,11 +804,16 @@ func TestCompactionPreservesShrinkThenGrow(t *testing.T) {
 	gen := newGenerationID(f.clock.Now())
 	stages := []segment{
 		{PageSize: 512, DBSize: 1536, Pages: []uint32{1, 2, 3}, Data: [][]byte{bytes.Repeat([]byte("a"), 512), bytes.Repeat([]byte("b"), 512), bytes.Repeat([]byte("c"), 512)}},
+		{PageSize: 512, DBSize: 1536, Pages: []uint32{2}, Data: [][]byte{bytes.Repeat([]byte("d"), 512)}},
 		{PageSize: 512, DBSize: 512, Pages: []uint32{1}, Data: [][]byte{bytes.Repeat([]byte("x"), 512)}},
 		{PageSize: 512, DBSize: 1536, Pages: []uint32{3}, Data: [][]byte{bytes.Repeat([]byte("z"), 512)}},
 	}
 	for index, seg := range stages {
-		f.clock.Add(time.Minute)
+		if index == 2 {
+			f.clock.Add(20 * time.Minute)
+		} else {
+			f.clock.Add(time.Minute)
+		}
 		ref, err := r.putPart(ctx, fmt.Sprintf("%sdata/input/%d.seg", r.generationPrefix(gen), index), seg)
 		if err != nil {
 			t.Fatal(err)
@@ -844,5 +849,61 @@ func TestCompactionPreservesShrinkThenGrow(t *testing.T) {
 	}
 	if !bytes.Equal(a, b) || !bytes.Equal(b[512:1024], make([]byte, 512)) {
 		t.Fatal("compaction resurrected a page removed by truncation")
+	}
+}
+
+type cancelStore struct {
+	ObjectStore
+	entered chan struct{}
+}
+
+func (s cancelStore) Put(ctx context.Context, key string, data []byte) error {
+	close(s.entered)
+	<-ctx.Done()
+	return ctx.Err()
+}
+func TestCloseCancelsSyncBeforeReleasingRegistration(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, []byte("close"))
+	entered := make(chan struct{})
+	f.rep.s3 = cancelStore{ObjectStore: f.objects, entered: entered}
+	synced := make(chan error, 1)
+	go func() { synced <- f.rep.Sync(context.Background()) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sync did not reach object store")
+	}
+	closed := make(chan struct{})
+	go func() { f.rep.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not cancel active sync")
+	}
+	if err := <-synced; !errors.Is(err, context.Canceled) {
+		t.Fatalf("sync %v", err)
+	}
+	if err := f.rep.Sync(context.Background()); err == nil {
+		t.Fatal("closed replica accepted sync")
+	}
+}
+
+func TestMissingBatchCannotBeHiddenByLaterCommits(t *testing.T) {
+	f := newFixture(t)
+	for i := 0; i < 3; i++ {
+		f.write(t, []byte{byte(i)})
+		f.sync(t)
+		f.clock.Add(time.Second)
+	}
+	l, err := f.rep.loadLayout(context.Background(), f.rep.Status().Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.objects.Delete(context.Background(), l.raw[0].key); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.rep.Fetch(context.Background(), l.generation, time.Time{}, f.dir+"/gap"); err == nil {
+		t.Fatal("restore accepted missing batch")
 	}
 }

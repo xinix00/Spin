@@ -470,6 +470,9 @@ type AgentSettings struct {
 	Mode            string `json:"mode,omitempty"`
 	Model           string `json:"model,omitempty"`
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// AutoAccept is whether Spin answers this agent's permission requests
+	// itself; nil means yes. Sessions on the layer start with it.
+	AutoAccept *bool `json:"auto_accept,omitempty"`
 }
 
 // AgentOptions is what an ACP layer's agent reported it can be configured

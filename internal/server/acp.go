@@ -510,6 +510,10 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 	}
 	active.mu.Lock()
 	active.sessionID = session.ID
+	// The layer's default; the chat switch changes it for this Session.
+	if settings := s.agentSettingsFor(composition); settings.AutoAccept != nil {
+		active.autoAccept = *settings.AutoAccept
+	}
 	active.onIdle = func() {
 		if _, err := s.store.SettleWorkflowChatTurn(session.ID); err != nil {
 			s.logger.Warn("settle workflow phase after ACP turn", "session", session.ID, "error", err)

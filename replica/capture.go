@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 )
 
 type spoolPart struct {
@@ -18,6 +19,7 @@ type capture struct {
 	revision uint64
 	pageSize int
 	snapshot bool
+	at       time.Time
 }
 
 func (c capture) close(files Storage) {
@@ -87,7 +89,11 @@ func (r *Replica) capture(ctx context.Context, db Database, all bool) (capture, 
 		if err := spool.Sync(); err != nil {
 			return err
 		}
-		return spool.Close()
+		if err := spool.Close(); err != nil {
+			return err
+		}
+		c.at = r.now().UTC()
+		return nil
 	})
 	if err != nil {
 		r.tracker.putBack(c.pages)

@@ -10,15 +10,17 @@ import (
 	"github.com/ncruces/go-sqlite3/vfs"
 )
 
-// storage is how the replica itself reaches files next to SQLite: the
-// database to read pages from or rebuild, and its marker. On an ordinary
-// system that is the OS; on HopOS it is the volume VFS.
+// Storage accesses the same bytes as SQLite's underlying VFS. Open(create)
+// creates a file if missing, without truncating existing contents. Creation
+// must be durable by a successful File.Sync; Remove must durably remove the
+// directory entry. A read/write file is returned even when create is false.
 type Storage interface {
 	Open(name string, create bool) (File, error)
 	Exists(name string) (bool, error)
 	Remove(name string) error
 }
 
+// File is a random-access local file. Sync is its durability boundary.
 type File interface {
 	io.ReaderAt
 	io.WriterAt

@@ -16,21 +16,13 @@ import (
 	"github.com/ncruces/go-sqlite3/vfs"
 )
 
-// A Replica keeps one tenant's database on S3, page by page. Pages that
-// SQLite writes are tracked in the VFS; every interval they are read under
-// a read transaction and shipped as a segment. A generation starts with a
-// snapshot (every page) and grows with the changes; when the changes
-// outweigh the database, a new generation replaces it. At start, a missing
-// database is rebuilt from the current generation.
-//
-// Layout in the bucket, under the prefix and the domain:
-//
-//	current                       the id of the complete generation
-//	generations/<id>/<seq>.seg    the segments, in order
+// A Replica keeps one database in object storage as complete, manifest-backed
+// batches. A generation starts with a permanent snapshot and grows through
+// incremental commits and compacted windows. See README.md for the wire layout.
 
 // Database must exclude ALL writers for the duration of fn, including writes
 // through other connections. Use rollback-journal mode: WAL is not supported.
-// The callback must read a database table to acquire SQLite's shared lock.
+// The adapter must read a database table before fn to acquire SQLite's shared lock.
 // The single-connection adapter in the example also works with a lockless VFS.
 type Database interface {
 	WithReadTransaction(ctx context.Context, fn func() error) error
@@ -234,7 +226,7 @@ func (r *Replica) Prepare(ctx context.Context) error {
 	return nil
 }
 
-// Attach gives the replica the database to read under, and starts the loop.
+// Attach supplies the database adapter. Start or Sync drives replication.
 func (r *Replica) Attach(db Database) {
 	r.mu.Lock()
 	r.db = db
@@ -341,7 +333,7 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 	}
 	if len(captured.parts) > 0 {
 		// Monotone times keep new batches out of already sealed time windows.
-		at := r.now().UTC()
+		at := captured.at
 		if !at.After(current.At) {
 			at = current.At.Add(time.Nanosecond)
 		}
@@ -448,7 +440,7 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 }
 
 // compactionDue: the changes outweigh the database, or the generation is a
-// day old; a fresh snapshot keeps restores short.
+// configured generation age is reached; a fresh snapshot keeps restores short.
 func (r *Replica) compactionDue(current marker) bool {
 	if !current.Complete {
 		return false

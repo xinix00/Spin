@@ -158,8 +158,8 @@ func (t *tracker) pendingPages() int {
 	return len(t.dirty)
 }
 
-// settle marks the tracker clean when nothing is dirty; it reports whether
-// it did, so the caller can record the clean state on storage.
+// settle persists clean while excluding new writes, and only if capture
+// still covers the current revision.
 func (t *tracker) settle(revision uint64, persist func() error) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
