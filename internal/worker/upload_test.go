@@ -115,3 +115,34 @@ func TestUploadSnapshotSendsChunksInParallelAndRetriesOnce(t *testing.T) {
 		t.Fatalf("expected 4 chunks plus one retry, saw %d puts (failed=%t)", puts.Load(), failed.Load())
 	}
 }
+
+// The create request carries the snapshot's identity, never its manifest:
+// a listing of tens of thousands of paths would not fit the request.
+func TestCreateUploadLeavesTheManifestOut(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(http.MaxBytesReader(w, r.Body, 16<<10))
+		if err := json.Unmarshal(body, &received); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"up_1","chunk_size":1048576,"parallel":1}`))
+	}))
+	defer server.Close()
+	client, err := newUploadClient(server.URL, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := make([]domain.ContentEntry, 20000)
+	for index := range entries {
+		entries[index] = domain.ContentEntry{Path: "/usr/local/lib/node_modules/some/package/file" + strconv.Itoa(index) + ".js", Bytes: 1234, Kind: "tool"}
+	}
+	snapshot := domain.CapsuleSnapshot{Driver: "docker", Ref: "spin/artifact:rec_1", Digest: "sha256:abc", Contents: &domain.LayerContents{Files: len(entries), Entries: entries}}
+	if _, err := client.create(context.Background(), snapshot, 10); err != nil {
+		t.Fatal(err)
+	}
+	if snapshotBody, ok := received["snapshot"].(map[string]any); !ok || snapshotBody["contents"] != nil || snapshotBody["ref"] != "spin/artifact:rec_1" {
+		t.Fatalf("create request = %v", received["snapshot"])
+	}
+}

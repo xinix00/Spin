@@ -94,6 +94,9 @@ func (c *uploadClient) do(ctx context.Context, method, path string, body io.Read
 }
 
 func (c *uploadClient) create(ctx context.Context, snapshot domain.CapsuleSnapshot, size int64) (uploadSession, error) {
+	// The archive keeps the image, not the manifest: the listing can run to
+	// tens of thousands of paths and has no place in this request.
+	snapshot.Contents = nil
 	body, _ := json.Marshal(map[string]any{"kind": "snapshot", "name": snapshot.Ref, "size": size, "snapshot": snapshot})
 	status, payload, err := c.do(ctx, http.MethodPost, "", bytes.NewReader(body), int64(len(body)), map[string]string{"Content-Type": "application/json"})
 	if err != nil {

@@ -90,7 +90,7 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request createUploadRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err := decoder.Decode(&request); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid upload: " + err.Error()})
 		return
