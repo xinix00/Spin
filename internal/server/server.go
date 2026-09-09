@@ -847,6 +847,12 @@ func (s *Server) deleteArtifact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if files := s.manifestFiles(); files != nil {
+		for _, member := range deleted {
+			_ = files.Remove("artifact:" + member.ID)
+		}
+	}
+	s.logger.Info("layers removed", "root", string(artifact.Kind)+":"+artifact.Name, "layers", len(deleted), "by", operator)
 	writeJSON(w, http.StatusOK, deleted[len(deleted)-1])
 }
 

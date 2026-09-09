@@ -787,6 +787,16 @@ func (s *Store) DeleteArtifactTree(artifactID, operator string, admin bool) ([]d
 			s.state.Sessions[id] = session
 		}
 	}
+	// The kept files of a layer that no longer exists in any version go too.
+	remaining := map[string]bool{}
+	for _, artifact := range s.state.Artifacts {
+		remaining[artifact.Subject+"/"+string(artifact.Kind)+":"+artifact.Name] = true
+	}
+	for _, artifact := range tree {
+		if key := artifact.Subject + "/" + string(artifact.Kind) + ":" + artifact.Name; !remaining[key] {
+			delete(s.state.LoginStates, key)
+		}
+	}
 	return tree, s.saveLocked()
 }
 

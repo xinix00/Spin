@@ -507,3 +507,49 @@ func TestAuthenticatedGitCheckoutUsesSecretEngineBoundary(t *testing.T) {
 		t.Fatal("job response leaked the Git token")
 	}
 }
+
+// Removing a layer takes every version of it and everything built on any
+// version, other users' logins included, and stops what still runs on
+// them first: the snapshots go, the state is clean, the rest stays.
+func TestDeleteArtifactTakesTheWholeTreeAndStopsWhatRunsOnIt(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &testEngine{}
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
+	node := toolLayer("node")
+	node.From = "tool:git"
+	codex := agentLayer("codex", "codex-acp")
+	codex.From = "tool:node"
+	layers := buildLayers(t, srv, "derek", gitLayer(), node, codex)
+	git := layers[0]
+	login := layerSpec{Kind: domain.ArtifactCredential, Name: "codex", Scope: domain.ScopeUser, From: "tool:codex", Install: "codex login"}
+	buildLayers(t, srv, "john", login)
+	// A new version of node: the layers above still sit on the old one.
+	editLayer(t, srv, "derek", "tool:node")
+	nodeV2 := saveLayer(t, srv, "derek")
+	composition := useLayers(t, srv, "john", "credential:codex")
+	if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+		t.Fatalf("composition did not start: %+v", composition)
+	}
+
+	request := httptest.NewRequest(http.MethodDelete, "/api/artifacts/"+nodeV2.ID+"?operator=derek", nil)
+	response := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d; body = %s", response.Code, response.Body.String())
+	}
+	left := st.Snapshot().Artifacts
+	if len(left) != 1 || left[0].ID != git.ID {
+		t.Fatalf("left after delete: %+v", left)
+	}
+	if engine.removed != 4 {
+		t.Fatalf("snapshots removed = %d, want node v1, node v2, codex and john's login", engine.removed)
+	}
+	for _, candidate := range st.Snapshot().Compositions {
+		if candidate.ID == composition.ID {
+			t.Fatalf("composition on the removed layers survived: %+v", candidate)
+		}
+	}
+}
