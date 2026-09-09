@@ -439,6 +439,12 @@ func validateDatabaseObjects(ctx context.Context, database *persistence.SQLite, 
 	restorable := restorableArtifacts(inspection.Artifacts)
 	for index, artifact := range restorable {
 		if err := database.RestoreSnapshot(ctx, artifact.Snapshot, io.Discard); err != nil {
+			if artifact.SupersededBy != "" {
+				// An older version whose archive went before the prune was
+				// recorded: its newer version carries the content.
+				progress("snapshots", fmt.Sprintf("Oudere versie van %s:%s zonder archief overgeslagen", artifact.Kind, artifact.Name), index+1, len(restorable))
+				continue
+			}
 			return fmt.Errorf("backup Docker snapshot %s:%s (%s) is missing or corrupt: %w", artifact.Kind, artifact.Name, artifact.Snapshot.Digest, err)
 		}
 		progress("snapshots", fmt.Sprintf("Docker-laag %s:%s gecontroleerd", artifact.Kind, artifact.Name), index+1, len(restorable))
@@ -446,10 +452,12 @@ func validateDatabaseObjects(ctx context.Context, database *persistence.SQLite, 
 	return nil
 }
 
+// restorableArtifacts are the layers a backup must carry: restorable
+// snapshots whose archive was not pruned as a superseded version.
 func restorableArtifacts(artifacts []domain.Artifact) []domain.Artifact {
 	result := make([]domain.Artifact, 0, len(artifacts))
 	for _, artifact := range artifacts {
-		if artifact.Snapshot.Restorable {
+		if artifact.Snapshot.Restorable && artifact.SnapshotPrunedAt == nil {
 			result = append(result, artifact)
 		}
 	}

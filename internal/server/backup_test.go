@@ -268,3 +268,18 @@ func TestSQLiteBackupRestoresStateSecretsAndAttachmentsUnderDestinationKey(t *te
 		t.Fatalf("reopened account=%+v error=%v", reopenedAccount, err)
 	}
 }
+
+// A backup made after old layer versions were pruned carries no archive
+// for them, and must not be refused for it.
+func TestRestorableArtifactsSkipPrunedVersions(t *testing.T) {
+	pruned := time.Now()
+	artifacts := []domain.Artifact{
+		{ID: "old", Snapshot: domain.CapsuleSnapshot{Restorable: true}, SupersededBy: "new", SnapshotPrunedAt: &pruned},
+		{ID: "new", Snapshot: domain.CapsuleSnapshot{Restorable: true}},
+		{ID: "legacy", Snapshot: domain.CapsuleSnapshot{Restorable: false}},
+	}
+	restorable := restorableArtifacts(artifacts)
+	if len(restorable) != 1 || restorable[0].ID != "new" {
+		t.Fatalf("restorable = %+v", restorable)
+	}
+}
