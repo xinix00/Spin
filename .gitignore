@@ -6,3 +6,4 @@
 
 # Local HOP job with the real worker token; the example next to it is the template.
 hop-spin-client.json
+hop-spin-server.json

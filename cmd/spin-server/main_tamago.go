@@ -73,6 +73,10 @@ func main() {
 			if options.PublicURL == "" && single == "" {
 				options.PublicURL = "https://" + domain
 			}
+			if options.InternalURL == "" && single == "" {
+				// Agents reach the workflow tools over the same public URL.
+				options.InternalURL = options.PublicURL
+			}
 			return options
 		},
 		BeforeStore: func(_ string, database *persistence.SQLite) error {

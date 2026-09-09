@@ -1,0 +1,36 @@
+{
+  "name": "spin",
+  "driver": "hop",
+  "artifacts": [
+    {
+      "url": "https://github.com/xinix00/Spin/releases/download/rolling/spin-server-arm64-tamago.elf",
+      "match": { "node.arch": "arm64" }
+    },
+    {
+      "url": "https://github.com/xinix00/Spin/releases/download/rolling/spin-server-riscv64-tamago.elf",
+      "match": { "node.arch": "riscv64" }
+    }
+  ],
+  "ports": { "http": 8080 },
+  "volumes": { "/scratch/spin": "/data" },
+  "env": {
+    "SPIN_DATA_DIR": "/data",
+    "SPIN_MASTER_KEY": "REPLACE_WITH_BASE64_32_BYTE_KEY",
+    "SPIN_WORKER_TOKEN": "REPLACE_WITH_WORKER_TOKEN_TO_SEED_NEW_DATABASES",
+    "SPIN_S3_ENDPOINT": "https://de-s3.storage.bunnycdn.com",
+    "SPIN_S3_BUCKET": "REPLACE_WITH_STORAGE_ZONE",
+    "SPIN_S3_ACCESS_KEY": "REPLACE_WITH_STORAGE_ZONE",
+    "SPIN_S3_SECRET_KEY": "REPLACE_WITH_STORAGE_ZONE_PASSWORD",
+    "SPIN_S3_REGION": "de",
+    "SPIN_S3_PREFIX": "spin",
+    "SPIN_REPLICA_SCHEDULE": "15m:2h,1h:24h,24h:168h",
+    "SPIN_REPLICA_GENERATION": "168h",
+    "SPIN_REPLICA_RETENTION": "672h",
+    "SPIN_GITHUB_CLIENT_ID": "REPLACE_OR_REMOVE",
+    "SPIN_GITHUB_CLIENT_SECRET": "REPLACE_OR_REMOVE"
+  },
+  "memory_limit": 2147483648,
+  "cpu_shares": 1024,
+  "max_restarts": -1,
+  "priority": 100
+}
