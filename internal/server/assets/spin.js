@@ -1432,7 +1432,8 @@ async function bootstrap(){
     await refresh(true);if(restoreError)showError(restoreError);
   }catch(error){
     if(error.status===503&&error.body?.stage){const started=error.body.started_at?Math.max(0,Math.round((Date.now()-new Date(error.body.started_at).getTime())/1000)):0;showAuthGate(error.body.opening?`${error.body.message}${started?` · ${started} s`:''}`:`Openen mislukt: ${error.body.failure||error.body.message}`);setGateBusy(!!error.body.opening);if(error.body.opening)setTimeout(bootstrap,2000);return;}
-    showAuthGate(`Server niet bereikbaar: ${error.message||error}`);setGateBusy(false);
+    // A redeploy or a proxy hiccup: keep asking until the server answers.
+    showAuthGate(`Server niet bereikbaar: ${error.message||error} · opnieuw proberen…`);setGateBusy(true);setTimeout(bootstrap,3000);
   }
 }
 
