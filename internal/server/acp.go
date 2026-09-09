@@ -90,6 +90,10 @@ type acpBrowserEvent struct {
 	Auto    bool   `json:"auto,omitempty"`
 	Choice  string `json:"choice,omitempty"`
 	Enabled *bool  `json:"enabled,omitempty"`
+	// Viewer marks a ready event for someone watching another operator's
+	// Session; Operator names who runs it.
+	Viewer   bool   `json:"viewer,omitempty"`
+	Operator string `json:"operator,omitempty"`
 }
 
 type acpRPCResponse struct {
@@ -226,15 +230,22 @@ func (s *Server) sessionACP(w http.ResponseWriter, r *http.Request) {
 	defer connection.Close()
 	connection.SetReadLimit(1 << 20)
 	active, err := s.getOrStartACP(r.PathValue("sessionID"), operator)
+	viewer := false
 	if err != nil {
-		_ = connection.WriteJSON(acpBrowserEvent{Type: "error", Error: err.Error(), Fatal: true})
-		return
+		// Another operator's Session that is running: watch along. Only
+		// its operator talks to the agent.
+		if running := s.runningACP(r.PathValue("sessionID")); running != nil && errors.Is(err, store.ErrConflict) {
+			active, viewer = running, true
+		} else {
+			_ = connection.WriteJSON(acpBrowserEvent{Type: "error", Error: err.Error(), Fatal: true})
+			return
+		}
 	}
 
 	events, history := active.subscribe()
 	defer active.unsubscribe(events)
 	agentSessionID, agentName, busy := active.info()
-	ready := acpBrowserEvent{Type: "ready", AgentSessionID: agentSessionID, AgentName: agentName, Busy: busy, Queued: active.queuedCount()}
+	ready := acpBrowserEvent{Type: "ready", AgentSessionID: agentSessionID, AgentName: agentName, Busy: busy, Queued: active.queuedCount(), Viewer: viewer, Operator: active.operator}
 	if err := connection.WriteJSON(ready); err != nil {
 		return
 	}
@@ -276,6 +287,10 @@ func (s *Server) sessionACP(w http.ResponseWriter, r *http.Request) {
 		case message, ok := <-clientMessages:
 			if !ok {
 				return
+			}
+			if viewer {
+				_ = connection.WriteJSON(acpBrowserEvent{Type: "error", Error: "je kijkt mee; alleen " + active.operator + " stuurt hier"})
+				continue
 			}
 			switch message.Type {
 			case "prompt":
@@ -470,6 +485,22 @@ func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, session
 		return capsule.WorkspaceChanges{}, err
 	}
 	return label(changes), nil
+}
+
+// runningACP is the live agent of a Session, whoever runs it, or nil.
+func (s *Server) runningACP(sessionID string) *activeACP {
+	s.acpMu.Lock()
+	defer s.acpMu.Unlock()
+	active := s.acpSessions[sessionID]
+	if active == nil {
+		return nil
+	}
+	select {
+	case <-active.done:
+		return nil
+	default:
+		return active
+	}
 }
 
 func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
