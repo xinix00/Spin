@@ -1440,7 +1440,6 @@ document.getElementById('nav-toggle').onclick=()=>setNavCollapsed(!document.getE
 try{setNavCollapsed(localStorage.getItem('spin-nav')==='collapsed');}catch(_){}
 document.getElementById('add-snapshot').onclick=()=>openLayerDialog({scope:'user'});
 document.getElementById('record-git-tool').onclick=()=>openLayerDialog(recordPresets[0]);
-document.getElementById('list-snapshots').onclick=()=>refresh(true);
 document.getElementById('terminal-interrupt').onclick=interruptTerminal;
 document.getElementById('capsule-dialog').addEventListener('cancel',event=>{const session=activeTerminal();if(session&&!session.exited&&document.activeElement?.closest('.pty-pane')){event.preventDefault();}});
 // Refit only when the stage itself changed size, and never more than a few
