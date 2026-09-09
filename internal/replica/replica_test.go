@@ -185,13 +185,27 @@ func TestReplicaShipsPagesAndRestoresTheDatabase(t *testing.T) {
 	if current != again.Status().Generation {
 		t.Fatalf("current = %q, want %q", current, again.Status().Generation)
 	}
-	// The old generation stays within the retention: a point in time to go
-	// back to. It can be fetched into another file and read.
-	generations, err := again.Generations(context.Background())
-	if err != nil || len(generations) != 2 || generations[0].ID != again.Status().Generation || !generations[0].Current || generations[1].ID != status.Generation {
-		t.Fatalf("generations = %+v, %v", generations, err)
+	// The old generation stays within the retention: its snapshot is a
+	// restore point, fetched into another file and read.
+	points, err := again.Points(context.Background())
+	if err != nil || len(points) < 2 {
+		keys := []string{}
+		for key := range bucket.objects {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		t.Fatalf("points = %+v, %v; bucket = %v", points, err, keys)
 	}
-	if err := again.Fetch(context.Background(), status.Generation, dir+"/point.db"); err != nil {
+	var oldest Point
+	for _, point := range points {
+		if point.Generation == status.Generation {
+			oldest = point
+		}
+	}
+	if oldest.Generation == "" || points[0].Generation != again.Status().Generation || !points[0].Current {
+		t.Fatalf("points = %+v", points)
+	}
+	if err := again.Fetch(context.Background(), oldest.Generation, oldest.At, dir+"/point.db"); err != nil {
 		t.Fatal(err)
 	}
 	point, err := persistence.Open(dir+"/point.db", persistence.OpenOptions{})
@@ -204,11 +218,113 @@ func TestReplicaShipsPagesAndRestoresTheDatabase(t *testing.T) {
 	}
 	// Outside the retention it goes.
 	again.config.Retention = time.Nanosecond
+	again.now = func() time.Time { return time.Now().UTC().Add(time.Hour) }
 	again.pruneGenerations(again.Status().Generation)
 	for key := range bucket.objects {
 		if strings.Contains(key, status.Generation) {
 			t.Fatalf("expired generation %s still in the bucket: %s", status.Generation, key)
 		}
+	}
+}
+
+// Restore points thin out with age: raw segments merge into quarter-hour
+// windows, those into hours; each window's end is a point that restores
+// exactly the state of that moment, and covered files go once their keep
+// has passed.
+func TestReplicaMergesWindowsIntoTieredRestorePoints(t *testing.T) {
+	bucket := &fakeBucket{objects: map[string][]byte{}}
+	server := httptest.NewServer(bucket)
+	defer server.Close()
+	config := testConfig(server)
+	config.Schedule = []Level{{Window: 15 * time.Minute, Keep: 2 * time.Hour}, {Window: time.Hour, Keep: 24 * time.Hour}}
+	dir := t.TempDir()
+	rep, database := openReplicated(t, config, "tiers.example.test", dir+"/tiers.db")
+	defer rep.Close()
+	defer database.Close()
+	clock := time.Date(2026, 9, 9, 8, 0, 30, 0, time.UTC)
+	rep.now = func() time.Time { return clock }
+	write := func(value string) {
+		if err := database.WriteFile("state", []byte(value)); err != nil {
+			t.Fatal(err)
+		}
+		if err := rep.Sync(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"minute":0}`)
+	if !rep.Status().Complete {
+		t.Fatalf("status = %+v", rep.Status())
+	}
+	// Two syncs in the first quarter, one in the second, one in the fifth.
+	clock = clock.Add(5 * time.Minute)
+	write(`{"minute":5}`)
+	clock = clock.Add(5 * time.Minute)
+	write(`{"minute":10}`)
+	clock = clock.Add(10 * time.Minute)
+	write(`{"minute":20}`)
+	clock = clock.Add(50 * time.Minute)
+	write(`{"minute":70}`)
+	// Everything up to 09:00 is more than an hour old: quarter windows for
+	// 08:00 and 08:15 exist, the hour window 08:00-09:00 too.
+	clock = clock.Add(20 * time.Minute)
+	rep.lastCompact = time.Time{}
+	if err := rep.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lay, err := rep.loadLayout(context.Background(), rep.Status().Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lay.windows[1]) < 2 || len(lay.windows[2]) != 1 {
+		t.Fatalf("windows = L1:%d L2:%d", len(lay.windows[1]), len(lay.windows[2]))
+	}
+	// The end of the first quarter restores the state as of minute 10; the
+	// end of the hour restores minute 20.
+	quarter := time.Date(2026, 9, 9, 8, 15, 0, 0, time.UTC)
+	if err := rep.Fetch(context.Background(), rep.Status().Generation, quarter, dir+"/quarter.db"); err != nil {
+		t.Fatal(err)
+	}
+	quarterDB, err := persistence.Open(dir+"/quarter.db", persistence.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer quarterDB.Close()
+	if state, _ := quarterDB.ReadFile("state"); string(state) != `{"minute":10}` {
+		t.Fatalf("state at the end of the first quarter = %s", state)
+	}
+	hour := time.Date(2026, 9, 9, 9, 0, 0, 0, time.UTC)
+	if err := rep.Fetch(context.Background(), rep.Status().Generation, hour, dir+"/hour.db"); err != nil {
+		t.Fatal(err)
+	}
+	hourDB, err := persistence.Open(dir+"/hour.db", persistence.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hourDB.Close()
+	if state, _ := hourDB.ReadFile("state"); string(state) != `{"minute":20}` {
+		t.Fatalf("state at the end of the hour = %s", state)
+	}
+	// Raw segments older than a quarter and covered by a window are gone;
+	// the quarter windows stay (their keep is two hours); latest is intact.
+	for _, raw := range lay.raw {
+		if raw.at.Before(clock.Add(-15 * time.Minute)) {
+			t.Fatalf("raw segment %s still there", raw.key)
+		}
+	}
+	points, err := rep.Points(context.Background())
+	if err != nil || len(points) < 4 || points[0].At.Before(points[1].At) {
+		t.Fatalf("points = %+v, %v", points, err)
+	}
+	if err := rep.Fetch(context.Background(), rep.Status().Generation, time.Time{}, dir+"/latest.db"); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := persistence.Open(dir+"/latest.db", persistence.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer latest.Close()
+	if state, _ := latest.ReadFile("state"); string(state) != `{"minute":70}` {
+		t.Fatalf("latest state = %s", state)
 	}
 }
 

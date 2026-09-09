@@ -489,35 +489,35 @@ func (s *Server) hasInteractiveActivity() bool {
 // can be put back to, through the same validated restore as a backup zip.
 
 type replicaRestorer interface {
-	Generations(ctx context.Context) ([]replica.Generation, error)
-	Fetch(ctx context.Context, generation, destination string) error
+	Points(ctx context.Context) ([]replica.Point, error)
+	Fetch(ctx context.Context, generation string, at time.Time, destination string) error
 }
 
-func (s *Server) listReplicaGenerations(w http.ResponseWriter, r *http.Request) {
+func (s *Server) listReplicaPoints(w http.ResponseWriter, r *http.Request) {
 	if !s.requireBackupAdmin(w, r) {
 		return
 	}
 	restorer, ok := s.replica.(replicaRestorer)
 	if !ok {
-		writeJSON(w, http.StatusOK, map[string]any{"generations": []replica.Generation{}})
+		writeJSON(w, http.StatusOK, map[string]any{"points": []replica.Point{}})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	generations, err := restorer.Generations(ctx)
+	points, err := restorer.Points(ctx)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if generations == nil {
-		generations = []replica.Generation{}
+	if points == nil {
+		points = []replica.Point{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"generations": generations})
+	writeJSON(w, http.StatusOK, map[string]any{"points": points})
 }
 
-// restoreReplicaGeneration fetches one generation next to the database and
-// runs the restore job on it.
-func (s *Server) restoreReplicaGeneration(w http.ResponseWriter, r *http.Request) {
+// restoreReplicaPoint fetches the database as it was at a point, next to
+// the live one, and runs the restore job on it.
+func (s *Server) restoreReplicaPoint(w http.ResponseWriter, r *http.Request) {
 	if !s.requireBackupAdmin(w, r) {
 		return
 	}
@@ -527,7 +527,8 @@ func (s *Server) restoreReplicaGeneration(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var request struct {
-		Generation string `json:"generation"`
+		Generation string    `json:"generation"`
+		At         time.Time `json:"at"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || strings.TrimSpace(request.Generation) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "generation is required"})
@@ -547,12 +548,12 @@ func (s *Server) restoreReplicaGeneration(w http.ResponseWriter, r *http.Request
 		return
 	}
 	job := &restoreJob{
-		ID: jobID, Status: "running", Stage: "download", Message: "Generatie " + request.Generation + " uit de replica halen",
+		ID: jobID, Status: "running", Stage: "download", Message: "Herstelpunt uit de replica halen",
 		ExpiresAt: time.Now().Add(restoreJobResultLifetime),
 	}
 	s.storeRestoreJob(job)
 	initial := s.restoreJobResult(job)
-	generation, masterKey := strings.TrimSpace(request.Generation), s.store.PortableMasterKey()
+	generation, at, masterKey := strings.TrimSpace(request.Generation), request.At, s.store.PortableMasterKey()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 		defer cancel()
@@ -565,7 +566,7 @@ func (s *Server) restoreReplicaGeneration(w http.ResponseWriter, r *http.Request
 			})
 			s.logger.Warn("restore replica generation", "generation", generation, "error", err)
 		}
-		if err := restorer.Fetch(ctx, generation, destination); err != nil {
+		if err := restorer.Fetch(ctx, generation, at, destination); err != nil {
 			fail(err)
 			return
 		}

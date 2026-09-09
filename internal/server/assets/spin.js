@@ -1213,8 +1213,9 @@ async function pollRestoreJob(initial){
 async function completeRestoreUpload(uploadID){
   const response=await backupResponse(`/api/uploads/${encodeURIComponent(uploadID)}/complete`,{method:'POST'}),job=await response.json();if(!job.id)throw new Error('Spin gaf geen restore-status-ID terug');rememberRestoreJob(job.id);stopStateStream();return pollRestoreJob(job);
 }
-// Replica generations are points in time; putting one back is the same
-// validated restore as a backup zip, without the upload.
+// Restore points from the replica thin out with age (quarter hours, hours,
+// days, generations); putting one back is the same validated restore as a
+// backup zip, without the upload.
 async function renderReplicaGenerations(){
   const root=document.getElementById('replica-generations');if(!root)return;
   const replication=snapshot.storage?.replication;
@@ -1222,18 +1223,19 @@ async function renderReplicaGenerations(){
   root.hidden=false;
   if(!root.dataset.loaded){root.innerHTML=`<button class="small-button" id="load-generations">${icon('history')}Herstelpunten uit de replica</button>`;document.getElementById('load-generations').onclick=loadReplicaGenerations;}
 }
+const pointLevelLabel=level=>({'-1':'generatie',0:'sync',1:'kwartier',2:'uur',3:'dag'})[level]||`niveau ${level}`;
 async function loadReplicaGenerations(){
   const root=document.getElementById('replica-generations');
   try{
-    const result=await api('/api/replica/generations'),generations=result.generations||[];root.dataset.loaded='1';
-    root.innerHTML=generations.length?`<p class="hint">${icon('history')} Herstelpunten in de replica, nieuwste eerst. Een herstel vervangt de huidige database door die generatie.</p>${generations.map(generation=>`<div class="binding"><span>${esc(formatDateTime(generation.created_at))}${generation.current?' · nu':''}</span><span>${generation.segments} segment${generation.segments===1?'':'en'} · ${esc(formatBytes(generation.bytes))}${generation.current?'':` <button class="small-button" data-restore-generation="${esc(generation.id)}" data-generation-label="${esc(formatDateTime(generation.created_at))}">${icon('restore')}Herstel</button>`}</span></div>`).join('')}`:'<p class="hint">Nog geen complete generatie in de replica.</p>';
-    root.querySelectorAll('[data-restore-generation]').forEach(button=>button.onclick=()=>restoreReplicaGeneration(button.dataset.restoreGeneration,button.dataset.generationLabel));
+    const result=await api('/api/replica/points'),points=result.points||[];root.dataset.loaded='1';
+    root.innerHTML=points.length?`<p class="hint">${icon('history')} Herstelpunten in de replica, nieuwste eerst: elke sync van het laatste kwartier, kwartieren van de laatste twee uur, uren van de laatste dag, dagen van de laatste week en de wekelijkse generaties van de laatste maand. Een herstel vervangt de huidige database door de staat van dat moment.</p><div class="restore-points">${points.slice(0,400).map((point,index)=>`<div class="binding"><span>${esc(formatDateTime(point.at))}</span><span><span class="tag">${esc(pointLevelLabel(point.level))}</span>${index===0&&point.current?'<span class="tag capability">nu</span>':`<button class="small-button" data-restore-point="${index}" data-generation="${esc(point.generation)}" data-at="${esc(point.at)}" data-label="${esc(formatDateTime(point.at))}">${icon('restore')}Herstel</button>`}</span></div>`).join('')}</div>`:'<p class="hint">Nog geen complete generatie in de replica.</p>';
+    root.querySelectorAll('[data-restore-point]').forEach(button=>button.onclick=()=>restoreReplicaPoint(button.dataset.generation,button.dataset.at,button.dataset.label));
   }catch(error){showError(error);}
 }
-async function restoreReplicaGeneration(generation,label){
-  if(!confirm(`Database terugzetten naar ${label}?\n\nAlles wat daarna is gebeurd verdwijnt uit deze Spin (de replica houdt de huidige generatie nog als herstelpunt). Actieve browser-sessions worden afgesloten.`))return;
+async function restoreReplicaPoint(generation,at,label){
+  if(!confirm(`Database terugzetten naar ${label}?\n\nAlles wat daarna is gebeurd verdwijnt uit deze Spin (de replica houdt de huidige staat nog als herstelpunt). Actieve browser-sessions worden afgesloten.`))return;
   updateRestoreProgress('Herstelpunt ophalen',label,0);
-  try{const response=await backupResponse('/api/replica/restore',{method:'POST',body:JSON.stringify({generation})}),job=await response.json();if(!job.id)throw new Error('Spin gaf geen restore-status-ID terug');rememberRestoreJob(job.id);stopStateStream();const result=await pollRestoreJob(job);announceRestoreComplete(result);}
+  try{const response=await backupResponse('/api/replica/restore',{method:'POST',body:JSON.stringify({generation,at})}),job=await response.json();if(!job.id)throw new Error('Spin gaf geen restore-status-ID terug');rememberRestoreJob(job.id);stopStateStream();const result=await pollRestoreJob(job);announceRestoreComplete(result);}
   catch(error){updateRestoreProgress('Herstel mislukt',error.message||String(error),100,true);showError(error);if(authState.authenticated&&stateStream.stopped)connectStateStream();}
 }
 function announceRestoreComplete(result){alert(`Restore compleet: ${result.jobs} Jobs, ${result.templates} Templates, ${result.deliverables} deliverables, ${result.attachments} bijlagen en ${result.snapshots} Docker-snapshots. Log opnieuw in.`);location.reload();}

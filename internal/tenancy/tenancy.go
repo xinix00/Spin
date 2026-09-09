@@ -337,11 +337,12 @@ func (t *Tenants) Close() error {
 	defer t.mu.Unlock()
 	var errs []error
 	for domain, tenant := range t.tenants {
-		if tenant.Replica != nil {
-			tenant.Replica.Close()
-		}
+		// The database closes through the replica's VFS: database first.
 		if err := tenant.Database.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", domain, err))
+		}
+		if tenant.Replica != nil {
+			tenant.Replica.Close()
 		}
 		delete(t.tenants, domain)
 	}

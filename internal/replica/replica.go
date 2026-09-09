@@ -72,12 +72,15 @@ type Replica struct {
 	markerMu sync.Mutex
 	marker   marker
 
-	mu       sync.Mutex
-	db       Database
-	syncing  bool
-	status   Status
-	stop     chan struct{}
-	stopOnce sync.Once
+	mu          sync.Mutex
+	db          Database
+	syncing     bool
+	status      Status
+	stop        chan struct{}
+	stopOnce    sync.Once
+	lastCompact time.Time
+	// now is the clock; tests move it.
+	now func() time.Time
 }
 
 var registered sync.Map
@@ -104,6 +107,7 @@ func New(config Config, domain, path string, inner vfs.VFS, logger *slog.Logger)
 		config: config, domain: domain, path: full, inner: inner, files: storageFor(inner), tracker: newTracker(), vfsName: name, logger: logger,
 		s3:     &S3{Endpoint: config.Endpoint, Bucket: config.Bucket, Region: config.Region, AccessKey: config.AccessKey, SecretKey: config.SecretKey},
 		status: Status{Enabled: true, Bucket: config.Bucket}, stop: make(chan struct{}),
+		now: func() time.Time { return time.Now().UTC() },
 	}
 	replica.tracker.onUnclean = replica.markUnclean
 	vfs.Register(name, &trackingVFS{inner: inner, main: full, tracker: replica.tracker})
@@ -135,10 +139,6 @@ func (r *Replica) generationPrefix(generation string) string {
 	return r.key("generations", generation) + "/"
 }
 
-func (r *Replica) segmentKey(generation string, seq int64) string {
-	return fmt.Sprintf("%s%012d.seg", r.generationPrefix(generation), seq)
-}
-
 // Prepare runs before the database opens: a missing database is restored
 // from the current generation; an existing one continues its generation
 // when the marker says every write was shipped, and starts a new one else.
@@ -157,11 +157,13 @@ func (r *Replica) Prepare(ctx context.Context) error {
 			return fmt.Errorf("read current generation: %w", err)
 		}
 		generation := strings.TrimSpace(string(current))
-		restored, err := r.restore(ctx, generation)
+		restored, err := r.restoreInto(ctx, generation, time.Time{}, r.path)
 		if err != nil {
 			return fmt.Errorf("restore generation %s: %w", generation, err)
 		}
-		r.setMarker(restored)
+		if err := r.setMarker(restored); err != nil {
+			return err
+		}
 		r.mu.Lock()
 		r.status.Restored, r.status.Generation, r.status.Complete = true, generation, true
 		r.mu.Unlock()
@@ -261,9 +263,9 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		if err != nil {
 			return err
 		}
-		generation := newGenerationID()
+		generation := newGenerationID(r.now())
 		r.tracker.markAll(size)
-		current = marker{Generation: generation, StartedAt: time.Now().UTC()}
+		current = marker{Generation: generation, StartedAt: r.now()}
 		if err := r.setMarker(current); err != nil {
 			return err
 		}
@@ -296,7 +298,7 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 			continue
 		}
 		encoded := encodeSegment(seg)
-		if err := r.s3.Put(ctx, r.segmentKey(current.Generation, current.Seq+1), encoded); err != nil {
+		if err := r.s3.Put(ctx, r.rawKey(current.Generation, current.Seq+1, r.now()), encoded); err != nil {
 			r.tracker.putBack(pages)
 			return err
 		}
@@ -321,6 +323,10 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 	}
 	current = r.getMarker()
 	if !current.Complete && r.tracker.pendingPages() == 0 && current.Seq > 0 {
+		note, _ := json.Marshal(snapshotNote{Seq: current.Seq, At: r.now().Truncate(time.Second)})
+		if err := r.s3.Put(ctx, r.snapshotKey(current.Generation), note); err != nil {
+			return err
+		}
 		if err := r.s3.Put(ctx, r.currentKey(), []byte(current.Generation)); err != nil {
 			return err
 		}
@@ -334,6 +340,12 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		r.logger.Info("replica: generation complete", "domain", r.domain, "generation", current.Generation, "segments", current.Seq, "bytes", current.Bytes)
 		r.pruneGenerations(current.Generation)
 	}
+	if current.Complete && r.now().Sub(r.lastCompact) >= time.Minute {
+		r.lastCompact = r.now()
+		if err := r.compact(ctx, current.Generation); err != nil {
+			return fmt.Errorf("compact: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -346,7 +358,7 @@ func (r *Replica) compactionDue(current marker) bool {
 	if current.Bytes > 2*current.Size+64<<20 {
 		return true
 	}
-	return time.Since(current.StartedAt) > 24*time.Hour
+	return r.now().Sub(current.StartedAt) > r.config.Generation
 }
 
 func (r *Replica) readPages(pageSize int, pages []uint32) (segment, error) {
@@ -388,120 +400,6 @@ func (r *Replica) fileSize() (int64, error) {
 	return file.Size()
 }
 
-// restore rebuilds the database from every segment of a generation.
-func (r *Replica) restore(ctx context.Context, generation string) (marker, error) {
-	result, err := r.restoreInto(ctx, generation, r.path)
-	if err != nil {
-		return marker{}, err
-	}
-	return result, r.writeMarker(result)
-}
-
-// Fetch writes a generation of the database to another file: a point in
-// time to inspect or put back.
-func (r *Replica) Fetch(ctx context.Context, generation, destination string) error {
-	if !validGeneration(generation) {
-		return fmt.Errorf("invalid generation %q", generation)
-	}
-	_, err := r.restoreInto(ctx, generation, destination)
-	return err
-}
-
-func (r *Replica) restoreInto(ctx context.Context, generation, path string) (marker, error) {
-	objects, err := r.s3.List(ctx, r.generationPrefix(generation))
-	if err != nil {
-		return marker{}, err
-	}
-	if len(objects) == 0 {
-		return marker{}, errors.New("the generation has no segments")
-	}
-	file, err := r.files.Open(path, true)
-	if err != nil {
-		return marker{}, err
-	}
-	result := marker{Generation: generation, Complete: true, Clean: true, StartedAt: time.Now().UTC()}
-	for _, object := range objects {
-		if !strings.HasSuffix(object.Key, ".seg") {
-			continue
-		}
-		data, err := r.s3.Get(ctx, object.Key)
-		if err != nil {
-			_ = file.Close()
-			return marker{}, err
-		}
-		seg, err := decodeSegment(data)
-		if err != nil {
-			_ = file.Close()
-			return marker{}, fmt.Errorf("%s: %w", object.Key, err)
-		}
-		for index, page := range seg.Pages {
-			if _, err := file.WriteAt(seg.Data[index], int64(page-1)*int64(seg.PageSize)); err != nil {
-				_ = file.Close()
-				return marker{}, err
-			}
-		}
-		if err := file.Truncate(seg.DBSize); err != nil {
-			_ = file.Close()
-			return marker{}, err
-		}
-		result.Seq++
-		result.Size = seg.DBSize
-		result.Bytes += int64(len(data))
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return marker{}, err
-	}
-	if err := file.Close(); err != nil {
-		return marker{}, err
-	}
-	if result.Seq == 0 {
-		_ = r.files.Remove(path)
-		return marker{}, errors.New("the generation has no segments")
-	}
-	return result, nil
-}
-
-// A Generation is one point in time in the bucket.
-type Generation struct {
-	ID        string    `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	Segments  int       `json:"segments"`
-	Bytes     int64     `json:"bytes"`
-	Current   bool      `json:"current"`
-}
-
-// Generations lists what the bucket holds for this domain, newest first.
-func (r *Replica) Generations(ctx context.Context) ([]Generation, error) {
-	objects, err := r.s3.List(ctx, r.key("generations")+"/")
-	if err != nil {
-		return nil, err
-	}
-	current := r.getMarker()
-	byID := map[string]*Generation{}
-	var order []string
-	for _, object := range objects {
-		rest := strings.TrimPrefix(object.Key, r.key("generations")+"/")
-		id, file, ok := strings.Cut(rest, "/")
-		if !ok || !strings.HasSuffix(file, ".seg") {
-			continue
-		}
-		generation := byID[id]
-		if generation == nil {
-			generation = &Generation{ID: id, CreatedAt: generationTime(id), Current: id == current.Generation && current.Complete}
-			byID[id] = generation
-			order = append(order, id)
-		}
-		generation.Segments++
-		generation.Bytes += object.Size
-	}
-	generations := make([]Generation, 0, len(order))
-	for index := len(order) - 1; index >= 0; index-- {
-		generations = append(generations, *byID[order[index]])
-	}
-	return generations, nil
-}
-
 func validGeneration(id string) bool {
 	if len(id) < 17 || generationTime(id).IsZero() {
 		return false
@@ -519,9 +417,9 @@ func generationTime(id string) time.Time {
 	return created
 }
 
-// pruneGenerations removes generations older than the retention, never
-// the one kept, nor an incomplete one younger than a day (it may be the
-// snapshot in progress of another start).
+// pruneGenerations removes generations past the retention, and unfinished
+// ones older than a day that are not this one (a snapshot another start
+// never completed). The one kept always stays.
 func (r *Replica) pruneGenerations(keep string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -530,16 +428,26 @@ func (r *Replica) pruneGenerations(keep string) {
 		r.logger.Warn("replica: list generations", "domain", r.domain, "error", err)
 		return
 	}
-	keepPrefix := r.generationPrefix(keep)
-	cutoff := time.Now().UTC().Add(-r.config.Retention)
+	now := r.now()
+	complete := map[string]bool{}
+	for _, object := range objects {
+		if strings.HasSuffix(object.Key, "/snapshot") {
+			rest := strings.TrimPrefix(object.Key, r.key("generations")+"/")
+			id, _, _ := strings.Cut(rest, "/")
+			complete[id] = true
+		}
+	}
 	removed := 0
 	for _, object := range objects {
-		if strings.HasPrefix(object.Key, keepPrefix) {
-			continue
-		}
 		rest := strings.TrimPrefix(object.Key, r.key("generations")+"/")
 		id, _, _ := strings.Cut(rest, "/")
-		if created := generationTime(id); created.IsZero() || created.After(cutoff) {
+		if id == keep {
+			continue
+		}
+		created := generationTime(id)
+		expired := !created.IsZero() && created.Before(now.Add(-r.config.Retention))
+		abandoned := !complete[id] && !created.IsZero() && created.Before(now.Add(-24*time.Hour))
+		if !expired && !abandoned {
 			continue
 		}
 		if err := r.s3.Delete(ctx, object.Key); err != nil {
@@ -549,14 +457,14 @@ func (r *Replica) pruneGenerations(keep string) {
 		removed++
 	}
 	if removed > 0 {
-		r.logger.Info("replica: old generations removed", "domain", r.domain, "segments", removed)
+		r.logger.Info("replica: old generations removed", "domain", r.domain, "files", removed)
 	}
 }
 
-func newGenerationID() string {
+func newGenerationID(now time.Time) string {
 	var random [3]byte
 	_, _ = rand.Read(random[:])
-	return time.Now().UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(random[:])
+	return now.UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(random[:])
 }
 
 // The marker lives next to the database on the same storage.
