@@ -112,13 +112,26 @@ func main() {
 	tenants := tenancy.New(config)
 	defer tenants.Close()
 	// Every Spin this server holds opens at start: its replica restores and
-	// syncs from the first minute, not from the first visitor.
-	domainsOpen, err := tenants.Discover(context.Background())
-	if err != nil {
-		logger.Error("open tenants", "error", err)
-		os.Exit(1)
+	// syncs from the first minute, not from the first visitor. A single
+	// database must open before serving; the rest opens in the background
+	// so the port answers while a restore runs.
+	if single != "" {
+		if _, err := tenants.Discover(context.Background()); err != nil {
+			logger.Error("open database", "error", err)
+			os.Exit(1)
+		}
+	} else {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+			defer cancel()
+			domainsOpen, err := tenants.Discover(ctx)
+			if err != nil {
+				logger.Error("open tenants", "error", err, "open", domainsOpen)
+				return
+			}
+			logger.Info("tenants open", "domains", domainsOpen)
+		}()
 	}
-	logger.Info("tenants open", "domains", domainsOpen)
 
 	httpServer := &http.Server{
 		Addr:              *addr,

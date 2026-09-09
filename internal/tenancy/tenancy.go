@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"easyacp/internal/buildinfo"
 	"easyacp/internal/capsule"
@@ -185,18 +186,25 @@ func (t *Tenants) Discover(ctx context.Context) ([]string, error) {
 		add(local)
 	}
 	if t.config.Replication != nil {
-		remote, err := replica.Domains(ctx, *t.config.Replication)
+		listCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		remote, err := replica.Domains(listCtx, *t.config.Replication)
+		cancel()
 		if err != nil {
-			return nil, fmt.Errorf("list replicas: %w", err)
+			// The local databases still open; the bucket is asked again
+			// at the first visit of a domain that only lives there.
+			t.logger.Warn("list replicas in the bucket", "error", err)
 		}
 		add(remote)
 	}
+	var opened []string
 	for _, domain := range domains {
+		t.logger.Info("opening tenant", "domain", domain)
 		if _, err := t.Open(ctx, domain); err != nil {
-			return domains, fmt.Errorf("%s: %w", domain, err)
+			return opened, fmt.Errorf("%s: %w", domain, err)
 		}
+		opened = append(opened, domain)
 	}
-	return domains, nil
+	return opened, nil
 }
 
 // Open returns the tenant of a domain, opening it once; concurrent callers

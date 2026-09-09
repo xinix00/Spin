@@ -36,11 +36,13 @@ func (w ringWriter) Write(p []byte) (int, error) {
 
 func main() {
 	app := applib.Init()
+	app.Logf("%s", buildinfo.String("spin-server"))
 	logger := slog.New(slog.NewTextHandler(ringWriter{app: app}, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	if _, err := appnet.Up(app); err != nil {
 		app.Logf("spin-server: net: %v", err)
 		app.Exit(1)
 	}
+	app.Logf("spin-server: network up")
 
 	bridgeEnvironment(app,
 		"SPIN_PUBLIC_URL", "SPIN_INTERNAL_URL", "SPIN_GITHUB_CLIENT_ID", "SPIN_GITHUB_CLIENT_SECRET",
@@ -58,6 +60,8 @@ func main() {
 	}
 	if !enabled {
 		app.Logf("spin-server: WARNING: replication is off; the databases live on this volume only")
+	} else {
+		app.Logf("spin-server: replication to %s bucket %s prefix %s", replication.Endpoint, replication.Bucket, replication.Prefix)
 	}
 	dataDir := strings.TrimSpace(app.Env("SPIN_DATA_DIR"))
 	if dataDir == "" {
@@ -117,12 +121,19 @@ func main() {
 		config.Replication = &replication
 	}
 	tenants := tenancy.New(config)
-	domainsOpen, err := tenants.Discover(context.Background())
-	if err != nil {
-		app.Logf("spin-server: open tenants: %v", err)
-		app.Exit(1)
-	}
-	app.Logf("spin-server: tenants open: %v", domainsOpen)
+	// The known Spins open in the background: a restore from the bucket
+	// can take a while, and the port must answer meanwhile.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+		defer cancel()
+		app.Logf("spin-server: opening the Spins this server holds")
+		domainsOpen, err := tenants.Discover(ctx)
+		if err != nil {
+			app.Logf("spin-server: open tenants: %v (open so far: %v)", err, domainsOpen)
+			return
+		}
+		app.Logf("spin-server: tenants open: %v", domainsOpen)
+	}()
 
 	port := strings.TrimSpace(app.Env("ER_PORT_HTTP"))
 	if port == "" {
@@ -134,7 +145,6 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	app.Logf("%s", buildinfo.String("spin-server"))
 	app.Logf("spin-server: listening on :%s; data=%s single=%q domains=%v replication=%v", port, dataDir, single, config.Domains, enabled)
 	app.Logf("spin-server: http: %v", server.ListenAndServe())
 	app.Exit(1)
