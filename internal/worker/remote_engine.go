@@ -451,6 +451,16 @@ func (e *RemoteEngine) ensureSnapshotOn(ctx context.Context, artifact domain.Art
 		_, err := e.broker.store.AddSnapshotReplica(artifact.ID, targetID)
 		return err
 	}
+	// A delta is rebuilt from its parent: the parent goes first.
+	if artifact.Snapshot.Delta && artifact.Snapshot.ParentRef != "" {
+		parent, ok := e.parentArtifact(artifact)
+		if !ok {
+			return fmt.Errorf("parent %s of %s is not a known layer", artifact.Snapshot.ParentRef, artifact.ID)
+		}
+		if err := e.ensureSnapshotOn(ctx, parent, targetID); err != nil {
+			return fmt.Errorf("parent of %s: %w", artifact.ID, err)
+		}
+	}
 	var replicaErr error
 	connectedSource := e.broker.connectedSnapshotSource(artifact.Snapshot, targetID)
 	if e.archive == nil || connectedSource != "" {
@@ -511,6 +521,23 @@ func (e *RemoteEngine) ensureSnapshotOn(ctx context.Context, artifact domain.Art
 	}
 	_, err = e.broker.store.AddSnapshotReplica(artifact.ID, targetID)
 	return err
+}
+
+// parentArtifact finds the layer a delta was recorded on: among its
+// parents, or any layer whose image is the recorded parent.
+func (e *RemoteEngine) parentArtifact(artifact domain.Artifact) (domain.Artifact, bool) {
+	for _, parentID := range artifact.ParentArtifactIDs {
+		parent, err := e.broker.store.Artifact(parentID)
+		if err == nil && parent.Snapshot.Ref == artifact.Snapshot.ParentRef {
+			return parent, true
+		}
+	}
+	for _, candidate := range e.broker.store.Snapshot().Artifacts {
+		if candidate.Snapshot.Ref == artifact.Snapshot.ParentRef {
+			return candidate, true
+		}
+	}
+	return domain.Artifact{}, false
 }
 
 // snapshotChunkArchive is an archive the runner can pull from over HTTP.

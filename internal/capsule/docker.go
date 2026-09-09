@@ -251,21 +251,15 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 	d.tidyCapsule(ctx, recording.Runtime.ContainerID)
 	parentImage, _ := d.control(ctx, "inspect", "--format", "{{.Config.Image}}", recording.Runtime.ContainerID)
 	parentImage = strings.TrimSpace(parentImage)
-	var err error
+	// Every layer, a new version of one as well, commits over the image it
+	// was recorded on; the archive later holds only its own difference.
+	_, err := d.control(ctx,
+		"commit", "--pause=true",
+		"--change", "LABEL spin.managed=true",
+		"--change", "LABEL spin.recording_id="+recording.ID,
+		recording.Runtime.ContainerID, tag,
+	)
 	var contents *domain.LayerContents
-	if recording.ReplacesArtifactID != "" {
-		// An EDIT replaces files of the version below; committing would keep
-		// the old ones in the lower layer forever. Flatten the filesystem
-		// into one layer instead, so the image is as big as what is in it.
-		err = d.flattenCapsule(ctx, recording, tag)
-	} else {
-		_, err = d.control(ctx,
-			"commit", "--pause=true",
-			"--change", "LABEL spin.managed=true",
-			"--change", "LABEL spin.recording_id="+recording.ID,
-			recording.Runtime.ContainerID, tag,
-		)
-	}
 	if err != nil {
 		// A retried save: the container was already committed and removed
 		// by an attempt whose answer never reached the server. The image tagged
@@ -273,7 +267,7 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 		if _, inspectErr := d.control(ctx, "image", "inspect", "--format", "{{.Id}}", tag); inspectErr != nil {
 			return domain.CapsuleSnapshot{}, err
 		}
-	} else if recording.ReplacesArtifactID == "" {
+	} else {
 		// The layer keeps its real difference: what is byte-for-byte the
 		// same in the layer below, and every cache, goes.
 		cleaned, cleanErr := d.cleanLayer(ctx, tag, parentImage, recording.ID)
@@ -290,10 +284,15 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 	if err != nil {
 		return domain.CapsuleSnapshot{}, err
 	}
+	content, _, err := d.layerIdentity(ctx, tag, parentImage)
+	if err != nil {
+		return domain.CapsuleSnapshot{}, fmt.Errorf("identify the layer: %w", err)
+	}
+	delta := strings.HasPrefix(parentImage, "spin/artifact:")
 	// The immutable image is already safe when cleanup fails, so leave any
 	// stubborn container discoverable through its spin.* labels.
 	_, _, _ = d.run(ctx, "rm", "-f", recording.Runtime.ContainerID)
-	return domain.CapsuleSnapshot{
+	result := domain.CapsuleSnapshot{
 		Driver:               "docker",
 		Ref:                  tag,
 		Digest:               strings.TrimSpace(digest),
@@ -301,7 +300,13 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 		Restorable:           true,
 		IncludesProcessState: false,
 		Contents:             contents,
-	}, nil
+		Content:              content,
+		Delta:                delta,
+	}
+	if delta {
+		result.ParentRef = parentImage
+	}
+	return result, nil
 }
 
 // tidyCapsule drops caches that have no business in a layer before it is
@@ -309,40 +314,6 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 // fatal; the layer is then merely bigger.
 func (d *Docker) tidyCapsule(ctx context.Context, containerID string) {
 	_, _, _ = d.run(ctx, "exec", containerID, "sh", "-c", "rm -rf /root/.npm/_cacache /root/.cache/pip /root/.cache/go-build /tmp/* /var/cache/apk/* 2>/dev/null; true")
-}
-
-// flattenCapsule seals a capsule as a single-layer image: the container's
-// filesystem is exported and imported again, so files replaced during an
-// EDIT are gone instead of shadowed in a lower layer.
-func (d *Docker) flattenCapsule(ctx context.Context, recording domain.Recording, tag string) error {
-	containerID := recording.Runtime.ContainerID
-	if _, err := d.control(ctx, "pause", containerID); err != nil {
-		return err
-	}
-	defer func() { _, _, _ = d.run(ctx, "unpause", containerID) }()
-	export := exec.CommandContext(ctx, d.binary, "export", containerID)
-	imports := exec.CommandContext(ctx, d.binary, "import",
-		"--change", "LABEL spin.managed=true",
-		"--change", "LABEL spin.recording_id="+recording.ID,
-		"-", tag)
-	pipe, err := export.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	imports.Stdin = pipe
-	var exportErr, importErr bytes.Buffer
-	export.Stderr, imports.Stderr = &exportErr, &importErr
-	if err := export.Start(); err != nil {
-		return fmt.Errorf("docker export: %w", err)
-	}
-	if err := imports.Run(); err != nil {
-		_ = export.Wait()
-		return fmt.Errorf("docker import %s: %s: %w", tag, strings.TrimSpace(importErr.String()), err)
-	}
-	if err := export.Wait(); err != nil {
-		return fmt.Errorf("docker export %s: %s: %w", containerID, strings.TrimSpace(exportErr.String()), err)
-	}
-	return nil
 }
 
 // Cancel removes the recording's capsule. Without a known container ID it
@@ -572,6 +543,9 @@ func (d *Docker) ExportSnapshot(ctx context.Context, snapshot domain.CapsuleSnap
 	if snapshot.Driver != "docker" || strings.TrimSpace(snapshot.Ref) == "" {
 		return errors.New("snapshot is not an exportable Docker image")
 	}
+	if snapshot.Delta && snapshot.ParentRef != "" {
+		return d.exportDelta(ctx, snapshot, destination)
+	}
 	compressor, err := gzip.NewWriterLevel(destination, gzip.BestSpeed)
 	if err != nil {
 		return err
@@ -599,6 +573,9 @@ func (d *Docker) HasSnapshot(ctx context.Context, snapshot domain.CapsuleSnapsho
 	}
 	// The same image on another image store has another ID; its layers
 	// tell whether the cached image is the recorded one.
+	if snapshot.Content != "" && d.imageLabel(ctx, snapshot.Ref, contentLabel) == snapshot.Content {
+		return true, nil
+	}
 	if snapshot.RootFS != "" {
 		rootFS, err := d.imageRootFS(ctx, snapshot.Ref)
 		return err == nil && rootFS == snapshot.RootFS, nil
@@ -613,8 +590,31 @@ func (d *Docker) ImportSnapshot(ctx context.Context, snapshot domain.CapsuleSnap
 	if snapshot.Driver != "docker" || strings.TrimSpace(snapshot.Ref) == "" {
 		return errors.New("snapshot is not an importable Docker image")
 	}
+	seekable, ok := source.(io.ReadSeeker)
+	if !ok {
+		spool, err := os.CreateTemp("", "spin-import-*.tar.gz")
+		if err != nil {
+			return err
+		}
+		defer func() {
+			_ = spool.Close()
+			_ = os.Remove(spool.Name())
+		}()
+		if _, err := io.Copy(spool, source); err != nil {
+			return err
+		}
+		seekable = spool
+	}
+	if _, err := seekable.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if note, err := readDeltaNote(seekable); err != nil {
+		return err
+	} else if note != nil {
+		return d.importDelta(ctx, snapshot, note, seekable)
+	}
 	cmd := exec.CommandContext(ctx, d.binary, "image", "load")
-	cmd.Stdin = source
+	cmd.Stdin = seekable
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output

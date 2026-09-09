@@ -1163,3 +1163,36 @@ func TestLoginStateIsKeptEncrypted(t *testing.T) {
 		t.Fatalf("reopened login state = %+v, %v", state, ok)
 	}
 }
+
+// A superseded version whose archive a delta layer is rebuilt from is not
+// pruned; once no delta needs it, it is.
+func TestPruneKeepsTheParentOfADeltaLayer(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "codex", Scope: domain.ScopeGlobal})
+	credential := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactCredential, Name: "codex", Scope: domain.ScopeUser, ParentArtifactIDs: []string{old.ID}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "codex", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{old.ID}, ReplacesArtifactID: old.ID})
+	st.mu.Lock()
+	for id, artifact := range st.state.Artifacts {
+		artifact.Snapshot.Digest = "sha256:" + id
+		artifact.Snapshot.Ref = "spin/artifact:" + id
+		if id == credential.ID {
+			artifact.Snapshot.Delta, artifact.Snapshot.ParentRef = true, "spin/artifact:"+old.ID
+		}
+		st.state.Artifacts[id] = artifact
+	}
+	st.mu.Unlock()
+	if prunable := st.PrunableArtifacts(); len(prunable) != 0 {
+		t.Fatalf("the parent of a delta was offered for pruning: %+v", prunable)
+	}
+	st.mu.Lock()
+	child := st.state.Artifacts[credential.ID]
+	child.Snapshot.Delta = false
+	st.state.Artifacts[credential.ID] = child
+	st.mu.Unlock()
+	if prunable := st.PrunableArtifacts(); len(prunable) != 1 || prunable[0].ID != old.ID {
+		t.Fatalf("prunable = %+v, want the old version", prunable)
+	}
+}

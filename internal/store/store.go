@@ -4109,13 +4109,27 @@ func (s *Store) PrunableArtifacts() []domain.Artifact {
 		if artifact.SupersededBy == "" || artifact.SnapshotPrunedAt != nil || artifact.Snapshot.Digest == "" {
 			continue
 		}
-		if s.artifactInUseLocked(artifact.ID) || s.snapshotSharedLocked(artifact) {
+		if s.artifactInUseLocked(artifact.ID) || s.snapshotSharedLocked(artifact) || s.snapshotIsParentLocked(artifact) {
 			continue
 		}
 		prunable = append(prunable, artifact)
 	}
 	slices.SortFunc(prunable, func(a, b domain.Artifact) int { return strings.Compare(a.ID, b.ID) })
 	return prunable
+}
+
+// snapshotIsParentLocked tells whether a layer still archived as a delta
+// is rebuilt from this one: its archive must stay for that.
+func (s *Store) snapshotIsParentLocked(artifact domain.Artifact) bool {
+	if artifact.Snapshot.Ref == "" {
+		return false
+	}
+	for _, child := range s.state.Artifacts {
+		if child.SnapshotPrunedAt == nil && child.Snapshot.Delta && child.Snapshot.ParentRef == artifact.Snapshot.Ref {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) artifactInUseLocked(artifactID string) bool {

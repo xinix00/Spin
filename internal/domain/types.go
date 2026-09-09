@@ -461,6 +461,15 @@ type CapsuleSnapshot struct {
 	IncludesProcessState bool   `json:"includes_process_state"`
 	// Contents is the layer's manifest: its real difference, by kind.
 	Contents *LayerContents `json:"contents,omitempty"`
+	// ParentRef is the Spin layer image this layer was recorded on; with
+	// Delta set, the archive holds only this layer's own difference, and a
+	// runner rebuilds the image from the parent plus that difference.
+	ParentRef string `json:"parent_ref,omitempty"`
+	Delta     bool   `json:"delta,omitempty"`
+	// Content identifies the layer by what is in it: a chain of the
+	// parent's identity and the hash of this layer's own difference, the
+	// same on every runner however the image was put together there.
+	Content string `json:"content,omitempty"`
 }
 
 type CapsuleRuntime struct {
