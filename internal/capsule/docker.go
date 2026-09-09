@@ -249,7 +249,10 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 	}
 	tag := "spin/artifact:" + safeName(recording.ID)
 	d.tidyCapsule(ctx, recording.Runtime.ContainerID)
+	parentImage, _ := d.control(ctx, "inspect", "--format", "{{.Config.Image}}", recording.Runtime.ContainerID)
+	parentImage = strings.TrimSpace(parentImage)
 	var err error
+	var contents *domain.LayerContents
 	if recording.ReplacesArtifactID != "" {
 		// An EDIT replaces files of the version below; committing would keep
 		// the old ones in the lower layer forever. Flatten the filesystem
@@ -270,6 +273,14 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 		if _, inspectErr := d.control(ctx, "image", "inspect", "--format", "{{.Id}}", tag); inspectErr != nil {
 			return domain.CapsuleSnapshot{}, err
 		}
+	} else if recording.ReplacesArtifactID == "" {
+		// The layer keeps its real difference: what is byte-for-byte the
+		// same in the layer below, and every cache, goes.
+		cleaned, cleanErr := d.cleanLayer(ctx, tag, parentImage, recording.ID)
+		if cleanErr != nil && d.logger != nil {
+			d.logger.Warn("seal: the layer keeps its full diff", "recording", recording.ID, "error", cleanErr)
+		}
+		contents = cleaned
 	}
 	digest, err := d.control(ctx, "image", "inspect", "--format", "{{.Id}}", tag)
 	if err != nil {
@@ -289,6 +300,7 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 		RootFS:               rootFS,
 		Restorable:           true,
 		IncludesProcessState: false,
+		Contents:             contents,
 	}, nil
 }
 

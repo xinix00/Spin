@@ -61,10 +61,21 @@ func (s *Server) restoreLoginState(ctx context.Context, composition domain.Compo
 }
 
 // captureLoginState reads the logins back from a running capsule and keeps
-// what changed.
+// what changed; it also notes what else the capsule changed, by kind.
 func (s *Server) captureLoginState(ctx context.Context, composition domain.Composition) {
+	if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+		return
+	}
+	if inspector, ok := s.engine.(capsule.CapsuleInspector); ok {
+		changes, err := inspector.CaptureCapsuleChanges(ctx, *composition.Runtime)
+		if err != nil {
+			s.logger.Warn("inspect capsule changes", "composition", composition.ID, "error", err)
+		} else if err := s.store.SetCompositionChanges(composition.ID, changes); err != nil {
+			s.logger.Warn("record capsule changes", "composition", composition.ID, "error", err)
+		}
+	}
 	login, ok := s.engine.(capsule.LoginState)
-	if !ok || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+	if !ok {
 		return
 	}
 	for _, target := range s.loginTargets(composition) {

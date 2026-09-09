@@ -301,6 +301,12 @@ func (e *RemoteEngine) InspectWorkspaceRange(ctx context.Context, runtime domain
 	return changes, err
 }
 
+func (e *RemoteEngine) CaptureCapsuleChanges(ctx context.Context, runtime domain.CapsuleRuntime) (domain.LayerContents, error) {
+	var changes domain.LayerContents
+	_, err := e.broker.call(ctx, runtime.ClientID, methodCapsuleChanges, runtimePayload{Runtime: runtime}, &changes)
+	return changes, err
+}
+
 func (e *RemoteEngine) CaptureLoginState(ctx context.Context, runtime domain.CapsuleRuntime, credential domain.CapsuleSnapshot) (map[string][]byte, error) {
 	var files map[string][]byte
 	_, err := e.broker.call(ctx, runtime.ClientID, methodCaptureLogin, homeFilesPayload{Runtime: runtime, Credential: credential}, &files)
@@ -807,6 +813,7 @@ var (
 	_ capsule.RepositoryBrowser           = (*RemoteEngine)(nil)
 	_ capsule.RepositoryComparer          = (*RemoteEngine)(nil)
 	_ capsule.LoginState                  = (*RemoteEngine)(nil)
+	_ capsule.CapsuleInspector            = (*RemoteEngine)(nil)
 	_ capsule.EnabledEngine               = (*RemoteEngine)(nil)
 	_ capsule.EnabledProber               = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceInspector          = (*RemoteEngine)(nil)

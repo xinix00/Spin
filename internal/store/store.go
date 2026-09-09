@@ -819,6 +819,20 @@ func (s *Store) SetCompositionRuntime(compositionID, operator string, runtime do
 	return composition, s.saveLocked()
 }
 
+// SetCompositionChanges records what a capsule changed outside its
+// workspace, as last seen.
+func (s *Store) SetCompositionChanges(compositionID string, changes domain.LayerContents) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	composition, ok := s.state.Compositions[compositionID]
+	if !ok {
+		return ErrNotFound
+	}
+	composition.CapsuleChanges = &changes
+	s.state.Compositions[compositionID] = composition
+	return s.saveLocked()
+}
+
 func (s *Store) Composition(compositionID string) (domain.Composition, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

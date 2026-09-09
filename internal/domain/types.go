@@ -407,6 +407,35 @@ const (
 // CapsuleSnapshot describes what the snapshot engine actually persisted. The
 // process-state bit is explicit because a Docker image commit is restorable but
 // does not contain RAM, open sockets or a provider-side KV cache.
+// LayerContents is what a layer wrote (its real difference from the layer
+// under it) or what a Session changed outside its workspace, by kind.
+type LayerContents struct {
+	Files int           `json:"files"`
+	Bytes int64         `json:"bytes"`
+	Kinds []ContentKind `json:"kinds,omitempty"`
+	// Dropped is what sealing left out: files identical to the layer
+	// below, and caches.
+	DroppedIdentical ContentTotal `json:"dropped_identical,omitempty"`
+	DroppedCache     ContentTotal `json:"dropped_cache,omitempty"`
+}
+
+type ContentKind struct {
+	Kind    string        `json:"kind"`
+	Files   int           `json:"files"`
+	Bytes   int64         `json:"bytes"`
+	Largest []ContentPath `json:"largest,omitempty"`
+}
+
+type ContentPath struct {
+	Path  string `json:"path"`
+	Bytes int64  `json:"bytes"`
+}
+
+type ContentTotal struct {
+	Files int   `json:"files,omitempty"`
+	Bytes int64 `json:"bytes,omitempty"`
+}
+
 type CapsuleSnapshot struct {
 	Driver string `json:"driver"`
 	// ClientID pins daemon-local images to the runner that created them. An
@@ -421,6 +450,8 @@ type CapsuleSnapshot struct {
 	RootFS               string `json:"rootfs,omitempty"`
 	Restorable           bool   `json:"restorable"`
 	IncludesProcessState bool   `json:"includes_process_state"`
+	// Contents is the layer's manifest: its real difference, by kind.
+	Contents *LayerContents `json:"contents,omitempty"`
 }
 
 type CapsuleRuntime struct {
@@ -624,7 +655,10 @@ type Composition struct {
 	Git               *GitWorkspace      `json:"git,omitempty"`
 	Warnings          []string           `json:"warnings,omitempty"`
 	Runtime           *CapsuleRuntime    `json:"runtime,omitempty"`
-	CreatedAt         time.Time          `json:"created_at"`
+	// CapsuleChanges is what the capsule changed outside the workspace,
+	// taken after a turn and at stop, by kind.
+	CapsuleChanges *LayerContents `json:"capsule_changes,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
 }
 
 type Job struct {

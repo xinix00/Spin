@@ -118,6 +118,12 @@ type LoginState interface {
 	WriteHomeFiles(ctx context.Context, runtime domain.CapsuleRuntime, files map[string][]byte) error
 }
 
+// CapsuleInspector says what a running capsule changed outside its
+// workspace, by kind.
+type CapsuleInspector interface {
+	CaptureCapsuleChanges(ctx context.Context, runtime domain.CapsuleRuntime) (domain.LayerContents, error)
+}
+
 // LoginFileLimit bounds one login file; larger files are caches, not logins.
 const LoginFileLimit = 1 << 20
 
