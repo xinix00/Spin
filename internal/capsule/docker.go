@@ -3,11 +3,13 @@
 package capsule
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,6 +18,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +42,9 @@ type DockerConfig struct {
 }
 
 type Docker struct {
+	loginPathsMu    sync.Mutex
+	loginPathsCache map[string][]string
+
 	logger        *slog.Logger
 	binary        string
 	baseImage     string
@@ -904,6 +910,193 @@ func (d *Docker) InjectWorkspaceAttachments(ctx context.Context, runtime domain.
 		if output, code, err := d.run(ctx, "exec", runtime.ContainerID, "chmod", "0444", attachment.TargetPath); err != nil || code != 0 {
 			return fmt.Errorf("protect Job attachment %s (exit %d): %s: %w", attachment.TargetPath, code, strings.TrimSpace(output), err)
 		}
+	}
+	return nil
+}
+
+// validHomePath is a relative path without spaces or parent steps.
+func validHomePath(path string) bool {
+	if path == "" || len(path) > 200 || strings.HasPrefix(path, "/") || strings.ContainsAny(path, " \t\r\n'\"\\") {
+		return false
+	}
+	for _, part := range strings.Split(path, "/") {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// CaptureLoginState reads the files the credential layer wrote under HOME
+// as they are now in the capsule.
+func (d *Docker) CaptureLoginState(ctx context.Context, runtime domain.CapsuleRuntime, credential domain.CapsuleSnapshot) (map[string][]byte, error) {
+	paths, err := d.loginPaths(ctx, credential)
+	if err != nil {
+		return nil, err
+	}
+	if len(paths) == 0 {
+		return map[string][]byte{}, nil
+	}
+	return d.readHomeFiles(ctx, runtime, paths)
+}
+
+// loginPaths lists the files under HOME in a credential layer's own diff:
+// the top layer of its image. Computed once per image per runner.
+func (d *Docker) loginPaths(ctx context.Context, credential domain.CapsuleSnapshot) ([]string, error) {
+	if credential.Driver != "docker" || credential.Ref == "" {
+		return nil, errors.New("credential layer is not a Docker snapshot")
+	}
+	d.loginPathsMu.Lock()
+	if cached, ok := d.loginPathsCache[credential.Ref]; ok {
+		d.loginPathsMu.Unlock()
+		return cached, nil
+	}
+	d.loginPathsMu.Unlock()
+	save, err := os.CreateTemp("", "spin-login-*.tar")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = save.Close()
+		_ = os.Remove(save.Name())
+	}()
+	saver := exec.CommandContext(ctx, d.binary, "image", "save", credential.Ref)
+	saver.Stdout = save
+	var saveError bytes.Buffer
+	saver.Stderr = &saveError
+	if err := saver.Run(); err != nil {
+		return nil, fmt.Errorf("docker image save %s: %s: %w", credential.Ref, strings.TrimSpace(saveError.String()), err)
+	}
+	diff, err := os.CreateTemp("", "spin-login-diff-*.tar")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = diff.Close()
+		_ = os.Remove(diff.Name())
+	}()
+	if _, err := save.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	if _, err := layerDiff(save, diff); err != nil {
+		return nil, fmt.Errorf("read the diff of %s: %w", credential.Ref, err)
+	}
+	if _, err := diff.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	paths, err := homePathsInLayer(diff)
+	if err != nil {
+		return nil, err
+	}
+	d.loginPathsMu.Lock()
+	if d.loginPathsCache == nil {
+		d.loginPathsCache = map[string][]string{}
+	}
+	d.loginPathsCache[credential.Ref] = paths
+	d.loginPathsMu.Unlock()
+	return paths, nil
+}
+
+// homePathsInLayer picks the regular files under /root or /home/<user>
+// out of a layer tar, as paths relative to that home.
+func homePathsInLayer(layer io.Reader) ([]string, error) {
+	reader := tar.NewReader(layer)
+	var paths []string
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if header.Typeflag != tar.TypeReg || header.Size > LoginFileLimit {
+			continue
+		}
+		name := strings.TrimPrefix(strings.TrimPrefix(header.Name, "./"), "/")
+		relative := ""
+		switch {
+		case strings.HasPrefix(name, "root/"):
+			relative = strings.TrimPrefix(name, "root/")
+		case strings.HasPrefix(name, "home/"):
+			_, rest, ok := strings.Cut(strings.TrimPrefix(name, "home/"), "/")
+			if !ok {
+				continue
+			}
+			relative = rest
+		default:
+			continue
+		}
+		if validHomePath(relative) {
+			paths = append(paths, relative)
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+// readHomeFiles returns the files under HOME that exist, base64 over one
+// exec so a handful of small files costs one round trip.
+func (d *Docker) readHomeFiles(ctx context.Context, runtime domain.CapsuleRuntime, paths []string) (map[string][]byte, error) {
+	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
+		return nil, errors.New("composition has no live Docker capsule")
+	}
+	var script strings.Builder
+	script.WriteString("cd \"${HOME:-/root}\" 2>/dev/null || exit 0\n")
+	for _, path := range paths {
+		if !validHomePath(path) {
+			return nil, fmt.Errorf("invalid home path %q", path)
+		}
+		fmt.Fprintf(&script, "if [ -f '%s' ]; then printf 'SPIN_FILE %s '; base64 < '%s' | tr -d '\\n'; printf '\\n'; fi\n", path, path, path)
+	}
+	output, code, err := d.run(ctx, "exec", runtime.ContainerID, "sh", "-c", script.String())
+	if err != nil && code < 0 {
+		return nil, err
+	}
+	return parseHomeFiles(output)
+}
+
+func parseHomeFiles(output string) (map[string][]byte, error) {
+	files := map[string][]byte{}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "SPIN_FILE" {
+			continue
+		}
+		var data []byte
+		if len(fields) == 3 {
+			decoded, err := base64.StdEncoding.DecodeString(fields[2])
+			if err != nil {
+				return nil, fmt.Errorf("home file %s: %w", fields[1], err)
+			}
+			data = decoded
+		}
+		files[fields[1]] = data
+	}
+	return files, nil
+}
+
+// WriteHomeFiles puts files under HOME, readable by the owner only.
+func (d *Docker) WriteHomeFiles(ctx context.Context, runtime domain.CapsuleRuntime, files map[string][]byte) error {
+	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
+		return errors.New("composition has no live Docker capsule")
+	}
+	var input strings.Builder
+	for path, data := range files {
+		if !validHomePath(path) {
+			return fmt.Errorf("invalid home path %q", path)
+		}
+		fmt.Fprintf(&input, "%s %s\n", path, base64.StdEncoding.EncodeToString(data))
+	}
+	script := `cd "${HOME:-/root}" || exit 1
+while IFS=' ' read -r path data; do
+  [ -n "$path" ] || continue
+  mkdir -p "$(dirname "$path")"
+  printf '%s' "$data" | base64 -d > "$path.spin-tmp" && chmod 600 "$path.spin-tmp" && mv "$path.spin-tmp" "$path"
+done`
+	output, err := d.controlInput(ctx, []byte(input.String()), "exec", "-i", runtime.ContainerID, "sh", "-c", script)
+	if err != nil {
+		return fmt.Errorf("write home files: %s: %w", strings.TrimSpace(output), err)
 	}
 	return nil
 }

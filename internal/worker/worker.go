@@ -453,6 +453,20 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		}
 		result, err := inspector.InspectWorkspaceRange(ctx, payload.Runtime, payload.Comparison)
 		return result, false, err
+	case methodCaptureLogin, methodWriteHomeFiles:
+		var payload homeFilesPayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		login, ok := w.engine.(capsule.LoginState)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot keep login state")
+		}
+		if request.Method == methodCaptureLogin {
+			files, err := login.CaptureLoginState(ctx, payload.Runtime, payload.Credential)
+			return files, false, err
+		}
+		return nil, false, login.WriteHomeFiles(ctx, payload.Runtime, payload.Files)
 	case methodInjectAttachments:
 		var payload injectAttachmentsPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {

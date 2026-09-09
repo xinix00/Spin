@@ -1130,3 +1130,36 @@ func TestWorkerTokenLivesInTheStore(t *testing.T) {
 		t.Fatalf("reopened token = %q, want %q", reopened.WorkerToken(), rotated)
 	}
 }
+
+// A login state is kept per credential layer and user, encrypted on disk,
+// and comes back after a reopen; saving the same files again is a no-op.
+func TestLoginStateIsKeptEncrypted(t *testing.T) {
+	path := t.TempDir() + "/state.json"
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{".claude/.credentials.json": []byte(`{"refresh":"rotated-token"}`)}
+	changed, err := st.SaveLoginState("derek/credential:claude", files)
+	if err != nil || !changed {
+		t.Fatalf("first save changed=%v err=%v", changed, err)
+	}
+	if changed, err := st.SaveLoginState("derek/credential:claude", files); err != nil || changed {
+		t.Fatalf("same files changed=%v err=%v", changed, err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "rotated-token") {
+		t.Fatal("login state is stored in plaintext")
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, ok := reopened.LoginState("derek/credential:claude")
+	if !ok || string(state.Files[".claude/.credentials.json"]) != `{"refresh":"rotated-token"}` {
+		t.Fatalf("reopened login state = %+v, %v", state, ok)
+	}
+}

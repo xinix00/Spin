@@ -55,6 +55,7 @@ type persistedState struct {
 	Users                    map[string]domain.User                  `json:"users"`
 	AuthSessions             map[string]domain.AuthSession           `json:"auth_sessions"`
 	GitOAuthConfigurations   map[string]domain.GitOAuthConfiguration `json:"git_oauth_configurations"`
+	LoginStates              map[string]domain.LoginState            `json:"login_states,omitempty"`
 	// WorkerToken is the bearer token runners of this Spin present. It lives
 	// in the database, encrypted like every other secret, so it travels with
 	// a backup and can be rotated without a restart.
@@ -410,6 +411,45 @@ func (s *Store) ensureMaps() {
 	if s.state.GitOAuthConfigurations == nil {
 		s.state.GitOAuthConfigurations = map[string]domain.GitOAuthConfiguration{}
 	}
+	if s.state.LoginStates == nil {
+		s.state.LoginStates = map[string]domain.LoginState{}
+	}
+}
+
+// LoginState is the kept login of a credential layer, if any.
+func (s *Store) LoginState(key string) (domain.LoginState, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.state.LoginStates[key]
+	return state, ok
+}
+
+// SaveLoginState keeps the files as they are now; it reports whether
+// anything differed from what was kept.
+func (s *Store) SaveLoginState(key string, files map[string][]byte) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if previous, ok := s.state.LoginStates[key]; ok && len(previous.Files) == len(files) {
+		same := true
+		for path, data := range files {
+			if !bytes.Equal(previous.Files[path], data) {
+				same = false
+				break
+			}
+		}
+		if same {
+			return false, nil
+		}
+	}
+	copied := make(map[string][]byte, len(files))
+	for path, data := range files {
+		copied[path] = append([]byte(nil), data...)
+	}
+	if s.state.LoginStates == nil {
+		s.state.LoginStates = map[string]domain.LoginState{}
+	}
+	s.state.LoginStates[key] = domain.LoginState{Key: key, Files: copied, UpdatedAt: time.Now().UTC()}
+	return true, s.saveLocked()
 }
 
 func (s *Store) CreateRecording(req domain.CreateRecordingRequest) (domain.Recording, error) {

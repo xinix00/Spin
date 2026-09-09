@@ -466,6 +466,15 @@ type AgentOption struct {
 // AgentSettings is the chosen way to start an ACP layer's agent. Empty
 // fields mean automatic: full access when the agent offers it, and the
 // agent's own default model and reasoning effort.
+// LoginState is what a credential layer's recording wrote under HOME, as
+// it last was in a capsule: an agent's login with its rotated tokens. Kept
+// per credential layer and user so the next Session starts logged in.
+type LoginState struct {
+	Key       string            `json:"key"`
+	Files     map[string][]byte `json:"files"`
+	UpdatedAt time.Time         `json:"updated_at"`
+}
+
 type AgentSettings struct {
 	Mode            string `json:"mode,omitempty"`
 	Model           string `json:"model,omitempty"`

@@ -559,6 +559,11 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 		}
 		mcpServers = append(mcpServers, workflowServer)
 	}
+	{
+		loginCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		s.restoreLoginState(loginCtx, composition)
+		cancel()
+	}
 	active, err := s.openACP(composition, operator, mcpServers)
 	if err != nil {
 		return nil, err
@@ -574,6 +579,13 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 			s.logger.Warn("settle workflow phase after ACP turn", "session", session.ID, "error", err)
 		}
 		go s.syncWorkspace(session.ID)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if current, err := s.store.Composition(composition.ID); err == nil {
+				s.captureLoginState(ctx, current)
+			}
+		}()
 	}
 	active.mu.Unlock()
 	s.rememberAgentOptions(composition, active)

@@ -108,6 +108,19 @@ type WorkspaceAttachment struct {
 	TargetPath string
 }
 
+// LoginState is what a credential layer's recording wrote under HOME (the
+// login of an agent), read back from a running capsule and put in place
+// before the next one starts, so a rotated OAuth token survives a Session.
+// Nothing else the agent did in the capsule comes along. Paths are
+// relative to HOME.
+type LoginState interface {
+	CaptureLoginState(ctx context.Context, runtime domain.CapsuleRuntime, credential domain.CapsuleSnapshot) (map[string][]byte, error)
+	WriteHomeFiles(ctx context.Context, runtime domain.CapsuleRuntime, files map[string][]byte) error
+}
+
+// LoginFileLimit bounds one login file; larger files are caches, not logins.
+const LoginFileLimit = 1 << 20
+
 // WorkspaceAttachmentInjector copies immutable Job inputs outside /workspace,
 // so agents can read them without making them part of the Git worktree.
 type WorkspaceAttachmentInjector interface {
