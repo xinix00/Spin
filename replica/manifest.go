@@ -65,7 +65,9 @@ func (r *Replica) getManifest(ctx context.Context, generation, key string) (mani
 	if m.MinSize < 0 || m.FirstSeq < 1 || m.Seq < m.FirstSeq || m.At.IsZero() || len(m.Parts) == 0 {
 		return m, fmt.Errorf("invalid manifest %s", key)
 	}
-	if m.Level > 0 && (m.Start.IsZero() || !m.End.After(m.Start) || !m.At.Before(m.End)) {
+	// A window is (start, end]: its last commit lies after the start and at
+	// or before the end.
+	if m.Level > 0 && (m.Start.IsZero() || !m.End.After(m.Start) || !m.At.After(m.Start) || m.At.After(m.End)) {
 		return m, fmt.Errorf("invalid window %s", key)
 	}
 	seen := map[string]bool{}

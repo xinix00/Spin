@@ -39,10 +39,19 @@ serializes all writers through the supplied Database adapter.
   change starts a new generation. The host runs that first, whole copy before
   it serves (`SnapshotDue`).
 - A **page index** next to the database (`<db>.replica-index`) holds a hash per
-  page of what the bucket has, written after every committed sync. A start
+  page of what the bucket has, stamped with the marker sequence it describes
+  and written after every committed sync; a failed write removes it. A start
   after an unclean stop hashes the database, compares, and continues the
-  generation with the pages that differ; a missing or torn index costs a full
-  snapshot, never a missed page.
+  generation with the pages that differ. A missing, torn, foreign or stale
+  index (sequence behind the marker) costs a full snapshot, never a missed
+  page: a stale index would hide a page that returned to its old bytes.
+- A window is `(start, end]`: a commit exactly on a boundary belongs to the
+  window that ends there, the rule `plan` uses for a point at that boundary, so
+  a point restores the same database before and after compaction. A commit
+  never lands at or before the sealed frontier.
+- Pruning an expired generation removes visibility first (its snapshot
+  manifest, then other manifests, then data): an interrupted prune leaves only
+  orphaned data, never an advertised point that cannot be fetched.
 - Parts use fresh random object names. Only a final manifest PUT publishes a
   batch. An upload failure exposes either the previous complete state or the
   new complete state, never a subset. An uncertain manifest acknowledgment

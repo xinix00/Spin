@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -119,8 +120,14 @@ func (r *Replica) elapsedWindows(l *layout, level int, now time.Time) [][2]time.
 		merged[w.start.Unix()] = true
 	}
 	candidates := map[int64]time.Time{}
+	// A window is (start, end]: a commit exactly on a boundary belongs to
+	// the window that ends there, the same rule plan uses for a point at
+	// that boundary, so the point does not change once the window exists.
 	note := func(at time.Time) {
 		start := at.Truncate(size)
+		if at.Equal(start) {
+			start = start.Add(-size)
+		}
 		if !start.Add(size).After(now) && !merged[start.Unix()] {
 			candidates[start.Unix()] = start
 		}
@@ -146,7 +153,7 @@ func (l *layout) inputs(level int, start, end time.Time) []manifest {
 	var inputs []manifest
 	if level == 1 {
 		for _, raw := range l.raw {
-			if !raw.at.Before(start) && raw.at.Before(end) {
+			if raw.at.After(start) && !raw.at.After(end) {
 				inputs = append(inputs, raw.manifest)
 			}
 		}
@@ -156,6 +163,9 @@ func (l *layout) inputs(level int, start, end time.Time) []manifest {
 				inputs = append(inputs, w.manifest)
 			}
 		}
+		// A lower window that ends exactly at this window's start belongs
+		// to the window before this one.
+		inputs = slices.DeleteFunc(inputs, func(m manifest) bool { return !m.End.After(start) })
 	}
 	return inputs
 }

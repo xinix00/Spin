@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -204,7 +205,7 @@ func (r *Replica) Prepare(ctx context.Context) error {
 		if err := r.setMarker(restored); err != nil {
 			return err
 		}
-		if err := r.rebuildIndex(restored.PageSize); err != nil {
+		if err := r.rebuildIndex(restored.PageSize, restored.Seq); err != nil {
 			return fmt.Errorf("index the restored database: %w", err)
 		}
 		r.mu.Lock()
@@ -224,8 +225,8 @@ func (r *Replica) Prepare(ctx context.Context) error {
 	case !stored.Clean:
 		// Writes after the last sync: compare with what the bucket holds
 		// and continue with the difference.
-		index, err := r.readIndex()
-		if err != nil || index.pageSize != stored.PageSize {
+		index, err := r.usableIndex(stored)
+		if err != nil {
 			r.logger.Warn("replica: the database changed after its last sync and the page index is unusable; a new generation starts", "domain", r.domain, "generation", stored.Generation, "error", err)
 			return nil
 		}
@@ -249,11 +250,11 @@ func (r *Replica) Prepare(ctx context.Context) error {
 		if err := r.setMarker(stored); err != nil {
 			return err
 		}
-		if index, err := r.readIndex(); err == nil && index.pageSize == stored.PageSize {
+		if index, err := r.usableIndex(stored); err == nil {
 			r.indexMu.Lock()
 			r.index = index
 			r.indexMu.Unlock()
-		} else if err := r.rebuildIndex(stored.PageSize); err != nil {
+		} else if err := r.rebuildIndex(stored.PageSize, stored.Seq); err != nil {
 			r.logger.Warn("replica: page index rebuilt with an error; the next unclean stop costs a full snapshot", "domain", r.domain, "error", err)
 		}
 		r.mu.Lock()
@@ -388,8 +389,10 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		if !at.After(current.At) {
 			at = current.At.Add(time.Nanosecond)
 		}
-		if at.Before(current.SealedAt) {
-			at = current.SealedAt
+		// Sealed windows end at SealedAt and include that instant; a new
+		// commit lands after it.
+		if !at.After(current.SealedAt) {
+			at = current.SealedAt.Add(time.Nanosecond)
 		}
 		m := manifest{MinSize: captured.size, Version: formatVersion, FirstSeq: current.Seq + 1, Seq: current.Seq + 1, At: at}
 		prefix := r.generationPrefix(current.Generation) + "data/" + newGenerationID(r.now()) + "/"
@@ -450,6 +453,7 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		committed = true
 		r.indexMu.Lock()
 		r.index.apply(captured.pageSize, captured.size, captured.shipped, captured.hashes)
+		r.index.seq = current.Seq
 		r.indexMu.Unlock()
 		if err := r.writeIndex(); err != nil {
 			r.logger.Warn("replica: write page index", "domain", r.domain, "error", err)
@@ -604,7 +608,22 @@ func (r *Replica) pruneGenerations(keep string) {
 			complete[id] = true
 		}
 	}
-	removed := 0
+	// Visibility goes first: a generation's snapshot manifest, then its
+	// other manifests, then the data. An interrupted removal then leaves
+	// only orphaned data, never a point that is advertised but cannot be
+	// fetched.
+	rank := func(key string) int {
+		switch {
+		case strings.HasSuffix(key, "/snapshot"):
+			return 0
+		case !strings.Contains(key, "/data/"):
+			return 1
+		default:
+			return 2
+		}
+	}
+	sort.SliceStable(objects, func(i, j int) bool { return rank(objects[i].Key) < rank(objects[j].Key) })
+	removed, failed := 0, 0
 	for _, object := range objects {
 		rest := strings.TrimPrefix(object.Key, r.key("generations")+"/")
 		id, _, _ := strings.Cut(rest, "/")
@@ -618,10 +637,14 @@ func (r *Replica) pruneGenerations(keep string) {
 			continue
 		}
 		if err := r.s3.Delete(ctx, object.Key); err != nil {
+			failed++
 			r.logger.Warn("replica: delete old segment", "domain", r.domain, "key", object.Key, "error", err)
-			return
+			continue
 		}
 		removed++
+	}
+	if failed > 0 {
+		r.logger.Warn("replica: old generations not fully removed; the next generation start tries again", "domain", r.domain, "failed", failed)
 	}
 	if removed > 0 {
 		r.logger.Info("replica: old generations removed", "domain", r.domain, "files", removed)
