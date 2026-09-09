@@ -1316,8 +1316,16 @@ function bindSpawnForms(root){root.querySelectorAll('.spawn-form').forEach(form=
 });}
 function bindResultButtons(root){root.querySelectorAll('[data-select-result]').forEach(button=>button.onclick=async()=>{try{await api(`/api/jobs/${encodeURIComponent(button.dataset.jobId)}/select-result`,{method:'POST',body:JSON.stringify({result_id:button.dataset.selectResult})});await refresh(true);}catch(error){showError(error);}});}
 
-function artifactDescendants(id){const out=[],seen=new Set([id]);const walk=parent=>{snapshot.artifacts.forEach(candidate=>{const version=candidate.superseded_by===parent||(byID(snapshot.artifacts,parent)||{}).superseded_by===candidate.id;if(((candidate.parent_artifact_ids||[]).includes(parent)||version)&&!seen.has(candidate.id)){seen.add(candidate.id);if(!version)out.push(candidate);walk(candidate.id);}});};walk(id);return out;}
-async function removeArtifact(id,label){const below=artifactDescendants(id);const lines=[`${label} verwijderen?`];if(below.length)lines.push(`De ${below.length} ${below.length===1?'laag':'lagen'} die erop gebouwd ${below.length===1?'is':'zijn'} ${below.length===1?'gaat':'gaan'} mee, ook die van andere gebruikers: ${below.map(artifactSelector).join(', ')}.`);lines.push('De snapshots verdwijnen uit archief en runners; dit kan niet ongedaan worden gemaakt.');if(!confirm(lines.join('\n\n')))return;try{await api(`/api/artifacts/${encodeURIComponent(id)}`,{method:'DELETE'});showNotice(`${label} verwijderd${below.length?` met ${below.length} ${below.length===1?'laag':'lagen'} erop`:''}`);await refresh(true);}catch(error){showError(error);}}
+async function removeArtifact(id,label){
+  let members=[];try{members=(await api(`/api/artifacts/${encodeURIComponent(id)}/tree`)).members||[];}catch(error){showError(error);return;}
+  const versions=members.filter(member=>member.version).length,above=members.filter(member=>!member.version);
+  const lines=[`${label} verwijderen?`];
+  if(versions)lines.push(`Alle ${versions+1} versies van deze laag gaan weg.`);
+  if(above.length)lines.push(`De ${above.length} ${above.length===1?'laag':'lagen'} die erop gebouwd ${above.length===1?'is gaat':'zijn gaan'} mee, ook van andere gebruikers: ${above.map(member=>member.subject?`${member.layer} (${member.subject})`:member.layer).join(', ')}.`);
+  lines.push('De snapshots verdwijnen uit archief en runners; dit kan niet ongedaan worden gemaakt.');
+  if(!confirm(lines.join('\n\n')))return;
+  try{await api(`/api/artifacts/${encodeURIComponent(id)}`,{method:'DELETE'});showNotice(`${label} verwijderd${members.length?` met ${members.length} ${members.length===1?'laag':'lagen'}`:''}`);await refresh(true);}catch(error){showError(error);}
+}
 async function removeMCP(id){if(!confirm('Remove deze persoonlijke MCP-configuratie?'))return;try{await api(`/api/mcp-servers/${encodeURIComponent(id)}`,{method:'DELETE'});await refresh(true);}catch(error){showError(error);}}
 async function removeGitAccount(id){if(!confirm('Deze Git identity ontkoppelen? Repositories lossen daarna automatisch een andere identity voor dezelfde host en scope op, of wachten op een nieuwe koppeling.'))return;try{await api(`/api/git/accounts/${encodeURIComponent(id)}`,{method:'DELETE'});await refresh(true);}catch(error){showError(error);}}
 async function removeGit(id){if(!confirm('Remove deze Git repositoryconfiguratie? Bestaande Jobs blokkeren dit.'))return;try{await api(`/api/git/repositories/${encodeURIComponent(id)}`,{method:'DELETE'});await refresh(true);}catch(error){showError(error);}}

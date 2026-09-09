@@ -536,6 +536,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/clients/{clientID}/drain", s.drainClient)
 	s.mux.HandleFunc("DELETE /api/clients/{clientID}", s.removeClient)
 	s.mux.HandleFunc("GET /api/artifacts/{artifactID}/contents", s.artifactContentsHandler)
+	s.mux.HandleFunc("GET /api/artifacts/{artifactID}/tree", s.artifactTreeHandler)
 	s.mux.HandleFunc("PUT /api/artifacts/{artifactID}/tracked", s.setTrackedPathsHandler)
 	s.mux.HandleFunc("GET /api/compositions/{compositionID}/changes", s.compositionChangesHandler)
 	s.mux.HandleFunc("GET /api/runners/token", s.workerTokenHandler)

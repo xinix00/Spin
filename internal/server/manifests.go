@@ -102,3 +102,29 @@ func (s *Server) setTrackedPathsHandler(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusOK, updated)
 }
+
+// artifactTreeHandler names everything that goes with a layer: every
+// version of it and every layer built on any version, other users'
+// included, so a confirmation can say so before the removal.
+func (s *Server) artifactTreeHandler(w http.ResponseWriter, r *http.Request) {
+	artifact, err := s.store.Artifact(r.PathValue("artifactID"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	type member struct {
+		ID      string `json:"id"`
+		Layer   string `json:"layer"`
+		Subject string `json:"subject,omitempty"`
+		Version bool   `json:"version"`
+	}
+	members := []member{}
+	for _, candidate := range s.store.ArtifactTree(artifact.ID) {
+		if candidate.ID == artifact.ID {
+			continue
+		}
+		sameLayer := candidate.Kind == artifact.Kind && candidate.Name == artifact.Name && candidate.Subject == artifact.Subject
+		members = append(members, member{ID: candidate.ID, Layer: string(candidate.Kind) + ":" + candidate.Name, Subject: candidate.Subject, Version: sameLayer})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"members": members})
+}
