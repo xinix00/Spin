@@ -11,7 +11,7 @@ import (
 )
 
 // Storage on the server is finite and Spin cannot ask the volume how much is
-// left. What it can do is not waste it: an EDIT makes the old version of a
+// left. What it can do is not waste it: a new version makes the old one of a
 // layer superseded, and once nothing running uses that version its archived
 // snapshot goes. The numbers below are shown so a person sees the database
 // grow before the volume is full.

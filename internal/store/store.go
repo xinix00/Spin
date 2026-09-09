@@ -436,10 +436,10 @@ func (s *Store) CreateRecording(req domain.CreateRecordingRequest) (domain.Recor
 			return domain.Recording{}, fmt.Errorf("artifact to edit %s: %w", replaces, ErrNotFound)
 		}
 		if previous.Kind != req.Kind || previous.Name != name || previous.SupersededBy != "" {
-			return domain.Recording{}, fmt.Errorf("EDIT must record the current version of %s:%s: %w", req.Kind, name, ErrConflict)
+			return domain.Recording{}, fmt.Errorf("a new version records from the current version of %s:%s: %w", req.Kind, name, ErrConflict)
 		}
 		if !slices.Contains(parents, replaces) {
-			return domain.Recording{}, fmt.Errorf("an EDIT records from the version it replaces: %w", ErrConflict)
+			return domain.Recording{}, fmt.Errorf("a new version records from the version it replaces: %w", ErrConflict)
 		}
 	}
 	now := time.Now().UTC()
@@ -561,7 +561,7 @@ func (s *Store) EndRecording(recordingID string, req domain.EndRecordingRequest)
 		// for the layers recorded from it and for anything still running on it.
 		previous.SupersededBy = artifact.ID
 		// The agent's options and chosen settings are metadata of the layer,
-		// not of a version: they move to the new version with the EDIT.
+		// not of a version: they move to the new version.
 		if artifact.AgentOptions == nil {
 			artifact.AgentOptions = previous.AgentOptions
 		}
@@ -2662,7 +2662,7 @@ func (s *Store) BindSessionClient(sessionID, clientID string) (domain.Session, e
 // SetArtifactEnablementCommand sets the entrypoint of a capability the
 // layer ENABLES, after the fact: the command is metadata of the layer, not
 // content of its snapshot, and a recording made without --command would
-// otherwise be stuck. Later versions (EDIT) inherit it.
+// otherwise be stuck. Later versions inherit it.
 func (s *Store) SetArtifactEnablementCommand(artifactID, name, command string) (domain.Artifact, error) {
 	name = normalizeName(name)
 	command = strings.TrimSpace(command)
@@ -3446,7 +3446,7 @@ func (s *Store) resolveArtifactSelectorLocked(selector, operator, profile string
 	return selected, nil
 }
 
-// newestVersionLocked follows the EDIT chain from artifact to the last version
+// newestVersionLocked follows the version chain from artifact to the last version
 // the operator may use. It reports false when artifact is already that version.
 func (s *Store) newestVersionLocked(artifact domain.Artifact, operator string) (domain.Artifact, bool) {
 	newest, replaced := artifact, false
@@ -3463,7 +3463,7 @@ func (s *Store) newestVersionLocked(artifact domain.Artifact, operator string) (
 // layerStackLocked orders a composition's layers, bottom to top: each
 // selection after its parents, selections in the order given, and every
 // layer lifted to its newest usable version, placed right above the version
-// it replaces so an EDIT reaches every layer built on the old one.
+// it replaces so a new version reaches every layer built on the old one.
 func (s *Store) layerStackLocked(selections []domain.Artifact, operator string) []domain.Artifact {
 	var stack []domain.Artifact
 	present := map[string]bool{}
@@ -3576,7 +3576,7 @@ func (s *Store) enablingLayerLocked(artifactID, capability string) (domain.Artif
 		}
 		for _, enabled := range artifact.Enables {
 			if enabled.Name == capability {
-				// A layer built on an older version follows the EDIT: the
+				// A layer built on an older version follows the newer version: the
 				// options belong to the newest version of that layer.
 				newest, _ := s.newestVersionLocked(artifact, artifact.CreatedBy)
 				return newest, true
@@ -3599,7 +3599,7 @@ func (s *Store) sameLineageLocked(a, b domain.Artifact) bool {
 	return newestA.ID == newestB.ID
 }
 
-// dependsOnLineageLocked is artifactDependsOnLocked across EDIT versions: a
+// dependsOnLineageLocked is artifactDependsOnLocked across versions: a
 // credential recorded on an older tool:codex still depends on tool:codex.
 func (s *Store) dependsOnLineageLocked(artifactID string, ancestor domain.Artifact) bool {
 	visited := map[string]bool{}

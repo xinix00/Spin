@@ -30,7 +30,7 @@ func (s *Server) executeRecordingCommand(ctx context.Context, recordingID string
 	return recording, execution, err
 }
 
-// editCapsuleArtifact starts an EDIT: the current version of a layer is
+// editCapsuleArtifact starts a new version: the current version of a layer is
 // recorded again with every setting it has, and ending that recording makes
 // the result the new version everything follows.
 func (s *Server) editCapsuleArtifact(actor, artifactID string) (domain.Recording, *domain.StartStatus, error) {

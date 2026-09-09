@@ -25,6 +25,7 @@ import (
 )
 
 type Server struct {
+	inflight        inflight
 	store           *store.Store
 	logger          *slog.Logger
 	mux             *http.ServeMux
@@ -63,7 +64,7 @@ type Server struct {
 	sealWait        time.Duration // how long End & save waits before answering with progress
 	startMu         sync.Mutex
 	starts          map[string]*startJob
-	startWait       time.Duration // how long RECORD and EDIT wait before answering with progress
+	startWait       time.Duration // how long a recording and a new version wait before answering with progress
 	startCancelWait time.Duration // how long a cancel waits for a stopped start job
 	appMu           sync.Mutex
 	appStarts       map[string]*appStart // app service starts per Session
@@ -876,7 +877,7 @@ func (s *Server) createRecording(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, recording)
 }
 
-// editArtifact starts an EDIT recording of a layer; like createRecording it
+// editArtifact starts a new version of a layer; like createRecording it
 // answers with the start job when the capsule takes a moment.
 func (s *Server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -1479,7 +1480,12 @@ func (s *Server) forkSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.logger.Debug("http request", "method", r.Method, "path", r.URL.Path)
+		if quietRequestPath(r.URL.Path) {
+			s.logger.Debug("http request", "method", r.Method, "path", r.URL.Path)
+		} else {
+			s.logger.Info("http request", "method", r.Method, "path", r.URL.Path)
+		}
+		defer s.inflight.end(s.inflight.begin(r, s.logger))
 		next.ServeHTTP(w, r)
 	})
 }

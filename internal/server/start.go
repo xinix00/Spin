@@ -14,7 +14,7 @@ import (
 	"easyacp/internal/store"
 )
 
-// RECORD and EDIT bring a capsule up on a runner. That is seconds when the
+// A recording and a new version bring a capsule up on a runner. That is seconds when the
 // runner already holds the base image and minutes when the image has to come
 // out of the archive first, and the edge closes any request after 100 s. So
 // the recording is created at once, the rest runs as a job, and the command

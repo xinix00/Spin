@@ -569,13 +569,13 @@ type Artifact struct {
 	TrackedPaths []string `json:"tracked_paths,omitempty"`
 	// AgentSettings is how Sessions on this layer start the agent: chosen
 	// from AgentOptions on the layer that ENABLES acp, kept as metadata (no
-	// re-seal) and carried to the next version on EDIT.
+	// re-seal) and carried to the next version.
 	AgentSettings *AgentSettings `json:"agent_settings,omitempty"`
 	// SnapshotPrunedAt is set once the archived snapshot of a superseded
 	// version was removed to free storage; the newer version carries its
 	// content, and runners may still hold the image as a cache.
 	SnapshotPrunedAt *time.Time `json:"snapshot_pruned_at,omitempty"`
-	// SupersededBy points at the version that replaced this one through EDIT.
+	// SupersededBy points at the version that replaced this one.
 	// The snapshot stays: layers recorded from it still resolve their parent by
 	// ID, and a composition that meets it binds the newest version instead.
 	SupersededBy string `json:"superseded_by,omitempty"`
@@ -1084,7 +1084,7 @@ type CreateRecordingRequest struct {
 	ParentArtifactIDs        []string            `json:"parent_artifact_ids,omitempty"`
 	CompatibilityFingerprint string              `json:"compatibility_fingerprint,omitempty"`
 	Sensitivity              ArtifactSensitivity `json:"sensitivity,omitempty"`
-	// ReplacesArtifactID marks an EDIT: the finished recording becomes the new
+	// ReplacesArtifactID marks a new version: the finished recording becomes the new
 	// version of that artifact, which is then superseded.
 	ReplacesArtifactID string `json:"replaces_artifact_id,omitempty"`
 }
@@ -1127,7 +1127,7 @@ type StopCompositionRequest struct {
 	Operator string `json:"operator"`
 }
 
-// StartStatus reports RECORD or EDIT while the capsule comes up. Providing the
+// StartStatus reports a recording or a new version while the capsule comes up. Providing the
 // base image to a runner that lacks it can take minutes; the container itself
 // starts in seconds.
 type StartStatus struct {

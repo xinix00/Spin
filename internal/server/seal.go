@@ -142,7 +142,7 @@ func (s *Server) runSeal(job *sealJob, recording domain.Recording, req domain.En
 		status.Message = "Opgeslagen"
 		status.Artifact = &artifact
 	})
-	// An EDIT just superseded a version; its snapshot can go.
+	// A new version just superseded the old one; its snapshot can go.
 	s.pruneLater()
 }
 
