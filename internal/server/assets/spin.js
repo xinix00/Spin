@@ -71,7 +71,7 @@ async function api(path,options={}) {
     const body=await response.json().catch(()=>({error:response.statusText}));
     // A restarted server rotates the CSRF token; pick the new one up once and retry.
     if(response.status===403&&/CSRF/.test(body.error||'')&&!options.retried){const status=await api('/api/auth/status');if(status?.csrf_token){authState=status;csrfToken=status.csrf_token;return api(path,{...options,retried:true});}}
-    const error=new Error(body.error||response.statusText);error.status=response.status;throw error;
+    const error=new Error(body.error||response.statusText);error.status=response.status;error.body=body;throw error;
   }
   return response.status===204?null:response.json();
 }
@@ -544,10 +544,11 @@ function captureCodeReviewSelection(event){
 function focusCodeReviewComment(id){
   const comment=(jobChangesState.bundle?.comments||[]).find(item=>item.id===id);if(!comment)return;openJobChangeDiff(comment.path);document.querySelectorAll('.comment-card.active,[data-code-comment-ids].active').forEach(element=>element.classList.remove('active'));document.querySelector(`[data-focus-code-comment="${CSS.escape(id)}"]`)?.classList.add('active');const marks=[...document.querySelectorAll('[data-code-comment-ids]')].filter(mark=>String(mark.dataset.codeCommentIds||'').split(' ').includes(id)&&mark.offsetParent!==null);marks.forEach(mark=>mark.classList.add('active'));marks[0]?.scrollIntoView({behavior:'smooth',block:'center'});
 }
+function setGateBusy(busy){const spinner=document.getElementById('auth-busy');if(spinner)spinner.hidden=!busy;}
 function showAuthGate(copy,mode='login'){
   document.getElementById('app-shell').hidden=true;
   document.getElementById('auth-gate').hidden=false;
-  document.getElementById('auth-copy').textContent=copy;
+  document.getElementById('auth-copy').textContent=copy;setGateBusy(false);
   document.getElementById('setup-form').hidden=mode!=='setup';
   document.getElementById('login-form').hidden=mode!=='login';
 }
@@ -1392,7 +1393,10 @@ async function bootstrap(){
     enterApp(status);
     setTab(localStorage.getItem('spin-tab')||'jobs');setWorkView(localStorage.getItem('spin-work-view')||'jobs');setJobState(jobStateFilter);setConnection(localStorage.getItem('spin-connection')||'git');handleOAuthStatus();
     await refresh(true);if(restoreError)showError(restoreError);
-  }catch(error){showAuthGate(`Server niet bereikbaar: ${error.message||error}`);}
+  }catch(error){
+    if(error.status===503&&error.body?.stage){const started=error.body.started_at?Math.max(0,Math.round((Date.now()-new Date(error.body.started_at).getTime())/1000)):0;showAuthGate(error.body.opening?`${error.body.message}${started?` · ${started} s`:''}`:`Openen mislukt: ${error.body.failure||error.body.message}`);setGateBusy(!!error.body.opening);if(error.body.opening)setTimeout(bootstrap,2000);return;}
+    showAuthGate(`Server niet bereikbaar: ${error.message||error}`);setGateBusy(false);
+  }
 }
 
 document.querySelectorAll('.tab-button').forEach(button=>button.onclick=()=>setTab(button.dataset.tab));

@@ -2,10 +2,18 @@ package tenancy
 
 import (
 	"context"
+	"easyacp/internal/capsule"
+	"easyacp/internal/persistence"
+	"easyacp/internal/store"
+	"easyacp/internal/worker"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	spinserver "easyacp/internal/server"
 )
@@ -110,4 +118,43 @@ func TestNormalizeHost(t *testing.T) {
 			t.Fatalf("NormalizeHost(%q) = %q, %v", input, got, ok)
 		}
 	}
+}
+
+// A Spin whose open takes long (a restore from the bucket) answers at once
+// with where it stands, and the page asks again; a quick open goes through.
+func TestSlowOpenAnswersWithItsStage(t *testing.T) {
+	dir := t.TempDir()
+	release := make(chan struct{})
+	var once sync.Once
+	tenants := New(Config{
+		DataDir: dir,
+		Options: func(string) spinserver.ServerOptions { return spinserver.ServerOptions{DisableAuthentication: true} },
+		Engine: func(st *store.Store, database *persistence.SQLite, logger *slog.Logger) (capsule.Engine, *worker.Broker, error) {
+			once.Do(func() { <-release })
+			broker := worker.NewBroker(st, logger)
+			return worker.NewRemoteEngine(broker, database), broker, nil
+		},
+	})
+	defer tenants.Close()
+	get := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, "http://slow.test/healthz", nil)
+		request.Host = "slow.test"
+		response := httptest.NewRecorder()
+		tenants.ServeHTTP(response, request)
+		return response
+	}
+	first := get()
+	var body map[string]any
+	if first.Code != http.StatusServiceUnavailable || json.Unmarshal(first.Body.Bytes(), &body) != nil || body["opening"] != true || body["stage"] == "" {
+		t.Fatalf("while opening = %d %s", first.Code, first.Body.String())
+	}
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if response := get(); response.Code == http.StatusOK {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("the Spin never opened")
 }

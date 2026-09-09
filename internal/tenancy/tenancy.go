@@ -6,6 +6,7 @@ package tenancy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -71,8 +72,29 @@ type Tenants struct {
 	mu      sync.Mutex
 	tenants map[string]*Tenant
 	opening map[string]chan struct{}
-	ctx     context.Context
-	cancel  context.CancelFunc
+	// stages says where an opening Spin is, for the page that waits on it.
+	stages map[string]openingStage
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// openingStage is where the open of a Spin stands; a page shows it.
+type openingStage struct {
+	Stage     string    `json:"stage"`
+	Message   string    `json:"message"`
+	StartedAt time.Time `json:"started_at"`
+	Error     string    `json:"error,omitempty"`
+}
+
+func (t *Tenants) setStage(domain, stage, message string) {
+	t.mu.Lock()
+	current := t.stages[domain]
+	if current.StartedAt.IsZero() {
+		current.StartedAt = time.Now().UTC()
+	}
+	current.Stage, current.Message, current.Error = stage, message, ""
+	t.stages[domain] = current
+	t.mu.Unlock()
 }
 
 func New(config Config) *Tenants {
@@ -80,7 +102,7 @@ func New(config Config) *Tenants {
 		config.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Tenants{config: config, logger: config.Logger, tenants: map[string]*Tenant{}, opening: map[string]chan struct{}{}, ctx: ctx, cancel: cancel}
+	return &Tenants{config: config, logger: config.Logger, tenants: map[string]*Tenant{}, opening: map[string]chan struct{}{}, stages: map[string]openingStage{}, ctx: ctx, cancel: cancel}
 }
 
 // NormalizeHost turns a Host header into a tenant name: lower case, no
@@ -142,10 +164,24 @@ func (t *Tenants) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		domain = host
 	}
-	tenant, err := t.Open(r.Context(), domain)
-	if err != nil {
-		t.logger.Error("open tenant", "domain", domain, "error", err)
-		http.Error(w, "this Spin cannot open its database: "+err.Error(), http.StatusServiceUnavailable)
+	tenant, _ := t.lookup(domain)
+	if tenant == nil {
+		// The open runs on its own. A quick one (the database is here)
+		// finishes within the grace and the request goes through; a long
+		// one (a restore from the bucket) answers with where it stands and
+		// the page asks again.
+		tenant = t.awaitOpen(r.Context(), t.startOpen(domain), domain, 2*time.Second)
+	}
+	if tenant == nil {
+		_, opening := t.lookup(domain)
+		stage := opening
+		if stage.Stage == "" {
+			stage = openingStage{Stage: "start", Message: "Deze Spin wordt geopend", StartedAt: time.Now().UTC()}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "2")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": stage.Message, "opening": stage.Error == "", "stage": stage.Stage, "message": stage.Message, "started_at": stage.StartedAt, "failure": stage.Error})
 		return
 	}
 	tenant.Handler.ServeHTTP(w, r)
@@ -203,39 +239,83 @@ func (t *Tenants) Discover(ctx context.Context) ([]string, error) {
 	return opened, nil
 }
 
+// startOpen registers an open for a domain and runs it, once; it returns
+// the channel that closes when that open is done.
+func (t *Tenants) startOpen(domain string) chan struct{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if wait, opening := t.opening[domain]; opening {
+		return wait
+	}
+	wait := make(chan struct{})
+	t.opening[domain] = wait
+	go t.runOpen(domain, wait)
+	return wait
+}
+
+func (t *Tenants) runOpen(domain string, wait chan struct{}) {
+	tenant, err := t.open(domain)
+	t.mu.Lock()
+	if err == nil {
+		t.tenants[domain] = tenant
+		delete(t.stages, domain)
+	} else {
+		stage := t.stages[domain]
+		stage.Error = err.Error()
+		stage.Message = "Openen mislukt: " + err.Error()
+		t.stages[domain] = stage
+	}
+	delete(t.opening, domain)
+	t.mu.Unlock()
+	close(wait)
+}
+
 // Open returns the tenant of a domain, opening it once; concurrent callers
 // wait for that one open.
 func (t *Tenants) Open(ctx context.Context, domain string) (*Tenant, error) {
 	for {
-		t.mu.Lock()
-		if tenant, ok := t.tenants[domain]; ok {
-			t.mu.Unlock()
+		tenant, stage := t.lookup(domain)
+		if tenant != nil {
 			return tenant, nil
 		}
-		wait, opening := t.opening[domain]
-		if !opening {
-			wait = make(chan struct{})
-			t.opening[domain] = wait
+		if stage.Error != "" {
+			// A failed open is tried again by the next caller.
+			t.mu.Lock()
+			delete(t.stages, domain)
+			t.mu.Unlock()
 		}
-		t.mu.Unlock()
-		if opening {
-			select {
-			case <-wait:
-				continue
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
+		wait := t.startOpen(domain)
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
-		tenant, err := t.open(domain)
-		t.mu.Lock()
-		if err == nil {
-			t.tenants[domain] = tenant
+		tenant, stage = t.lookup(domain)
+		if tenant != nil {
+			return tenant, nil
 		}
-		delete(t.opening, domain)
-		close(wait)
-		t.mu.Unlock()
-		return tenant, err
+		if stage.Error != "" {
+			return nil, errors.New(stage.Error)
+		}
 	}
+}
+
+// awaitOpen waits up to the grace for an open in progress.
+func (t *Tenants) awaitOpen(ctx context.Context, wait chan struct{}, domain string, grace time.Duration) *Tenant {
+	select {
+	case <-wait:
+	case <-time.After(grace):
+	case <-ctx.Done():
+	}
+	tenant, _ := t.lookup(domain)
+	return tenant
+}
+
+// lookup is the open tenant, or where its open stands.
+func (t *Tenants) lookup(domain string) (*Tenant, openingStage) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.tenants[domain], t.stages[domain]
 }
 
 func (t *Tenants) databasePath(domain string) string {
@@ -253,18 +333,21 @@ func (t *Tenants) open(domain string) (*Tenant, error) {
 		fsPath = path
 	}
 	var rep *replica.Replica
+	t.setStage(domain, "replica", "Replica in de bucket controleren")
 	if t.config.Replication != nil {
 		var err error
 		rep, err = replica.New(*t.config.Replication, domain, path, vfs.Find(t.config.StorageVFS), logger)
 		if err != nil {
 			return nil, err
 		}
+		t.setStage(domain, "restore", "Database uit de replica halen als ze hier nog niet staat")
 		if err := rep.Prepare(t.ctx); err != nil {
 			rep.Close()
 			return nil, fmt.Errorf("replica: %w", err)
 		}
 		vfsName = rep.VFSName()
 	}
+	t.setStage(domain, "database", "Database openen")
 	database, err := persistence.Open(path, persistence.OpenOptions{VFS: vfsName, FSPath: fsPath})
 	if err != nil {
 		if rep != nil {
@@ -282,6 +365,7 @@ func (t *Tenants) open(domain string) (*Tenant, error) {
 		}
 		return nil, err
 	}
+	t.setStage(domain, "store", "State laden en geheimen ontsleutelen")
 	st, err := store.OpenWithBackend("state", store.OpenOptions{MasterKey: t.config.MasterKey, MasterKeyFile: t.config.MasterKeyFile}, database)
 	if err != nil {
 		return fail(fmt.Errorf("open store: %w", err))
@@ -314,6 +398,7 @@ func (t *Tenants) open(domain string) (*Tenant, error) {
 	if rep != nil {
 		options.Replica = rep
 	}
+	t.setStage(domain, "server", "Runners en replica starten")
 	server := spinserver.NewWithOptions(st, logger, engine, options)
 	tenant := &Tenant{Domain: domain, Path: path, Database: database, Store: st, Broker: broker, Server: server, Handler: server.Handler(), Replica: rep}
 	if rep != nil {
