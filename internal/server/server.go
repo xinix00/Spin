@@ -39,7 +39,6 @@ type Server struct {
 	snapshotArchive capsule.SnapshotArchive
 	database        *persistence.SQLite
 	replica         ReplicaStatus
-	backfillMu      sync.Mutex
 	loginLimiter    loginLimiter
 	csrfTokens      csrfTokenCache
 	terminalMu      sync.Mutex
@@ -162,7 +161,6 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 	s.routes()
 	if s.runnerBroker != nil {
 		s.runnerBroker.OnRunnerConnected(s.resumeQueuedWorkflowPhases)
-		s.runnerBroker.OnRunnerConnected(func() { go s.backfillContents() })
 	}
 	if reporter, ok := engine.(placementReporter); ok {
 		reporter.OnPlacement(s.recordLaunchPlacement)
@@ -538,7 +536,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/clients/{clientID}/drain", s.drainClient)
 	s.mux.HandleFunc("DELETE /api/clients/{clientID}", s.removeClient)
 	s.mux.HandleFunc("GET /api/artifacts/{artifactID}/contents", s.artifactContentsHandler)
-	s.mux.HandleFunc("POST /api/artifacts/{artifactID}/contents/inspect", s.inspectArtifactContentsHandler)
+	s.mux.HandleFunc("PUT /api/artifacts/{artifactID}/tracked", s.setTrackedPathsHandler)
 	s.mux.HandleFunc("GET /api/compositions/{compositionID}/changes", s.compositionChangesHandler)
 	s.mux.HandleFunc("GET /api/runners/token", s.workerTokenHandler)
 	s.mux.HandleFunc("POST /api/runners/token", s.workerTokenHandler)
@@ -783,18 +781,27 @@ func (s *Server) deleteArtifact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if remover, ok := s.engine.(capsule.SnapshotRemover); ok {
-		if err := remover.RemoveSnapshot(r.Context(), artifact.Snapshot); err != nil {
-			writeError(w, fmt.Errorf("remove artifact snapshot: %w", err))
-			return
+	// The top layers go first, then their parents: a runner rebuilds a
+	// delta from its parent, never the other way round.
+	for _, member := range s.store.ArtifactTree(artifact.ID) {
+		if remover, ok := s.engine.(capsule.SnapshotRemover); ok {
+			if err := remover.RemoveSnapshot(r.Context(), member.Snapshot); err != nil {
+				writeError(w, fmt.Errorf("remove snapshot of %s:%s: %w", member.Kind, member.Name, err))
+				return
+			}
+		}
+		if s.snapshotArchive != nil && member.SnapshotPrunedAt == nil && member.Snapshot.Digest != "" {
+			if err := s.snapshotArchive.RemoveArchivedSnapshot(r.Context(), member.Snapshot); err != nil {
+				s.logger.Warn("remove archived snapshot", "artifact", member.ID, "error", err)
+			}
 		}
 	}
-	deleted, err := s.store.DeleteArtifact(artifact.ID, operator)
+	deleted, err := s.store.DeleteArtifactTree(artifact.ID, operator)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, deleted)
+	writeJSON(w, http.StatusOK, deleted[len(deleted)-1])
 }
 
 func (s *Server) createRecording(w http.ResponseWriter, r *http.Request) {

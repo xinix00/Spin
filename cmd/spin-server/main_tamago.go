@@ -6,8 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"errors"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,7 +16,6 @@ import (
 	"easyacp/internal/persistence"
 	"easyacp/internal/replicaconfig"
 	spinserver "easyacp/internal/server"
-	"easyacp/internal/store"
 	"easyacp/internal/tenancy"
 
 	"github.com/xinix00/HopOS/metal/v2/app/applib"
@@ -80,39 +77,6 @@ func main() {
 				options.InternalURL = options.PublicURL
 			}
 			return options
-		},
-		BeforeStore: func(_ string, database *persistence.SQLite) error {
-			if single == "" {
-				return nil
-			}
-			if _, err := database.ReadFile("state"); !errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			legacy, legacyErr := app.ReadFile("/data/spin-state.json")
-			if legacyErr != nil {
-				return nil
-			}
-			if err := database.WriteFile("state", legacy); err != nil {
-				return err
-			}
-			app.Logf("spin-server: imported /data/spin-state.json into %s", single)
-			return nil
-		},
-		AfterStore: func(_ string, st *store.Store, attachments *persistence.FileStore) error {
-			if single == "" {
-				return nil
-			}
-			for _, attachment := range st.Snapshot().JobAttachments {
-				if _, err := attachments.ReadFile(attachment.ID); err == nil {
-					continue
-				}
-				if legacy, legacyErr := app.ReadFile("/data/job-attachments/" + attachment.ID); legacyErr == nil {
-					if err := attachments.WriteFile(attachment.ID, legacy); err != nil {
-						return err
-					}
-				}
-			}
-			return nil
 		},
 	}
 	if enabled {

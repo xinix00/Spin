@@ -301,37 +301,20 @@ func (e *RemoteEngine) InspectWorkspaceRange(ctx context.Context, runtime domain
 	return changes, err
 }
 
-// InspectLayer asks a runner that holds the image for the layer's manifest;
-// a runner without it fetches it first.
-func (e *RemoteEngine) InspectLayer(ctx context.Context, artifact domain.Artifact) (domain.LayerContents, error) {
-	var contents domain.LayerContents
-	target, err := e.broker.choosePreferring(ctx, "", func(clientID string) bool {
-		return snapshotAvailableOn(artifact.Snapshot, clientID)
-	})
-	if err != nil {
-		return contents, err
-	}
-	if err := e.ensureSnapshotOn(ctx, artifact, target.id); err != nil {
-		return contents, err
-	}
-	_, err = e.broker.call(ctx, target.id, methodInspectLayer, snapshotPayload{Snapshot: artifact.Snapshot}, &contents)
-	return contents, err
-}
-
 func (e *RemoteEngine) CaptureCapsuleChanges(ctx context.Context, runtime domain.CapsuleRuntime) (domain.LayerContents, error) {
 	var changes domain.LayerContents
 	_, err := e.broker.call(ctx, runtime.ClientID, methodCapsuleChanges, runtimePayload{Runtime: runtime}, &changes)
 	return changes, err
 }
 
-func (e *RemoteEngine) CaptureLoginState(ctx context.Context, runtime domain.CapsuleRuntime, credential domain.CapsuleSnapshot) (map[string][]byte, error) {
+func (e *RemoteEngine) ReadTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, paths []string) (map[string][]byte, error) {
 	var files map[string][]byte
-	_, err := e.broker.call(ctx, runtime.ClientID, methodCaptureLogin, homeFilesPayload{Runtime: runtime, Credential: credential}, &files)
+	_, err := e.broker.call(ctx, runtime.ClientID, methodReadTracked, trackedFilesPayload{Runtime: runtime, Paths: paths}, &files)
 	return files, err
 }
 
-func (e *RemoteEngine) WriteHomeFiles(ctx context.Context, runtime domain.CapsuleRuntime, files map[string][]byte) error {
-	_, err := e.broker.call(ctx, runtime.ClientID, methodWriteHomeFiles, homeFilesPayload{Runtime: runtime, Files: files}, nil)
+func (e *RemoteEngine) WriteTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, files map[string][]byte) error {
+	_, err := e.broker.call(ctx, runtime.ClientID, methodWriteTracked, trackedFilesPayload{Runtime: runtime, Files: files}, nil)
 	return err
 }
 
@@ -390,9 +373,7 @@ func (e *RemoteEngine) RemoveSnapshot(ctx context.Context, snapshot domain.Capsu
 func (e *RemoteEngine) replicateSnapshot(ctx context.Context, artifact domain.Artifact, targetID string) error {
 	sourceID := e.broker.snapshotSource(artifact.Snapshot, targetID)
 	if sourceID == "" {
-		// Legacy snapshots predate runner affinity. The chosen runner may share
-		// the old daemon; let Docker resolve the ref normally.
-		return nil
+		return errors.New("no connected runner holds the snapshot")
 	}
 	importProcess, err := e.broker.openStream(ctx, targetID, methodImportSnapshot, snapshotPayload{Snapshot: artifact.Snapshot})
 	if err == nil {
@@ -449,19 +430,6 @@ type snapshotSizer interface {
 	SnapshotInfo(context.Context, domain.CapsuleSnapshot) (persistence.BlobInfo, error)
 }
 
-type progressWriter struct {
-	io.Writer
-	written int64
-	total   int64
-	ctx     context.Context
-}
-
-func (w *progressWriter) Write(p []byte) (int, error) {
-	n, err := w.Writer.Write(p)
-	w.written += int64(n)
-	capsule.ReportProgress(w.ctx, "parents", "Basisimage uit het archief naar de runner", w.written, w.total)
-	return n, err
-}
 
 func (e *RemoteEngine) ensureSnapshotOn(ctx context.Context, artifact domain.Artifact, targetID string) error {
 	if e.runnerHasSnapshot(ctx, artifact.Snapshot, targetID) {
@@ -497,11 +465,6 @@ func (e *RemoteEngine) ensureSnapshotOn(ctx context.Context, artifact domain.Art
 		if replicaErr != nil {
 			return replicaErr
 		}
-		// Legacy state without runner affinity may still share the target
-		// daemon. Preserve that compatibility until it has been archived.
-		if !snapshotHasPlacement(artifact.Snapshot) {
-			return nil
-		}
 		return errors.New("snapshot is absent from the central archive and every known runner is offline")
 	}
 	var total int64
@@ -510,34 +473,19 @@ func (e *RemoteEngine) ensureSnapshotOn(ctx context.Context, artifact domain.Art
 			total = info.Size
 		}
 	}
-	// A runner that can pull fetches the image itself in resumable HTTP
-	// chunks; the link only carries its progress. Older runners get the
-	// image pushed over the link.
-	_, archiveServesChunks := e.archive.(snapshotChunkArchive)
-	if archiveServesChunks && e.broker.supportsSnapshotMode(targetID, snapshotModePull) {
-		if err := e.pullSnapshotOn(ctx, artifact, targetID, total); err != nil {
-			return errors.Join(replicaErr, err)
-		}
-		_, replicaAddErr := e.broker.store.AddSnapshotReplica(artifact.ID, targetID)
-		return replicaAddErr
+	// The runner fetches the image itself in resumable HTTP chunks; the
+	// link only carries its progress.
+	if _, archiveServesChunks := e.archive.(snapshotChunkArchive); !archiveServesChunks {
+		return errors.Join(replicaErr, errors.New("the archive cannot serve snapshot chunks"))
 	}
-	process, err := e.broker.openStream(ctx, targetID, methodImportSnapshot, snapshotPayload{Snapshot: artifact.Snapshot})
-	if err != nil {
+	if !e.broker.supportsSnapshotMode(targetID, snapshotModePull) {
+		return errors.Join(replicaErr, fmt.Errorf("runner %s cannot pull snapshots; update it", targetID))
+	}
+	if err := e.pullSnapshotOn(ctx, artifact, targetID, total); err != nil {
 		return errors.Join(replicaErr, err)
 	}
-	process.bulk = true
-	capsule.ReportProgress(ctx, "parents", "Basisimage uit het archief naar de runner", 0, total)
-	restoreErr := e.archive.RestoreSnapshot(ctx, artifact.Snapshot, &progressWriter{Writer: process, total: total, ctx: ctx})
-	closeErr := process.Close()
-	if restoreErr == nil && closeErr == nil {
-		capsule.ReportProgress(ctx, "load", "Runner laadt de image in Docker", 0, 0)
-	}
-	execution, waitErr := process.Wait()
-	if err := errors.Join(restoreErr, closeErr, waitErr, executionError("snapshot import", execution)); err != nil {
-		return errors.Join(replicaErr, err)
-	}
-	_, err = e.broker.store.AddSnapshotReplica(artifact.ID, targetID)
-	return err
+	_, replicaAddErr := e.broker.store.AddSnapshotReplica(artifact.ID, targetID)
+	return replicaAddErr
 }
 
 // parentArtifact finds the layer a delta was recorded on: among its
@@ -654,18 +602,6 @@ func snapshotsAvailableOn(artifacts []domain.Artifact, clientID string) bool {
 
 func snapshotAvailableOn(snapshot domain.CapsuleSnapshot, clientID string) bool {
 	return snapshot.ClientID == clientID || slices.Contains(snapshot.ReplicaClientIDs, clientID)
-}
-
-func snapshotHasPlacement(snapshot domain.CapsuleSnapshot) bool {
-	if strings.TrimSpace(snapshot.ClientID) != "" {
-		return true
-	}
-	for _, clientID := range snapshot.ReplicaClientIDs {
-		if strings.TrimSpace(clientID) != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func recordingAffinity(recording domain.Recording) string {
@@ -856,7 +792,7 @@ var (
 	_ capsule.WorkspaceSyncer             = (*RemoteEngine)(nil)
 	_ capsule.RepositoryBrowser           = (*RemoteEngine)(nil)
 	_ capsule.RepositoryComparer          = (*RemoteEngine)(nil)
-	_ capsule.LoginState                  = (*RemoteEngine)(nil)
+	_ capsule.TrackedFiles                = (*RemoteEngine)(nil)
 	_ capsule.CapsuleInspector            = (*RemoteEngine)(nil)
 	_ capsule.EnabledEngine               = (*RemoteEngine)(nil)
 	_ capsule.EnabledProber               = (*RemoteEngine)(nil)

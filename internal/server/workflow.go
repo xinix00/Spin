@@ -422,7 +422,7 @@ func (s *Server) validateWorkflowAccept(sessionID string) error {
 }
 
 func phaseAllowsChanges(phase domain.WorkflowPhase) bool {
-	return phase.AllowChanges || phase.AllowCommit
+	return phase.AllowChanges
 }
 
 func (s *Server) acceptWorkflowWorkspace(ctx context.Context, sessionID, summary, acceptedBy string) (capsule.WorkspaceAcceptanceResult, error) {

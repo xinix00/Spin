@@ -37,18 +37,9 @@ func (p LayerPlan) Needed() []domain.Artifact {
 	return needed
 }
 
-// CompositionLayers is the stack order of a composition: its Layers, or for
-// a composition from before stacks were recorded, the order its layers were
-// resolved in (each layer after its parents, newer versions last).
+// CompositionLayers is the stack order of a composition.
 func CompositionLayers(composition domain.Composition) []string {
-	if len(composition.Layers) > 0 {
-		return composition.Layers
-	}
-	order := make([]string, 0, len(composition.ResolvedArtifacts))
-	for _, resolved := range composition.ResolvedArtifacts {
-		order = append(order, resolved.ArtifactID)
-	}
-	return order
+	return composition.Layers
 }
 
 func layerRestorable(artifact domain.Artifact) bool {

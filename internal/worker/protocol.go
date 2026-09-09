@@ -36,10 +36,9 @@ const (
 	methodInspectWorkspace  = "workspace.inspect"
 	methodInspectRange      = "workspace.inspect_range"
 	methodInjectAttachments = "workspace.inject_attachments"
-	methodCaptureLogin      = "home.capture"
+	methodReadTracked       = "files.read"
 	methodCapsuleChanges    = "capsule.changes"
-	methodInspectLayer      = "layer.inspect"
-	methodWriteHomeFiles    = "home.write"
+	methodWriteTracked      = "files.write"
 	methodAcceptWorkspace   = "workspace.accept"
 	methodMergeWorkspace    = "workspace.merge"
 	methodSyncWorkspace     = "workspace.sync"
@@ -160,10 +159,10 @@ type attachmentPayload struct {
 	Data       []byte `json:"data"`
 }
 
-type homeFilesPayload struct {
-	Runtime    domain.CapsuleRuntime  `json:"runtime"`
-	Credential domain.CapsuleSnapshot `json:"credential,omitempty"`
-	Files      map[string][]byte      `json:"files,omitempty"`
+type trackedFilesPayload struct {
+	Runtime domain.CapsuleRuntime `json:"runtime"`
+	Paths   []string              `json:"paths,omitempty"`
+	Files   map[string][]byte     `json:"files,omitempty"`
 }
 
 type injectAttachmentsPayload struct {

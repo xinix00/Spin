@@ -453,17 +453,6 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		}
 		result, err := inspector.InspectWorkspaceRange(ctx, payload.Runtime, payload.Comparison)
 		return result, false, err
-	case methodInspectLayer:
-		var payload snapshotPayload
-		if err := json.Unmarshal(request.Payload, &payload); err != nil {
-			return nil, false, err
-		}
-		inspector, ok := w.engine.(capsule.LayerInspector)
-		if !ok {
-			return nil, false, errors.New("runner engine cannot inspect layers")
-		}
-		contents, err := inspector.InspectLayer(ctx, payload.Snapshot)
-		return contents, false, err
 	case methodCapsuleChanges:
 		var payload runtimePayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {
@@ -475,20 +464,20 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		}
 		changes, err := inspector.CaptureCapsuleChanges(ctx, payload.Runtime)
 		return changes, false, err
-	case methodCaptureLogin, methodWriteHomeFiles:
-		var payload homeFilesPayload
+	case methodReadTracked, methodWriteTracked:
+		var payload trackedFilesPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {
 			return nil, false, err
 		}
-		login, ok := w.engine.(capsule.LoginState)
+		tracked, ok := w.engine.(capsule.TrackedFiles)
 		if !ok {
-			return nil, false, errors.New("runner engine cannot keep login state")
+			return nil, false, errors.New("runner engine cannot reach tracked files")
 		}
-		if request.Method == methodCaptureLogin {
-			files, err := login.CaptureLoginState(ctx, payload.Runtime, payload.Credential)
+		if request.Method == methodReadTracked {
+			files, err := tracked.ReadTrackedFiles(ctx, payload.Runtime, payload.Paths)
 			return files, false, err
 		}
-		return nil, false, login.WriteHomeFiles(ctx, payload.Runtime, payload.Files)
+		return nil, false, tracked.WriteTrackedFiles(ctx, payload.Runtime, payload.Files)
 	case methodInjectAttachments:
 		var payload injectAttachmentsPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {

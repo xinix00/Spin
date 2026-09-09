@@ -74,7 +74,7 @@ func (s *Server) syncWorkspace(sessionID string) {
 	}
 	if session.PhaseRunID != "" {
 		_, _, _, phase, _, _, err := s.store.WorkflowForSession(sessionID)
-		if err != nil || !(phase.AllowChanges || phase.AllowCommit) {
+		if err != nil || !phase.AllowChanges {
 			return
 		}
 	}

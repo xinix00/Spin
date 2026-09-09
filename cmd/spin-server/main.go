@@ -4,13 +4,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -32,8 +30,6 @@ func main() {
 	dataDir := flag.String("data-dir", envOr("SPIN_DATA_DIR", "./var"), "directory with one database per domain (<domain>.db)")
 	databasePath := flag.String("database", envOr("SPIN_DATABASE", ""), "serve every host from this one database instead of one per domain")
 	domains := flag.String("domains", envOr("SPIN_DOMAINS", ""), "comma-separated domains this Spin answers on; empty admits any host")
-	legacyStatePath := flag.String("state", "./var/spin-state.json", "legacy JSON state to import once (single database)")
-	legacyAttachmentDir := flag.String("attachments", "./var/job-attachments", "legacy Job attachment directory to import once (single database)")
 	capsuleDriver := flag.String("capsule-driver", "runner", "capsule engine: runner, docker or journal")
 	capsuleBase := flag.String("capsule-base", "alpine:3.24", "clean substrate image for root Docker recordings")
 	capsuleNetwork := flag.String("capsule-network", "bridge", "Docker network for capsule containers")
@@ -97,18 +93,6 @@ func main() {
 		logger.Error("unknown capsule driver", "driver", *capsuleDriver)
 		os.Exit(1)
 	}
-	if single != "" {
-		config.BeforeStore = func(_ string, database *persistence.SQLite) error {
-			imported, err := database.ImportFileIfMissing("state", *legacyStatePath)
-			if imported {
-				logger.Info("imported legacy JSON state", "source", *legacyStatePath, "database", single)
-			}
-			return err
-		}
-		config.AfterStore = func(_ string, st *store.Store, attachments *persistence.FileStore) error {
-			return importLegacyAttachments(st, attachments, *legacyAttachmentDir)
-		}
-	}
 	tenants := tenancy.New(config)
 	defer tenants.Close()
 	// Every Spin this server holds opens at start: its replica restores and
@@ -153,30 +137,6 @@ func main() {
 		logger.Error("serve", "error", err)
 		os.Exit(1)
 	}
-}
-
-type legacyAttachmentStore interface {
-	ReadFile(string) ([]byte, error)
-	WriteFile(string, []byte) error
-}
-
-func importLegacyAttachments(st *store.Store, destination legacyAttachmentStore, directory string) error {
-	for _, attachment := range st.Snapshot().JobAttachments {
-		if _, err := destination.ReadFile(attachment.ID); err == nil {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(directory, attachment.ID))
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if err := destination.WriteFile(attachment.ID, data); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func envOr(name, fallback string) string {

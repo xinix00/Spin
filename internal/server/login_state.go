@@ -2,66 +2,60 @@ package server
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
 )
 
-// An agent's login lives in a credential layer, and an agent rotates its
-// OAuth tokens while it works. The rotated token stays in the capsule that
-// ran, and the next Session starts from the layer's old one, which the
-// provider then refuses. So Spin keeps the login state: after every turn
-// and at stop it reads back the files the credential layer's recording
-// wrote under HOME, encrypted in the database per layer and user, and puts
-// them in place before the next agent starts. Nothing else the agent did
-// in the capsule comes along.
+// A layer can track files: a login an agent rotates, a config it keeps.
+// Chosen by a person in the layer's contents. After every turn and at
+// stop Spin reads those files back from the capsule and keeps them,
+// encrypted in the database per layer and user; before the next agent
+// starts they are put in place. Nothing else the agent did in the capsule
+// comes along.
 
-type loginTarget struct {
-	key        string
-	credential domain.CapsuleSnapshot
+type trackedTarget struct {
+	key   string
+	paths []string
 }
 
-// loginTargets are the credential layers of a composition, keyed per user
-// and layer name across versions.
-func (s *Server) loginTargets(composition domain.Composition) []loginTarget {
-	var targets []loginTarget
-	for slot, artifactID := range composition.SlotBindings {
-		if !strings.HasPrefix(slot, "credential:") {
-			continue
-		}
+// trackedTargets are the layers of a composition that track files, keyed
+// per user and layer name across versions.
+func (s *Server) trackedTargets(composition domain.Composition) []trackedTarget {
+	var targets []trackedTarget
+	for _, artifactID := range capsule.CompositionLayers(composition) {
 		artifact, err := s.store.Artifact(artifactID)
-		if err != nil || !artifact.Snapshot.Restorable || artifact.Snapshot.Driver != "docker" {
+		if err != nil || len(artifact.TrackedPaths) == 0 {
 			continue
 		}
-		targets = append(targets, loginTarget{key: artifact.Subject + "/" + string(artifact.Kind) + ":" + artifact.Name, credential: artifact.Snapshot})
+		targets = append(targets, trackedTarget{key: artifact.Subject + "/" + string(artifact.Kind) + ":" + artifact.Name, paths: artifact.TrackedPaths})
 	}
 	return targets
 }
 
-// restoreLoginState puts the kept logins in the capsule before the agent
+// restoreLoginState puts the kept files in the capsule before the agent
 // starts.
 func (s *Server) restoreLoginState(ctx context.Context, composition domain.Composition) {
-	login, ok := s.engine.(capsule.LoginState)
+	tracked, ok := s.engine.(capsule.TrackedFiles)
 	if !ok || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
 		return
 	}
-	for _, target := range s.loginTargets(composition) {
+	for _, target := range s.trackedTargets(composition) {
 		state, ok := s.store.LoginState(target.key)
 		if !ok || len(state.Files) == 0 {
 			continue
 		}
-		if err := login.WriteHomeFiles(ctx, *composition.Runtime, state.Files); err != nil {
-			s.logger.Warn("restore login state", "composition", composition.ID, "login", target.key, "error", err)
+		if err := tracked.WriteTrackedFiles(ctx, *composition.Runtime, state.Files); err != nil {
+			s.logger.Warn("restore tracked files", "composition", composition.ID, "layer", target.key, "error", err)
 			continue
 		}
-		s.logger.Info("login state restored", "composition", composition.ID, "login", target.key, "files", len(state.Files), "kept_at", state.UpdatedAt.Format(time.RFC3339))
+		s.logger.Info("tracked files restored", "composition", composition.ID, "layer", target.key, "files", len(state.Files), "kept_at", state.UpdatedAt.Format(time.RFC3339))
 	}
 }
 
-// captureLoginState reads the logins back from a running capsule and keeps
-// what changed; it also notes what else the capsule changed, by kind.
+// captureLoginState reads the tracked files back from a running capsule
+// and keeps what changed; it also notes what else the capsule changed.
 func (s *Server) captureLoginState(ctx context.Context, composition domain.Composition) {
 	if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
 		return
@@ -77,14 +71,14 @@ func (s *Server) captureLoginState(ctx context.Context, composition domain.Compo
 			}
 		}
 	}
-	login, ok := s.engine.(capsule.LoginState)
+	tracked, ok := s.engine.(capsule.TrackedFiles)
 	if !ok {
 		return
 	}
-	for _, target := range s.loginTargets(composition) {
-		files, err := login.CaptureLoginState(ctx, *composition.Runtime, target.credential)
+	for _, target := range s.trackedTargets(composition) {
+		files, err := tracked.ReadTrackedFiles(ctx, *composition.Runtime, target.paths)
 		if err != nil {
-			s.logger.Warn("capture login state", "composition", composition.ID, "login", target.key, "error", err)
+			s.logger.Warn("read tracked files", "composition", composition.ID, "layer", target.key, "error", err)
 			continue
 		}
 		if len(files) == 0 {
@@ -92,11 +86,11 @@ func (s *Server) captureLoginState(ctx context.Context, composition domain.Compo
 		}
 		changed, err := s.store.SaveLoginState(target.key, files)
 		if err != nil {
-			s.logger.Warn("keep login state", "login", target.key, "error", err)
+			s.logger.Warn("keep tracked files", "layer", target.key, "error", err)
 			continue
 		}
 		if changed {
-			s.logger.Info("login state kept", "login", target.key, "files", len(files))
+			s.logger.Info("tracked files kept", "layer", target.key, "files", len(files))
 		}
 	}
 }

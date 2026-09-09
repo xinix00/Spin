@@ -52,10 +52,6 @@ type Config struct {
 	Options func(domain string) spinserver.ServerOptions
 	// Engine builds the capsule engine of a tenant; nil means runners.
 	Engine func(st *store.Store, database *persistence.SQLite, logger *slog.Logger) (capsule.Engine, *worker.Broker, error)
-	// BeforeStore and AfterStore run once per tenant open, around the store:
-	// the entrypoints import legacy files there.
-	BeforeStore func(domain string, database *persistence.SQLite) error
-	AfterStore  func(domain string, st *store.Store, attachments *persistence.FileStore) error
 }
 
 type Tenant struct {
@@ -286,21 +282,11 @@ func (t *Tenants) open(domain string) (*Tenant, error) {
 		}
 		return nil, err
 	}
-	if t.config.BeforeStore != nil {
-		if err := t.config.BeforeStore(domain, database); err != nil {
-			return fail(err)
-		}
-	}
 	st, err := store.OpenWithBackend("state", store.OpenOptions{MasterKey: t.config.MasterKey, MasterKeyFile: t.config.MasterKeyFile}, database)
 	if err != nil {
 		return fail(fmt.Errorf("open store: %w", err))
 	}
 	attachments := database.Files("attachment:", "job-attachment", 15<<20)
-	if t.config.AfterStore != nil {
-		if err := t.config.AfterStore(domain, st, attachments); err != nil {
-			return fail(err)
-		}
-	}
 	token, err := st.EnsureWorkerToken(t.config.WorkerTokenSeed)
 	if err != nil {
 		return fail(fmt.Errorf("worker token: %w", err))

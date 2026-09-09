@@ -108,14 +108,13 @@ type WorkspaceAttachment struct {
 	TargetPath string
 }
 
-// LoginState is what a credential layer's recording wrote under HOME (the
-// login of an agent), read back from a running capsule and put in place
-// before the next one starts, so a rotated OAuth token survives a Session.
-// Nothing else the agent did in the capsule comes along. Paths are
-// relative to HOME.
-type LoginState interface {
-	CaptureLoginState(ctx context.Context, runtime domain.CapsuleRuntime, credential domain.CapsuleSnapshot) (map[string][]byte, error)
-	WriteHomeFiles(ctx context.Context, runtime domain.CapsuleRuntime, files map[string][]byte) error
+// TrackedFiles reads and writes the files a layer tracks (a login, a
+// config an agent rotates) in a running capsule, by absolute path. What
+// Spin keeps between Sessions travels through this; nothing else the
+// agent did in the capsule comes along.
+type TrackedFiles interface {
+	ReadTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, paths []string) (map[string][]byte, error)
+	WriteTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, files map[string][]byte) error
 }
 
 // CapsuleInspector says what a running capsule changed outside its
@@ -124,14 +123,8 @@ type CapsuleInspector interface {
 	CaptureCapsuleChanges(ctx context.Context, runtime domain.CapsuleRuntime) (domain.LayerContents, error)
 }
 
-// LayerInspector reads the manifest of a layer that was sealed before
-// manifests existed: its own difference, as the image holds it.
-type LayerInspector interface {
-	InspectLayer(ctx context.Context, snapshot domain.CapsuleSnapshot) (domain.LayerContents, error)
-}
-
-// LoginFileLimit bounds one login file; larger files are caches, not logins.
-const LoginFileLimit = 1 << 20
+// TrackedFileLimit bounds one tracked file; larger files are caches.
+const TrackedFileLimit = 1 << 20
 
 // WorkspaceAttachmentInjector copies immutable Job inputs outside /workspace,
 // so agents can read them without making them part of the Git worktree.

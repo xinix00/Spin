@@ -151,51 +151,6 @@ func TestSecretsAreEncryptedAtRestAndReopenWithMasterKey(t *testing.T) {
 	}
 }
 
-func TestOpenMigratesLegacyPlaintextSecrets(t *testing.T) {
-	directory := t.TempDir()
-	path := filepath.Join(directory, "state.json")
-	legacy := `{"mcp_servers":{"mcp_legacy":{"id":"mcp_legacy","operator":"derek","name":"legacy","transport":"http","url":"https://mcp.example.test","headers":[{"name":"Authorization","value":"legacy-mcp-secret"}]}},"git_accounts":{"gac_legacy":{"id":"gac_legacy","operator":"derek","provider":"github","host":"github.com","login":"derek","access_token":"legacy-git-secret"}}}`
-	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := OpenWithOptions(path, OpenOptions{MasterKeyFile: filepath.Join(directory, "master.key")}); err != nil {
-		t.Fatal(err)
-	}
-	stored, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(stored), "legacy-mcp-secret") || strings.Contains(string(stored), "legacy-git-secret") || strings.Count(string(stored), encryptedValuePrefix) != 2 {
-		t.Fatalf("legacy secrets were not migrated: %s", stored)
-	}
-}
-
-func TestOpenPermanentlyDropsLegacyRecordingTranscripts(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
-	legacy := `{"recordings":{"rec_secret":{"id":"rec_secret","actor":"derek","kind":"credential","name":"codex","sensitivity":"secret","status":"recording","commands":[{"sequence":1,"input":"oauth-secret-code","output":"oauth-secret-transcript"}]}},"artifacts":{}}`
-	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	st, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recording, err := st.Recording("rec_secret")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(recording.Commands) != 1 || recording.Commands[0].Sequence != 1 {
-		t.Fatalf("minimal execution ledger = %+v", recording.Commands)
-	}
-	stored, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(stored), "oauth-secret-code") || strings.Contains(string(stored), "oauth-secret-transcript") {
-		t.Fatalf("legacy transcript survived migration: %s", stored)
-	}
-}
-
 func TestJobSessionCheckpointResultAndFork(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	st, err := Open(path)
@@ -496,21 +451,28 @@ func TestArtifactDeletionIsOwnedAndDependencySafe(t *testing.T) {
 		Actor: "derek", Kind: domain.ArtifactTool, Name: "codex", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{parent.ID},
 	})
 
-	if _, err := st.DeleteArtifact(parent.ID, "derek"); !errors.Is(err, ErrConflict) {
-		t.Fatalf("deleting a referenced parent error = %v", err)
-	}
+	// John's login on codex belongs to him, hidden from Derek; it still goes
+	// with the layers it is built on.
+	johnLogin := recordArtifact(t, st, domain.CreateRecordingRequest{
+		Actor: "john", Kind: domain.ArtifactCredential, Name: "codex", Scope: domain.ScopeUser, ParentArtifactIDs: []string{child.ID},
+	})
 	if _, err := st.DeleteArtifact(child.ID, "john"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("deleting somebody else's artifact error = %v", err)
 	}
-	if _, err := st.DeleteArtifact(child.ID, "derek"); err != nil {
+	tree := st.ArtifactTree(parent.ID)
+	if len(tree) != 3 || tree[0].ID != johnLogin.ID || tree[2].ID != parent.ID {
+		t.Fatalf("tree = %+v", tree)
+	}
+	deleted, err := st.DeleteArtifactTree(parent.ID, "derek")
+	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := st.Snapshot()
-	if len(snapshot.Artifacts) != 1 || snapshot.Artifacts[0].ID != parent.ID {
-		t.Fatalf("artifacts after delete = %+v", snapshot.Artifacts)
+	if len(deleted) != 3 {
+		t.Fatalf("deleted = %+v", deleted)
 	}
-	if len(snapshot.Recordings) != 1 || snapshot.Recordings[0].ArtifactID != parent.ID {
-		t.Fatalf("recording history after delete = %+v", snapshot.Recordings)
+	snapshot := st.Snapshot()
+	if len(snapshot.Artifacts) != 0 || len(snapshot.Recordings) != 0 {
+		t.Fatalf("after delete: artifacts=%+v recordings=%+v", snapshot.Artifacts, snapshot.Recordings)
 	}
 }
 

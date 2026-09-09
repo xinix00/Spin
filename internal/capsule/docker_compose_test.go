@@ -140,21 +140,6 @@ func TestPlanLayersCarriesAPrunedVersionByItsSuccessor(t *testing.T) {
 	}
 }
 
-// A composition from before stacks were recorded is planned in the order
-// its layers were resolved.
-func TestPlanLayersFallsBackToResolvedOrder(t *testing.T) {
-	tool, credential := restorable("tool"), restorable("credential", "tool")
-	composition := domain.Composition{ResolvedArtifacts: []domain.ResolvedArtifact{{ArtifactID: "tool"}, {ArtifactID: "credential"}}}
-	plan, err := PlanLayers(composition, []domain.Artifact{tool, credential})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plan.Base.ID != "credential" || len(plan.Steps) != 0 {
-		t.Fatalf("plan = %v", planIDs(plan))
-	}
-}
-
-// Paths a running container owns are never copied into it.
 func TestFilterExportDropsDockerManagedPaths(t *testing.T) {
 	export := tarWith(map[string]string{"proc/1/status": "x", "sys/kernel": "x", "dev/null": "", "etc/hosts": "x", "etc/passwd": "root", "usr/bin/tool": "bin"})
 	var out bytes.Buffer
@@ -205,47 +190,22 @@ func TestImportedImageVerifiesOnLayersNotID(t *testing.T) {
 	if err := verifyImportedImage(recorded, "sha256:classic-id", rootFSDigest(`["sha256:zzz"]`)); err == nil {
 		t.Fatal("other layers were accepted")
 	}
-	legacy := domain.CapsuleSnapshot{Driver: "docker", Ref: "spin/artifact:rec_0", Digest: "sha256:classic-id"}
-	if err := verifyImportedImage(legacy, "sha256:containerd-id", rootFS); err != nil {
-		t.Fatalf("legacy snapshot without layers: %v", err)
+	unidentified := domain.CapsuleSnapshot{Driver: "docker", Ref: "spin/artifact:rec_0", Digest: "sha256:classic-id"}
+	if err := verifyImportedImage(unidentified, "sha256:containerd-id", rootFS); err == nil {
+		t.Fatal("a snapshot without recorded layers was accepted")
 	}
 }
 
-// The login files of a credential layer are the regular files its own diff
-// wrote under a home directory, relative to that home; caches over the
-// limit and anything outside HOME stay out.
-func TestHomePathsInLayerPickTheLoginFiles(t *testing.T) {
-	var buffer bytes.Buffer
-	writer := tar.NewWriter(&buffer)
-	add := func(name string, size int64, typeflag byte) {
-		header := &tar.Header{Name: name, Size: size, Typeflag: typeflag, Mode: 0o600}
-		if err := writer.WriteHeader(header); err != nil {
-			t.Fatal(err)
-		}
-		if size > 0 {
-			if _, err := writer.Write(bytes.Repeat([]byte("x"), int(size))); err != nil {
-				t.Fatal(err)
-			}
+// Tracked files are read back as absolute paths; a path that could
+// escape or break the shell is refused.
+func TestTrackedPathsAndParsing(t *testing.T) {
+	for path, want := range map[string]bool{"/root/.claude/.credentials.json": true, "/home/dev/.codex/auth.json": true, "root/x": false, "/a/../b": false, "/with space": false, "/quote'x": false} {
+		if got := validTrackedPath(path); got != want {
+			t.Fatalf("validTrackedPath(%q) = %v", path, got)
 		}
 	}
-	add("root/.claude/", 0, tar.TypeDir)
-	add("root/.claude/.credentials.json", 120, tar.TypeReg)
-	add("root/.claude.json", 40, tar.TypeReg)
-	add("home/dev/.codex/auth.json", 80, tar.TypeReg)
-	add("root/.cache/big.bin", LoginFileLimit+1, tar.TypeReg)
-	add("usr/local/lib/node_modules/x.js", 10, tar.TypeReg)
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	paths, err := homePathsInLayer(&buffer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(paths, " "); got != ".claude.json .claude/.credentials.json .codex/auth.json" {
-		t.Fatalf("paths = %s", got)
-	}
-	files, err := parseHomeFiles("SPIN_FILE .claude.json e30=\nnoise\nSPIN_FILE .empty \n")
-	if err != nil || string(files[".claude.json"]) != "{}" || len(files[".empty"]) != 0 {
+	files, err := parseHomeFiles("SPIN_FILE /root/.claude.json e30=\nnoise\nSPIN_FILE /root/.empty \n")
+	if err != nil || string(files["/root/.claude.json"]) != "{}" || len(files["/root/.empty"]) != 0 {
 		t.Fatalf("parsed = %v, %v", files, err)
 	}
 }

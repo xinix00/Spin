@@ -2,73 +2,11 @@ package store
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"easyacp/internal/domain"
 )
-
-func TestLegacyAllowCommitMigratesToAllowChanges(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
-	legacy := `{"workflow_templates":{"tpl_legacy":{"id":"tpl_legacy","name":"Legacy","created_by":"derek","phases":[{"id":"design","name":"Design","instructions":"Design","deliverables":[{"name":"FO","required":true}],"accept":{"target":"develop"},"reject":{"target":"SELF"}},{"id":"develop","name":"Develop","instructions":"Build","allow_commit":true,"ask_user":true,"accept":{"target":"DONE"},"reject":{"target":"SELF"}}]}}}`
-	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	st, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	phases := st.Snapshot().WorkflowTemplates[0].Phases
-	phase := phases[1]
-	if !phase.AllowChanges || phase.AllowCommit {
-		t.Fatalf("migrated phase = %+v", phase)
-	}
-	if phase.AskUser || !phase.Accept.AskUser || !phase.Reject.AskUser || len(phase.Inject) != 1 || phase.Inject[0] != "FO" {
-		t.Fatalf("legacy gates/injection = %+v", phase)
-	}
-	persisted, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(persisted), `"allow_commit"`) || !strings.Contains(string(persisted), `"allow_changes": true`) {
-		t.Fatalf("persisted migration = %s", persisted)
-	}
-}
-
-func TestCompletedLegacyWorkflowIsBackfilledWithMandatoryPullRequest(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
-	legacy := `{
-  "workflow_templates":{"tpl_old":{"id":"tpl_old","name":"Old flow","created_by":"derek","phases":[{"id":"review","name":"Review","instructions":"Review","accept":{"target":"DONE"},"reject":{"target":"SELF"}}]}},
-  "jobs":{"job_old":{"id":"job_old","title":"Existing result","objective":"Publish it","owner":"derek","git_repository_id":"git_old","base_ref":"main","branch":"jobs/existing/main","template_id":"tpl_old","status":"done","workflow_status":"done","session_ids":["ses_old"],"phase_run_ids":["run_old"]}},
-  "sessions":{"ses_old":{"id":"ses_old","job_id":"job_old","phase_run_id":"run_old","operator":"derek","status":"done"}},
-  "phase_runs":{"run_old":{"id":"run_old","job_id":"job_old","template_id":"tpl_old","phase_id":"review","phase_name":"Review","session_id":"ses_old","status":"accepted"}}
-}`
-	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	st, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot := st.Snapshot()
-	if len(snapshot.Jobs) != 1 || snapshot.Jobs[0].WorkflowStatus != domain.WorkflowBusy || snapshot.Jobs[0].Status != domain.JobActive || snapshot.Jobs[0].CurrentPhaseRunID == "" {
-		t.Fatalf("backfilled Job = %+v", snapshot.Jobs)
-	}
-	if len(snapshot.PhaseRuns) != 2 || len(snapshot.Sessions) != 2 {
-		t.Fatalf("backfilled runs/sessions = %+v / %+v", snapshot.PhaseRuns, snapshot.Sessions)
-	}
-	var finalSession domain.Session
-	for _, session := range snapshot.Sessions {
-		if session.Executor == domain.WorkflowExecutorAction {
-			finalSession = session
-		}
-	}
-	if finalSession.ID == "" || finalSession.BaseRef != "jobs/existing/main" || finalSession.TargetBranch != "jobs/existing/main" {
-		t.Fatalf("backfilled PR Session = %+v", finalSession)
-	}
-}
 
 func TestWorkflowTemplateMovesJobThroughDeliverablesQuestionsAndRejectLimit(t *testing.T) {
 	st, err := Open("")

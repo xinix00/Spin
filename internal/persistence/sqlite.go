@@ -11,11 +11,9 @@ import (
 	"io"
 	"io/fs"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"easyacp/internal/domain"
 
@@ -145,9 +143,6 @@ func (s *SQLite) initialize(ctx context.Context) error {
 			return fmt.Errorf("initialize SQLite: %w", err)
 		}
 	}
-	if err := s.rebuildWithoutRowid(ctx); err != nil {
-		return fmt.Errorf("initialize SQLite: %w", err)
-	}
 	statements := []string{
 		createKV,
 		`CREATE TABLE IF NOT EXISTS spin_objects (
@@ -171,67 +166,6 @@ func (s *SQLite) initialize(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("initialize SQLite: %w", err)
 		}
-	}
-	return nil
-}
-
-// rebuildWithoutRowid converts spin_kv and spin_object_chunks from the earlier
-// WITHOUT ROWID form to rowid tables, in place and in one transaction per
-// table. Foreign-key bookkeeping is off for the duration: DROP TABLE would
-// otherwise run an implicit DELETE that walks every row first.
-func (s *SQLite) rebuildWithoutRowid(ctx context.Context) error {
-	rebuilds := []struct{ table, create, columns string }{
-		{"spin_kv", createKV, "key, value"},
-		{"spin_object_chunks", createChunks, "object_id, sequence, data"},
-	}
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	for _, r := range rebuilds {
-		var definition string
-		err := conn.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, r.table).Scan(&definition)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if !strings.Contains(strings.ToUpper(definition), "WITHOUT ROWID") {
-			continue
-		}
-		started := time.Now()
-		if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
-			return err
-		}
-		err = func() error {
-			tx, err := conn.BeginTx(ctx, nil)
-			if err != nil {
-				return err
-			}
-			defer tx.Rollback()
-			scratch := r.table + "_rowid"
-			steps := []string{
-				strings.Replace(r.create, "IF NOT EXISTS "+r.table, scratch, 1),
-				fmt.Sprintf(`INSERT INTO %s(%s) SELECT %s FROM %s ORDER BY %s`, scratch, r.columns, r.columns, r.table, r.columns),
-				`DROP TABLE ` + r.table,
-				fmt.Sprintf(`ALTER TABLE %s RENAME TO %s`, scratch, r.table),
-			}
-			for _, step := range steps {
-				if _, err := tx.ExecContext(ctx, step); err != nil {
-					return fmt.Errorf("%s: %w", r.table, err)
-				}
-			}
-			return tx.Commit()
-		}()
-		if _, fkErr := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err == nil {
-			err = fkErr
-		}
-		if err != nil {
-			return fmt.Errorf("rebuild %s as rowid table: %w", r.table, err)
-		}
-		s.migrations = append(s.migrations, fmt.Sprintf("rebuilt %s as a rowid table in %s", r.table, time.Since(started).Round(time.Millisecond)))
 	}
 	return nil
 }
@@ -282,25 +216,6 @@ func (s *SQLite) WriteFile(path string, data []byte) error {
 func (s *SQLite) DeleteFile(path string) error {
 	_, err := s.db.Exec(`DELETE FROM spin_kv WHERE key = ?`, path)
 	return err
-}
-
-func (s *SQLite) ImportFileIfMissing(key, source string) (bool, error) {
-	if _, err := s.ReadFile(key); err == nil {
-		return false, nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return false, err
-	}
-	data, err := os.ReadFile(source)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if err := s.WriteFile(key, data); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 func (s *SQLite) PutBlob(ctx context.Context, ref, kind string, source io.Reader) (BlobInfo, error) {

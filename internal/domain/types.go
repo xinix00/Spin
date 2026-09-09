@@ -94,17 +94,10 @@ type WorkflowPhase struct {
 	// phase's first prompt (session/set_config_option); empty keeps the
 	// agent's default. The values an agent accepts are on its layer's
 	// AgentOptions.
-	Model           string `json:"model,omitempty"`
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-	// AllowCommit is read only to migrate Templates written by older builds.
-	// New state and API clients use AllowChanges; commit is a control-plane
-	// action performed as part of ACCEPT, never an agent tool.
-	AllowCommit bool `json:"allow_commit,omitempty"`
-	// AskUser is read only to migrate Templates written by older builds.
-	// New Templates configure the human gate separately on Accept and Reject.
-	AskUser bool               `json:"ask_user,omitempty"`
-	Accept  WorkflowTransition `json:"accept"`
-	Reject  WorkflowTransition `json:"reject"`
+	Model           string             `json:"model,omitempty"`
+	ReasoningEffort string             `json:"reasoning_effort,omitempty"`
+	Accept          WorkflowTransition `json:"accept"`
+	Reject          WorkflowTransition `json:"reject"`
 }
 
 // WorkflowTemplate is deliberately only data. Names such as Development or
@@ -447,8 +440,7 @@ type ContentTotal struct {
 
 type CapsuleSnapshot struct {
 	Driver string `json:"driver"`
-	// ClientID pins daemon-local images to the runner that created them. An
-	// empty value is legacy state and may be resolved by any compatible runner.
+	// ClientID pins daemon-local images to the runner that created them.
 	ClientID         string   `json:"client_id,omitempty"`
 	ReplicaClientIDs []string `json:"replica_client_ids,omitempty"`
 	Ref              string   `json:"ref,omitempty"`
@@ -570,6 +562,11 @@ type Artifact struct {
 	// AgentOptions is what this layer's ACP agent reported it accepts; nil
 	// until fetched or until a Session on this layer ran.
 	AgentOptions *AgentOptions `json:"agent_options,omitempty"`
+	// TrackedPaths are the files of this layer, chosen by a person in its
+	// contents, that Spin keeps between Sessions: read back from a capsule
+	// after every turn and at stop, put in place before the next agent
+	// starts. Absolute paths in the capsule. They move to a new version.
+	TrackedPaths []string `json:"tracked_paths,omitempty"`
 	// AgentSettings is how Sessions on this layer start the agent: chosen
 	// from AgentOptions on the layer that ENABLES acp, kept as metadata (no
 	// re-seal) and carried to the next version on EDIT.
@@ -655,7 +652,7 @@ type Composition struct {
 	Operator             string   `json:"operator"`
 	Selector             string   `json:"selector"`
 	EntryArtifactID      string   `json:"entry_artifact_id"`
-	Tool                 string   `json:"tool,omitempty"` // legacy worker routing hint
+	Tool                 string   `json:"tool,omitempty"` // the agent's name, for routing and display
 	SessionID            string   `json:"session_id,omitempty"`
 	Profile              string   `json:"profile"`
 	WithSelectors        []string `json:"with_selectors,omitempty"`

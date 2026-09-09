@@ -130,8 +130,11 @@ func (c *secretCipher) encrypt(value, purpose string) (string, error) {
 }
 
 func (c *secretCipher) decrypt(value, purpose string) (string, error) {
-	if value == "" || !strings.HasPrefix(value, encryptedValuePrefix) {
-		return value, nil // plaintext from the legacy schema; next save migrates it
+	if value == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(value, encryptedValuePrefix) {
+		return "", errors.New("secret is not encrypted")
 	}
 	payload, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(value, encryptedValuePrefix))
 	if err != nil || len(payload) < c.aead.NonceSize() {

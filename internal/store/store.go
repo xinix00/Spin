@@ -29,43 +29,36 @@ var (
 )
 
 type persistedState struct {
-	Artifacts                map[string]domain.Artifact              `json:"artifacts"`
-	Recordings               map[string]domain.Recording             `json:"recordings"`
-	Compositions             map[string]domain.Composition           `json:"compositions"`
-	Jobs                     map[string]domain.Job                   `json:"jobs"`
-	JobAttachments           map[string]domain.JobAttachment         `json:"job_attachments"`
-	WorkflowTemplates        map[string]domain.WorkflowTemplate      `json:"workflow_templates"`
-	PhaseRuns                map[string]domain.PhaseRun              `json:"phase_runs"`
-	Deliverables             map[string]domain.Deliverable           `json:"deliverables"`
-	DeliverableComments      map[string]domain.DeliverableComment    `json:"deliverable_comments"`
-	CodeReviewRevisions      map[string]domain.CodeReviewRevision    `json:"code_review_revisions"`
-	CodeReviewComments       map[string]domain.CodeReviewComment     `json:"code_review_comments"`
-	WorkflowQuestions        map[string]domain.WorkflowQuestion      `json:"workflow_questions"`
-	JobRequestKeys           map[string]string                       `json:"job_request_keys"`
-	Sessions                 map[string]domain.Session               `json:"sessions"`
-	Activations              map[string]domain.Activation            `json:"activations"`
-	Turns                    map[string]domain.Turn                  `json:"turns"`
-	Checkpoints              map[string]domain.Checkpoint            `json:"checkpoints"`
-	Results                  map[string]domain.Result                `json:"results"`
-	Clients                  map[string]domain.Client                `json:"clients"`
-	MCPServers               map[string]domain.MCPServer             `json:"mcp_servers"`
-	GitRepositories          map[string]domain.GitRepository         `json:"git_repositories"`
-	GitAccounts              map[string]domain.GitAccount            `json:"git_accounts"`
-	LegacyGitAccountBindings map[string]legacyGitAccountBinding      `json:"git_account_bindings,omitempty"`
-	Users                    map[string]domain.User                  `json:"users"`
-	AuthSessions             map[string]domain.AuthSession           `json:"auth_sessions"`
-	GitOAuthConfigurations   map[string]domain.GitOAuthConfiguration `json:"git_oauth_configurations"`
-	LoginStates              map[string]domain.LoginState            `json:"login_states,omitempty"`
+	Artifacts              map[string]domain.Artifact              `json:"artifacts"`
+	Recordings             map[string]domain.Recording             `json:"recordings"`
+	Compositions           map[string]domain.Composition           `json:"compositions"`
+	Jobs                   map[string]domain.Job                   `json:"jobs"`
+	JobAttachments         map[string]domain.JobAttachment         `json:"job_attachments"`
+	WorkflowTemplates      map[string]domain.WorkflowTemplate      `json:"workflow_templates"`
+	PhaseRuns              map[string]domain.PhaseRun              `json:"phase_runs"`
+	Deliverables           map[string]domain.Deliverable           `json:"deliverables"`
+	DeliverableComments    map[string]domain.DeliverableComment    `json:"deliverable_comments"`
+	CodeReviewRevisions    map[string]domain.CodeReviewRevision    `json:"code_review_revisions"`
+	CodeReviewComments     map[string]domain.CodeReviewComment     `json:"code_review_comments"`
+	WorkflowQuestions      map[string]domain.WorkflowQuestion      `json:"workflow_questions"`
+	JobRequestKeys         map[string]string                       `json:"job_request_keys"`
+	Sessions               map[string]domain.Session               `json:"sessions"`
+	Activations            map[string]domain.Activation            `json:"activations"`
+	Turns                  map[string]domain.Turn                  `json:"turns"`
+	Checkpoints            map[string]domain.Checkpoint            `json:"checkpoints"`
+	Results                map[string]domain.Result                `json:"results"`
+	Clients                map[string]domain.Client                `json:"clients"`
+	MCPServers             map[string]domain.MCPServer             `json:"mcp_servers"`
+	GitRepositories        map[string]domain.GitRepository         `json:"git_repositories"`
+	GitAccounts            map[string]domain.GitAccount            `json:"git_accounts"`
+	Users                  map[string]domain.User                  `json:"users"`
+	AuthSessions           map[string]domain.AuthSession           `json:"auth_sessions"`
+	GitOAuthConfigurations map[string]domain.GitOAuthConfiguration `json:"git_oauth_configurations"`
+	LoginStates            map[string]domain.LoginState            `json:"login_states,omitempty"`
 	// WorkerToken is the bearer token runners of this Spin present. It lives
 	// in the database, encrypted like every other secret, so it travels with
 	// a backup and can be rotated without a restart.
 	WorkerToken string `json:"worker_token,omitempty"`
-}
-
-// legacyGitAccountBinding exists only to read pre-scope state. ensureMaps uses
-// it once to infer user scope and then clears it before the state is rewritten.
-type legacyGitAccountBinding struct {
-	RepositoryID string `json:"repository_id"`
 }
 
 type Store struct {
@@ -157,8 +150,6 @@ func OpenWithBackend(path string, options OpenOptions, backend StateBackend) (*S
 	if err := s.decryptSecretsLocked(); err != nil {
 		return nil, fmt.Errorf("decrypt state: %w", err)
 	}
-	// Rewriting through the current schema permanently drops legacy terminal
-	// input/output fields. Snapshots are canonical; transcripts are ephemeral.
 	if err := s.saveLocked(); err != nil {
 		return nil, fmt.Errorf("migrate state: %w", err)
 	}
@@ -167,32 +158,31 @@ func OpenWithBackend(path string, options OpenOptions, backend StateBackend) (*S
 
 func newState() persistedState {
 	return persistedState{
-		Artifacts:                map[string]domain.Artifact{},
-		Recordings:               map[string]domain.Recording{},
-		Compositions:             map[string]domain.Composition{},
-		Jobs:                     map[string]domain.Job{},
-		JobAttachments:           map[string]domain.JobAttachment{},
-		WorkflowTemplates:        map[string]domain.WorkflowTemplate{},
-		PhaseRuns:                map[string]domain.PhaseRun{},
-		Deliverables:             map[string]domain.Deliverable{},
-		DeliverableComments:      map[string]domain.DeliverableComment{},
-		CodeReviewRevisions:      map[string]domain.CodeReviewRevision{},
-		CodeReviewComments:       map[string]domain.CodeReviewComment{},
-		WorkflowQuestions:        map[string]domain.WorkflowQuestion{},
-		JobRequestKeys:           map[string]string{},
-		Sessions:                 map[string]domain.Session{},
-		Activations:              map[string]domain.Activation{},
-		Turns:                    map[string]domain.Turn{},
-		Checkpoints:              map[string]domain.Checkpoint{},
-		Results:                  map[string]domain.Result{},
-		Clients:                  map[string]domain.Client{},
-		MCPServers:               map[string]domain.MCPServer{},
-		GitRepositories:          map[string]domain.GitRepository{},
-		GitAccounts:              map[string]domain.GitAccount{},
-		LegacyGitAccountBindings: map[string]legacyGitAccountBinding{},
-		Users:                    map[string]domain.User{},
-		AuthSessions:             map[string]domain.AuthSession{},
-		GitOAuthConfigurations:   map[string]domain.GitOAuthConfiguration{},
+		Artifacts:              map[string]domain.Artifact{},
+		Recordings:             map[string]domain.Recording{},
+		Compositions:           map[string]domain.Composition{},
+		Jobs:                   map[string]domain.Job{},
+		JobAttachments:         map[string]domain.JobAttachment{},
+		WorkflowTemplates:      map[string]domain.WorkflowTemplate{},
+		PhaseRuns:              map[string]domain.PhaseRun{},
+		Deliverables:           map[string]domain.Deliverable{},
+		DeliverableComments:    map[string]domain.DeliverableComment{},
+		CodeReviewRevisions:    map[string]domain.CodeReviewRevision{},
+		CodeReviewComments:     map[string]domain.CodeReviewComment{},
+		WorkflowQuestions:      map[string]domain.WorkflowQuestion{},
+		JobRequestKeys:         map[string]string{},
+		Sessions:               map[string]domain.Session{},
+		Activations:            map[string]domain.Activation{},
+		Turns:                  map[string]domain.Turn{},
+		Checkpoints:            map[string]domain.Checkpoint{},
+		Results:                map[string]domain.Result{},
+		Clients:                map[string]domain.Client{},
+		MCPServers:             map[string]domain.MCPServer{},
+		GitRepositories:        map[string]domain.GitRepository{},
+		GitAccounts:            map[string]domain.GitAccount{},
+		Users:                  map[string]domain.User{},
+		AuthSessions:           map[string]domain.AuthSession{},
+		GitOAuthConfigurations: map[string]domain.GitOAuthConfiguration{},
 	}
 }
 
@@ -202,20 +192,6 @@ func (s *Store) ensureMaps() {
 	}
 	if s.state.Recordings == nil {
 		s.state.Recordings = map[string]domain.Recording{}
-	}
-	// Older states advertised Git through the generic Provides list. Upgrade
-	// that persisted metadata once; all runtime selection below uses ENABLES.
-	for id, artifact := range s.state.Artifacts {
-		if slices.Contains(artifact.Provides, "tool:git") && !enablementsContain(artifact.Enables, "git") {
-			artifact.Enables = mergeEnablements(artifact.Enables, []domain.Enablement{{Name: "git"}})
-			s.state.Artifacts[id] = artifact
-		}
-	}
-	for id, recording := range s.state.Recordings {
-		if slices.Contains(recording.Provides, "tool:git") && !enablementsContain(recording.Enables, "git") {
-			recording.Enables = mergeEnablements(recording.Enables, []domain.Enablement{{Name: "git"}})
-			s.state.Recordings[id] = recording
-		}
 	}
 	if s.state.Compositions == nil {
 		s.state.Compositions = map[string]domain.Composition{}
@@ -247,17 +223,6 @@ func (s *Store) ensureMaps() {
 			phase := &template.Phases[index]
 			if phase.Executor == "" {
 				phase.Executor = domain.WorkflowExecutorAgent
-				changed = true
-			}
-			if phase.AllowCommit {
-				phase.AllowChanges = true
-				phase.AllowCommit = false
-				changed = true
-			}
-			if phase.AskUser {
-				phase.Accept.AskUser = true
-				phase.Reject.AskUser = true
-				phase.AskUser = false
 				changed = true
 			}
 			// Templates saved before explicit injection existed received every
@@ -335,7 +300,6 @@ func (s *Store) ensureMaps() {
 		}
 		s.state.Sessions[id] = session
 	}
-	s.backfillWorkflowPullRequestsLocked()
 	if s.state.Activations == nil {
 		s.state.Activations = map[string]domain.Activation{}
 	}
@@ -360,48 +324,6 @@ func (s *Store) ensureMaps() {
 	if s.state.GitAccounts == nil {
 		s.state.GitAccounts = map[string]domain.GitAccount{}
 	}
-	if s.state.LegacyGitAccountBindings == nil {
-		s.state.LegacyGitAccountBindings = map[string]legacyGitAccountBinding{}
-	}
-	for id, account := range s.state.GitAccounts {
-		if account.CredentialScope == "" {
-			account.CredentialScope = domain.CredentialScopeUser
-			s.state.GitAccounts[id] = account
-		}
-	}
-	for id, repository := range s.state.GitRepositories {
-		if repository.Provider == "" {
-			repository.Provider, _ = gitRemoteIdentity(repository.RemoteURL)
-		}
-		if repository.CredentialScope == "" {
-			repository.CredentialScope = domain.CredentialScopePublic
-			for _, binding := range s.state.LegacyGitAccountBindings {
-				if binding.RepositoryID == repository.ID {
-					repository.CredentialScope = domain.CredentialScopeUser
-					break
-				}
-			}
-		}
-		s.state.GitRepositories[id] = repository
-	}
-	for id, job := range s.state.Jobs {
-		if repository, ok := s.state.GitRepositories[job.GitRepositoryID]; ok {
-			if job.GitRepositoryName == "" {
-				job.GitRepositoryName = repository.Name
-			}
-			if job.GitRemoteURL == "" {
-				job.GitRemoteURL = repository.RemoteURL
-			}
-			if job.GitProvider == "" {
-				job.GitProvider = repository.Provider
-			}
-			if job.GitCredentialScope == "" {
-				job.GitCredentialScope = repository.CredentialScope
-			}
-			s.state.Jobs[id] = job
-		}
-	}
-	s.state.LegacyGitAccountBindings = map[string]legacyGitAccountBinding{}
 	if s.state.Users == nil {
 		s.state.Users = map[string]domain.User{}
 	}
@@ -646,6 +568,9 @@ func (s *Store) EndRecording(recordingID string, req domain.EndRecordingRequest)
 		if artifact.AgentSettings == nil {
 			artifact.AgentSettings = previous.AgentSettings
 		}
+		if len(artifact.TrackedPaths) == 0 {
+			artifact.TrackedPaths = previous.TrackedPaths
+		}
 		s.state.Artifacts[artifact.ID] = artifact
 		s.state.Artifacts[previous.ID] = previous
 	}
@@ -740,49 +665,83 @@ func (s *Store) PrepareArtifactDeletion(artifactID, operator string) (domain.Art
 	if operator == "" || !canUseArtifact(operator, artifact) || (artifact.CreatedBy != "" && artifact.CreatedBy != operator) {
 		return domain.Artifact{}, ErrConflict
 	}
-	for _, child := range s.state.Artifacts {
-		if slices.Contains(child.ParentArtifactIDs, artifact.ID) {
-			return domain.Artifact{}, fmt.Errorf("artifact is parent of %s:%s (%s): %w", child.Kind, child.Name, child.ID, ErrConflict)
+	// Everything built on the layer goes with it, other users' logins
+	// included; nothing of that may be in use.
+	for _, member := range s.artifactTreeLocked(artifact.ID) {
+		for _, recording := range s.state.Recordings {
+			if recording.Status == domain.RecordingOpen && slices.Contains(recording.ParentArtifactIDs, member.ID) {
+				return domain.Artifact{}, fmt.Errorf("%s:%s is used by open recording %s: %w", member.Kind, member.Name, recording.ID, ErrConflict)
+			}
 		}
-	}
-	for _, recording := range s.state.Recordings {
-		if recording.Status == domain.RecordingOpen && slices.Contains(recording.ParentArtifactIDs, artifact.ID) {
-			return domain.Artifact{}, fmt.Errorf("artifact is used by open recording %s: %w", recording.ID, ErrConflict)
-		}
-	}
-	for _, composition := range s.state.Compositions {
-		if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
-			continue
-		}
-		if slices.ContainsFunc(composition.ResolvedArtifacts, func(resolved domain.ResolvedArtifact) bool {
-			return resolved.ArtifactID == artifact.ID
-		}) {
-			return domain.Artifact{}, fmt.Errorf("artifact is used by running composition %s: %w", composition.ID, ErrConflict)
+		for _, composition := range s.state.Compositions {
+			if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+				continue
+			}
+			if slices.ContainsFunc(composition.ResolvedArtifacts, func(resolved domain.ResolvedArtifact) bool {
+				return resolved.ArtifactID == member.ID
+			}) {
+				return domain.Artifact{}, fmt.Errorf("%s:%s is used by running composition %s: %w", member.Kind, member.Name, composition.ID, ErrConflict)
+			}
 		}
 	}
 	return artifact, nil
 }
 
-func (s *Store) DeleteArtifact(artifactID, operator string) (domain.Artifact, error) {
-	artifact, err := s.PrepareArtifactDeletion(artifactID, operator)
-	if err != nil {
-		return domain.Artifact{}, err
+// artifactTreeLocked is a layer with everything built on it, deepest
+// first, so removal can take the top layers before their parents.
+func (s *Store) artifactTreeLocked(artifactID string) []domain.Artifact {
+	var tree []domain.Artifact
+	seen := map[string]bool{}
+	var walk func(id string)
+	walk = func(id string) {
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		for _, candidate := range s.state.Artifacts {
+			if slices.Contains(candidate.ParentArtifactIDs, id) {
+				walk(candidate.ID)
+			}
+		}
+		if artifact, ok := s.state.Artifacts[id]; ok {
+			tree = append(tree, artifact)
+		}
+	}
+	walk(artifactID)
+	return tree
+}
+
+// ArtifactTree is the layer with everything built on it, deepest first.
+func (s *Store) ArtifactTree(artifactID string) []domain.Artifact {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.artifactTreeLocked(artifactID)
+}
+
+// DeleteArtifactTree removes a layer and everything built on it, and
+// returns what went, deepest first.
+func (s *Store) DeleteArtifactTree(artifactID, operator string) ([]domain.Artifact, error) {
+	if _, err := s.PrepareArtifactDeletion(artifactID, operator); err != nil {
+		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.state.Artifacts, artifact.ID)
-	for id, recording := range s.state.Recordings {
-		if recording.ArtifactID == artifact.ID {
-			delete(s.state.Recordings, id)
-		}
-	}
+	tree := s.artifactTreeLocked(artifactID)
 	removedCompositions := map[string]bool{}
-	for id, composition := range s.state.Compositions {
-		if slices.ContainsFunc(composition.ResolvedArtifacts, func(resolved domain.ResolvedArtifact) bool {
-			return resolved.ArtifactID == artifact.ID
-		}) {
-			delete(s.state.Compositions, id)
-			removedCompositions[id] = true
+	for _, artifact := range tree {
+		delete(s.state.Artifacts, artifact.ID)
+		for id, recording := range s.state.Recordings {
+			if recording.ArtifactID == artifact.ID {
+				delete(s.state.Recordings, id)
+			}
+		}
+		for id, composition := range s.state.Compositions {
+			if slices.ContainsFunc(composition.ResolvedArtifacts, func(resolved domain.ResolvedArtifact) bool {
+				return resolved.ArtifactID == artifact.ID
+			}) {
+				delete(s.state.Compositions, id)
+				removedCompositions[id] = true
+			}
 		}
 	}
 	for id, session := range s.state.Sessions {
@@ -791,7 +750,17 @@ func (s *Store) DeleteArtifact(artifactID, operator string) (domain.Artifact, er
 			s.state.Sessions[id] = session
 		}
 	}
-	return artifact, s.saveLocked()
+	return tree, s.saveLocked()
+}
+
+// DeleteArtifact removes a layer with everything built on it and returns
+// the layer itself.
+func (s *Store) DeleteArtifact(artifactID, operator string) (domain.Artifact, error) {
+	tree, err := s.DeleteArtifactTree(artifactID, operator)
+	if err != nil {
+		return domain.Artifact{}, err
+	}
+	return tree[len(tree)-1], nil
 }
 
 func (s *Store) LatestArtifact(kind domain.ArtifactKind, name, actor, profile string) (domain.Artifact, error) {
@@ -2671,6 +2640,31 @@ func (s *Store) SetArtifactEnablementCommand(artifactID, name, command string) (
 		return artifact, s.saveLocked()
 	}
 	return domain.Artifact{}, fmt.Errorf("layer does not ENABLE %s: %w", name, ErrConflict)
+}
+
+// SetArtifactTrackedPaths stores which files of a layer Spin keeps between
+// Sessions.
+func (s *Store) SetArtifactTrackedPaths(artifactID string, paths []string) (domain.Artifact, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	artifact, ok := s.state.Artifacts[artifactID]
+	if !ok {
+		return domain.Artifact{}, ErrNotFound
+	}
+	cleaned := make([]string, 0, len(paths))
+	seen := map[string]bool{}
+	for _, candidate := range paths {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || !strings.HasPrefix(candidate, "/") || strings.Contains(candidate, "/../") || strings.HasSuffix(candidate, "/..") || strings.ContainsAny(candidate, " \t\r\n'\"\\") || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		cleaned = append(cleaned, candidate)
+	}
+	sort.Strings(cleaned)
+	artifact.TrackedPaths = cleaned
+	s.state.Artifacts[artifact.ID] = artifact
+	return artifact, s.saveLocked()
 }
 
 // SetArtifactAgentSettings stores how Sessions on the layer start its agent.

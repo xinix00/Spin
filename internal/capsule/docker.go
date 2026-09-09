@@ -3,7 +3,6 @@
 package capsule
 
 import (
-	"archive/tar"
 	"bufio"
 	"bytes"
 	"compress/gzip"
@@ -18,7 +17,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,9 +40,6 @@ type DockerConfig struct {
 }
 
 type Docker struct {
-	loginPathsMu    sync.Mutex
-	loginPathsCache map[string][]string
-
 	logger        *slog.Logger
 	binary        string
 	baseImage     string
@@ -576,14 +571,11 @@ func (d *Docker) HasSnapshot(ctx context.Context, snapshot domain.CapsuleSnapsho
 	if snapshot.Content != "" && d.imageLabel(ctx, snapshot.Ref, contentLabel) == snapshot.Content {
 		return true, nil
 	}
-	if snapshot.RootFS != "" {
-		rootFS, err := d.imageRootFS(ctx, snapshot.Ref)
-		return err == nil && rootFS == snapshot.RootFS, nil
-	}
-	if expected := strings.TrimSpace(snapshot.Digest); expected != "" && strings.TrimSpace(id) != expected {
+	if snapshot.RootFS == "" {
 		return false, nil
 	}
-	return true, nil
+	rootFS, err := d.imageRootFS(ctx, snapshot.Ref)
+	return err == nil && rootFS == snapshot.RootFS, nil
 }
 
 func (d *Docker) ImportSnapshot(ctx context.Context, snapshot domain.CapsuleSnapshot, source io.Reader) error {
@@ -632,13 +624,6 @@ func (d *Docker) ImportSnapshot(ctx context.Context, snapshot domain.CapsuleSnap
 	if err := verifyImportedImage(snapshot, strings.TrimSpace(loadedDigest), loadedRootFS); err != nil {
 		return err
 	}
-	if strings.TrimSpace(loadedDigest) != strings.TrimSpace(snapshot.Digest) && d.logger != nil {
-		how := "its layers match the recorded ones"
-		if snapshot.RootFS == "" {
-			how = "recorded before layers were kept; accepted from the archive"
-		}
-		d.logger.Info("imported image has another ID than recorded (another image store); "+how, "ref", snapshot.Ref)
-	}
 	return nil
 }
 
@@ -668,11 +653,11 @@ func rootFSDigest(layersJSON string) string {
 // before layers were recorded is accepted by ID, or, when the ID differs,
 // on the strength of the archive it came from.
 func verifyImportedImage(snapshot domain.CapsuleSnapshot, loadedID, loadedRootFS string) error {
-	if snapshot.RootFS != "" {
-		if loadedRootFS != snapshot.RootFS {
-			return fmt.Errorf("imported image %s has layers %s, expected %s", snapshot.Ref, loadedRootFS, snapshot.RootFS)
-		}
-		return nil
+	if snapshot.RootFS == "" {
+		return fmt.Errorf("snapshot %s records no layers to verify against", snapshot.Ref)
+	}
+	if loadedRootFS != snapshot.RootFS {
+		return fmt.Errorf("imported image %s has layers %s, expected %s", snapshot.Ref, loadedRootFS, snapshot.RootFS)
 	}
 	return nil
 }
@@ -939,127 +924,32 @@ func validHomePath(path string) bool {
 	return true
 }
 
-// CaptureLoginState reads the files the credential layer wrote under HOME
-// as they are now in the capsule.
-func (d *Docker) CaptureLoginState(ctx context.Context, runtime domain.CapsuleRuntime, credential domain.CapsuleSnapshot) (map[string][]byte, error) {
-	paths, err := d.loginPaths(ctx, credential)
-	if err != nil {
-		return nil, err
+// validTrackedPath is an absolute path without spaces, quotes or parent
+// steps.
+func validTrackedPath(path string) bool {
+	if path == "" || len(path) > 300 || !strings.HasPrefix(path, "/") || strings.ContainsAny(path, " \t\r\n'\"\\") {
+		return false
 	}
-	if len(paths) == 0 {
-		return map[string][]byte{}, nil
+	for _, part := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
 	}
-	return d.readHomeFiles(ctx, runtime, paths)
+	return true
 }
 
-// loginPaths lists the files under HOME in a credential layer's own diff:
-// the top layer of its image. Computed once per image per runner.
-func (d *Docker) loginPaths(ctx context.Context, credential domain.CapsuleSnapshot) ([]string, error) {
-	if credential.Driver != "docker" || credential.Ref == "" {
-		return nil, errors.New("credential layer is not a Docker snapshot")
-	}
-	d.loginPathsMu.Lock()
-	if cached, ok := d.loginPathsCache[credential.Ref]; ok {
-		d.loginPathsMu.Unlock()
-		return cached, nil
-	}
-	d.loginPathsMu.Unlock()
-	save, err := os.CreateTemp("", "spin-login-*.tar")
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		_ = save.Close()
-		_ = os.Remove(save.Name())
-	}()
-	saver := exec.CommandContext(ctx, d.binary, "image", "save", credential.Ref)
-	saver.Stdout = save
-	var saveError bytes.Buffer
-	saver.Stderr = &saveError
-	if err := saver.Run(); err != nil {
-		return nil, fmt.Errorf("docker image save %s: %s: %w", credential.Ref, strings.TrimSpace(saveError.String()), err)
-	}
-	diff, err := os.CreateTemp("", "spin-login-diff-*.tar")
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		_ = diff.Close()
-		_ = os.Remove(diff.Name())
-	}()
-	if _, err := save.Seek(0, io.SeekStart); err != nil {
-		return nil, err
-	}
-	if _, err := layerDiff(save, diff); err != nil {
-		return nil, fmt.Errorf("read the diff of %s: %w", credential.Ref, err)
-	}
-	if _, err := diff.Seek(0, io.SeekStart); err != nil {
-		return nil, err
-	}
-	paths, err := homePathsInLayer(diff)
-	if err != nil {
-		return nil, err
-	}
-	d.loginPathsMu.Lock()
-	if d.loginPathsCache == nil {
-		d.loginPathsCache = map[string][]string{}
-	}
-	d.loginPathsCache[credential.Ref] = paths
-	d.loginPathsMu.Unlock()
-	return paths, nil
-}
-
-// homePathsInLayer picks the regular files under /root or /home/<user>
-// out of a layer tar, as paths relative to that home.
-func homePathsInLayer(layer io.Reader) ([]string, error) {
-	reader := tar.NewReader(layer)
-	var paths []string
-	for {
-		header, err := reader.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if header.Typeflag != tar.TypeReg || header.Size > LoginFileLimit {
-			continue
-		}
-		name := strings.TrimPrefix(strings.TrimPrefix(header.Name, "./"), "/")
-		relative := ""
-		switch {
-		case strings.HasPrefix(name, "root/"):
-			relative = strings.TrimPrefix(name, "root/")
-		case strings.HasPrefix(name, "home/"):
-			_, rest, ok := strings.Cut(strings.TrimPrefix(name, "home/"), "/")
-			if !ok {
-				continue
-			}
-			relative = rest
-		default:
-			continue
-		}
-		if validHomePath(relative) {
-			paths = append(paths, relative)
-		}
-	}
-	sort.Strings(paths)
-	return paths, nil
-}
-
-// readHomeFiles returns the files under HOME that exist, base64 over one
-// exec so a handful of small files costs one round trip.
-func (d *Docker) readHomeFiles(ctx context.Context, runtime domain.CapsuleRuntime, paths []string) (map[string][]byte, error) {
+// ReadTrackedFiles returns the tracked files that exist in the capsule,
+// base64 over one exec so a handful of small files costs one round trip.
+func (d *Docker) ReadTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, paths []string) (map[string][]byte, error) {
 	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
 		return nil, errors.New("composition has no live Docker capsule")
 	}
 	var script strings.Builder
-	script.WriteString("cd \"${HOME:-/root}\" 2>/dev/null || exit 0\n")
 	for _, path := range paths {
-		if !validHomePath(path) {
-			return nil, fmt.Errorf("invalid home path %q", path)
+		if !validTrackedPath(path) {
+			return nil, fmt.Errorf("invalid tracked path %q", path)
 		}
-		fmt.Fprintf(&script, "if [ -f '%s' ]; then printf 'SPIN_FILE %s '; base64 < '%s' | tr -d '\\n'; printf '\\n'; fi\n", path, path, path)
+		fmt.Fprintf(&script, "if [ -f '%s' ] && [ \"$(wc -c < '%s')\" -le %d ]; then printf 'SPIN_FILE %s '; base64 < '%s' | tr -d '\\n'; printf '\\n'; fi\n", path, path, TrackedFileLimit, path, path)
 	}
 	output, code, err := d.run(ctx, "exec", runtime.ContainerID, "sh", "-c", script.String())
 	if err != nil && code < 0 {
@@ -1079,7 +969,7 @@ func parseHomeFiles(output string) (map[string][]byte, error) {
 		if len(fields) == 3 {
 			decoded, err := base64.StdEncoding.DecodeString(fields[2])
 			if err != nil {
-				return nil, fmt.Errorf("home file %s: %w", fields[1], err)
+				return nil, fmt.Errorf("tracked file %s: %w", fields[1], err)
 			}
 			data = decoded
 		}
@@ -1088,27 +978,26 @@ func parseHomeFiles(output string) (map[string][]byte, error) {
 	return files, nil
 }
 
-// WriteHomeFiles puts files under HOME, readable by the owner only.
-func (d *Docker) WriteHomeFiles(ctx context.Context, runtime domain.CapsuleRuntime, files map[string][]byte) error {
+// WriteTrackedFiles puts files in the capsule, readable by the owner only.
+func (d *Docker) WriteTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, files map[string][]byte) error {
 	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
 		return errors.New("composition has no live Docker capsule")
 	}
 	var input strings.Builder
 	for path, data := range files {
-		if !validHomePath(path) {
-			return fmt.Errorf("invalid home path %q", path)
+		if !validTrackedPath(path) {
+			return fmt.Errorf("invalid tracked path %q", path)
 		}
 		fmt.Fprintf(&input, "%s %s\n", path, base64.StdEncoding.EncodeToString(data))
 	}
-	script := `cd "${HOME:-/root}" || exit 1
-while IFS=' ' read -r path data; do
+	script := `while IFS=' ' read -r path data; do
   [ -n "$path" ] || continue
   mkdir -p "$(dirname "$path")"
   printf '%s' "$data" | base64 -d > "$path.spin-tmp" && chmod 600 "$path.spin-tmp" && mv "$path.spin-tmp" "$path"
 done`
 	output, err := d.controlInput(ctx, []byte(input.String()), "exec", "-i", runtime.ContainerID, "sh", "-c", script)
 	if err != nil {
-		return fmt.Errorf("write home files: %s: %w", strings.TrimSpace(output), err)
+		return fmt.Errorf("write tracked files: %s: %w", strings.TrimSpace(output), err)
 	}
 	return nil
 }

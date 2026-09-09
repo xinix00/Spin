@@ -73,15 +73,8 @@ func normalizeWorkflowTemplateRequest(req domain.CreateWorkflowTemplateRequest) 
 		if phase.Executor == "" {
 			phase.Executor = domain.WorkflowExecutorAgent
 		}
-		phase.AllowChanges = phase.AllowChanges || phase.AllowCommit
 		phase.Model = strings.TrimSpace(phase.Model)
 		phase.ReasoningEffort = strings.TrimSpace(phase.ReasoningEffort)
-		phase.AllowCommit = false
-		if phase.AskUser {
-			phase.Accept.AskUser = true
-			phase.Reject.AskUser = true
-			phase.AskUser = false
-		}
 		for _, transition := range []*domain.WorkflowTransition{&phase.Accept, &phase.Reject} {
 			// "DONE:merge" and "DONE:pull_request" end the Job with that
 			// landing; plain DONE takes the Template's default.
@@ -293,44 +286,6 @@ func ensureWorkflowPullRequestFinalizer(template domain.WorkflowTemplate) (domai
 	}
 	template.Phases = append(template.Phases, finalizer)
 	return template, changed
-}
-
-func (s *Store) backfillWorkflowPullRequestsLocked() {
-	for jobID, existingJob := range s.state.Jobs {
-		if existingJob.TemplateID == "" || existingJob.Status == domain.JobCancelled || (existingJob.Status != domain.JobDone && existingJob.WorkflowStatus != domain.WorkflowDone) {
-			continue
-		}
-		template, ok := s.workflowTemplateForJobLocked(existingJob)
-		if !ok {
-			continue
-		}
-		finalizer, ok := workflowPhase(template, domain.WorkflowPullRequestPhaseID)
-		if !ok || finalizer.Executor != domain.WorkflowExecutorAction {
-			continue
-		}
-		alreadyFinalized := false
-		for _, run := range s.state.PhaseRuns {
-			if run.JobID == existingJob.ID && run.PhaseID == finalizer.ID {
-				alreadyFinalized = true
-				break
-			}
-		}
-		if alreadyFinalized {
-			continue
-		}
-		parentSessionID := ""
-		for index := len(existingJob.PhaseRunIDs) - 1; index >= 0; index-- {
-			if run, exists := s.state.PhaseRuns[existingJob.PhaseRunIDs[index]]; exists {
-				parentSessionID = run.SessionID
-				break
-			}
-		}
-		job := existingJob
-		session, run := s.newWorkflowSessionLocked(&job, template, finalizer, parentSessionID)
-		s.state.Jobs[jobID] = job
-		s.state.Sessions[session.ID] = session
-		s.state.PhaseRuns[run.ID] = run
-	}
 }
 
 func (s *Store) UpdateWorkflowTemplate(templateID string, req domain.CreateWorkflowTemplateRequest) (domain.WorkflowTemplate, error) {
