@@ -430,7 +430,6 @@ type snapshotSizer interface {
 	SnapshotInfo(context.Context, domain.CapsuleSnapshot) (persistence.BlobInfo, error)
 }
 
-
 func (e *RemoteEngine) ensureSnapshotOn(ctx context.Context, artifact domain.Artifact, targetID string) error {
 	if e.runnerHasSnapshot(ctx, artifact.Snapshot, targetID) {
 		_, err := e.broker.store.AddSnapshotReplica(artifact.ID, targetID)
