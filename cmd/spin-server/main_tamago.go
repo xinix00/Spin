@@ -113,18 +113,12 @@ func main() {
 		config.Replication = &replication
 	}
 	tenants := tenancy.New(config)
-	if single != "" {
-		if _, err := tenants.Open(context.Background(), "spin"); err != nil {
-			app.Logf("spin-server: open database: %v", err)
-			app.Exit(1)
-		}
+	domainsOpen, err := tenants.Discover(context.Background())
+	if err != nil {
+		app.Logf("spin-server: open tenants: %v", err)
+		app.Exit(1)
 	}
-	for _, domain := range config.Domains {
-		if _, err := tenants.Open(context.Background(), domain); err != nil {
-			app.Logf("spin-server: open tenant %s: %v", domain, err)
-			app.Exit(1)
-		}
-	}
+	app.Logf("spin-server: tenants open: %v", domainsOpen)
 
 	port := strings.TrimSpace(app.Env("ER_PORT_HTTP"))
 	if port == "" {

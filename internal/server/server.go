@@ -469,6 +469,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/uploads/{uploadID}", s.deleteUpload)
 	s.mux.HandleFunc("POST /api/uploads/{uploadID}/complete", s.completeUpload)
 	s.mux.HandleFunc("GET /api/restores/{restoreID}", s.getRestoreJob)
+	s.mux.HandleFunc("GET /api/replica/generations", s.listReplicaGenerations)
+	s.mux.HandleFunc("POST /api/replica/restore", s.restoreReplicaGeneration)
 	s.mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, s.stateFor(r))
 	})

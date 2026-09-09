@@ -107,20 +107,14 @@ func main() {
 	}
 	tenants := tenancy.New(config)
 	defer tenants.Close()
-	// Every known tenant opens at start: its replica restores and syncs
-	// from the first minute, not from the first visitor.
-	if single != "" {
-		if _, err := tenants.Open(context.Background(), "spin"); err != nil {
-			logger.Error("open database", "error", err)
-			os.Exit(1)
-		}
+	// Every Spin this server holds opens at start: its replica restores and
+	// syncs from the first minute, not from the first visitor.
+	domainsOpen, err := tenants.Discover(context.Background())
+	if err != nil {
+		logger.Error("open tenants", "error", err)
+		os.Exit(1)
 	}
-	for _, domain := range config.Domains {
-		if _, err := tenants.Open(context.Background(), domain); err != nil {
-			logger.Error("open tenant", "domain", domain, "error", err)
-			os.Exit(1)
-		}
-	}
+	logger.Info("tenants open", "domains", domainsOpen)
 
 	httpServer := &http.Server{
 		Addr:              *addr,

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"easyacp/internal/replica"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -482,4 +483,100 @@ func (s *Server) hasInteractiveActivity() bool {
 	launches := len(s.jobLaunching)
 	s.jobLaunchMu.Unlock()
 	return terminals > 0 || chats > 0 || launches > 0
+}
+
+// The replica keeps generations for a while: points in time the database
+// can be put back to, through the same validated restore as a backup zip.
+
+type replicaRestorer interface {
+	Generations(ctx context.Context) ([]replica.Generation, error)
+	Fetch(ctx context.Context, generation, destination string) error
+}
+
+func (s *Server) listReplicaGenerations(w http.ResponseWriter, r *http.Request) {
+	if !s.requireBackupAdmin(w, r) {
+		return
+	}
+	restorer, ok := s.replica.(replicaRestorer)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"generations": []replica.Generation{}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	generations, err := restorer.Generations(ctx)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if generations == nil {
+		generations = []replica.Generation{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"generations": generations})
+}
+
+// restoreReplicaGeneration fetches one generation next to the database and
+// runs the restore job on it.
+func (s *Server) restoreReplicaGeneration(w http.ResponseWriter, r *http.Request) {
+	if !s.requireBackupAdmin(w, r) {
+		return
+	}
+	restorer, ok := s.replica.(replicaRestorer)
+	if !ok || s.database == nil {
+		writeError(w, fmt.Errorf("this Spin has no replica to restore from: %w", store.ErrConflict))
+		return
+	}
+	var request struct {
+		Generation string `json:"generation"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || strings.TrimSpace(request.Generation) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "generation is required"})
+		return
+	}
+	if s.hasInteractiveActivity() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "stop active terminals, chats and background Job launches before restoring"})
+		return
+	}
+	jobID, err := randomOAuthValue(24)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !s.backupMu.TryLock() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "another backup or restore is already running"})
+		return
+	}
+	job := &restoreJob{
+		ID: jobID, Status: "running", Stage: "download", Message: "Generatie " + request.Generation + " uit de replica halen",
+		ExpiresAt: time.Now().Add(restoreJobResultLifetime),
+	}
+	s.storeRestoreJob(job)
+	initial := s.restoreJobResult(job)
+	generation, masterKey := strings.TrimSpace(request.Generation), s.store.PortableMasterKey()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+		defer cancel()
+		destination := s.database.TemporaryPath("generation")
+		fail := func(err error) {
+			s.backupMu.Unlock()
+			s.updateRestoreJob(job, func(candidate *restoreJob) {
+				candidate.Status, candidate.Error = "error", err.Error()
+				candidate.ExpiresAt = time.Now().Add(restoreJobResultLifetime)
+			})
+			s.logger.Warn("restore replica generation", "generation", generation, "error", err)
+		}
+		if err := restorer.Fetch(ctx, generation, destination); err != nil {
+			fail(err)
+			return
+		}
+		staged, err := s.database.StageDatabaseFile(destination, masterKey)
+		if err != nil {
+			fail(err)
+			return
+		}
+		s.runRestoreJob(job, staged)
+	}()
+	w.Header().Set("Location", "/api/restores/"+job.ID)
+	w.Header().Set("Retry-After", "1")
+	writeJSON(w, http.StatusAccepted, initial)
 }

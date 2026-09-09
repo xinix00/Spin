@@ -37,9 +37,9 @@ type Config struct {
 	// MasterKey (or MasterKeyFile) encrypts the secrets of every tenant.
 	MasterKey     string
 	MasterKeyFile string
-	// Domains is the allowlist of hosts; empty admits any host, and then a
-	// host names its own database. With an allowlist, an IP address as host
-	// only answers the liveness check.
+	// Domains optionally limits the hosts; empty admits any host, each with
+	// its own database (whatever routes in front decides what arrives). An
+	// IP address as host only ever answers the liveness check.
 	Domains []string
 	// WorkerTokenSeed becomes the worker token of a tenant that has none
 	// yet: the token a deployment passed through the environment.
@@ -128,7 +128,9 @@ func (t *Tenants) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid host", http.StatusBadRequest)
 			return
 		}
-		if len(t.config.Domains) > 0 && net.ParseIP(host) != nil {
+		// An address is never a Spin: whatever routes in front sends the
+		// domain along, and probes on the address get the liveness check.
+		if net.ParseIP(host) != nil {
 			if r.URL.Path == "/healthz" {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = fmt.Fprintf(w, `{"status":"ok","version":%q,"tenants":%d}`, buildinfo.Version, t.count())
@@ -156,6 +158,45 @@ func (t *Tenants) count() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return len(t.tenants)
+}
+
+// Discover opens every Spin this server already holds: the databases in
+// the data directory, the domains with a replica in the bucket (restored
+// when missing here), and the configured domains. Their replicas run from
+// the start, not from the first visit.
+func (t *Tenants) Discover(ctx context.Context) ([]string, error) {
+	if t.config.SingleDatabase != "" {
+		_, err := t.Open(ctx, "spin")
+		return []string{"spin"}, err
+	}
+	seen := map[string]bool{}
+	var domains []string
+	add := func(candidates []string) {
+		for _, candidate := range candidates {
+			domain, ok := NormalizeHost(candidate)
+			if ok && !seen[domain] && net.ParseIP(domain) == nil {
+				seen[domain] = true
+				domains = append(domains, domain)
+			}
+		}
+	}
+	add(t.config.Domains)
+	if local, err := persistence.ListDatabases(t.config.DataDir); err == nil {
+		add(local)
+	}
+	if t.config.Replication != nil {
+		remote, err := replica.Domains(ctx, *t.config.Replication)
+		if err != nil {
+			return nil, fmt.Errorf("list replicas: %w", err)
+		}
+		add(remote)
+	}
+	for _, domain := range domains {
+		if _, err := t.Open(ctx, domain); err != nil {
+			return domains, fmt.Errorf("%s: %w", domain, err)
+		}
+	}
+	return domains, nil
 }
 
 // Open returns the tenant of a domain, opening it once; concurrent callers

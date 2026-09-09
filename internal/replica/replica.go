@@ -390,6 +390,24 @@ func (r *Replica) fileSize() (int64, error) {
 
 // restore rebuilds the database from every segment of a generation.
 func (r *Replica) restore(ctx context.Context, generation string) (marker, error) {
+	result, err := r.restoreInto(ctx, generation, r.path)
+	if err != nil {
+		return marker{}, err
+	}
+	return result, r.writeMarker(result)
+}
+
+// Fetch writes a generation of the database to another file: a point in
+// time to inspect or put back.
+func (r *Replica) Fetch(ctx context.Context, generation, destination string) error {
+	if !validGeneration(generation) {
+		return fmt.Errorf("invalid generation %q", generation)
+	}
+	_, err := r.restoreInto(ctx, generation, destination)
+	return err
+}
+
+func (r *Replica) restoreInto(ctx context.Context, generation, path string) (marker, error) {
 	objects, err := r.s3.List(ctx, r.generationPrefix(generation))
 	if err != nil {
 		return marker{}, err
@@ -397,7 +415,7 @@ func (r *Replica) restore(ctx context.Context, generation string) (marker, error
 	if len(objects) == 0 {
 		return marker{}, errors.New("the generation has no segments")
 	}
-	file, err := r.files.Open(r.path, true)
+	file, err := r.files.Open(path, true)
 	if err != nil {
 		return marker{}, err
 	}
@@ -438,13 +456,72 @@ func (r *Replica) restore(ctx context.Context, generation string) (marker, error
 		return marker{}, err
 	}
 	if result.Seq == 0 {
-		_ = r.files.Remove(r.path)
+		_ = r.files.Remove(path)
 		return marker{}, errors.New("the generation has no segments")
 	}
-	return result, r.writeMarker(result)
+	return result, nil
 }
 
-// pruneGenerations removes every generation but the one kept.
+// A Generation is one point in time in the bucket.
+type Generation struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	Segments  int       `json:"segments"`
+	Bytes     int64     `json:"bytes"`
+	Current   bool      `json:"current"`
+}
+
+// Generations lists what the bucket holds for this domain, newest first.
+func (r *Replica) Generations(ctx context.Context) ([]Generation, error) {
+	objects, err := r.s3.List(ctx, r.key("generations")+"/")
+	if err != nil {
+		return nil, err
+	}
+	current := r.getMarker()
+	byID := map[string]*Generation{}
+	var order []string
+	for _, object := range objects {
+		rest := strings.TrimPrefix(object.Key, r.key("generations")+"/")
+		id, file, ok := strings.Cut(rest, "/")
+		if !ok || !strings.HasSuffix(file, ".seg") {
+			continue
+		}
+		generation := byID[id]
+		if generation == nil {
+			generation = &Generation{ID: id, CreatedAt: generationTime(id), Current: id == current.Generation && current.Complete}
+			byID[id] = generation
+			order = append(order, id)
+		}
+		generation.Segments++
+		generation.Bytes += object.Size
+	}
+	generations := make([]Generation, 0, len(order))
+	for index := len(order) - 1; index >= 0; index-- {
+		generations = append(generations, *byID[order[index]])
+	}
+	return generations, nil
+}
+
+func validGeneration(id string) bool {
+	if len(id) < 17 || generationTime(id).IsZero() {
+		return false
+	}
+	return !strings.ContainsAny(id, "/\\ ")
+}
+
+// generationTime reads the moment out of a generation id.
+func generationTime(id string) time.Time {
+	stamp, _, _ := strings.Cut(id, "-")
+	created, err := time.Parse("20060102T150405Z", stamp)
+	if err != nil {
+		return time.Time{}
+	}
+	return created
+}
+
+// pruneGenerations removes generations older than the retention, never
+// the one kept, nor an incomplete one younger than a day (it may be the
+// snapshot in progress of another start).
 func (r *Replica) pruneGenerations(keep string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -454,9 +531,15 @@ func (r *Replica) pruneGenerations(keep string) {
 		return
 	}
 	keepPrefix := r.generationPrefix(keep)
+	cutoff := time.Now().UTC().Add(-r.config.Retention)
 	removed := 0
 	for _, object := range objects {
 		if strings.HasPrefix(object.Key, keepPrefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(object.Key, r.key("generations")+"/")
+		id, _, _ := strings.Cut(rest, "/")
+		if created := generationTime(id); created.IsZero() || created.After(cutoff) {
 			continue
 		}
 		if err := r.s3.Delete(ctx, object.Key); err != nil {
@@ -551,4 +634,24 @@ func (r *Replica) readMarker() (marker, error) {
 		return marker{}, err
 	}
 	return value, nil
+}
+
+// Domains lists the domains with a complete generation in the bucket, so a
+// server can open (and restore) every Spin it holds before the first visit.
+func Domains(ctx context.Context, config Config) ([]string, error) {
+	config = config.withDefaults()
+	client := &S3{Endpoint: config.Endpoint, Bucket: config.Bucket, Region: config.Region, AccessKey: config.AccessKey, SecretKey: config.SecretKey}
+	objects, err := client.List(ctx, config.Prefix+"/")
+	if err != nil {
+		return nil, err
+	}
+	var domains []string
+	for _, object := range objects {
+		rest := strings.TrimPrefix(object.Key, config.Prefix+"/")
+		domain, file, ok := strings.Cut(rest, "/")
+		if ok && file == "current" && domain != "" {
+			domains = append(domains, domain)
+		}
+	}
+	return domains, nil
 }

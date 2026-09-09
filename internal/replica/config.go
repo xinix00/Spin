@@ -23,6 +23,9 @@ type Config struct {
 	// segment (and the memory a sync pass holds).
 	Interval     time.Duration
 	SegmentBytes int
+	// Retention keeps older generations this long, each a point in time
+	// the database can be put back to.
+	Retention time.Duration
 }
 
 func (c Config) withDefaults() Config {
@@ -34,6 +37,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.SegmentBytes <= 0 {
 		c.SegmentBytes = 16 << 20
+	}
+	if c.Retention <= 0 {
+		c.Retention = 7 * 24 * time.Hour
 	}
 	return c
 }

@@ -66,6 +66,42 @@ func TestTenantsRouteOnHostAndKeepOneDatabasePerDomain(t *testing.T) {
 	}
 }
 
+// Without a list every domain is welcome; an address never is; and the next
+// start finds the databases again before anyone visits.
+func TestTenantsAcceptAnyDomainAndDiscoverTheirDatabasesAtStart(t *testing.T) {
+	dir := t.TempDir()
+	options := func(string) spinserver.ServerOptions { return spinserver.ServerOptions{DisableAuthentication: true} }
+	first := New(Config{DataDir: dir, Options: options})
+	for _, host := range []string{"alpha.example", "beta.example"} {
+		request := httptest.NewRequest(http.MethodGet, "http://"+host+"/healthz", nil)
+		request.Host = host
+		response := httptest.NewRecorder()
+		first.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s = %d", host, response.Code)
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://10.1.1.1/api/state", nil)
+	request.Host = "10.1.1.1"
+	response := httptest.NewRecorder()
+	first.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("address got a Spin: %d", response.Code)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second := New(Config{DataDir: dir, Options: options})
+	defer second.Close()
+	domains, err := second.Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(domains) != 2 || domains[0] != "alpha.example" || domains[1] != "beta.example" || second.count() != 2 {
+		t.Fatalf("discovered %v, open %d", domains, second.count())
+	}
+}
+
 func TestNormalizeHost(t *testing.T) {
 	cases := map[string]string{"Bollenloods.GetSpin.app:443": "bollenloods.getspin.app", "localhost": "localhost", "127.0.0.1:8080": "127.0.0.1", "a..b": "", "": "", "bad host": "", "-x.test": ""}
 	for input, want := range cases {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"easyacp/internal/persistence"
 
@@ -184,9 +185,29 @@ func TestReplicaShipsPagesAndRestoresTheDatabase(t *testing.T) {
 	if current != again.Status().Generation {
 		t.Fatalf("current = %q, want %q", current, again.Status().Generation)
 	}
+	// The old generation stays within the retention: a point in time to go
+	// back to. It can be fetched into another file and read.
+	generations, err := again.Generations(context.Background())
+	if err != nil || len(generations) != 2 || generations[0].ID != again.Status().Generation || !generations[0].Current || generations[1].ID != status.Generation {
+		t.Fatalf("generations = %+v, %v", generations, err)
+	}
+	if err := again.Fetch(context.Background(), status.Generation, dir+"/point.db"); err != nil {
+		t.Fatal(err)
+	}
+	point, err := persistence.Open(dir+"/point.db", persistence.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer point.Close()
+	if state, err := point.ReadFile("state"); err != nil || string(state) != `{"version":3}` {
+		t.Fatalf("fetched point in time = %q, %v", state, err)
+	}
+	// Outside the retention it goes.
+	again.config.Retention = time.Nanosecond
+	again.pruneGenerations(again.Status().Generation)
 	for key := range bucket.objects {
 		if strings.Contains(key, status.Generation) {
-			t.Fatalf("old generation %s still in the bucket: %s", status.Generation, key)
+			t.Fatalf("expired generation %s still in the bucket: %s", status.Generation, key)
 		}
 	}
 }

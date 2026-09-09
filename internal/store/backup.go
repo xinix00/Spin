@@ -203,3 +203,9 @@ func normalizeRestoredState(state *persistedState) {
 		}
 	}
 }
+
+// PortableMasterKey is the server's own key in portable form: what a copy
+// of this database (a replica generation) is encrypted with.
+func (s *Store) PortableMasterKey() string {
+	return s.secrets.portableKey()
+}

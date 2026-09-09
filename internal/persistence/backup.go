@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -399,6 +400,24 @@ func (s *SQLite) backupTo(ctx context.Context, destination string, progress func
 	})
 }
 
+// TemporaryPath names a scratch database next to this one; Close removes
+// what is left of it at the next start.
+func (s *SQLite) TemporaryPath(kind string) string { return s.temporaryPath(kind) }
+
+// StageDatabaseFile takes a copy of this database (a replica generation)
+// as a staged backup under the given master key, ready for RestoreFrom.
+func (s *SQLite) StageDatabaseFile(path, masterKey string) (*StagedBackup, error) {
+	backup, err := Open(path, OpenOptions{VFS: s.vfs})
+	if err != nil {
+		return nil, fmt.Errorf("open fetched database: %w", err)
+	}
+	if _, err := backup.ReadFile("state"); err != nil {
+		_ = backup.Close()
+		return nil, errors.New("the fetched database holds no Spin state")
+	}
+	return &StagedBackup{Path: path, Database: backup, MasterKey: strings.TrimSpace(masterKey), remove: removePhysicalFile}, nil
+}
+
 func (s *SQLite) temporaryPath(kind string) string {
 	return s.path + "." + kind + "-" + fmt.Sprint(s.nextID.Add(1)) + ".db"
 }
@@ -410,4 +429,22 @@ func physicalURI(path, vfsName string) string {
 		query.Set("nolock", "1")
 	}
 	return "file:" + path + "?" + query.Encode()
+}
+
+// ListDatabases names the databases in a directory: every <name>.db, minus
+// the temporary copies a backup or restore leaves (<name>.db.<kind>-<n>.db).
+func ListDatabases(directory string) ([]string, error) {
+	names, err := listPhysicalDir(directory)
+	if err != nil {
+		return nil, err
+	}
+	var databases []string
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".db") || strings.Contains(name, ".db.") {
+			continue
+		}
+		databases = append(databases, strings.TrimSuffix(name, ".db"))
+	}
+	sort.Strings(databases)
+	return databases, nil
 }
