@@ -453,6 +453,17 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		}
 		result, err := inspector.InspectWorkspaceRange(ctx, payload.Runtime, payload.Comparison)
 		return result, false, err
+	case methodInspectLayer:
+		var payload snapshotPayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		inspector, ok := w.engine.(capsule.LayerInspector)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot inspect layers")
+		}
+		contents, err := inspector.InspectLayer(ctx, payload.Snapshot)
+		return contents, false, err
 	case methodCapsuleChanges:
 		var payload runtimePayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {

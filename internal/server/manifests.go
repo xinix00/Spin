@@ -1,11 +1,16 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"time"
 
+	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
 	"easyacp/internal/persistence"
+	"easyacp/internal/store"
 )
 
 // A manifest's listing can run to tens of thousands of paths; it lives as
@@ -84,4 +89,73 @@ func (s *Server) compositionChangesHandler(w http.ResponseWriter, r *http.Reques
 		entries = []domain.ContentEntry{}
 	}
 	writeJSON(w, http.StatusOK, manifestResponse{Contents: composition.CapsuleChanges, Entries: entries})
+}
+
+// Layers sealed before manifests existed get theirs read out of the image:
+// on request, and in the background for every layer that still lacks one.
+
+type artifactLayerInspector interface {
+	InspectLayer(ctx context.Context, artifact domain.Artifact) (domain.LayerContents, error)
+}
+
+func (s *Server) inspectLayer(ctx context.Context, artifact domain.Artifact) (domain.LayerContents, error) {
+	switch engine := s.engine.(type) {
+	case artifactLayerInspector:
+		return engine.InspectLayer(ctx, artifact)
+	case capsule.LayerInspector:
+		return engine.InspectLayer(ctx, artifact.Snapshot)
+	}
+	return domain.LayerContents{}, fmt.Errorf("capsule engine %s cannot inspect layers: %w", s.engine.Info().Driver, store.ErrConflict)
+}
+
+// recordLayerContents reads and keeps the manifest of one layer.
+func (s *Server) recordLayerContents(ctx context.Context, artifact domain.Artifact) (domain.Artifact, error) {
+	contents, err := s.inspectLayer(ctx, artifact)
+	if err != nil {
+		return domain.Artifact{}, err
+	}
+	s.detachManifest("artifact:"+artifact.ID, &contents)
+	return s.store.SetArtifactContents(artifact.ID, contents)
+}
+
+func (s *Server) inspectArtifactContentsHandler(w http.ResponseWriter, r *http.Request) {
+	artifact, err := s.store.Artifact(r.PathValue("artifactID"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !artifact.Snapshot.Restorable {
+		writeError(w, fmt.Errorf("layer has no restorable image: %w", store.ErrConflict))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	updated, err := s.recordLayerContents(ctx, artifact)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// backfillContents gives every current layer without a manifest one, one
+// layer at a time, whenever a runner comes up.
+func (s *Server) backfillContents() {
+	if !s.backfillMu.TryLock() {
+		return
+	}
+	defer s.backfillMu.Unlock()
+	for _, artifact := range s.store.Snapshot().Artifacts {
+		if !artifact.Snapshot.Restorable || artifact.Snapshot.Contents != nil || artifact.SnapshotPrunedAt != nil || artifact.SupersededBy != "" {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		_, err := s.recordLayerContents(ctx, artifact)
+		cancel()
+		if err != nil {
+			s.logger.Warn("read layer manifest", "artifact", artifact.ID, "error", err)
+			continue
+		}
+		s.logger.Info("layer manifest read", "artifact", artifact.ID, "kind", artifact.Kind, "name", artifact.Name)
+	}
 }

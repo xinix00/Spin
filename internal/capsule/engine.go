@@ -124,6 +124,12 @@ type CapsuleInspector interface {
 	CaptureCapsuleChanges(ctx context.Context, runtime domain.CapsuleRuntime) (domain.LayerContents, error)
 }
 
+// LayerInspector reads the manifest of a layer that was sealed before
+// manifests existed: its own difference, as the image holds it.
+type LayerInspector interface {
+	InspectLayer(ctx context.Context, snapshot domain.CapsuleSnapshot) (domain.LayerContents, error)
+}
+
 // LoginFileLimit bounds one login file; larger files are caches, not logins.
 const LoginFileLimit = 1 << 20
 

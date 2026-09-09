@@ -301,6 +301,23 @@ func (e *RemoteEngine) InspectWorkspaceRange(ctx context.Context, runtime domain
 	return changes, err
 }
 
+// InspectLayer asks a runner that holds the image for the layer's manifest;
+// a runner without it fetches it first.
+func (e *RemoteEngine) InspectLayer(ctx context.Context, artifact domain.Artifact) (domain.LayerContents, error) {
+	var contents domain.LayerContents
+	target, err := e.broker.choosePreferring(ctx, "", func(clientID string) bool {
+		return snapshotAvailableOn(artifact.Snapshot, clientID)
+	})
+	if err != nil {
+		return contents, err
+	}
+	if err := e.ensureSnapshotOn(ctx, artifact, target.id); err != nil {
+		return contents, err
+	}
+	_, err = e.broker.call(ctx, target.id, methodInspectLayer, snapshotPayload{Snapshot: artifact.Snapshot}, &contents)
+	return contents, err
+}
+
 func (e *RemoteEngine) CaptureCapsuleChanges(ctx context.Context, runtime domain.CapsuleRuntime) (domain.LayerContents, error) {
 	var changes domain.LayerContents
 	_, err := e.broker.call(ctx, runtime.ClientID, methodCapsuleChanges, runtimePayload{Runtime: runtime}, &changes)

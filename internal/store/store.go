@@ -819,6 +819,20 @@ func (s *Store) SetCompositionRuntime(compositionID, operator string, runtime do
 	return composition, s.saveLocked()
 }
 
+// SetArtifactContents records the manifest of a layer sealed before
+// manifests existed.
+func (s *Store) SetArtifactContents(artifactID string, contents domain.LayerContents) (domain.Artifact, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	artifact, ok := s.state.Artifacts[artifactID]
+	if !ok {
+		return domain.Artifact{}, ErrNotFound
+	}
+	artifact.Snapshot.Contents = &contents
+	s.state.Artifacts[artifactID] = artifact
+	return artifact, s.saveLocked()
+}
+
 // SetCompositionChanges records what a capsule changed outside its
 // workspace, as last seen.
 func (s *Store) SetCompositionChanges(compositionID string, changes domain.LayerContents) error {

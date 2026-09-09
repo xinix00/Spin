@@ -315,3 +315,38 @@ func (d *Docker) CaptureCapsuleChanges(ctx context.Context, runtime domain.Capsu
 	}
 	return summarize(entries), nil
 }
+
+// InspectLayer reads the manifest out of an image's top layer: what the
+// recording changed, by kind, without changing the image.
+func (d *Docker) InspectLayer(ctx context.Context, snapshot domain.CapsuleSnapshot) (domain.LayerContents, error) {
+	if snapshot.Driver != "docker" || strings.TrimSpace(snapshot.Ref) == "" {
+		return domain.LayerContents{}, errors.New("snapshot is not a Docker image")
+	}
+	save, err := d.saveImage(ctx, snapshot.Ref)
+	if err != nil {
+		return domain.LayerContents{}, err
+	}
+	defer func() {
+		_ = save.Close()
+		_ = os.Remove(save.Name())
+	}()
+	top, err := os.CreateTemp("", "spin-inspect-*.tar")
+	if err != nil {
+		return domain.LayerContents{}, err
+	}
+	defer func() {
+		_ = top.Close()
+		_ = os.Remove(top.Name())
+	}()
+	if err := topLayer(save, top); err != nil {
+		return domain.LayerContents{}, err
+	}
+	if _, err := top.Seek(0, io.SeekStart); err != nil {
+		return domain.LayerContents{}, err
+	}
+	entries, _, err := readDiffEntries(top)
+	if err != nil {
+		return domain.LayerContents{}, err
+	}
+	return summarize(entries), nil
+}

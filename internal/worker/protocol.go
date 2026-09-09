@@ -38,6 +38,7 @@ const (
 	methodInjectAttachments = "workspace.inject_attachments"
 	methodCaptureLogin      = "home.capture"
 	methodCapsuleChanges    = "capsule.changes"
+	methodInspectLayer      = "layer.inspect"
 	methodWriteHomeFiles    = "home.write"
 	methodAcceptWorkspace   = "workspace.accept"
 	methodMergeWorkspace    = "workspace.merge"

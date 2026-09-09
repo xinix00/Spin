@@ -39,6 +39,7 @@ type Server struct {
 	snapshotArchive capsule.SnapshotArchive
 	database        *persistence.SQLite
 	replica         ReplicaStatus
+	backfillMu      sync.Mutex
 	loginLimiter    loginLimiter
 	csrfTokens      csrfTokenCache
 	terminalMu      sync.Mutex
@@ -161,6 +162,7 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 	s.routes()
 	if s.runnerBroker != nil {
 		s.runnerBroker.OnRunnerConnected(s.resumeQueuedWorkflowPhases)
+		s.runnerBroker.OnRunnerConnected(func() { go s.backfillContents() })
 	}
 	if reporter, ok := engine.(placementReporter); ok {
 		reporter.OnPlacement(s.recordLaunchPlacement)
@@ -536,6 +538,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/clients/{clientID}/drain", s.drainClient)
 	s.mux.HandleFunc("DELETE /api/clients/{clientID}", s.removeClient)
 	s.mux.HandleFunc("GET /api/artifacts/{artifactID}/contents", s.artifactContentsHandler)
+	s.mux.HandleFunc("POST /api/artifacts/{artifactID}/contents/inspect", s.inspectArtifactContentsHandler)
 	s.mux.HandleFunc("GET /api/compositions/{compositionID}/changes", s.compositionChangesHandler)
 	s.mux.HandleFunc("GET /api/runners/token", s.workerTokenHandler)
 	s.mux.HandleFunc("POST /api/runners/token", s.workerTokenHandler)
