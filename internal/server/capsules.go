@@ -267,6 +267,7 @@ func (s *Server) stopCapsule(ctx context.Context, compositionID, operator string
 	if s.engineConnected(composition.Runtime.ClientID) {
 		s.captureLoginState(ctx, composition)
 	}
+	s.delivered.forget(composition.ID)
 	if err := s.engine.Stop(ctx, *composition.Runtime); err != nil {
 		if !errors.Is(err, worker.ErrRunnerOffline) {
 			return domain.Composition{}, fmt.Errorf("stop composition capsule: %w", err)

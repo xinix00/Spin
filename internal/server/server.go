@@ -26,6 +26,8 @@ import (
 
 type Server struct {
 	inflight        inflight
+	loginMu         sync.Mutex
+	delivered       deliveredFiles
 	store           *store.Store
 	logger          *slog.Logger
 	mux             *http.ServeMux

@@ -346,6 +346,34 @@ func (s *Store) LoginState(key string) (domain.LoginState, bool) {
 	return state, ok
 }
 
+// SaveLoginStateFiles keeps the given files, leaving the other kept files
+// of the layer as they are; it reports whether anything differed.
+func (s *Store) SaveLoginStateFiles(key string, files map[string][]byte) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	merged := map[string][]byte{}
+	if previous, ok := s.state.LoginStates[key]; ok {
+		for path, data := range previous.Files {
+			merged[path] = data
+		}
+	}
+	changed := false
+	for path, data := range files {
+		if !bytes.Equal(merged[path], data) {
+			merged[path] = append([]byte(nil), data...)
+			changed = true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	if s.state.LoginStates == nil {
+		s.state.LoginStates = map[string]domain.LoginState{}
+	}
+	s.state.LoginStates[key] = domain.LoginState{Key: key, Files: merged, UpdatedAt: time.Now().UTC()}
+	return true, s.saveLocked()
+}
+
 // SaveLoginState keeps the files as they are now; it reports whether
 // anything differed from what was kept.
 func (s *Store) SaveLoginState(key string, files map[string][]byte) (bool, error) {

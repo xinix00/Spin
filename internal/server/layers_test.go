@@ -157,7 +157,7 @@ func useLayers(t *testing.T, srv *Server, actor, selector string, with ...string
 	return composition
 }
 
-// editLayer starts an EDIT of the current version of a selector.
+// editLayer starts a new version of the current version of a selector.
 func editLayer(t *testing.T, srv *Server, actor, selector string) domain.Recording {
 	t.Helper()
 	current := latestLayer(t, srv, actor, selector)
