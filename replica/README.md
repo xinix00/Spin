@@ -38,13 +38,18 @@ serializes all writers through the supplied Database adapter.
   before any network transfer. A generation starts with all pages; a page-size
   change starts a new generation. The host runs that first, whole copy before
   it serves (`SnapshotDue`).
-- A **page index** next to the database (`<db>.replica-index`) holds a hash per
-  page of what the bucket has, stamped with the marker sequence it describes
-  and written after every committed sync; a failed write removes it. A start
-  after an unclean stop hashes the database, compares, and continues the
-  generation with the pages that differ. A missing, torn, foreign or stale
-  index (sequence behind the marker) costs a full snapshot, never a missed
-  page: a stale index would hide a page that returned to its old bytes.
+- A **dirty log** next to the database (`<db>.replica-dirty-a` and `-b`) names
+  the pages written since the last sync: before the database file is synced,
+  the tracking VFS appends their numbers and syncs the log first, the way a
+  journal goes before the pages it protects, so a page can be on disk only
+  when the log names it. After a committed sync the log is rewritten into the
+  other file with what is still dirty, records first and the header (magic,
+  sequence, generation, checksum) last. A start after an unclean stop reads
+  the file of the marker's generation with the highest sequence not past the
+  marker and continues with the pages it names; nothing is hashed or read. A
+  file of an older sequence (a crash between the marker write and the
+  rewrite) names more, never less. A damaged file, one past the marker, or
+  none at all costs a full snapshot, never a missed page.
 - A window is `(start, end]`: a commit exactly on a boundary belongs to the
   window that ends there, the rule `plan` uses for a point at that boundary, so
   a point restores the same database before and after compaction. A commit

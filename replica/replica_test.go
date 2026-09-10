@@ -165,9 +165,8 @@ func TestReplicaShipsPagesAndRestoresTheDatabase(t *testing.T) {
 	if restoredReplica.Status().Generation != status.Generation {
 		t.Fatalf("restored server started a new generation: %+v", restoredReplica.Status())
 	}
-	// A write that never synced before a stop: the next start compares the
-	// database with the page index and continues the generation with the
-	// pages that differ.
+	// A write that never synced before a stop: the next start reads the
+	// dirty log and continues the generation with the pages it names.
 	if err := restored.WriteFile("state", []byte(`{"version":4}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +197,7 @@ func TestReplicaShipsPagesAndRestoresTheDatabase(t *testing.T) {
 	}
 	_ = check.Close()
 	checkReplica.Close()
-	// Without a usable page index the start cannot compare: a new
+	// Without a dirty log the start cannot say what changed: a new
 	// generation holds everything again.
 	clean, cleanDB := openReplicated(t, config, "one.example.test", dir+"/restored/one.db")
 	if clean.Status().Generation != status.Generation {
@@ -211,15 +210,17 @@ func TestReplicaShipsPagesAndRestoresTheDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	clean.Close()
-	if err := os.Remove(dir + "/restored/one.db.replica-index"); err != nil {
-		t.Fatal(err)
+	for _, candidate := range newDirtyLog(OSStorage(), dir+"/restored/one.db").paths {
+		if err := os.Remove(candidate); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
 	}
 	again, againDB := openReplicated(t, config, "one.example.test", dir+"/restored/one.db")
 	if err := again.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if again.Status().Generation == status.Generation || !again.Status().Complete {
-		t.Fatalf("start without an index did not begin a new generation: %+v", again.Status())
+		t.Fatalf("start without a dirty log did not begin a new generation: %+v", again.Status())
 	}
 	_ = againDB.Close()
 	again.Close()

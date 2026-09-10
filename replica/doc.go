@@ -9,6 +9,10 @@
 // Object replacement and listings must be strongly consistent. All SQLite
 // database writes must pass through VFSName; direct file writes are unsupported.
 //
+// A dirty log next to the database, synced before the database file, names
+// the pages written since the last sync, so a start after an unclean stop
+// continues where it was without reading the database.
+//
 // Sync captures one complete state into a local spool before uploading. It
 // bounds page data in memory by SegmentBytes, plus dirty-page/part metadata,
 // and requires local scratch space for the captured pages. Readers only follow

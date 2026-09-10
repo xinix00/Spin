@@ -513,7 +513,7 @@ func TestMarkerFailureBlocksSQLiteWriteAndRetries(t *testing.T) {
 }
 
 func TestSettleSerializesDurableMarkerWithFirstWrite(t *testing.T) {
-	tracker := newTracker()
+	tracker := newTracker(newDirtyLog(OSStorage(), t.TempDir()+"/tracker.db"))
 	tracker.clean = false
 	entered, release := make(chan struct{}), make(chan struct{})
 	var mu sync.Mutex
@@ -571,7 +571,7 @@ func TestSpoolFailureKeepsDirtyPagesAndDoesNotPublish(t *testing.T) {
 }
 
 func TestTruncateOnlyChangeAndSegmentValidation(t *testing.T) {
-	tracker := newTracker()
+	tracker := newTracker(newDirtyLog(OSStorage(), t.TempDir()+"/tracker.db"))
 	calls := 0
 	tracker.onUnclean = func() error { calls++; return nil }
 	if err := tracker.truncate(0); err != nil {

@@ -360,8 +360,8 @@ func TestCrashMidTransactionLeavesHotJournalAndTheGenerationContinues(t *testing
 	if generation == "" || !parent.rep.Status().Complete {
 		t.Fatalf("no generation after the first sync: %+v", parent.rep.Status())
 	}
-	if _, err := os.Stat(path + ".replica-index"); err != nil {
-		t.Fatalf("no page index after the first sync: %v", err)
+	if seq, _, _ := crashDirtyLog(t, path); seq != 1 {
+		t.Fatalf("dirty log after the first sync is at sequence %d", seq)
 	}
 	parent.close()
 	if current := crashCurrent(bucket, config, domain); current != generation {
@@ -444,10 +444,36 @@ func TestCrashMidTransactionLeavesHotJournalAndTheGenerationContinues(t *testing
 	crashEqual(t, "restore after the crash", got, want)
 }
 
-// A sync commits its manifest but the index write fails, so the index on
-// disk is one sync old. An unclean stop later must not lose a page: the
-// start either ships the pages of that sync again or starts over.
-func TestUncleanStopWithStaleIndexShipsAgainWithoutHarm(t *testing.T) {
+// crashDirtyLog reads the newest dirty log of the marker's generation next
+// to a database.
+func crashDirtyLog(t *testing.T, path string) (int64, []uint32, string) {
+	t.Helper()
+	marker := crashMarker(t, path)
+	log := newDirtyLog(OSStorage(), path)
+	bestSeq, bestPages, bestPath := int64(-1), []uint32(nil), ""
+	for _, candidate := range log.paths {
+		if _, err := os.Stat(candidate); err != nil {
+			continue
+		}
+		generation, seq, pages, err := log.readFile(candidate)
+		if err != nil {
+			t.Fatalf("dirty log %s: %v", candidate, err)
+		}
+		if generation == marker.Generation && seq > bestSeq {
+			bestSeq, bestPages, bestPath = seq, pages, candidate
+		}
+	}
+	if bestPath == "" {
+		t.Fatalf("no dirty log of generation %q next to %s", marker.Generation, path)
+	}
+	return bestSeq, bestPages, bestPath
+}
+
+// The rewrite of the dirty log after a committed sync fails: the previous
+// log stays, names the pages of that sync and everything after, and an
+// unclean start continues the generation with those, a few pages shipped
+// twice at most. A page that returned to its old bytes ships too.
+func TestUncleanStopWithStaleDirtyLogShipsAgainWithoutHarm(t *testing.T) {
 	for _, revert := range []bool{false, true} {
 		name := "fresh-pages"
 		if revert {
@@ -458,9 +484,9 @@ func TestUncleanStopWithStaleIndexShipsAgainWithoutHarm(t *testing.T) {
 			dir := t.TempDir()
 			path := dir + "/stale.db"
 			domain := "stale-" + name + ".example.test"
-			var failIndexWrite atomic.Bool
+			var failRewrite atomic.Bool
 			storage := faultStorage{Storage: OSStorage(), open: func(name string, create bool) error {
-				if create && strings.HasSuffix(name, ".replica-index") && failIndexWrite.CompareAndSwap(true, false) {
+				if create && strings.Contains(name, ".replica-dirty-") && failRewrite.CompareAndSwap(true, false) {
 					return errInjected
 				}
 				return nil
@@ -471,38 +497,24 @@ func TestUncleanStopWithStaleIndexShipsAgainWithoutHarm(t *testing.T) {
 			crashWrite(t, s, "state", first)
 			crashSync(t, s)
 			generation := s.rep.Status().Generation
-			indexBefore, err := os.ReadFile(path + ".replica-index")
-			if err != nil {
-				t.Fatal(err)
-			}
-			// The second sync commits, then its index write fails.
+			// The second sync commits, then the rewrite of the log fails.
 			crashWrite(t, s, "state", second)
 			if !revert {
 				crashWrite(t, s, "second", crashBlob('2', 40<<10))
 			}
-			failIndexWrite.Store(true)
+			failRewrite.Store(true)
 			crashSync(t, s)
-			if failIndexWrite.Load() {
-				t.Fatal("the sync never wrote the index")
+			if failRewrite.Load() {
+				t.Fatal("the sync never rewrote the dirty log")
 			}
-			// A failed index write must not leave the old index in place: a
-			// start would trust it and miss a page that returned to its old
-			// bytes. Either it is gone, or it is refused as stale.
-			if indexAfter, err := os.ReadFile(path + ".replica-index"); err == nil {
-				if bytes.Equal(indexBefore, indexAfter) {
-					index, decodeErr := decodeIndex(indexAfter)
-					if decodeErr == nil && index.seq == 2 {
-						t.Fatal("the stale index passes for the marker's sequence")
-					}
-				}
-			} else if !os.IsNotExist(err) {
-				t.Fatal(err)
+			if seq, pages, _ := crashDirtyLog(t, path); seq != 1 || len(pages) == 0 {
+				t.Fatalf("after the failed rewrite the log is at sequence %d with %d pages; expected the previous log, at 1, naming the pages of sync 2", seq, len(pages))
 			}
 			if m := crashMarker(t, path); !m.Clean || m.Seq != 2 || m.Generation != generation {
 				t.Fatalf("marker after the second sync = %+v", m)
 			}
 			// Writes that never sync, then an unclean stop. In the revert
-			// case a page returns to the content the stale index lists.
+			// case a page returns to its content of sync 1.
 			if revert {
 				crashWrite(t, s, "state", first)
 			} else {
@@ -516,20 +528,13 @@ func TestUncleanStopWithStaleIndexShipsAgainWithoutHarm(t *testing.T) {
 
 			again := crashOpen(t, config, domain, path)
 			status := again.rep.Status()
-			switch status.Generation {
-			case generation:
-				if status.PendingPages == 0 {
-					t.Fatalf("continued the generation with nothing to ship: %+v", status)
-				}
-				t.Logf("the generation continues with %d pages", status.PendingPages)
-			case "":
-				t.Log("a new generation starts")
-			default:
-				t.Fatalf("status after the unclean start = %+v", status)
+			if status.Generation != generation || status.PendingPages == 0 {
+				t.Fatalf("the generation did not continue from the previous log: %+v", status)
 			}
+			t.Logf("the generation continues with %d pages", status.PendingPages)
 			crashSync(t, again)
 			status = again.rep.Status()
-			if status.PendingPages != 0 || !status.Complete || status.Generation == "" {
+			if status.PendingPages != 0 || !status.Complete || status.Generation != generation {
 				t.Fatalf("status after the sync = %+v", status)
 			}
 			if current := crashCurrent(bucket, config, domain); current != status.Generation {
@@ -537,49 +542,78 @@ func TestUncleanStopWithStaleIndexShipsAgainWithoutHarm(t *testing.T) {
 			}
 			again.close()
 			got := crashRestore(t, config, domain, dir+"/restored/stale.db")
-			crashEqual(t, "restore after the stale index", got, want)
+			crashEqual(t, "restore after the stale dirty log", got, want)
 		})
 	}
 }
 
-// After an unclean stop a torn, corrupt, foreign or missing index cannot
-// tell which pages the bucket holds: a new generation starts, and it
-// restores everything the database held.
-func TestIndexTornOrForeignStartsANewGeneration(t *testing.T) {
+// After an unclean stop a dirty log that is damaged, past the marker or
+// missing cannot say which pages changed: a new generation starts, and it
+// restores everything the database held. A log at an older sequence, the
+// one a crash between the marker write and the rewrite leaves, continues.
+func TestDirtyLogDamageStartsANewGenerationAndAnOlderLogContinues(t *testing.T) {
 	cases := []struct {
-		name   string
-		damage func(t *testing.T, index string)
+		name      string
+		continues bool
+		damage    func(t *testing.T, path string)
 	}{
-		{"truncated-to-half", func(t *testing.T, index string) {
-			data, err := os.ReadFile(index)
+		{"header-cut", false, func(t *testing.T, path string) {
+			_, _, current := crashDirtyLog(t, path)
+			if err := os.Truncate(current, 10); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"flipped-record-byte", false, func(t *testing.T, path string) {
+			_, _, current := crashDirtyLog(t, path)
+			data, err := os.ReadFile(current)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(index, data[:len(data)/2], 0o600); err != nil {
+			header := dirtyLogHeaderSize(crashMarker(t, path).Generation)
+			if len(data) <= header {
+				t.Fatalf("the log holds no records to damage: %d bytes", len(data))
+			}
+			data[header+2] ^= 0xff
+			if err := os.WriteFile(current, data, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"flipped-byte", func(t *testing.T, index string) {
-			data, err := os.ReadFile(index)
+		{"flipped-header-byte", false, func(t *testing.T, path string) {
+			_, _, current := crashDirtyLog(t, path)
+			data, err := os.ReadFile(current)
 			if err != nil {
 				t.Fatal(err)
 			}
-			data[len(data)/2] ^= 0xff
-			if err := os.WriteFile(index, data, 0o600); err != nil {
+			data[len(dirtyLogMagic)+7] ^= 0x01
+			if err := os.WriteFile(current, data, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"foreign-page-size", func(t *testing.T, index string) {
-			foreign := encodeIndex(pageIndex{pageSize: 512, hashes: make([]pageHash, 64)})
-			if _, err := decodeIndex(foreign); err != nil {
+		{"past-the-marker", false, func(t *testing.T, path string) {
+			_, pages, _ := crashDirtyLog(t, path)
+			log := newDirtyLog(OSStorage(), path)
+			if err := log.rewrite(crashMarker(t, path).Generation, 99, pages); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(index, foreign, 0o600); err != nil {
-				t.Fatal(err)
+			log.close()
+		}},
+		{"deleted", false, func(t *testing.T, path string) {
+			for _, candidate := range newDirtyLog(OSStorage(), path).paths {
+				if err := os.Remove(candidate); err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
 			}
 		}},
-		{"deleted", func(t *testing.T, index string) {
-			if err := os.Remove(index); err != nil {
+		{"only-the-older-log", true, func(t *testing.T, path string) {
+			// The crash came between the marker write of sync 1 and the
+			// rewrite: the older log names the pages of sync 1 and after.
+			_, pages, current := crashDirtyLog(t, path)
+			log := newDirtyLog(OSStorage(), path)
+			if err := log.rewrite(crashMarker(t, path).Generation, 0, pages); err != nil {
+				t.Fatal(err)
+			}
+			log.close()
+			if err := os.Remove(current); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -605,29 +639,36 @@ func TestIndexTornOrForeignStartsANewGeneration(t *testing.T) {
 			if m := crashMarker(t, path); m.Clean || m.Generation != generation {
 				t.Fatalf("marker after the unclean stop = %+v", m)
 			}
-			tc.damage(t, path+".replica-index")
+			tc.damage(t, path)
 
 			again := crashOpen(t, config, domain, path)
-			if status := again.rep.Status(); status.Generation == generation {
-				t.Fatalf("the generation continued on a %s index: %+v", tc.name, status)
-			}
-			if !again.rep.SnapshotDue() {
-				t.Fatal("no snapshot due after the index became unusable")
+			status := again.rep.Status()
+			if tc.continues {
+				if status.Generation != generation || status.PendingPages == 0 {
+					t.Fatalf("the older log did not continue the generation: %+v", status)
+				}
+			} else {
+				if status.Generation == generation {
+					t.Fatalf("the generation continued on a %s dirty log: %+v", tc.name, status)
+				}
+				if !again.rep.SnapshotDue() {
+					t.Fatal("no snapshot due after the dirty log became unusable")
+				}
 			}
 			crashSync(t, again)
-			status := again.rep.Status()
-			if status.Generation == "" || status.Generation == generation || !status.Complete || status.PendingPages != 0 {
+			status = again.rep.Status()
+			if status.Generation == "" || (status.Generation == generation) != tc.continues || !status.Complete || status.PendingPages != 0 {
 				t.Fatalf("status after the sync = %+v, previous generation %s", status, generation)
 			}
 			if current := crashCurrent(bucket, config, domain); current != status.Generation {
-				t.Fatalf("current = %q, want the new generation %q", current, status.Generation)
+				t.Fatalf("current = %q, want %q", current, status.Generation)
 			}
-			if _, err := os.ReadFile(path + ".replica-index"); err != nil {
-				t.Fatalf("the new generation wrote no index: %v", err)
+			if seq, _, _ := crashDirtyLog(t, path); seq != crashMarker(t, path).Seq {
+				t.Fatalf("the dirty log is at sequence %d, the marker at %d", seq, crashMarker(t, path).Seq)
 			}
 			again.close()
 			got := crashRestore(t, config, domain, dir+"/restored/torn.db")
-			crashEqual(t, "restore from the new generation", got, want)
+			crashEqual(t, "restore after the "+tc.name+" dirty log", got, want)
 		})
 	}
 }
@@ -735,9 +776,8 @@ func TestRestartWhileNothingChangedShipsNothing(t *testing.T) {
 	if m := crashMarker(t, path); !m.Clean || m.Generation != generation {
 		t.Fatalf("marker after the clean stop = %+v", m)
 	}
-	indexBefore, err := os.ReadFile(path + ".replica-index")
-	if err != nil {
-		t.Fatal(err)
+	if seq, pages, _ := crashDirtyLog(t, path); seq != 2 || len(pages) != 0 {
+		t.Fatalf("dirty log after the clean stop: sequence %d, %d pages", seq, len(pages))
 	}
 	putsBefore := crashPuts(bucket)
 
@@ -760,22 +800,18 @@ func TestRestartWhileNothingChangedShipsNothing(t *testing.T) {
 	if m := crashMarker(t, path); !m.Clean || m.Seq != 2 {
 		t.Fatalf("marker after the idle sync = %+v", m)
 	}
-	indexAfter, err := os.ReadFile(path + ".replica-index")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(indexBefore, indexAfter) {
-		t.Fatal("the idle sync rewrote the index")
+	if seq, pages, _ := crashDirtyLog(t, path); seq != 2 || len(pages) != 0 {
+		t.Fatalf("dirty log after the idle sync: sequence %d, %d pages", seq, len(pages))
 	}
 	again.close()
 	got := crashRestore(t, config, domain, dir+"/restored/idle.db")
 	crashEqual(t, "restore after the idle restart", got, want)
 }
 
-// Prepare rebuilds the index from a database it restored, so a write and
-// a crash right after the restore continue the generation with only the
-// pages that changed.
-func TestPrepareIndexesARestoredDatabase(t *testing.T) {
+// Prepare starts the dirty log next to a database it restored, so a write
+// and a crash right after the restore continue the generation with only
+// the pages that changed.
+func TestPrepareStartsTheDirtyLogForARestoredDatabase(t *testing.T) {
 	_, _, config := crashBucket(t)
 	dir := t.TempDir()
 	domain := "rebuilt.example.test"
@@ -800,13 +836,8 @@ func TestPrepareIndexesARestoredDatabase(t *testing.T) {
 		t.Fatalf("marker after the restore = %+v", m)
 	}
 	pages := int(crashFileSize(t, restoredPath) / int64(m.PageSize))
-	indexData, err := os.ReadFile(restoredPath + ".replica-index")
-	if err != nil {
-		t.Fatalf("Prepare wrote no index next to the restored database: %v", err)
-	}
-	index, err := decodeIndex(indexData)
-	if err != nil || index.pageSize != m.PageSize || len(index.hashes) != pages {
-		t.Fatalf("index of the restored database: %d hashes of page size %d, %v; the file has %d pages of %d", len(index.hashes), index.pageSize, err, pages, m.PageSize)
+	if seq, logged, _ := crashDirtyLog(t, restoredPath); seq != m.Seq || len(logged) != 0 {
+		t.Fatalf("dirty log of the restored database: sequence %d with %d pages; the marker is at %d", seq, len(logged), m.Seq)
 	}
 	// A write without a sync, then the stop: unclean.
 	crashWrite(t, restored, "state", []byte(`{"version":2}`))
@@ -822,7 +853,7 @@ func TestPrepareIndexesARestoredDatabase(t *testing.T) {
 		t.Fatalf("the restored generation did not continue: %+v", status)
 	}
 	if status.PendingPages == 0 || status.PendingPages >= pages {
-		t.Fatalf("pending %d pages of %d; the index did not limit the difference", status.PendingPages, pages)
+		t.Fatalf("pending %d pages of %d; the dirty log did not limit the difference", status.PendingPages, pages)
 	}
 	crashSync(t, again)
 	status = again.rep.Status()

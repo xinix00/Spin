@@ -50,12 +50,12 @@ func TestModel(t *testing.T) {
 		steps, time.Since(started).Round(time.Millisecond), h.stats, len(h.committed), h.pointsFetched, len(h.generations))
 }
 
-// modelIndexWriteFaults adds the page index write to the local faults the
-// model injects: a failed index write removes the index, and the index
-// carries the marker sequence, so a stale one is refused at the next start
-// (TestUncleanStopWithStaleIndexShipsAgainWithoutHarm in crash_test.go
+// modelDirtyLogFaults adds the rewrite of the dirty log to the local
+// faults the model injects: a failed rewrite leaves the previous log, which
+// names more pages than are dirty, never fewer
+// (TestUncleanStopWithStaleDirtyLogShipsAgainWithoutHarm in crash_test.go
 // shows the case deterministically).
-const modelIndexWriteFaults = true
+const modelDirtyLogFaults = true
 
 func modelParameters(t *testing.T) (seed uint64, steps int) {
 	seed = uint64(time.Now().UnixNano())
@@ -340,9 +340,9 @@ func (h *modelHarness) randomStep() {
 	case roll < 95:
 		h.op("fetch-every-point", h.checkEveryPoint)
 	case roll < 97:
-		h.op("index-removed-restart", func() { h.damagedIndexRestart("remove") })
+		h.op("dirty-log-removed-restart", func() { h.damagedDirtyLogRestart("remove") })
 	default:
-		h.op("index-corrupt-restart", func() { h.damagedIndexRestart([]string{"flip", "truncate"}[h.rng.IntN(2)]) })
+		h.op("dirty-log-corrupt-restart", func() { h.damagedDirtyLogRestart("flip") })
 	}
 }
 
@@ -579,13 +579,13 @@ func (h *modelHarness) syncWithBucketFault() {
 // failure is reported, and the bucket is consistent either way.
 func (h *modelHarness) syncWithLocalFault() {
 	kinds := []string{"spool-sync", "spool-write", "marker-open"}
-	if modelIndexWriteFaults {
-		kinds = append(kinds, "index-open")
+	if modelDirtyLogFaults {
+		kinds = append(kinds, "dirty-log-open")
 	}
 	kind := kinds[h.rng.IntN(len(kinds))]
-	// A sync writes the marker several times and the index once.
+	// A sync writes the marker several times and rewrites the log once.
 	countdown := 1 + h.rng.IntN(4)
-	if kind == "index-open" {
+	if kind == "dirty-log-open" {
 		countdown = 1
 	}
 	fired := false
@@ -601,13 +601,13 @@ func (h *modelHarness) syncWithLocalFault() {
 			}
 			return faultFile{File: file, write: func([]byte, int64) (int, error) { fired = true; return 0, errInjected }}
 		}
-	case "marker-open", "index-open":
-		suffix := ".replica"
-		if kind == "index-open" {
-			suffix = ".replica-index"
+	case "marker-open", "dirty-log-open":
+		matches := func(path string) bool { return strings.HasSuffix(path, ".replica") }
+		if kind == "dirty-log-open" {
+			matches = func(path string) bool { return strings.Contains(path, ".replica-dirty-") }
 		}
-		fault.open = func(path string, _ bool) error {
-			if !strings.HasSuffix(path, suffix) {
+		fault.open = func(path string, create bool) error {
+			if !matches(path) || (kind == "dirty-log-open" && !create) {
 				return nil
 			}
 			countdown--
@@ -658,53 +658,66 @@ func (h *modelHarness) cleanRestart() {
 	}
 }
 
-// damagedIndexRestart: writes, an unclean stop, and an index the next
-// start cannot use. It must not guess: a new generation holds everything,
-// and the bucket's current generation becomes that one.
-func (h *modelHarness) damagedIndexRestart(damage string) {
+// damagedDirtyLogRestart: writes, an unclean stop, and a dirty log the
+// next start cannot trust, removed or with a flipped byte. It must not
+// guess: a new generation holds everything, and the bucket's current
+// generation becomes that one.
+func (h *modelHarness) damagedDirtyLogRestart(damage string) {
 	if h.current == nil {
 		return
 	}
 	h.write()
 	h.close()
-	indexPath := h.path + ".replica-index"
 	previous := h.closedStatus.Generation
-	if _, err := os.Stat(indexPath); errors.Is(err, os.ErrNotExist) {
-		// A failed index write may already have removed it: that is the
-		// "remove" case, and the same must hold.
+	log := newDirtyLog(OSStorage(), h.path)
+	var present []string
+	current, currentSeq := "", int64(-1)
+	for _, candidate := range log.paths {
+		if _, err := os.Stat(candidate); err != nil {
+			continue
+		}
+		present = append(present, candidate)
+		// The file the start would read: of the marker's generation, the
+		// highest sequence.
+		if generation, seq, _, err := log.readFile(candidate); err == nil && generation == h.closedMarker.Generation && seq > currentSeq {
+			current, currentSeq = candidate, seq
+		}
+	}
+	if len(present) == 0 {
+		h.fatalf("no dirty log next to the database after an unclean stop")
+	}
+	if current == "" {
+		// The marker names a generation whose first sync never committed
+		// (its snapshot failed); no log of it exists yet, and the start
+		// abandons it either way. That is the "remove" case.
 		damage = "remove"
-		h.stats["index-already-missing"]++
+		h.stats["dirty-log-of-uncommitted-generation"]++
 	}
 	switch damage {
 	case "remove":
-		if err := os.Remove(indexPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			h.fatalf("remove index: %v", err)
+		for _, candidate := range present {
+			h.exec("remove dirty log", func() error { return os.Remove(candidate) })
 		}
 	case "flip":
-		data, err := os.ReadFile(indexPath)
+		target := current
+		data, err := os.ReadFile(target)
 		if err != nil {
-			h.fatalf("read index: %v", err)
+			h.fatalf("read dirty log: %v", err)
 		}
 		data[h.rng.IntN(len(data))] ^= 0xff
-		h.exec("corrupt index", func() error { return os.WriteFile(indexPath, data, 0o600) })
-	case "truncate":
-		info, err := os.Stat(indexPath)
-		if err != nil {
-			h.fatalf("stat index: %v", err)
-		}
-		h.exec("truncate index", func() error { return os.Truncate(indexPath, h.rng.Int64N(info.Size())) })
+		h.exec("corrupt dirty log", func() error { return os.WriteFile(target, data, 0o600) })
 	}
 	h.open()
 	if status := h.rep.Status(); status.Generation != "" || status.PendingPages != 0 {
-		h.fatalf("start with a %sd index did not abandon the generation: %+v", damage, status)
+		h.fatalf("start with a %sd dirty log did not abandon the generation: %+v", damage, status)
 	}
-	if _, err := h.sync("after " + damage + "d index"); err != nil {
-		h.fatalf("sync after a %sd index failed: %v", damage, err)
+	if _, err := h.sync("after " + damage + "d dirty log"); err != nil {
+		h.fatalf("sync after a %sd dirty log failed: %v", damage, err)
 	}
 	if status := h.rep.Status(); status.Generation == previous || !status.Complete {
-		h.fatalf("sync after a %sd index did not start a new generation: %+v", damage, status)
+		h.fatalf("sync after a %sd dirty log did not start a new generation: %+v", damage, status)
 	}
-	h.stats["index-"+damage]++
+	h.stats["dirty-log-"+damage]++
 }
 
 // checkRestore closes the live replica, restores the domain into a fresh

@@ -12,11 +12,7 @@ type spoolPart struct {
 	length int
 }
 type capture struct {
-	pages []uint32
-	// shipped lists the pages that were read, in segment order, with
-	// their hashes for the index.
-	shipped  []uint32
-	hashes   []pageHash
+	pages    []uint32
 	parts    []spoolPart
 	path     string
 	size     int64
@@ -82,8 +78,6 @@ func (r *Replica) capture(ctx context.Context, db Database, all bool) (capture, 
 			if err != nil {
 				return err
 			}
-			c.shipped = append(c.shipped, seg.Pages...)
-			c.hashes = append(c.hashes, seg.hashes()...)
 			data := encodeSegment(seg)
 			if err := writeAt(spool, data, position); err != nil {
 				return err

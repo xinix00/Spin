@@ -90,9 +90,7 @@ type Replica struct {
 	stopOnce    sync.Once
 	lastCompact time.Time
 	// now is the clock; tests move it.
-	now     func() time.Time
-	indexMu sync.Mutex
-	index   pageIndex
+	now func() time.Time
 }
 
 var registered sync.Map
@@ -131,7 +129,7 @@ func NewWithOptions(config Config, domain, path string, inner vfs.VFS, logger *s
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	replica := &Replica{
-		config: config, domain: domain, path: full, inner: inner, files: storageFor(inner), tracker: newTracker(), vfsName: name, logger: logger,
+		config: config, domain: domain, path: full, inner: inner, files: storageFor(inner), vfsName: name, logger: logger,
 		s3:     &S3{Endpoint: config.Endpoint, Bucket: config.Bucket, Region: config.Region, AccessKey: config.AccessKey, SecretKey: config.SecretKey},
 		status: Status{Enabled: true, Bucket: config.Bucket}, stop: make(chan struct{}),
 		now: func() time.Time { return time.Now().UTC() },
@@ -146,6 +144,7 @@ func NewWithOptions(config Config, domain, path string, inner vfs.VFS, logger *s
 		replica.now = options.Now
 	}
 	replica.lifetime, replica.cancel = context.WithCancel(context.Background())
+	replica.tracker = newTracker(newDirtyLog(replica.files, full))
 	replica.tracker.onUnclean = replica.markUnclean
 	vfs.Register(name, &trackingVFS{inner: inner, main: full, tracker: replica.tracker})
 	return replica, nil
@@ -195,7 +194,7 @@ func (r *Replica) Prepare(ctx context.Context) error {
 				return errors.New("interrupted restore has no current generation")
 			}
 			r.logger.Info("replica: no generation in the bucket; the database starts empty", "domain", r.domain)
-			return nil
+			return r.tracker.rewriteLog("", 0)
 		}
 		if err != nil {
 			return fmt.Errorf("read current generation: %w", err)
@@ -208,8 +207,8 @@ func (r *Replica) Prepare(ctx context.Context) error {
 		if err := r.setMarker(restored); err != nil {
 			return err
 		}
-		if err := r.rebuildIndex(restored.PageSize, restored.Seq); err != nil {
-			return fmt.Errorf("index the restored database: %w", err)
+		if err := r.tracker.rewriteLog(restored.Generation, restored.Seq); err != nil {
+			return fmt.Errorf("start the dirty log: %w", err)
 		}
 		r.mu.Lock()
 		r.status.Restored, r.status.Generation, r.status.Complete = true, generation, true
@@ -217,6 +216,8 @@ func (r *Replica) Prepare(ctx context.Context) error {
 		r.logger.Info("replica: database restored from the bucket", "domain", r.domain, "generation", generation, "segments", restored.Seq, "bytes", restored.Size)
 		return nil
 	}
+	// The hash index of earlier versions is not read any more.
+	_ = r.files.Remove(r.path + ".replica-index")
 	stored, err := r.readMarker()
 	switch {
 	case err != nil:
@@ -225,46 +226,32 @@ func (r *Replica) Prepare(ctx context.Context) error {
 		r.logger.Warn("replica: legacy local marker; starting a generation with commit manifests", "domain", r.domain)
 	case stored.Destination != r.destinationID():
 		r.logger.Info("replica: object-store destination changed; starting a fresh generation", "domain", r.domain)
-	case !stored.Clean:
-		// Writes after the last sync: compare with what the bucket holds
-		// and continue with the difference.
-		index, err := r.usableIndex(stored)
-		if err != nil {
-			r.logger.Warn("replica: the database changed after its last sync and the page index is unusable; a new generation starts", "domain", r.domain, "generation", stored.Generation, "error", err)
-			return nil
-		}
-		pages, total, err := r.differingPages(index)
-		if err != nil {
-			r.logger.Warn("replica: the database changed after its last sync and could not be compared; a new generation starts", "domain", r.domain, "generation", stored.Generation, "error", err)
-			return nil
-		}
-		if err := r.setMarker(stored); err != nil {
-			return err
-		}
-		r.indexMu.Lock()
-		r.index = index
-		r.indexMu.Unlock()
-		r.tracker.markPages(pages)
-		r.mu.Lock()
-		r.status.Generation, r.status.Complete = stored.Generation, stored.Complete
-		r.mu.Unlock()
-		r.logger.Info("replica: the database changed after its last sync; the generation continues with the pages that differ", "domain", r.domain, "generation", stored.Generation, "pages", len(pages), "of", total)
 	default:
+		// The dirty log names the pages written since the last sync: the
+		// generation continues with those. A clean marker means none,
+		// and whatever the log names then is shipped once more, which
+		// costs nothing but a few pages.
+		pages, err := r.tracker.log.read(stored.Generation, stored.Seq)
+		if err != nil && !stored.Clean {
+			r.logger.Warn("replica: the database changed after its last sync and the dirty log is unusable; a new generation starts", "domain", r.domain, "generation", stored.Generation, "error", err)
+			return r.tracker.rewriteLog("", 0)
+		}
 		if err := r.setMarker(stored); err != nil {
 			return err
 		}
-		if index, err := r.usableIndex(stored); err == nil {
-			r.indexMu.Lock()
-			r.index = index
-			r.indexMu.Unlock()
-		} else if err := r.rebuildIndex(stored.PageSize, stored.Seq); err != nil {
-			r.logger.Warn("replica: page index rebuilt with an error; the next unclean stop costs a full snapshot", "domain", r.domain, "error", err)
+		r.tracker.markPages(pages)
+		if err := r.tracker.rewriteLog(stored.Generation, stored.Seq); err != nil {
+			return fmt.Errorf("start the dirty log: %w", err)
 		}
 		r.mu.Lock()
 		r.status.Generation, r.status.Complete = stored.Generation, stored.Complete
 		r.mu.Unlock()
+		if !stored.Clean {
+			r.logger.Info("replica: the database changed after its last sync; the generation continues with the pages the dirty log names", "domain", r.domain, "generation", stored.Generation, "pages", len(pages))
+		}
+		return nil
 	}
-	return nil
+	return r.tracker.rewriteLog("", 0)
 }
 
 // SnapshotDue reports whether the next sync copies the whole database: a
@@ -310,6 +297,7 @@ func (r *Replica) Close() {
 		close(r.stop)
 		r.mu.Unlock()
 		r.active.Wait()
+		r.tracker.log.close()
 		vfs.Unregister(r.vfsName)
 		registered.Delete(r.vfsName)
 	})
@@ -454,12 +442,10 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 			return err
 		}
 		committed = true
-		r.indexMu.Lock()
-		r.index.apply(captured.pageSize, captured.size, captured.shipped, captured.hashes)
-		r.index.seq = current.Seq
-		r.indexMu.Unlock()
-		if err := r.writeIndex(); err != nil {
-			r.logger.Warn("replica: write page index", "domain", r.domain, "error", err)
+		if err := r.tracker.rewriteLog(current.Generation, current.Seq); err != nil {
+			// The previous log stays and names more than is dirty, which
+			// is safe; the next start just ships a few pages twice.
+			r.logger.Warn("replica: rewrite the dirty log", "domain", r.domain, "error", err)
 		}
 		if captured.snapshot {
 			r.logger.Info("replica: snapshot uploaded", "domain", r.domain, "segments", len(m.Parts), "bytes", current.Bytes, "took", r.now().Sub(started).Round(time.Millisecond))

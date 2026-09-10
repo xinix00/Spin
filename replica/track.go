@@ -13,7 +13,9 @@ import (
 // those pages, reads them under a read transaction (so no write is half
 // way) and ships them. Writes that arrive in between mark their pages again.
 // The first write after a sync also flips the marker on storage to unclean,
-// so a crash before the next sync is known at the next start.
+// so a crash before the next sync is known at the next start; the dirty
+// log names the pages of those writes, so that start continues instead of
+// copying everything.
 
 type tracker struct {
 	mu       sync.Mutex
@@ -27,10 +29,11 @@ type tracker struct {
 	// arrives; it records the unclean state on storage before the write.
 	onUnclean func() error
 	revision  uint64
+	log       *dirtyLog
 }
 
-func newTracker() *tracker {
-	return &tracker{dirty: map[uint32]struct{}{}, clean: true}
+func newTracker(log *dirtyLog) *tracker {
+	return &tracker{dirty: map[uint32]struct{}{}, clean: true, log: log}
 }
 
 func (t *tracker) learnHeader(header []byte) {
@@ -56,12 +59,14 @@ func (t *tracker) learnHeader(header []byte) {
 func (t *tracker) markLocked(offset, length int64) {
 	if t.pageSize == 0 {
 		t.pending = append(t.pending, [2]int64{offset, length})
+		t.log.markBroken()
 		return
 	}
 	first := offset / int64(t.pageSize)
 	last := (offset + length - 1) / int64(t.pageSize)
 	for page := first; page <= last; page++ {
 		t.dirty[uint32(page+1)] = struct{}{}
+		t.log.note(uint32(page + 1))
 	}
 	if end := offset + length; end > t.size {
 		t.size = end
@@ -107,7 +112,29 @@ func (t *tracker) truncate(size int64) error {
 	t.size = size
 	// A size-only change must be shipped too. Page 1 carries SQLite's size.
 	t.dirty[1] = struct{}{}
+	t.log.note(1)
 	return nil
+}
+
+// rewriteLog starts the dirty log over with what is still dirty, after a
+// sync committed at seq.
+func (t *tracker) rewriteLog(generation string, seq int64) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	pages := make([]uint32, 0, len(t.dirty))
+	for page := range t.dirty {
+		pages = append(pages, page)
+	}
+	sort.Slice(pages, func(i, j int) bool { return pages[i] < pages[j] })
+	if len(t.pending) > 0 {
+		// Writes the tracker could not place yet stay unplaceable.
+		if err := t.log.rewrite(generation, seq, pages); err != nil {
+			return err
+		}
+		t.log.markBroken()
+		return t.log.flush()
+	}
+	return t.log.rewrite(generation, seq, pages)
 }
 
 // markAll marks every page of a database of the given size: the start of a
@@ -144,15 +171,17 @@ func (t *tracker) take(limit int) []uint32 {
 	return pages
 }
 
-// markPages marks pages found to differ from the bucket at a start after
-// an unclean stop; the tracker is unclean from then on.
+// markPages marks the pages the dirty log named at a start after an
+// unclean stop; the tracker is unclean from then on.
 func (t *tracker) markPages(pages []uint32) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, page := range pages {
 		t.dirty[page] = struct{}{}
 	}
-	t.clean = false
+	if len(pages) > 0 {
+		t.clean = false
+	}
 }
 
 func (t *tracker) putBack(pages []uint32) {
@@ -274,6 +303,22 @@ func (f *trackedFile) Truncate(size int64) error {
 		return err
 	}
 	return f.File.Truncate(size)
+}
+
+// Sync puts the dirty log on disk before the pages it names.
+func (f *trackedFile) Sync(flags vfs.SyncFlag) error {
+	if err := f.tracker.log.flush(); err != nil {
+		return err
+	}
+	return f.File.Sync(flags)
+}
+
+// Unlock ends a transaction; what it wrote without a sync is logged now.
+func (f *trackedFile) Unlock(lock vfs.LockLevel) error {
+	if err := f.tracker.log.flush(); err != nil {
+		return err
+	}
+	return f.File.Unlock(lock)
 }
 
 // DeviceCharacteristics drops capabilities the wrapper does not forward as
