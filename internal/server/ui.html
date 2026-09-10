@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Spin</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/v__SPIN_UI_VERSION__/spin-mark.svg">
   <link href="/assets/v__SPIN_UI_VERSION__/vendor/material-symbols-outlined.css" rel="stylesheet">
   <link href="/assets/v__SPIN_UI_VERSION__/vendor/xterm-5.5.0.css" rel="stylesheet">
   <link href="/assets/v__SPIN_UI_VERSION__/spin.css" rel="stylesheet">
@@ -11,7 +12,7 @@
 <body>
   <section class="auth-gate" id="auth-gate">
     <div class="auth-card">
-      <div class="brand"><div class="eyebrow">EasyACP</div><h1>Spin <span class="brand-version"></span></h1><p class="subtitle auth-status"><span class="auth-busy" id="auth-busy"><span class="material-symbols-outlined" aria-hidden="true">progress_activity</span></span><span id="auth-copy">Verbinden met de server…</span></p></div>
+      <div class="brand"><div class="eyebrow">EasyACP</div><h1><img class="spin-mark" src="/assets/v__SPIN_UI_VERSION__/spin-mark.svg" width="32" height="32" alt="">Spin <span class="brand-version"></span></h1><p class="subtitle auth-status"><span class="auth-busy" id="auth-busy"><span class="material-symbols-outlined" aria-hidden="true">progress_activity</span></span><span id="auth-copy">Verbinden met de server…</span></p></div>
       <form id="setup-form" class="form-grid" hidden>
         <div><label for="setup-username">Gebruikersnaam owner</label><input id="setup-username" name="username" value="derek" required autocomplete="username"></div>
         <div><label for="setup-name">Naam</label><input id="setup-name" name="display_name" value="Derek" required autocomplete="name"></div>
@@ -27,7 +28,7 @@
   </section>
   <div class="app-layout" id="app-shell" hidden>
     <aside class="sidebar">
-      <div class="brand-mark"><div class="brand-copy"><div class="eyebrow">EasyACP</div><div class="brand-name">Spin <span class="brand-version"></span></div></div><button class="icon-button nav-toggle" id="nav-toggle" type="button" title="Menu inklappen" aria-label="Menu inklappen"><span class="material-symbols-outlined" aria-hidden="true">left_panel_close</span></button></div>
+      <div class="brand-mark"><div class="brand-copy"><div class="eyebrow">EasyACP</div><div class="brand-name"><img class="spin-mark" src="/assets/v__SPIN_UI_VERSION__/spin-mark.svg" width="24" height="24" alt="">Spin <span class="brand-version"></span></div></div><button class="icon-button nav-toggle" id="nav-toggle" type="button" title="Menu inklappen" aria-label="Menu inklappen"><span class="material-symbols-outlined" aria-hidden="true">left_panel_close</span></button></div>
       <nav class="tabs" aria-label="Hoofdnavigatie">
         <button class="tab-button active" data-tab="jobs"><span class="material-symbols-outlined nav-icon" aria-hidden="true">work</span><span class="nav-label">Jobs</span><span class="nav-count" id="nav-count-jobs">(0/0)</span></button>
         <button class="tab-button" data-tab="explore"><span class="material-symbols-outlined nav-icon" aria-hidden="true">folder_open</span><span class="nav-label">Explore</span><span class="nav-count" id="nav-count-explore"></span></button>

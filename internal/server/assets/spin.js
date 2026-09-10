@@ -286,7 +286,7 @@ function sendChat(message){if(chatState.socket?.readyState===WebSocket.OPEN)chat
 // The capsule of a fresh Session is still on its way; the chat shows where
 // it stands and connects the moment the agent can be reached.
 function chatSessionReady(sessionID){const session=byID(snapshot.sessions,sessionID),composition=byID(snapshot.compositions,session?.prepared_composition_id);return Boolean(composition?.runtime&&composition.runtime.status!=='stopped');}
-function chatWaitingLabel(session){const preparing=sessionPreparation(session);if(preparing?.failure)return `Starten mislukt · ${preparing.failure.error} · probeert opnieuw`;const progress=preparing?.progress,stage=progress?({parents:'basisimage naar runner',load:'image laden op de runner',start:'capsule starten',prepare:'voorbereiden'}[progress.stage]||progress.stage):(preparing?'runner zoeken':'in de wachtrij'),pct=progress?.total?` · ${Math.floor((progress.current||0)/progress.total*100)}%`:'';return `Even geduld · ${stage}${pct}`;}
+function chatWaitingLabel(session){const state=preparationText(sessionPreparation(session),session);return state.failed?state.text:`Even geduld · ${state.text}`;}
 function connectACPChat(sessionID){
   chatState.manualClose=false;
   if(!chatSessionReady(sessionID)){const session=byID(snapshot.sessions,sessionID),status=document.getElementById('chat-status');status.className='chat-live busy';status.innerHTML=`<span class="dot"></span><span>${esc(chatWaitingLabel(session))}</span>`;if(!chatState.waitingShown){chatState.waitingShown=true;chatSystem('De omgeving van deze Session wordt klaargezet. Zodra de agent er is, kun je typen.');}clearTimeout(chatState.reconnectTimer);chatState.reconnectTimer=setTimeout(()=>{if(document.getElementById('chat-dialog').open&&chatState.sessionID===sessionID)connectACPChat(sessionID);},1500);return;}
@@ -593,10 +593,18 @@ function enterApp(status){
 function showBanner(text,kind){const dialog=document.querySelector('dialog[open]');let box=document.getElementById('error');if(dialog){box=dialog.querySelector('.dialog-banner');if(!box){box=document.createElement('div');box.className='error-banner dialog-banner';dialog.prepend(box);}}box.textContent=text;box.classList.toggle('notice',kind==='notice');box.style.display='block';clearTimeout(box._hide);box._hide=setTimeout(()=>box.style.display='none',kind==='notice'?4500:6500);}
 function showError(error){showBanner(error.message||error,'error');}
 function showNotice(text){showBanner(text,'notice');}
-function startProgressText(start){
-  const stage={prepare:'voorbereiden',parents:'basisimage naar runner',load:'image laden op de runner',start:'capsule starten',done:'klaar'}[start.stage]||start.stage||'starten';
-  const bytes=start.total?` · ${formatBytes(start.current||0)} / ${formatBytes(start.total)} (${Math.floor((start.current||0)/start.total*100)}%)`:'';
-  return `Starten · ${stage}${bytes}${start.message&&!start.total?` · ${start.message}`:''}`;
+// One vocabulary for everything that starts on a runner: a recording, a
+// Session's capsule, the chat waiting for it. The stage names come from the
+// runner; the words are here, once.
+const startStages={prepare:'voorbereiden',parents:'basisimage naar runner',load:'image laden op de runner',start:'capsule starten',done:'klaar'};
+function progressText(progress){if(!progress)return '';const stage=startStages[progress.stage]||progress.stage||'starten',bytes=progress.total?` · ${formatBytes(progress.current||0)} / ${formatBytes(progress.total)} (${Math.floor((progress.current||0)/progress.total*100)}%)`:'';return `${stage}${bytes}${progress.message&&!progress.total?` · ${progress.message}`:''}`;}
+function startProgressText(start){return `Starten · ${progressText(start)||'starten'}`;}
+// preparationText says where a Session's capsule stands: failed and
+// retrying, being prepared on a runner, or still waiting for one.
+function preparationText(preparing,session){
+  if(preparing?.failure){const since=preparing.failure.at?elapsedSince(preparing.failure.at):'';return {text:`Starten mislukt · ${preparing.failure.error} · probeert opnieuw${since?` · ${since} geleden`:''}`,failed:true};}
+  if(preparing){const client=byID(snapshot.clients,preparing.client_id||session?.client_id),since=preparing.started_at?elapsedSince(preparing.started_at):'',doing=progressText(preparing.progress);return {text:`${client?`Voorbereiden op ${client.name}`:'Runner zoeken'}${doing?` · ${doing}`:''}${since?` · ${since}`:''}`,failed:false};}
+  return {text:session?.status==='queued'?'In de wachtrij · wacht op een runner':'Nog geen runner gekoppeld',failed:false};
 }
 // followingStartID guards the poller: one per recording, whether the browser
 // issued the command or found the recording starting after a reload.
@@ -987,12 +995,8 @@ function jobTemplate(job){return job.template_snapshot||byID(snapshot.workflow_t
 function sessionPreparation(session){return session?(snapshot.preparing||[]).find(item=>item.session_id===session.id):null;}
 function sessionPresenceHTML(session){if(!session)return '';
   const preparing=sessionPreparation(session);
-  if(preparing?.failure){const since=preparing.failure.at?elapsedSince(preparing.failure.at):'';return `<small class="session-presence offline" title="${esc(preparing.failure.error)}">${icon('replay')}Starten mislukt${since?` · ${esc(since)} geleden`:''} · probeert opnieuw · ${esc(preparing.failure.error)}</small>`;}
-  if(preparing){const client=byID(snapshot.clients,preparing.client_id||session.client_id),since=preparing.started_at?elapsedSince(preparing.started_at):'',progress=preparing.progress;
-    const stage=progress?({parents:'basisimage naar runner',load:'image laden op de runner',start:'capsule starten',prepare:'voorbereiden'}[progress.stage]||progress.stage):'',bytes=progress?.total?` ${formatBytes(progress.current||0)} / ${formatBytes(progress.total)} (${Math.floor((progress.current||0)/progress.total*100)}%)`:'';
-    const doing=progress?` · ${stage}${bytes||(progress.message?` · ${progress.message}`:'')}`:'';
-    return `<small class="session-presence preparing">${icon('progress_activity')}${client?`Voorbereiden op ${esc(client.name)}`:'Runner zoeken'}${esc(doing)}${since?` · ${esc(since)}`:''}</small>`;}
-  if(!session.client_id)return `<small class="session-presence">${session.status==='queued'?'Wacht op runner':'Nog geen runner gekoppeld'}</small>`;const client=byID(snapshot.clients,session.client_id);if(client&&['online','draining'].includes(client.status))return `<small class="session-presence">Runner ${esc(client.name)} · ${esc(client.draining?'draining':'online')}</small>`;const name=client?.name||session.client_id,lastSeen=client?.last_seen_at;return `<small class="session-presence offline">${icon('cloud_off')} Geen actieve client · ${esc(name)}${lastSeen?` · ${esc(elapsedSince(lastSeen))} offline`:''}</small>`;}
+  if(preparing){const state=preparationText(preparing,session);return `<small class="session-presence ${state.failed?'offline':'preparing'}" title="${esc(state.text)}">${icon(state.failed?'replay':'progress_activity')}${esc(state.text)}</small>`;}
+  if(!session.client_id)return `<small class="session-presence">${esc(preparationText(null,session).text)}</small>`;const client=byID(snapshot.clients,session.client_id);if(client&&['online','draining'].includes(client.status))return `<small class="session-presence">Runner ${esc(client.name)} · ${esc(client.draining?'draining':'online')}</small>`;const name=client?.name||session.client_id,lastSeen=client?.last_seen_at;return `<small class="session-presence offline">${icon('cloud_off')} Geen actieve client · ${esc(name)}${lastSeen?` · ${esc(elapsedSince(lastSeen))} offline`:''}</small>`;}
 
 function assigneeOptions(job){const users=(snapshot.users||[]).filter(user=>!user.archived_at).map(user=>user.username);const names=[...new Set([jobAssignee(job),job.owner,currentOperator(),...users].filter(Boolean))];return names.map(name=>{const user=(snapshot.users||[]).find(item=>item.username===name);return `<option value="${esc(name)}" ${name===jobAssignee(job)?'selected':''}>${esc(user?.display_name||name)}</option>`;}).join('');}
 function renderJobs(){
