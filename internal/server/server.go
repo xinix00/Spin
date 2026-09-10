@@ -1118,7 +1118,7 @@ func (s *Server) stopJobRuntimes(ctx context.Context, job domain.Job, operator s
 }
 
 // adoptJobTemplate moves a Job to the newest revision of its Template,
-// continuing at the chosen step or keeping its current one.
+// continuing at the chosen step.
 func (s *Server) adoptJobTemplate(w http.ResponseWriter, r *http.Request) {
 	operator := s.requestOperator(r, r.URL.Query().Get("operator"))
 	var request struct {
@@ -1127,13 +1127,9 @@ func (s *Server) adoptJobTemplate(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	created, previousCompositionID, launched, err := s.store.AdoptWorkflowTemplate(r.PathValue("jobID"), operator, request.PhaseID)
+	created, previousCompositionID, _, err := s.store.AdoptWorkflowTemplate(r.PathValue("jobID"), operator, request.PhaseID)
 	if err != nil {
 		writeError(w, err)
-		return
-	}
-	if !launched {
-		writeJSON(w, http.StatusOK, created)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, created)

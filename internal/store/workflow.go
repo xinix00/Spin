@@ -1486,11 +1486,10 @@ func (s *Store) newWorkflowSessionLocked(job *domain.Job, template domain.Workfl
 }
 
 // AdoptWorkflowTemplate moves an active Job to the newest revision of its
-// Template. With no phase the Job keeps its current step, which must still
-// exist in that revision; with a phase the current step is closed as
-// "overgezet" and the Job continues at the chosen step of the new
-// revision, as a new attempt. It reports the composition the closed step
-// was using, so the caller can stop it.
+// Template, continuing at the chosen step of that revision as a new
+// attempt: the current step is closed as "overgezet", so the Job never
+// sits in a step the new revision does not know. It reports the
+// composition the closed step was using, so the caller can stop it.
 func (s *Store) AdoptWorkflowTemplate(jobID, operator, phaseID string) (domain.CreateJobResponse, string, bool, error) {
 	operator = normalizeSubject(operator)
 	phaseID = normalizeName(phaseID)
@@ -1513,15 +1512,7 @@ func (s *Store) AdoptWorkflowTemplate(jobID, operator, phaseID string) (domain.C
 	template := cloneWorkflowTemplate(latest)
 	run, hasRun := s.state.PhaseRuns[job.CurrentPhaseRunID]
 	if phaseID == "" {
-		if hasRun {
-			if _, exists := workflowPhase(template, run.PhaseID); !exists {
-				return domain.CreateJobResponse{}, "", false, fmt.Errorf("the current step %q is not in revision %d; choose the step to continue at: %w", run.PhaseName, template.Revision, ErrConflict)
-			}
-		}
-		job.TemplateSnapshot = &template
-		job.UpdatedAt = time.Now().UTC()
-		s.state.Jobs[job.ID] = job
-		return domain.CreateJobResponse{Job: job}, "", false, s.saveLocked()
+		return domain.CreateJobResponse{}, "", false, fmt.Errorf("choose the step of revision %d to continue at: %w", template.Revision, ErrConflict)
 	}
 	phase, exists := workflowPhase(template, phaseID)
 	if !exists {

@@ -588,11 +588,9 @@ func TestJobAdoptsANewerTemplateRevision(t *testing.T) {
 	if job := st.Snapshot().Jobs[0]; job.TemplateSnapshot == nil || job.TemplateSnapshot.Revision != 1 {
 		t.Fatalf("the update changed the running Job's copy: %+v", job.TemplateSnapshot)
 	}
-	// Keeping the current step works: the merge step exists in both
-	// revisions.
-	kept, _, launched, err := st.AdoptWorkflowTemplate(created.Job.ID, "derek", "")
-	if err != nil || launched || kept.Job.TemplateSnapshot == nil || kept.Job.TemplateSnapshot.Revision != 2 {
-		t.Fatalf("adopt keeping the step = %+v launched=%v, %v", kept.Job.TemplateSnapshot, launched, err)
+	// A step of the new revision is always chosen; nothing is kept.
+	if _, _, _, err := st.AdoptWorkflowTemplate(created.Job.ID, "derek", ""); err == nil {
+		t.Fatal("adopting without a step was accepted")
 	}
 	if _, _, _, err := st.AdoptWorkflowTemplate(created.Job.ID, "derek", "nonsense"); err == nil {
 		t.Fatal("an unknown step was accepted")
