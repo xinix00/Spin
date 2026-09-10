@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -26,8 +27,10 @@ type appTestEngine struct {
 	stopped  int
 	sessions map[string]bool
 	merged   []capsule.WorkspaceMerge
-	synced   []capsule.WorkspaceSync
-	browsed  []capsule.RepositoryBrowse
+	// conflicts is how many merges still fail on a conflict.
+	conflicts int
+	synced    []capsule.WorkspaceSync
+	browsed   []capsule.RepositoryBrowse
 }
 
 func (e *appTestEngine) BrowseRepository(_ context.Context, browse capsule.RepositoryBrowse) (capsule.RepositoryBrowseResult, error) {
@@ -94,6 +97,10 @@ func (e *appTestEngine) MergeWorkspace(_ context.Context, _ domain.CapsuleRuntim
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.merged = append(e.merged, merge)
+	if e.conflicts > 0 {
+		e.conflicts--
+		return capsule.WorkspaceMergeResult{}, errors.New("docker exec failed (exit 45): Auto-merging src/en.json\nCONFLICT (content): Merge conflict in src/en.json\nSPIN_CONFLICT De Job-branch conflicteert met develop in: src/en.json src/nl.json. Merge origin/develop in de Job-branch (die staat al opgehaald, niet fetchen), los de conflicten op, commit de merge; daarna kan de merge in develop opnieuw.: exit status 45")
+	}
 	return capsule.WorkspaceMergeResult{Head: "abc123"}, nil
 }
 
@@ -390,5 +397,135 @@ func TestExploreBrowsesARepositoryThroughTheRunner(t *testing.T) {
 	last := engine.browsed[len(engine.browsed)-1]
 	if last.RemoteURL != "https://example.com/explore.git" || last.CacheKey != repository.Repository.ID || last.Ref != "feature" {
 		t.Fatalf("browse request = %+v", last)
+	}
+}
+
+// A Template with its own merge step: a conflict is a reject like any
+// other, the next step is an agent that merges the base branch into the
+// Job branch and reads the conflict as feedback, its accept returns to the
+// merge step, and a clean merge ends the Job.
+func TestMergeStepRejectsOnConflictAndTheAIMergeStepReturnsToIt(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &appTestEngine{conflicts: 1}
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "shop", RemoteURL: "https://github.com/derek/shop.git", DefaultRef: "develop", CredentialScope: domain.CredentialScopePublic,
+		Services: []domain.AppService{{Name: "web", Run: "npm start", Ports: []int{3000}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Test, merge, AI merge", Phases: []domain.WorkflowPhase{
+		{ID: "test", Name: "Testen", Executor: domain.WorkflowExecutorExpose, Accept: domain.WorkflowTransition{Target: "merge"}, Reject: domain.WorkflowTransition{Target: "SELF"}},
+		{ID: "merge", Name: "Merge", Executor: domain.WorkflowExecutorAction, Action: &domain.WorkflowAction{Type: domain.WorkflowActionGitMerge}, Accept: domain.WorkflowTransition{Target: "DONE"}, Reject: domain.WorkflowTransition{Target: "ai-merge"}},
+		{ID: "ai-merge", Name: "AI merge", Executor: domain.WorkflowExecutorAgent, Instructions: "Merge origin/develop in de Job-branch en los de conflicten op.", AllowChanges: true, Accept: domain.WorkflowTransition{Target: "merge"}, Reject: domain.WorkflowTransition{Target: "ASK_USER"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mergePhase domain.WorkflowPhase
+	for _, phase := range template.Phases {
+		if phase.ID == "merge" {
+			mergePhase = phase
+		}
+	}
+	if mergePhase.Action == nil || mergePhase.Action.Type != domain.WorkflowActionGitMerge || mergePhase.Accept.Target != domain.WorkflowTargetDone || mergePhase.Reject.Target != "ai-merge" {
+		t.Fatalf("merge step after normalization = %+v", mergePhase)
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Objective: "Werkend", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.launchQueuedWorkflowPhases("test")
+	deadline := time.Now().Add(10 * time.Second)
+	var question domain.WorkflowQuestion
+	for question.ID == "" && time.Now().Before(deadline) {
+		for _, candidate := range st.Snapshot().WorkflowQuestions {
+			if candidate.SessionID == created.Session.ID && candidate.Status == "open" {
+				question = candidate
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if question.ID == "" {
+		t.Fatalf("no decision for the expose phase; failures=%+v", srv.sessionPreparations())
+	}
+	advance, err := st.AnswerWorkflowQuestion(question.ID, "derek", "accept", "")
+	if err != nil || advance.NextSession == nil {
+		t.Fatalf("accept did not queue the merge step: %+v, %v", advance, err)
+	}
+	srv.startQueuedWorkflowLaunch(*advance.NextSession)
+	// The merge conflicts: the merge step is rejected with the conflict
+	// as its reason, and the AI merge step is queued.
+	var aiSession domain.Session
+	deadline = time.Now().Add(10 * time.Second)
+	for aiSession.ID == "" && time.Now().Before(deadline) {
+		snapshot := st.Snapshot()
+		for _, run := range snapshot.PhaseRuns {
+			if run.JobID != created.Job.ID || run.PhaseID != "ai-merge" {
+				continue
+			}
+			for _, session := range snapshot.Sessions {
+				if session.ID == run.SessionID {
+					aiSession = session
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if aiSession.ID == "" {
+		var reasons []string
+		for _, run := range st.Snapshot().PhaseRuns {
+			reasons = append(reasons, run.PhaseID+"/"+string(run.Status)+": "+run.RejectReason)
+		}
+		t.Fatalf("the conflict did not queue the AI merge step; runs=%v", reasons)
+	}
+	var mergeRun domain.PhaseRun
+	for _, run := range st.Snapshot().PhaseRuns {
+		if run.JobID == created.Job.ID && run.PhaseID == "merge" {
+			mergeRun = run
+		}
+	}
+	if mergeRun.Status != domain.PhaseRunRejected || !strings.HasPrefix(mergeRun.RejectReason, "De Job-branch conflicteert met develop in: src/en.json src/nl.json.") || strings.Contains(mergeRun.RejectReason, "docker exec") {
+		t.Fatalf("merge run after the conflict = %s %q", mergeRun.Status, mergeRun.RejectReason)
+	}
+	prompt, err := srv.workflowPrompt(aiSession.ID)
+	if err != nil || !strings.Contains(prompt, "conflicteert met develop in: src/en.json src/nl.json") || !strings.Contains(prompt, "Merge origin/develop in de Job-branch") {
+		t.Fatalf("AI merge prompt = %q, %v", prompt, err)
+	}
+	// The agent resolves and accepts: back to the merge step, which now
+	// merges cleanly and ends the Job.
+	if _, err := st.MarkWorkflowPhaseRunning(aiSession.ID); err != nil {
+		t.Fatal(err)
+	}
+	// The agent accepts: the step's accept points at the merge step, so
+	// nobody is asked and the merge step is queued again.
+	advance, err = st.CompleteWorkflowPhase(aiSession.ID, "accept", "Conflicten opgelost, merge gecommit.")
+	if err != nil || advance.Question != nil || advance.NextSession == nil {
+		t.Fatalf("accept of the AI merge step did not queue the merge step: %+v, %v", advance, err)
+	}
+	if _, _, _, nextPhase, _, _, err := st.WorkflowForSession(advance.NextSession.ID); err != nil || nextPhase.ID != "merge" {
+		t.Fatalf("accept of the AI merge step went to %q, not back to the merge step (%v)", nextPhase.ID, err)
+	}
+	srv.startQueuedWorkflowLaunch(*advance.NextSession)
+	deadline = time.Now().Add(10 * time.Second)
+	var job domain.Job
+	for job.WorkflowStatus != domain.WorkflowDone && time.Now().Before(deadline) {
+		job = st.Snapshot().Jobs[0]
+		time.Sleep(10 * time.Millisecond)
+	}
+	if job.WorkflowStatus != domain.WorkflowDone || len(engine.merged) != 2 {
+		var reasons []string
+		for _, run := range st.Snapshot().PhaseRuns {
+			reasons = append(reasons, run.PhaseID+"/"+string(run.Status)+": "+run.RejectReason)
+		}
+		t.Fatalf("job after the second merge = %s, merges=%d; runs=%v", job.WorkflowStatus, len(engine.merged), reasons)
+	}
+	// The generated finalizer still sits behind the Template for steps that
+	// say DONE; the merge step's DONE did not go there.
+	if last := template.Phases[len(template.Phases)-1]; last.ID != domain.WorkflowPullRequestPhaseID {
+		t.Fatalf("last phase = %+v", last)
 	}
 }

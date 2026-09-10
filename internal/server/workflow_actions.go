@@ -96,7 +96,7 @@ func (s *Server) launchWorkflowMerge(session domain.Session, operator string) {
 		Authentication: authentication,
 	})
 	if err != nil {
-		s.finishWorkflowAction(session.ID, "reject", err.Error())
+		s.finishWorkflowAction(session.ID, "reject", mergeFailureReason(err))
 		return
 	}
 	detail := fmt.Sprintf("%s gemerged in %s met merge-commit %s", job.Branch, target, result.Head)
@@ -264,4 +264,17 @@ func pullRequestActionResult(pull githubPullRequest, existing bool) domain.Workf
 		detail = "Bestaande pull request gebruikt: " + pull.HTMLURL
 	}
 	return domain.WorkflowActionResult{Type: domain.WorkflowActionGitPullRequest, ExternalID: strconv.Itoa(pull.Number), URL: pull.HTMLURL, Detail: detail, CreatedAt: time.Now().UTC()}
+}
+
+// mergeFailureReason is what the next step reads: the merge's own words
+// (which files conflict, what to do), not the exec wrapper around them.
+func mergeFailureReason(err error) string {
+	text := err.Error()
+	if _, after, ok := strings.Cut(text, "(exit 45): "); ok {
+		text = strings.TrimSuffix(after, ": exit status 45")
+		if index := strings.LastIndex(text, "SPIN_CONFLICT "); index >= 0 {
+			text = text[index+len("SPIN_CONFLICT "):]
+		}
+	}
+	return strings.TrimSpace(text)
 }

@@ -53,12 +53,16 @@ func normalizeWorkflowTemplateRequest(req domain.CreateWorkflowTemplateRequest) 
 	inputs := make([]domain.WorkflowPhase, 0, len(req.Phases))
 	for _, input := range req.Phases {
 		if input.Executor == domain.WorkflowExecutorAction || input.Action != nil {
-			if input.Action != nil && isWorkflowFinalizerAction(input.Action.Type) {
-				// The PR finalizer is control-plane policy, not editable Template
-				// input. Accept echoed Templates by dropping the generated phase.
+			if isGeneratedFinalizer(input) {
+				// The generated finalizer is control-plane policy, not
+				// editable Template input. Accept echoed Templates by
+				// dropping it.
 				continue
 			}
-			return "", "", "", nil, fmt.Errorf("system actions cannot be configured as Template phases: %w", ErrConflict)
+			if input.Action == nil || strings.ToLower(strings.TrimSpace(input.Action.Type)) != domain.WorkflowActionGitMerge {
+				return "", "", "", nil, fmt.Errorf("system actions cannot be configured as Template phases: %w", ErrConflict)
+			}
+			input.Executor = domain.WorkflowExecutorAction
 		}
 		inputs = append(inputs, input)
 	}
@@ -129,7 +133,17 @@ func normalizeWorkflowTemplateRequest(req domain.CreateWorkflowTemplateRequest) 
 			phase.Model, phase.ReasoningEffort = "", ""
 			phase.Deliverables = nil
 		case domain.WorkflowExecutorAction:
-			return "", "", "", nil, fmt.Errorf("system actions cannot be configured as Template phases: %w", ErrConflict)
+			// A merge step: Spin merges the Job branch into the base branch
+			// with the operator's credentials, and the step's transitions
+			// are the person's like any step's. A conflict is a plain
+			// reject, so the next step (an agent that merges the base
+			// branch into the Job branch) reads it as feedback.
+			if phase.Action == nil || strings.ToLower(strings.TrimSpace(phase.Action.Type)) != domain.WorkflowActionGitMerge {
+				return "", "", "", nil, fmt.Errorf("phase %s: the only step Spin performs itself is a merge: %w", phase.Name, ErrConflict)
+			}
+			phase.Action = &domain.WorkflowAction{Type: domain.WorkflowActionGitMerge}
+			phase.EnvironmentSelector, phase.WithSelectors, phase.Model, phase.ReasoningEffort = "", nil, "", ""
+			phase.Deliverables, phase.Inject, phase.AllowChanges = nil, nil, false
 		default:
 			return "", "", "", nil, fmt.Errorf("phase %s has unsupported executor %q: %w", phase.Name, phase.Executor, ErrConflict)
 		}
@@ -179,10 +193,14 @@ func normalizeWorkflowTemplateRequest(req domain.CreateWorkflowTemplateRequest) 
 		if phase.Reject.Max > 0 && strings.TrimSpace(phase.Reject.Exhausted) == "" {
 			phase.Reject.Exhausted = domain.WorkflowTargetAskUser
 		}
-		phase.Accept.Target = workflowPullRequestTarget(phase.Accept.Target)
-		phase.Accept.Exhausted = workflowPullRequestTarget(phase.Accept.Exhausted)
-		phase.Reject.Target = workflowPullRequestTarget(phase.Reject.Target)
-		phase.Reject.Exhausted = workflowPullRequestTarget(phase.Reject.Exhausted)
+		// DONE from a step means the generated finalizer; from a merge step
+		// the merge was the landing, and DONE ends the Job.
+		if phase.Executor != domain.WorkflowExecutorAction {
+			phase.Accept.Target = workflowPullRequestTarget(phase.Accept.Target)
+			phase.Accept.Exhausted = workflowPullRequestTarget(phase.Accept.Exhausted)
+			phase.Reject.Target = workflowPullRequestTarget(phase.Reject.Target)
+			phase.Reject.Exhausted = workflowPullRequestTarget(phase.Reject.Exhausted)
+		}
 		for _, transition := range []domain.WorkflowTransition{phase.Accept, phase.Reject} {
 			for _, target := range []string{transition.Target, transition.Exhausted} {
 				if target != "" && !validWorkflowTarget(target, phaseIDs) {
@@ -245,10 +263,16 @@ func workflowPullRequestPhase() domain.WorkflowPhase {
 	}
 }
 
+// isGeneratedFinalizer tells the finalizer Spin appends from a merge step a
+// person put in the Template.
+func isGeneratedFinalizer(phase domain.WorkflowPhase) bool {
+	return phase.Executor == domain.WorkflowExecutorAction && phase.Action != nil && isWorkflowFinalizerAction(phase.Action.Type) && (phase.ID == "" || phase.ID == domain.WorkflowPullRequestPhaseID)
+}
+
 func ensureWorkflowPullRequestFinalizer(template domain.WorkflowTemplate) (domain.WorkflowTemplate, bool) {
 	finalizerIndex := -1
 	for index, phase := range template.Phases {
-		if phase.Executor == domain.WorkflowExecutorAction && phase.Action != nil && isWorkflowFinalizerAction(phase.Action.Type) {
+		if isGeneratedFinalizer(phase) {
 			finalizerIndex = index
 			break
 		}
@@ -273,6 +297,9 @@ func ensureWorkflowPullRequestFinalizer(template domain.WorkflowTemplate) (domai
 	}
 	for index := range template.Phases {
 		phase := &template.Phases[index]
+		if phase.Executor == domain.WorkflowExecutorAction {
+			continue
+		}
 		for _, transition := range []*domain.WorkflowTransition{&phase.Accept, &phase.Reject} {
 			if strings.EqualFold(strings.TrimSpace(transition.Target), domain.WorkflowTargetDone) {
 				transition.Target = finalizer.ID
@@ -437,7 +464,7 @@ func templateWithFinalizer(template domain.WorkflowTemplate, landing string) dom
 	template = cloneWorkflowTemplate(template)
 	for index := range template.Phases {
 		phase := &template.Phases[index]
-		if phase.Executor == domain.WorkflowExecutorAction && phase.Action != nil && isWorkflowFinalizerAction(phase.Action.Type) {
+		if isGeneratedFinalizer(*phase) {
 			chosen := workflowFinalizerPhase(landing)
 			phase.Name, phase.Action = chosen.Name, chosen.Action
 		}
