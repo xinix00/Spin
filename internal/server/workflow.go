@@ -296,8 +296,8 @@ func (s *Server) workflowTools(sessionID string) ([]workflowTool, error) {
 				"options":  map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string"}, "description": "Verwachte antwoorden, in de volgorde die je aanbeveelt"},
 			}, "question")},
 		})},
-		{Name: "accept", Title: "Accepteer fase", Description: "Markeer deze fase als geslaagd en volg de geconfigureerde accept-overgang.", InputSchema: object(map[string]any{"summary": map[string]any{"type": "string"}})},
-		{Name: "reject", Title: "Wijs fase af", Description: "Wijs deze fase af met een concrete reden en volg de geconfigureerde reject-overgang.", InputSchema: object(map[string]any{"reason": map[string]any{"type": "string"}}, "reason")},
+		{Name: "accept", Title: "Accepteer fase", Description: "Markeer deze fase als geslaagd en volg de geconfigureerde accept-overgang. De samenvatting wordt als Markdown getoond aan wie het besluit neemt: gebruik koppen, lijsten en code waar dat helpt.", InputSchema: object(map[string]any{"summary": map[string]any{"type": "string", "description": "Wat je opleverde en waarom het klaar is, in Markdown"}})},
+		{Name: "reject", Title: "Wijs fase af", Description: "Wijs deze fase af met een concrete reden en volg de geconfigureerde reject-overgang. De reden wordt als Markdown getoond aan wie het besluit neemt: gebruik koppen, lijsten en code waar dat helpt.", InputSchema: object(map[string]any{"reason": map[string]any{"type": "string", "description": "Wat er ontbreekt of fout is en wat er moet gebeuren, in Markdown"}}, "reason")},
 	}
 	if len(phase.Deliverables) > 0 {
 		names := make([]string, 0, len(phase.Deliverables))
