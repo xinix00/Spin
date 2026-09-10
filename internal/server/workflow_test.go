@@ -38,10 +38,10 @@ func TestWorkflowAcceptOwnsCommitAndPublishesSessionToJobBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Code", Phases: []domain.WorkflowPhase{{
-		ID: "develop", Name: "Ontwikkelen", Instructions: "Bouw het", AllowChanges: true,
-		Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf},
-	}}})
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Code", Phases: []domain.WorkflowPhase{
+		{ID: "develop", Name: "Ontwikkelen", Instructions: "Bouw het", AllowChanges: true, Accept: domain.WorkflowTransition{Target: "NEXT"}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf}},
+		{ID: "pr", Name: "Pull request", Executor: domain.WorkflowExecutorAction, Action: &domain.WorkflowAction{Type: domain.WorkflowActionGitPullRequest}, Accept: domain.WorkflowTransition{Target: "DONE"}, Reject: domain.WorkflowTransition{Target: "SELF", Max: 2, Exhausted: "ASK_USER"}},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestWorkflowAcceptOwnsCommitAndPublishesSessionToJobBranch(t *testing.T) {
 	}
 	foundPR := false
 	for _, run := range snapshot.PhaseRuns {
-		if run.PhaseID == domain.WorkflowPullRequestPhaseID && run.ActionResult != nil && run.ActionResult.URL == "https://github.com/derek/accept/pull/7" {
+		if run.PhaseID == "pr" && run.ActionResult != nil && run.ActionResult.URL == "https://github.com/derek/accept/pull/7" {
 			foundPR = true
 		}
 	}

@@ -251,11 +251,10 @@ func TestWorkflowKeepsAgentOutcomeHistoryWhenChatResumesSamePhaseRun(t *testing.
 		t.Fatal(err)
 	}
 	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{
-		Operator: "derek", Name: "History", Phases: []domain.WorkflowPhase{{
-			ID: "develop", Name: "Ontwikkel", Instructions: "Bouw het",
-			Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone},
-			Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetAskUser},
-		}},
+		Operator: "derek", Name: "History", Phases: []domain.WorkflowPhase{
+			{ID: "develop", Name: "Ontwikkel", Instructions: "Bouw het", Accept: domain.WorkflowTransition{Target: "NEXT"}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetAskUser}},
+			{ID: "pr", Name: "Pull request", Executor: domain.WorkflowExecutorAction, Action: &domain.WorkflowAction{Type: domain.WorkflowActionGitPullRequest}, Accept: domain.WorkflowTransition{Target: "DONE"}, Reject: domain.WorkflowTransition{Target: "SELF", Max: 2, Exhausted: "ASK_USER"}},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -395,7 +394,10 @@ func TestWorkflowPhaseLayersGoOnTopOfTheJobsLayers(t *testing.T) {
 	}
 }
 
-func TestMandatoryPullRequestFailureCanOnlyReturnToPullRequestPhase(t *testing.T) {
+// A pull request step that fails follows its own reject route: retried up
+// to its limit, then the person is asked, and the only way on is to try
+// the step again.
+func TestFailedPullRequestStepRetriesAndThenAsksToRetry(t *testing.T) {
 	st, err := Open("")
 	if err != nil {
 		t.Fatal(err)
@@ -406,10 +408,10 @@ func TestMandatoryPullRequestFailureCanOnlyReturnToPullRequestPhase(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Always PR", Phases: []domain.WorkflowPhase{{
-		ID: "review", Name: "Review", Instructions: "Review",
-		Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf},
-	}}})
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Always PR", Phases: []domain.WorkflowPhase{
+		{ID: "review", Name: "Review", Instructions: "Review", Accept: domain.WorkflowTransition{Target: "NEXT"}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf}},
+		{ID: "pr", Name: "Pull request", Executor: domain.WorkflowExecutorAction, Action: &domain.WorkflowAction{Type: domain.WorkflowActionGitPullRequest}, Accept: domain.WorkflowTransition{Target: "DONE"}, Reject: domain.WorkflowTransition{Target: "SELF", Max: 2, Exhausted: "ASK_USER"}},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

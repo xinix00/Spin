@@ -58,10 +58,10 @@ func TestGitPullRequestActionUsesJobOwnerProviderAccountInsteadOfRepositoryCreat
 	if err != nil {
 		t.Fatal(err)
 	}
-	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Publish", Phases: []domain.WorkflowPhase{{
-		ID: "review", Name: "Review", Instructions: "Controleer het resultaat",
-		Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf},
-	}}})
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Publish", Phases: []domain.WorkflowPhase{
+		{ID: "review", Name: "Review", Instructions: "Controleer het resultaat", Accept: domain.WorkflowTransition{Target: "NEXT"}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf}},
+		{ID: "pr", Name: "Pull request", Executor: domain.WorkflowExecutorAction, Action: &domain.WorkflowAction{Type: domain.WorkflowActionGitPullRequest}, Accept: domain.WorkflowTransition{Target: "DONE"}, Reject: domain.WorkflowTransition{Target: "SELF", Max: 2, Exhausted: "ASK_USER"}},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,8 +74,8 @@ func TestGitPullRequestActionUsesJobOwnerProviderAccountInsteadOfRepositoryCreat
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(template.Phases) != 2 || template.Phases[1].ID != domain.WorkflowPullRequestPhaseID {
-		t.Fatalf("Template has no automatic PR finalizer: %+v", template.Phases)
+	if len(template.Phases) != 2 || template.Phases[1].ID != "pr" {
+		t.Fatalf("Template phases = %+v", template.Phases)
 	}
 	if _, err := st.MarkWorkflowPhaseRunning(created.Session.ID); err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestGitPullRequestActionUsesJobOwnerProviderAccountInsteadOfRepositoryCreat
 	}
 	var run domain.PhaseRun
 	for _, candidate := range snapshot.PhaseRuns {
-		if candidate.PhaseID == domain.WorkflowPullRequestPhaseID {
+		if candidate.PhaseID == "pr" {
 			run = candidate
 			break
 		}

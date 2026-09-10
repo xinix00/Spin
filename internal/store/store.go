@@ -241,9 +241,6 @@ func (s *Store) ensureMaps() {
 				availableDeliverables = append(availableDeliverables, strings.TrimSpace(deliverable.Name))
 			}
 		}
-		var finalized bool
-		template, finalized = ensureWorkflowPullRequestFinalizer(template)
-		changed = changed || finalized
 		if changed {
 			s.state.WorkflowTemplates[id] = template
 		}
@@ -253,11 +250,6 @@ func (s *Store) ensureMaps() {
 			continue
 		}
 		if job.TemplateSnapshot != nil {
-			frozen, changed := ensureWorkflowPullRequestFinalizer(cloneWorkflowTemplate(*job.TemplateSnapshot))
-			if changed {
-				job.TemplateSnapshot = &frozen
-				s.state.Jobs[id] = job
-			}
 			continue
 		}
 		if template, ok := s.state.WorkflowTemplates[job.TemplateID]; ok {

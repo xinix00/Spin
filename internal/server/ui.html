@@ -186,7 +186,6 @@
             <div class="form-grid">
               <div><label for="template-name">Naam</label><input id="template-name" name="name" required placeholder="Ontwikkeling"></div>
               <div><label for="template-description">Omschrijving</label><input id="template-description" name="description" placeholder="Van ontwerp naar implementatie en review"></div>
-              <div class="wide"><label for="template-finalize">Afronden</label><select id="template-finalize" name="finalize"><option value="pull_request">Standaard: pull request op de remote (jij merget daar)</option><option value="merge">Standaard: mergen in de basisbranch (Spin merget de Job-branch zelf; fast-forward waar het kan, anders een merge-commit)</option></select><small>Dit is de standaard van het Template. Bij de laatste ACCEPT van een Job kies je alsnog per Job: pull request of direct mergen.</small></div>
               <div class="wide"><label for="template-git">Git environment</label><select id="template-git" name="git_selector" required><option value="">record eerst een laag die Git ENABLET</option></select><small>De flow kiest alleen de Git-implementatie; agents en repository-tooling blijven daarvan gescheiden.</small></div>
             </div>
             <div id="template-steps"></div>

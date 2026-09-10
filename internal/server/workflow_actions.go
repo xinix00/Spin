@@ -57,7 +57,7 @@ func (s *Server) launchWorkflowAction(ctx context.Context, sessionID string) {
 	s.finishWorkflowAction(sessionID, "accept", result.Detail)
 }
 
-// launchWorkflowMerge finalizes a Job by merging its branch into the base
+// launchWorkflowMerge runs a merge step: the Job branch goes into the base
 // branch from the phase's workspace, with the operator's Git identity. A
 // merge that fails leaves the decision to a person, like a failed pull
 // request does.

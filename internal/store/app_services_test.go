@@ -188,9 +188,9 @@ func TestAssignJobHandsItToAKnownUser(t *testing.T) {
 	}
 }
 
-// A step whose accept ends the Job says how it lands, so an agent that
-// accepts on its own does not need a person to choose.
-func TestStepTargetCarriesTheLanding(t *testing.T) {
+// A merge is a step of its own: an agent that accepts on its own moves
+// the Job to it without a person choosing anything, and DONE is DONE.
+func TestMergeIsAStepAndDoneIsDone(t *testing.T) {
 	st, err := Open("")
 	if err != nil {
 		t.Fatal(err)
@@ -201,15 +201,23 @@ func TestStepTargetCarriesTheLanding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Code", Phases: []domain.WorkflowPhase{{ID: "dev", Name: "Dev", Instructions: "Bouw", AllowChanges: true, Accept: domain.WorkflowTransition{Target: "DONE:merge"}, Reject: domain.WorkflowTransition{Target: "SELF"}}}})
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Code", Phases: []domain.WorkflowPhase{
+		{ID: "dev", Name: "Dev", Instructions: "Bouw", AllowChanges: true, Accept: domain.WorkflowTransition{Target: "NEXT"}, Reject: domain.WorkflowTransition{Target: "SELF"}},
+		{ID: "merge", Name: "Merge", Executor: domain.WorkflowExecutorAction, Action: &domain.WorkflowAction{Type: domain.WorkflowActionGitMerge}, Accept: domain.WorkflowTransition{Target: "DONE"}, Reject: domain.WorkflowTransition{Target: "dev"}},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dev := template.Phases[0]; dev.Accept.Target != domain.WorkflowPullRequestPhaseID || dev.Accept.Landing != "merge" {
-		t.Fatalf("accept transition = %+v", dev.Accept)
+	if len(template.Phases) != 2 || template.Phases[1].Accept.Target != domain.WorkflowTargetDone {
+		t.Fatalf("phases = %+v", template.Phases)
 	}
-	if _, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Fout", Phases: []domain.WorkflowPhase{{ID: "dev", Name: "Dev", Instructions: "Bouw", Accept: domain.WorkflowTransition{Target: "DONE:fax"}, Reject: domain.WorkflowTransition{Target: "SELF"}}}}); err == nil {
-		t.Fatal("an unknown landing was accepted")
+	for _, bad := range []string{"DONE:merge", "DONE:pull_request", "spin-pull-request"} {
+		if _, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Fout", Phases: []domain.WorkflowPhase{{ID: "dev", Name: "Dev", Instructions: "Bouw", Accept: domain.WorkflowTransition{Target: bad}, Reject: domain.WorkflowTransition{Target: "SELF"}}}}); err == nil {
+			t.Fatalf("target %q was accepted", bad)
+		}
+	}
+	if _, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Fout", Phases: []domain.WorkflowPhase{{ID: "x", Name: "X", Executor: domain.WorkflowExecutorAction, Action: &domain.WorkflowAction{Type: "git.fax"}}}}); err == nil {
+		t.Fatal("an unknown action was accepted as a step")
 	}
 	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Objective: "Werkend", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
 	if err != nil {
@@ -218,17 +226,20 @@ func TestStepTargetCarriesTheLanding(t *testing.T) {
 	if _, err := st.MarkWorkflowPhaseRunning(created.Session.ID); err != nil {
 		t.Fatal(err)
 	}
-	// The agent accepts by itself: the next phase is the merge, not a PR.
 	advance, err := st.CompleteWorkflowPhase(created.Session.ID, "accept", "klaar")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if advance.NextSession == nil {
-		t.Fatalf("no finalizer session: %+v", advance)
+	if err != nil || advance.NextSession == nil {
+		t.Fatalf("accept = %+v, %v", advance, err)
 	}
 	_, _, _, next, _, _, err := st.WorkflowForSession(advance.NextSession.ID)
-	if err != nil || next.Action == nil || next.Action.Type != domain.WorkflowActionGitMerge {
-		t.Fatalf("finalizer phase = %+v, %v", next, err)
+	if err != nil || next.ID != "merge" || next.Action == nil || next.Action.Type != domain.WorkflowActionGitMerge {
+		t.Fatalf("next phase = %+v, %v", next, err)
+	}
+	if _, err := st.MarkWorkflowPhaseRunning(advance.NextSession.ID); err != nil {
+		t.Fatal(err)
+	}
+	done, err := st.CompleteWorkflowPhase(advance.NextSession.ID, "accept", "gemerged")
+	if err != nil || done.NextSession != nil || done.Question != nil || done.Job.WorkflowStatus != domain.WorkflowDone {
+		t.Fatalf("after the merge step = %+v, %v", done, err)
 	}
 }
 

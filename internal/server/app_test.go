@@ -174,7 +174,7 @@ func TestExposePhaseStartsTheAppAndWaitsForAVerdict(t *testing.T) {
 
 // A Template that finalizes by merging lands the Job branch on the base
 // branch from a workspace, with the Job done afterwards; no pull request.
-func TestMergeFinalizerLandsTheJobOnTheBaseBranch(t *testing.T) {
+func TestMergeStepLandsTheJobOnTheBaseBranch(t *testing.T) {
 	st, err := store.Open("")
 	if err != nil {
 		t.Fatal(err)
@@ -187,15 +187,12 @@ func TestMergeFinalizerLandsTheJobOnTheBaseBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Test en merge", Finalize: domain.WorkflowFinalizeMerge, Phases: []domain.WorkflowPhase{{
-		ID: "test", Name: "Testen", Executor: domain.WorkflowExecutorExpose,
-		Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: "SELF"},
-	}}})
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Test en merge", Phases: []domain.WorkflowPhase{
+		{ID: "test", Name: "Testen", Executor: domain.WorkflowExecutorExpose, Accept: domain.WorkflowTransition{Target: "NEXT"}, Reject: domain.WorkflowTransition{Target: "SELF"}},
+		{ID: "merge", Name: "Mergen", Executor: domain.WorkflowExecutorAction, Action: &domain.WorkflowAction{Type: domain.WorkflowActionGitMerge}, Accept: domain.WorkflowTransition{Target: "DONE"}, Reject: domain.WorkflowTransition{Target: "SELF", Max: 2, Exhausted: "ASK_USER"}},
+	}})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if last := template.Phases[len(template.Phases)-1]; last.Action == nil || last.Action.Type != domain.WorkflowActionGitMerge || last.Name != "Mergen" {
-		t.Fatalf("finalizer = %+v", last)
 	}
 	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Objective: "Werkend", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
 	if err != nil {
@@ -241,7 +238,7 @@ func TestMergeFinalizerLandsTheJobOnTheBaseBranch(t *testing.T) {
 	}
 	var mergeRun domain.PhaseRun
 	for _, run := range st.Snapshot().PhaseRuns {
-		if run.JobID == job.ID && run.PhaseID == domain.WorkflowPullRequestPhaseID {
+		if run.JobID == job.ID && run.PhaseID == "merge" {
 			mergeRun = run
 		}
 	}
@@ -523,11 +520,6 @@ func TestMergeStepRejectsOnConflictAndTheAIMergeStepReturnsToIt(t *testing.T) {
 		}
 		t.Fatalf("job after the second merge = %s, merges=%d; runs=%v", job.WorkflowStatus, len(engine.merged), reasons)
 	}
-	// The generated finalizer still sits behind the Template for steps that
-	// say DONE; the merge step's DONE did not go there.
-	if last := template.Phases[len(template.Phases)-1]; last.ID != domain.WorkflowPullRequestPhaseID {
-		t.Fatalf("last phase = %+v", last)
-	}
 }
 
 // A Job runs on a copy of its Template; a newer revision is taken over on
@@ -547,10 +539,12 @@ func TestJobAdoptsANewerTemplateRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Revision 1: test, then the generated merge finalizer, which conflicts.
-	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Test en merge", Finalize: domain.WorkflowFinalizeMerge, Phases: []domain.WorkflowPhase{{
-		ID: "test", Name: "Testen", Executor: domain.WorkflowExecutorExpose, Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: "SELF"},
-	}}})
+	// Revision 1: test, then a merge step that retries twice and then
+	// asks the person; it conflicts every time.
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Test en merge", Phases: []domain.WorkflowPhase{
+		{ID: "test", Name: "Testen", Executor: domain.WorkflowExecutorExpose, Accept: domain.WorkflowTransition{Target: "NEXT"}, Reject: domain.WorkflowTransition{Target: "SELF"}},
+		{ID: "merge", Name: "Mergen", Executor: domain.WorkflowExecutorAction, Action: &domain.WorkflowAction{Type: domain.WorkflowActionGitMerge}, Accept: domain.WorkflowTransition{Target: "DONE"}, Reject: domain.WorkflowTransition{Target: "SELF", Max: 2, Exhausted: "ASK_USER"}},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,7 +571,7 @@ func TestJobAdoptsANewerTemplateRevision(t *testing.T) {
 		t.Fatalf("accept did not queue the merge: %+v, %v", advance, err)
 	}
 	srv.startQueuedWorkflowLaunch(*advance.NextSession)
-	// The generated finalizer retries twice and then asks the person.
+	// The merge step retries twice and then asks the person.
 	stuck := openQuestion("")
 	if stuck.PhaseRunID == "" {
 		t.Fatalf("question = %+v", stuck)
@@ -594,8 +588,8 @@ func TestJobAdoptsANewerTemplateRevision(t *testing.T) {
 	if job := st.Snapshot().Jobs[0]; job.TemplateSnapshot == nil || job.TemplateSnapshot.Revision != 1 {
 		t.Fatalf("the update changed the running Job's copy: %+v", job.TemplateSnapshot)
 	}
-	// Keeping the current step works: the generated finalizer exists in
-	// both revisions.
+	// Keeping the current step works: the merge step exists in both
+	// revisions.
 	kept, _, launched, err := st.AdoptWorkflowTemplate(created.Job.ID, "derek", "")
 	if err != nil || launched || kept.Job.TemplateSnapshot == nil || kept.Job.TemplateSnapshot.Revision != 2 {
 		t.Fatalf("adopt keeping the step = %+v launched=%v, %v", kept.Job.TemplateSnapshot, launched, err)
