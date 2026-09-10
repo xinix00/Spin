@@ -341,6 +341,7 @@ func (t *Tenants) open(domain string) (*Tenant, error) {
 			return nil, err
 		}
 		t.setStage(domain, "restore", "Database uit de replica halen als ze hier nog niet staat")
+		rep.Progress = func(message string) { t.setStage(domain, "restore", message) }
 		if err := rep.Prepare(t.ctx); err != nil {
 			rep.Close()
 			return nil, fmt.Errorf("replica: %w", err)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 )
 
 // The index remembers, per page, a hash of what the bucket holds. A start
@@ -167,7 +168,16 @@ func (r *Replica) hashDatabase(pageSize int) ([]pageHash, error) {
 	count := int(size / int64(pageSize))
 	hashes := make([]pageHash, 0, count)
 	run := make([]byte, max(pageSize, readRunBytes/pageSize*pageSize))
+	started := time.Now()
+	r.logger.Info("replica: indexing the database", "domain", r.domain, "bytes", size, "page_size", pageSize)
+	defer func() {
+		took := time.Since(started)
+		r.logger.Info("replica: database indexed", "domain", r.domain, "bytes", size, "took", took.Round(time.Millisecond), "mib_per_second", float64(size)/(1<<20)/max(took.Seconds(), 0.001))
+	}()
 	for offset := int64(0); offset < size; offset += int64(len(run)) {
+		if r.Progress != nil && offset%(256<<20) == 0 {
+			r.Progress(fmt.Sprintf("Database indexeren: %d van %d MiB", offset>>20, size>>20))
+		}
 		chunk := run[:min(int64(len(run)), size-offset)]
 		read, err := file.ReadAt(chunk, offset)
 		if err != nil && !errors.Is(err, io.EOF) {

@@ -2,6 +2,8 @@ package replica
 
 import (
 	"bytes"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,7 +20,7 @@ func indexTestReplica(t *testing.T, pages [][]byte) *Replica {
 	if err := os.WriteFile(path, bytes.Join(pages, nil), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return &Replica{files: storageFor(vfs.Find("")), path: path}
+	return &Replica{files: storageFor(vfs.Find("")), path: path, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 
 func indexTestPage(size int, fill byte) []byte { return bytes.Repeat([]byte{fill}, size) }

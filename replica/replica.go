@@ -60,15 +60,18 @@ type marker struct {
 }
 
 type Replica struct {
-	config  Config
-	s3      ObjectStore
-	domain  string
-	path    string
-	inner   vfs.VFS
-	files   Storage
-	tracker *tracker
-	vfsName string
-	logger  *slog.Logger
+	// Progress, when set, hears what a long step of Prepare is doing, for
+	// a page that waits on it.
+	Progress func(message string)
+	config   Config
+	s3       ObjectStore
+	domain   string
+	path     string
+	inner    vfs.VFS
+	files    Storage
+	tracker  *tracker
+	vfsName  string
+	logger   *slog.Logger
 
 	restoreMu sync.Mutex
 	archiveMu sync.RWMutex
