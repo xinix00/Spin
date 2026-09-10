@@ -637,11 +637,9 @@ async function followStart(start){
 // sealState mirrors the End & save job the browser is following, for the
 // recorder panel; the console shows the same numbers as a progress line.
 let sealState=null;
-function sealProgressText(seal){
-  const stage={commit:'committen',archive:'archiveren',finish:'vastleggen',done:'klaar'}[seal.stage]||seal.stage||'opslaan';
-  const bytes=seal.total?` · ${formatBytes(seal.current||0)} / ${formatBytes(seal.total)} (${Math.floor((seal.current||0)/seal.total*100)}%)`:'';
-  return `Opslaan · ${stage}${bytes}${seal.message&&!seal.total?` · ${seal.message}`:''}`;
-}
+// Saving a layer speaks the same way as starting one: stage, bytes, percentage.
+const sealStages={commit:'committen',archive:'archiveren',finish:'vastleggen',done:'klaar'};
+function sealProgressText(seal){return `Opslaan · ${progressText({...seal,stage:sealStages[seal.stage]||seal.stage||'opslaan'})||'opslaan'}`;}
 async function followSeal(seal){
   sealState=seal;renderRecording();
   for(let failures=0;;){
@@ -859,7 +857,7 @@ function renderRecording(){
   const sealing=sealState&&sealState.recording_id===recording.id&&sealState.status==='running'?sealState:null;
   // While the capsule is still starting the runtime block already carries the
   // progress bar; there is nothing to end yet, but the start can be cancelled.
-  const actions=sealing?`<div class="seal-progress"><div class="seal-track ${sealing.total?'':'indeterminate'}"><div class="seal-fill" style="width:${sealing.total?Math.floor((sealing.current||0)/sealing.total*100):100}%"></div></div><small>${esc(sealProgressText(sealing))}</small></div>`:(recording.runtime?.container_id?`<div class="panel-actions" style="margin-top:9px"><button class="small-button" data-action="end">End & save</button><button class="danger" data-action="cancel">Cancel</button></div>`:`<div class="panel-actions" style="margin-top:9px"><button class="danger" data-action="cancel">Cancel start</button></div>`);
+  const actions=sealing?`<div class="seal-progress"><div class="seal-track ${progressPercent(sealing)===null?'indeterminate':''}"><div class="seal-fill" style="width:${progressPercent(sealing)??100}%"></div></div><small>${esc(sealProgressText(sealing))}</small></div>`:(recording.runtime?.container_id?`<div class="panel-actions" style="margin-top:9px"><button class="small-button" data-action="end">End & save</button><button class="danger" data-action="cancel">Cancel</button></div>`:`<div class="panel-actions" style="margin-top:9px"><button class="danger" data-action="cancel">Cancel start</button></div>`);
   if(sealing){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>SAVING ${esc(recording.kind)}:${esc(recording.name)}${progressPercent(sealing)===null?'':` ${progressPercent(sealing)}%`}</span>`;}
   root.innerHTML=`<h3>Recorder</h3><div class="record-card"><strong>● ${esc(recording.kind)}:${esc(recording.name)}</strong><small>${esc(recording.scope)} · ${(recording.commands||[]).length} commands</small>${recording.enables?.length?`<small>ENABLES <span class="capability">${esc(enabledNames(recording.enables))}</span></small>`:''}${runtime}${actions}</div>`;
   bindActionButtons(root);updateTerminalControls();
