@@ -99,7 +99,7 @@ func (e *appTestEngine) MergeWorkspace(_ context.Context, _ domain.CapsuleRuntim
 	e.merged = append(e.merged, merge)
 	if e.conflicts > 0 {
 		e.conflicts--
-		return capsule.WorkspaceMergeResult{}, errors.New("docker exec failed (exit 45): Auto-merging src/en.json\nCONFLICT (content): Merge conflict in src/en.json\nSPIN_CONFLICT De Job-branch conflicteert met develop in: src/en.json src/nl.json. Merge origin/develop in de Job-branch (die staat al opgehaald, niet fetchen), los de conflicten op, commit de merge; daarna kan de merge in develop opnieuw.: exit status 45")
+		return capsule.WorkspaceMergeResult{}, errors.New("docker exec failed (exit 45): Auto-merging src/en.json\nCONFLICT (content): Merge conflict in src/en.json\nSPIN_CONFLICT De Job-branch conflicteert met develop in: src/en.json src/nl.json. Merge origin/develop in de Job-branch (die staat al opgehaald, niet fetchen), los de conflicten op en accept; Spin neemt het resultaat op in de Job-branch en de merge in develop kan daarna opnieuw.: exit status 45")
 	}
 	return capsule.WorkspaceMergeResult{Head: "abc123"}, nil
 }

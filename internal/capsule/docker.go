@@ -1743,7 +1743,7 @@ git checkout -q -B spin-merge "$SPIN_TARGET"
 if ! git -c user.name="$SPIN_GIT_AUTHOR_NAME" -c user.email="$SPIN_GIT_AUTHOR_EMAIL" merge -q --no-ff -m "$SPIN_COMMIT_SUBJECT" -m "$SPIN_COMMIT_BODY" "$SPIN_SOURCE" >/dev/null 2>&1; then
   SPIN_CONFLICTS="$(git diff --name-only --diff-filter=U | tr '\n' ' ' | sed 's/ $//')"
   git merge --abort >/dev/null 2>&1 || true
-  echo "SPIN_CONFLICT De Job-branch conflicteert met ${SPIN_MERGE_TARGET} in: ${SPIN_CONFLICTS}. Merge origin/${SPIN_MERGE_TARGET} in de Job-branch (die staat al opgehaald, niet fetchen), los de conflicten op, commit de merge; daarna kan de merge in ${SPIN_MERGE_TARGET} opnieuw." >&2
+  echo "SPIN_CONFLICT De Job-branch conflicteert met ${SPIN_MERGE_TARGET} in: ${SPIN_CONFLICTS}. Merge origin/${SPIN_MERGE_TARGET} in de Job-branch (die staat al opgehaald, niet fetchen), los de conflicten op en accept; Spin neemt het resultaat op in de Job-branch en de merge in ${SPIN_MERGE_TARGET} kan daarna opnieuw." >&2
   exit 45
 fi
 SPIN_HEAD="$(git rev-parse HEAD)"
