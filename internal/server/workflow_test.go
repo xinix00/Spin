@@ -169,7 +169,7 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 		t.Fatal(err)
 	}
 	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Docs", Phases: []domain.WorkflowPhase{{
-		ID: "docs", Name: "Documenteer", Instructions: "Schrijf het FO", Deliverables: []domain.DeliverableDefinition{{Name: "FO", Required: true}, {Name: "Preview", Kind: domain.DeliverableKindVisual}},
+		ID: "docs", Name: "Documenteer", Instructions: "Schrijf het FO", Deliverables: []domain.DeliverableDefinition{{Name: "FO", Required: true}, {Name: "Preview", Kind: domain.DeliverableKindFolder}},
 		Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf},
 	}}})
 	if err != nil {
@@ -249,7 +249,7 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 		t.Fatalf("put of a missing file = %s", missingText)
 	}
 	// A visual deliverable is bundled by the runner and kept as such.
-	engine.bundle = domain.DeliverableBundle{Ref: "bundle:abc", Digest: "sha256:abc", Size: 1234, Files: 3, Entry: "index.html", ContentType: "text/html; charset=utf-8"}
+	engine.bundle = domain.DeliverableBundle{Ref: "bundle:abc", Digest: "sha256:abc", Size: 1234, Files: 3, Folder: true, Entry: "index.html", ContentType: "text/html; charset=utf-8"}
 	visual := call(`{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"put_deliverable","arguments":{"name":"Preview","path":"/root/deliverables/preview/"}}}`)
 	if visual.Error != nil || engine.bundled != "/root/deliverables/preview" {
 		t.Fatalf("visual put = %+v, bundled %q", visual, engine.bundled)
@@ -260,7 +260,7 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 			preview = candidate
 		}
 	}
-	if preview.Kind != domain.DeliverableKindVisual || preview.Bundle == nil || preview.Bundle.Ref != "bundle:abc" || preview.Content != "" || preview.CapsulePath() != "/root/deliverables/preview" {
+	if preview.Kind != domain.DeliverableKindFolder || preview.Bundle == nil || preview.Bundle.Ref != "bundle:abc" || preview.Content != "" || preview.CapsulePath() != "/root/deliverables/preview" {
 		t.Fatalf("visual deliverable = %+v", preview)
 	}
 	downloadRequest := httptest.NewRequest(http.MethodGet, "/api/deliverables/"+firstRevision.ID+"/download", nil)

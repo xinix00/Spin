@@ -426,3 +426,53 @@ func TestJobEnvironmentChangesForTheNextStep(t *testing.T) {
 		}
 	}
 }
+
+// The kind of a deliverable is its measure: a put that is not what the
+// Template asked for is refused, and every kind maps to a path in the
+// capsule.
+func TestDeliverableKindsAreCheckedOnPut(t *testing.T) {
+	folder := &domain.DeliverableBundle{Ref: "bundle:a", Files: 3, Folder: true, Entry: "index.html", ContentType: "text/html; charset=utf-8"}
+	emptyFolder := &domain.DeliverableBundle{Ref: "bundle:b", Files: 0, Folder: true}
+	pdf := &domain.DeliverableBundle{Ref: "bundle:c", Files: 1, Entry: "bon.pdf", ContentType: "application/pdf"}
+	png := &domain.DeliverableBundle{Ref: "bundle:d", Files: 1, Entry: "kassa.png", ContentType: "image/png"}
+	other := &domain.DeliverableBundle{Ref: "bundle:e", Files: 1, Entry: "export.xlsx", ContentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+	cases := []struct {
+		kind    string
+		content string
+		bundle  *domain.DeliverableBundle
+		ok      bool
+	}{
+		{domain.DeliverableKindMarkdown, "# FO", nil, true},
+		{domain.DeliverableKindMarkdown, "", nil, false},
+		{domain.DeliverableKindMarkdown, "", folder, false},
+		{domain.DeliverableKindFolder, "", folder, true},
+		{domain.DeliverableKindFolder, "", emptyFolder, false},
+		{domain.DeliverableKindFolder, "", pdf, false},
+		{domain.DeliverableKindPDF, "", pdf, true},
+		{domain.DeliverableKindPDF, "", png, false},
+		{domain.DeliverableKindPDF, "", folder, false},
+		{domain.DeliverableKindImage, "", png, true},
+		{domain.DeliverableKindImage, "", pdf, false},
+		{domain.DeliverableKindFile, "", other, true},
+		{domain.DeliverableKindFile, "", pdf, true},
+		{domain.DeliverableKindFile, "", folder, false},
+	}
+	for _, tc := range cases {
+		err := checkDeliverableShape(domain.DeliverableDefinition{Name: "X", Kind: tc.kind}, tc.content, tc.bundle)
+		if (err == nil) != tc.ok {
+			t.Fatalf("kind %s with %+v: ok=%v, err=%v", tc.kind, tc.bundle, tc.ok, err)
+		}
+	}
+	paths := map[string]domain.Deliverable{
+		"/root/deliverables/functioneel-ontwerp.md": {Name: "Functioneel ontwerp", Kind: domain.DeliverableKindMarkdown},
+		"/root/deliverables/website":                {Name: "Website", Kind: domain.DeliverableKindFolder, Bundle: folder},
+		"/root/deliverables/bon.pdf":                {Name: "Bon", Kind: domain.DeliverableKindPDF, Bundle: pdf},
+		"/root/deliverables/kassa-scherm.png":       {Name: "Kassa scherm!", Kind: domain.DeliverableKindImage, Bundle: png},
+		"/root/deliverables/export.xlsx":            {Name: "Export", Kind: domain.DeliverableKindFile, Bundle: other},
+	}
+	for want, deliverable := range paths {
+		if got := deliverable.CapsulePath(); got != want {
+			t.Fatalf("%s lands at %s, want %s", deliverable.Name, got, want)
+		}
+	}
+}

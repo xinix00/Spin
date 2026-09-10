@@ -54,7 +54,7 @@ func (w *Worker) bundleDeliverable(ctx context.Context, bundler capsule.Workspac
 		_ = writer.CloseWithError(err)
 		streamErr <- err
 	}()
-	entry, files, total, zipErr := tarToZip(reader, file)
+	entry, folder, files, total, zipErr := tarToZip(reader, file)
 	_ = reader.CloseWithError(zipErr)
 	if err := <-streamErr; err != nil {
 		return domain.DeliverableBundle{}, err
@@ -72,12 +72,18 @@ func (w *Worker) bundleDeliverable(ctx context.Context, bundler capsule.Workspac
 	if err != nil {
 		return domain.DeliverableBundle{}, err
 	}
-	return domain.DeliverableBundle{Ref: result.Ref, Digest: result.Digest, Size: result.Size, Files: files, Entry: entry, ContentType: bundleContentType(entry)}, nil
+	contentType := ""
+	if entry != "" {
+		contentType = bundleContentType(entry)
+	}
+	return domain.DeliverableBundle{Ref: result.Ref, Digest: result.Digest, Size: result.Size, Files: files, Folder: folder, Entry: entry, ContentType: contentType}, nil
 }
 
-// tarToZip writes the regular files of a tar to a zip and names the entry:
-// the one file of a single-file bundle, or index.html of a folder.
-func tarToZip(source io.Reader, destination *os.File) (entry string, files int, total int64, err error) {
+// tarToZip writes the regular files of a tar to a zip. A folder's tar
+// carries its own "./" entry, which tells a folder from a single file. The
+// entry is the one file of a single-file bundle, or index.html of a folder
+// when it has one.
+func tarToZip(source io.Reader, destination *os.File) (entry string, folder bool, files int, total int64, err error) {
 	archive := zip.NewWriter(destination)
 	reader := tar.NewReader(source)
 	var names []string
@@ -87,7 +93,11 @@ func tarToZip(source io.Reader, destination *os.File) (entry string, files int, 
 			break
 		}
 		if err != nil {
-			return "", 0, 0, err
+			return "", false, 0, 0, err
+		}
+		if header.Typeflag == tar.TypeDir {
+			folder = true
+			continue
 		}
 		if header.Typeflag != tar.TypeReg {
 			continue
@@ -99,35 +109,35 @@ func tarToZip(source io.Reader, destination *os.File) (entry string, files int, 
 		files++
 		total += header.Size
 		if files > maxBundleFiles {
-			return "", 0, 0, fmt.Errorf("a bundle holds at most %d files", maxBundleFiles)
+			return "", false, 0, 0, fmt.Errorf("a bundle holds at most %d files", maxBundleFiles)
 		}
 		if total > maxBundleBytes {
-			return "", 0, 0, fmt.Errorf("a bundle holds at most %d MiB", maxBundleBytes>>20)
+			return "", false, 0, 0, fmt.Errorf("a bundle holds at most %d MiB", maxBundleBytes>>20)
 		}
 		part, err := archive.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Deflate, Modified: header.ModTime})
 		if err != nil {
-			return "", 0, 0, err
+			return "", false, 0, 0, err
 		}
 		if _, err := io.Copy(part, reader); err != nil {
-			return "", 0, 0, err
+			return "", false, 0, 0, err
 		}
 		names = append(names, name)
 	}
 	if err := archive.Close(); err != nil {
-		return "", 0, 0, err
+		return "", false, 0, 0, err
 	}
 	if files == 0 {
-		return "", 0, 0, errors.New("the bundle is empty")
+		return "", folder, 0, 0, errors.New("the bundle is empty: the folder holds no file")
 	}
-	if files == 1 && !strings.Contains(names[0], "/") && names[0] != "index.html" {
-		return names[0], files, total, nil
+	if !folder {
+		return names[0], false, files, total, nil
 	}
 	for _, name := range names {
 		if name == "index.html" {
-			return "index.html", files, total, nil
+			return "index.html", true, files, total, nil
 		}
 	}
-	return "", 0, 0, errors.New("a folder bundle needs index.html at its root")
+	return "", true, files, total, nil
 }
 
 func bundleContentType(entry string) string {
@@ -186,10 +196,9 @@ func (w *Worker) placeDeliverable(ctx context.Context, placer capsule.BundlePlac
 	if err != nil {
 		return fmt.Errorf("bundle %s: %w", bundle.Ref, err)
 	}
-	single := len(archive.File) == 1 && bundle.Entry != "index.html"
 	directory := target
 	rename := ""
-	if single {
+	if !bundle.Folder {
 		directory, rename = path.Dir(target), path.Base(target)
 	}
 	reader, writer := io.Pipe()

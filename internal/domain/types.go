@@ -68,14 +68,26 @@ type WorkflowTransition struct {
 	Exhausted string `json:"exhausted,omitempty"`
 }
 
-// DeliverableKindMarkdown is a document the agent writes through the tool;
-// DeliverableKindVisual is a folder or file the agent puts in /deliverables
-// of its capsule (a page with its own CSS and JS, an image, a PDF), kept as
-// a bundle and served to the reviewer.
+// A deliverable has a kind, and the kind says what a put must be, so a
+// delivery is checked rather than trusted: a Markdown document, a PDF, an
+// image, a folder with at least one file (a page with its own CSS and JS,
+// say), or one file of any kind. Everything but a document is kept as a
+// bundle and served to the reviewer.
 const (
 	DeliverableKindMarkdown = "markdown"
-	DeliverableKindVisual   = "visual"
+	DeliverableKindPDF      = "pdf"
+	DeliverableKindImage    = "image"
+	DeliverableKindFolder   = "folder"
+	DeliverableKindFile     = "file"
 )
+
+// DeliverableKinds lists the kinds a Template may ask for.
+var DeliverableKinds = []string{DeliverableKindMarkdown, DeliverableKindPDF, DeliverableKindImage, DeliverableKindFolder, DeliverableKindFile}
+
+// DeliverableIsBundle says whether a kind travels as a bundle.
+func DeliverableIsBundle(kind string) bool {
+	return kind != "" && kind != DeliverableKindMarkdown
+}
 
 type DeliverableDefinition struct {
 	Name        string `json:"name"`
@@ -114,10 +126,10 @@ func DeliverableSlug(name string) string {
 // folder, or a single file with the entry's extension.
 func (d Deliverable) CapsulePath() string {
 	slug := DeliverableSlug(d.Name)
-	if d.Kind != DeliverableKindVisual || d.Bundle == nil {
+	if !DeliverableIsBundle(d.Kind) || d.Bundle == nil {
 		return DeliverableDirectory + "/" + slug + ".md"
 	}
-	if d.Bundle.Entry == "index.html" {
+	if d.Bundle.Folder {
 		return DeliverableDirectory + "/" + slug
 	}
 	return DeliverableDirectory + "/" + slug + strings.ToLower(filepath.Ext(d.Bundle.Entry))
@@ -126,12 +138,15 @@ func (d Deliverable) CapsulePath() string {
 // DeliverableBundle is a visual deliverable as the runner delivered it: a
 // zip in the database, its entry file and what that file is.
 type DeliverableBundle struct {
-	Ref         string `json:"ref"`
-	Digest      string `json:"digest"`
-	Size        int64  `json:"size"`
-	Files       int    `json:"files"`
-	Entry       string `json:"entry"`
-	ContentType string `json:"content_type"`
+	Ref    string `json:"ref"`
+	Digest string `json:"digest"`
+	Size   int64  `json:"size"`
+	Files  int    `json:"files"`
+	// Folder says the bundle came from a folder; Entry is index.html of a
+	// folder when it has one, or the one file of a single-file bundle.
+	Folder      bool   `json:"folder"`
+	Entry       string `json:"entry,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
 }
 
 type WorkflowPhase struct {
@@ -219,8 +234,8 @@ type Deliverable struct {
 	// UpdatedAt is set when the same phase run rewrote or edited this
 	// revision in place.
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
-	// Kind is markdown or visual; a visual revision has a Bundle and no
-	// Content.
+	// Kind is one of DeliverableKinds; every kind but markdown has a
+	// Bundle and no Content.
 	Kind   string             `json:"kind,omitempty"`
 	Bundle *DeliverableBundle `json:"bundle,omitempty"`
 }

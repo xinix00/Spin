@@ -39,7 +39,7 @@ func TestPreviewServesAVisualRevisionFromItsBundleInASandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Design", Phases: []domain.WorkflowPhase{{
-		ID: "design", Name: "Ontwerp", Instructions: "Maak de preview", Deliverables: []domain.DeliverableDefinition{{Name: "Website", Kind: domain.DeliverableKindVisual, Required: true}},
+		ID: "design", Name: "Ontwerp", Instructions: "Maak de preview", Deliverables: []domain.DeliverableDefinition{{Name: "Website", Kind: domain.DeliverableKindFolder, Required: true}},
 		Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf},
 	}}})
 	if err != nil {
@@ -78,7 +78,7 @@ func TestPreviewServesAVisualRevisionFromItsBundleInASandbox(t *testing.T) {
 	if err != nil || !strings.HasPrefix(info.Ref, "bundle:") {
 		t.Fatalf("bundle upload = %+v, %v", info, err)
 	}
-	deliverable, err := st.PutWorkflowDeliverable(created.Session.ID, "Website", "", &domain.DeliverableBundle{Ref: info.Ref, Digest: info.Digest, Size: info.Size, Files: 3, Entry: "index.html", ContentType: "text/html; charset=utf-8"})
+	deliverable, err := st.PutWorkflowDeliverable(created.Session.ID, "Website", "", &domain.DeliverableBundle{Ref: info.Ref, Digest: info.Digest, Size: info.Size, Files: 3, Folder: true, Entry: "index.html", ContentType: "text/html; charset=utf-8"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -144,12 +144,11 @@ func normalizeWorkflowTemplateRequest(req domain.CreateWorkflowTemplateRequest) 
 			deliverable := &phase.Deliverables[deliverableIndex]
 			deliverable.Name = strings.TrimSpace(deliverable.Name)
 			deliverable.Description = strings.TrimSpace(deliverable.Description)
-			switch strings.ToLower(strings.TrimSpace(deliverable.Kind)) {
-			case "", domain.DeliverableKindMarkdown:
+			deliverable.Kind = strings.ToLower(strings.TrimSpace(deliverable.Kind))
+			if deliverable.Kind == "" {
 				deliverable.Kind = domain.DeliverableKindMarkdown
-			case domain.DeliverableKindVisual:
-				deliverable.Kind = domain.DeliverableKindVisual
-			default:
+			}
+			if !slices.Contains(domain.DeliverableKinds, deliverable.Kind) {
 				return "", "", "", nil, fmt.Errorf("deliverable %s has unknown kind %q: %w", deliverable.Name, deliverable.Kind, ErrConflict)
 			}
 			key := strings.ToLower(deliverable.Name)
@@ -552,18 +551,52 @@ func (s *Store) PutWorkflowDeliverable(sessionID, name, content string, bundle *
 	if err != nil {
 		return domain.Deliverable{}, err
 	}
-	switch definition.Kind {
-	case domain.DeliverableKindVisual:
-		if bundle == nil || bundle.Ref == "" || bundle.Entry == "" {
-			return domain.Deliverable{}, fmt.Errorf("deliverable %s is visual: put a folder with index.html, an image or a PDF: %w", definition.Name, ErrConflict)
-		}
+	if err := checkDeliverableShape(definition, content, bundle); err != nil {
+		return domain.Deliverable{}, err
+	}
+	if domain.DeliverableIsBundle(definition.Kind) {
 		content = ""
-	default:
-		if bundle != nil || content == "" || len(content) > maxDeliverableBytes {
-			return domain.Deliverable{}, fmt.Errorf("deliverable %s is a Markdown document of at most %d bytes: %w", definition.Name, maxDeliverableBytes, ErrConflict)
-		}
 	}
 	return s.storeDeliverableLocked(job, run, sessionID, definition, content, bundle)
+}
+
+// checkDeliverableShape is the measure of a delivery: what was put must
+// be what the definition asks for.
+func checkDeliverableShape(definition domain.DeliverableDefinition, content string, bundle *domain.DeliverableBundle) error {
+	kind := definition.Kind
+	if kind == "" {
+		kind = domain.DeliverableKindMarkdown
+	}
+	if !domain.DeliverableIsBundle(kind) {
+		if bundle != nil || content == "" || len(content) > maxDeliverableBytes {
+			return fmt.Errorf("deliverable %s is a Markdown document of at most %d bytes: %w", definition.Name, maxDeliverableBytes, ErrConflict)
+		}
+		return nil
+	}
+	if bundle == nil || bundle.Ref == "" || bundle.Files < 1 {
+		return fmt.Errorf("deliverable %s needs a file or folder: %w", definition.Name, ErrConflict)
+	}
+	single := !bundle.Folder && bundle.Files == 1 && bundle.Entry != ""
+	contentType := strings.ToLower(bundle.ContentType)
+	switch kind {
+	case domain.DeliverableKindFolder:
+		if !bundle.Folder {
+			return fmt.Errorf("deliverable %s is a folder: put a folder with at least one file: %w", definition.Name, ErrConflict)
+		}
+	case domain.DeliverableKindPDF:
+		if !single || !strings.HasPrefix(contentType, "application/pdf") {
+			return fmt.Errorf("deliverable %s is a PDF: put one .pdf file: %w", definition.Name, ErrConflict)
+		}
+	case domain.DeliverableKindImage:
+		if !single || !strings.HasPrefix(contentType, "image/") {
+			return fmt.Errorf("deliverable %s is an image: put one image file (png, jpg, gif, webp, svg): %w", definition.Name, ErrConflict)
+		}
+	case domain.DeliverableKindFile:
+		if !single {
+			return fmt.Errorf("deliverable %s is one file: put a single file: %w", definition.Name, ErrConflict)
+		}
+	}
+	return nil
 }
 
 // Deliverable returns one stored revision by ID.
@@ -681,9 +714,9 @@ func (s *Store) AddDeliverableComment(deliverableID, author string, req domain.C
 	if !ok {
 		return domain.DeliverableComment{}, ErrNotFound
 	}
-	// A document comment anchors on selected text; a comment on a visual
-	// deliverable is about the whole revision.
-	if deliverable.Kind == domain.DeliverableKindVisual {
+	// A document comment anchors on selected text; a comment on any other
+	// kind is about the whole revision.
+	if domain.DeliverableIsBundle(deliverable.Kind) {
 		req.SelectedText, req.StartOffset, req.EndOffset, req.Prefix, req.Suffix = "", 0, 0, "", ""
 	} else if strings.TrimSpace(req.SelectedText) == "" || req.StartOffset < 0 || req.EndOffset <= req.StartOffset {
 		return domain.DeliverableComment{}, fmt.Errorf("a comment on a document needs selected text with valid offsets: %w", ErrConflict)

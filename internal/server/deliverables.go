@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"mime"
 	"net/http"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -48,7 +50,7 @@ func (s *Server) placeDeliverables(ctx context.Context, jobID string, compositio
 	documents := map[string][]byte{}
 	for _, deliverable := range latest {
 		target := deliverable.CapsulePath()
-		if deliverable.Kind == domain.DeliverableKindVisual && deliverable.Bundle != nil {
+		if domain.DeliverableIsBundle(deliverable.Kind) && deliverable.Bundle != nil {
 			placer, ok := s.engine.(capsule.DeliverablePlacer)
 			if !ok {
 				continue
@@ -105,7 +107,7 @@ func (s *Server) putWorkflowDeliverable(ctx context.Context, sessionID, name, pu
 	if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
 		return domain.Deliverable{}, fmt.Errorf("session %s has no running capsule: %w", session.ID, store.ErrConflict)
 	}
-	if definition.Kind == domain.DeliverableKindVisual {
+	if domain.DeliverableIsBundle(definition.Kind) {
 		bundler, ok := s.engine.(capsule.DeliverableBundler)
 		if !ok {
 			return domain.Deliverable{}, fmt.Errorf("the engine cannot bundle a deliverable: %w", store.ErrConflict)
@@ -136,13 +138,32 @@ func (s *Server) putWorkflowDeliverable(ctx context.Context, sessionID, name, pu
 
 // deliverableShape says what a revision is, for the prompt.
 func deliverableShape(deliverable domain.Deliverable) string {
-	if deliverable.Kind != domain.DeliverableKindVisual || deliverable.Bundle == nil {
+	if !domain.DeliverableIsBundle(deliverable.Kind) || deliverable.Bundle == nil {
 		return "Markdown"
 	}
-	if deliverable.Bundle.Entry == "index.html" {
-		return fmt.Sprintf("map met index.html, %d bestanden", deliverable.Bundle.Files)
+	if deliverable.Bundle.Folder {
+		if deliverable.Bundle.Entry != "" {
+			return fmt.Sprintf("map met index.html, %d bestanden", deliverable.Bundle.Files)
+		}
+		return fmt.Sprintf("map, %d bestanden", deliverable.Bundle.Files)
 	}
 	return deliverable.Bundle.ContentType
+}
+
+// deliverableAsk says what a definition asks for, for the prompt.
+func deliverableAsk(definition domain.DeliverableDefinition) string {
+	slug := domain.DeliverableSlug(definition.Name)
+	switch definition.Kind {
+	case domain.DeliverableKindPDF:
+		return fmt.Sprintf("Eén PDF-bestand; bijvoorbeeld %s/%s.pdf", domain.DeliverableDirectory, slug)
+	case domain.DeliverableKindImage:
+		return fmt.Sprintf("Eén afbeelding (png, jpg, gif, webp, svg); bijvoorbeeld %s/%s.png", domain.DeliverableDirectory, slug)
+	case domain.DeliverableKindFolder:
+		return fmt.Sprintf("Een map met minstens één bestand; met index.html erin (eigen CSS, JS en afbeeldingen mogen los) toont Spin de pagina; bijvoorbeeld %s/%s/", domain.DeliverableDirectory, slug)
+	case domain.DeliverableKindFile:
+		return fmt.Sprintf("Eén bestand, welke vorm ook; bijvoorbeeld %s/%s.<ext>", domain.DeliverableDirectory, slug)
+	}
+	return fmt.Sprintf("Markdown-bestand; bijvoorbeeld %s/%s.md", domain.DeliverableDirectory, slug)
 }
 
 // previewDeliverable serves one file out of a visual revision's bundle.
@@ -157,15 +178,12 @@ func (s *Server) previewDeliverable(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	deliverable, err := s.store.Deliverable(r.PathValue("deliverableID"))
-	if err != nil || deliverable.Kind != domain.DeliverableKindVisual || deliverable.Bundle == nil || s.database == nil {
+	if err != nil || !domain.DeliverableIsBundle(deliverable.Kind) || deliverable.Bundle == nil || s.database == nil {
 		http.NotFound(w, r)
 		return
 	}
 	name := path.Clean("/" + r.PathValue("file"))
 	name = strings.TrimPrefix(name, "/")
-	if name == "" || name == "." {
-		name = deliverable.Bundle.Entry
-	}
 	readerAt, info, err := s.database.BlobReaderAt(r.Context(), deliverable.Bundle.Ref)
 	if err != nil {
 		writeError(w, err)
@@ -175,6 +193,14 @@ func (s *Server) previewDeliverable(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+	if name == "" || name == "." {
+		if deliverable.Bundle.Entry == "" {
+			// A folder without index.html: the files, each a link.
+			s.previewListing(w, deliverable, archive)
+			return
+		}
+		name = deliverable.Bundle.Entry
 	}
 	var file *zip.File
 	for _, candidate := range archive.File {
@@ -199,7 +225,7 @@ func (s *Server) previewDeliverable(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.FormatUint(file.UncompressedSize64, 10))
-	w.Header().Set("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-modals; default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; form-action 'none'; frame-ancestors 'self'")
+	w.Header().Set("Content-Security-Policy", previewPolicy(contentType))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
@@ -293,4 +319,47 @@ func (s *Server) removeUnusedBundles(refs []string) {
 			s.logger.Warn("remove deliverable bundle", "ref", ref, "error", err)
 		}
 	}
+}
+
+// previewPolicy sandboxes what can run. A PDF or a raster image runs
+// nothing of its own and is shown by the browser's own viewer, which a
+// sandbox would refuse; everything else (pages, scripts, styles, SVG) gets
+// an opaque origin, no network and nowhere to post.
+func previewPolicy(contentType string) string {
+	lower := strings.ToLower(contentType)
+	if strings.HasPrefix(lower, "application/pdf") || (strings.HasPrefix(lower, "image/") && !strings.Contains(lower, "svg")) {
+		return "default-src 'none'; frame-ancestors 'self'"
+	}
+	return "sandbox allow-scripts allow-forms allow-modals; default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; form-action 'none'; frame-ancestors 'self'"
+}
+
+// previewListing is the page for a folder without index.html: its files.
+func (s *Server) previewListing(w http.ResponseWriter, deliverable domain.Deliverable, archive *zip.Reader) {
+	var page strings.Builder
+	page.WriteString("<!doctype html><meta charset=\"utf-8\"><title>" + html.EscapeString(deliverable.Name) + "</title><style>body{font:14px/1.6 system-ui,sans-serif;margin:24px;color:#111}a{display:block;padding:4px 0;color:#1a56b3}small{color:#666}</style><h1>" + html.EscapeString(deliverable.Name) + " <small>revisie " + strconv.Itoa(deliverable.Revision) + "</small></h1>")
+	for _, file := range archive.File {
+		if file.FileInfo().IsDir() {
+			continue
+		}
+		href := (&url.URL{Path: file.Name}).EscapedPath()
+		page.WriteString("<a href=\"" + href + "\">" + html.EscapeString(file.Name) + " <small>" + html.EscapeString(formatBytesGo(int64(file.UncompressedSize64))) + "</small></a>")
+	}
+	body := page.String()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.Header().Set("Content-Security-Policy", previewPolicy("text/html"))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, body)
+}
+
+func formatBytesGo(size int64) string {
+	switch {
+	case size >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(size)/(1<<20))
+	case size >= 1<<10:
+		return fmt.Sprintf("%.0f KiB", float64(size)/(1<<10))
+	}
+	return fmt.Sprintf("%d B", size)
 }

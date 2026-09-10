@@ -84,7 +84,7 @@ func (s *Server) downloadDeliverable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if deliverable.Kind == domain.DeliverableKindVisual && deliverable.Bundle != nil {
+	if domain.DeliverableIsBundle(deliverable.Kind) && deliverable.Bundle != nil {
 		s.downloadBundle(w, r, deliverable)
 		return
 	}
@@ -709,18 +709,10 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 				requirement = "VERPLICHT"
 			}
 			description := strings.TrimSpace(definition.Description)
-			slug := domain.DeliverableSlug(definition.Name)
-			if definition.Kind == domain.DeliverableKindVisual {
-				if description == "" {
-					description = "Visuele deliverable voor deze workflowfase"
-				}
-				fmt.Fprintf(&prompt, "- %s (%s): %s\n  Map met index.html (eigen CSS, JS en afbeeldingen mogen los), of een afbeelding of PDF; bijvoorbeeld %s/%s/\n", definition.Name, requirement, description, domain.DeliverableDirectory, slug)
-				continue
-			}
 			if description == "" {
-				description = "Markdown-document voor deze workflowfase"
+				description = "Deliverable voor deze workflowfase"
 			}
-			fmt.Fprintf(&prompt, "- %s (%s): %s\n  Markdown-bestand; bijvoorbeeld %s/%s.md\n", definition.Name, requirement, description, domain.DeliverableDirectory, slug)
+			fmt.Fprintf(&prompt, "- %s (%s): %s\n  %s\n", definition.Name, requirement, description, deliverableAsk(definition))
 		}
 	}
 	_ = attachInjectedDeliverables
@@ -745,9 +737,15 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 		}
 		fmt.Fprintf(&prompt, "\n%s (revisie %d)\n", deliverable.Name, deliverable.Revision)
 		for _, comment := range comments {
+			body := strings.ReplaceAll(strings.TrimSpace(comment.Body), "\n", "\n  ")
+			if strings.TrimSpace(comment.SelectedText) == "" {
+				fmt.Fprintf(&prompt, "- %s over de hele revisie:\n\n  %s\n", comment.Author, body)
+				continue
+			}
+			// The quote ends before the remark: a blank line, or Markdown
+			// reads the remark as part of the quote.
 			quote := strings.ReplaceAll(strings.TrimSpace(comment.SelectedText), "\n", "\n  > ")
-			body := strings.ReplaceAll(comment.Body, "\n", "\n  ")
-			fmt.Fprintf(&prompt, "- %s bij:\n  > %s\n  %s\n", comment.Author, quote, body)
+			fmt.Fprintf(&prompt, "- %s bij de tekst:\n  > %s\n\n  Opmerking: %s\n", comment.Author, quote, body)
 		}
 	}
 	// A recorded decision is a question that was put to a person and answered.
