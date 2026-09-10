@@ -597,8 +597,10 @@ function showNotice(text){showBanner(text,'notice');}
 // Session's capsule, the chat waiting for it. The stage names come from the
 // runner; the words are here, once.
 const startStages={prepare:'voorbereiden',parents:'basisimage naar runner',load:'image laden op de runner',start:'capsule starten',done:'klaar'};
-function progressText(progress){if(!progress)return '';const stage=startStages[progress.stage]||progress.stage||'starten',bytes=progress.total?` · ${formatBytes(progress.current||0)} / ${formatBytes(progress.total)} (${Math.floor((progress.current||0)/progress.total*100)}%)`:'';return `${stage}${bytes}${progress.message&&!progress.total?` · ${progress.message}`:''}`;}
+function progressText(progress){if(!progress)return '';const stage=startStages[progress.stage]||progress.stage||'starten',bytes=progressPercent(progress)===null?'':` · ${formatBytes(progress.current||0)} / ${formatBytes(progress.total)} (${progressPercent(progress)}%)`;return `${stage}${bytes}${progress.message&&!progress.total?` · ${progress.message}`:''}`;}
 function startProgressText(start){return `Starten · ${progressText(start)||'starten'}`;}
+// progressPercent is the whole-number percentage of a progress with a total, else null.
+function progressPercent(progress){return progress?.total?Math.floor((progress.current||0)/progress.total*100):null;}
 // preparationText says where a Session's capsule stands: failed and
 // retrying, being prepared on a runner, or still waiting for one.
 function preparationText(preparing,session){
@@ -852,13 +854,13 @@ function renderRecording(){
   // reload, or when another tab gave the command).
   const starting=startState&&startState.recording_id===recording.id&&startState.status==='running'?startState:(recording.runtime?.container_id?null:{stage:'prepare',message:'Voortgang ophalen'});
   if(!recording.runtime?.container_id&&followingStartID!==recording.id)followStart({recording_id:recording.id,status:'running',stage:'prepare',message:'Voortgang ophalen'});
-  const runtime=recording.runtime?.container_id?'<small>Werk in de shell hieronder; + shell opent een tweede in dezelfde capsule.</small>':`<div class="seal-progress"><div class="seal-track ${starting?.total?'':'indeterminate'}"><div class="seal-fill" style="width:${starting?.total?Math.floor((starting.current||0)/starting.total*100):100}%"></div></div><small>${esc(startProgressText(starting||{}))}</small></div>`;
-  if(!recording.runtime?.container_id){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>STARTING ${esc(recording.kind)}:${esc(recording.name)}${starting?.total?` ${Math.floor((starting.current||0)/starting.total*100)}%`:''}</span>`;}
+  const runtime=recording.runtime?.container_id?'<small>Werk in de shell hieronder; + shell opent een tweede in dezelfde capsule.</small>':`<div class="seal-progress"><div class="seal-track ${progressPercent(starting)===null?'indeterminate':''}"><div class="seal-fill" style="width:${progressPercent(starting)??100}%"></div></div><small>${esc(startProgressText(starting||{}))}</small></div>`;
+  if(!recording.runtime?.container_id){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>STARTING ${esc(recording.kind)}:${esc(recording.name)}${progressPercent(starting)===null?'':` ${progressPercent(starting)}%`}</span>`;}
   const sealing=sealState&&sealState.recording_id===recording.id&&sealState.status==='running'?sealState:null;
   // While the capsule is still starting the runtime block already carries the
   // progress bar; there is nothing to end yet, but the start can be cancelled.
   const actions=sealing?`<div class="seal-progress"><div class="seal-track ${sealing.total?'':'indeterminate'}"><div class="seal-fill" style="width:${sealing.total?Math.floor((sealing.current||0)/sealing.total*100):100}%"></div></div><small>${esc(sealProgressText(sealing))}</small></div>`:(recording.runtime?.container_id?`<div class="panel-actions" style="margin-top:9px"><button class="small-button" data-action="end">End & save</button><button class="danger" data-action="cancel">Cancel</button></div>`:`<div class="panel-actions" style="margin-top:9px"><button class="danger" data-action="cancel">Cancel start</button></div>`);
-  if(sealing){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>SAVING ${esc(recording.kind)}:${esc(recording.name)}${sealing.total?` ${Math.floor((sealing.current||0)/sealing.total*100)}%`:''}</span>`;}
+  if(sealing){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>SAVING ${esc(recording.kind)}:${esc(recording.name)}${progressPercent(sealing)===null?'':` ${progressPercent(sealing)}%`}</span>`;}
   root.innerHTML=`<h3>Recorder</h3><div class="record-card"><strong>● ${esc(recording.kind)}:${esc(recording.name)}</strong><small>${esc(recording.scope)} · ${(recording.commands||[]).length} commands</small>${recording.enables?.length?`<small>ENABLES <span class="capability">${esc(enabledNames(recording.enables))}</span></small>`:''}${runtime}${actions}</div>`;
   bindActionButtons(root);updateTerminalControls();
 }
