@@ -2001,3 +2001,48 @@ func safeName(value string) string {
 	}
 	return b.String()
 }
+
+// BundleWorkspace streams a folder or a file of the capsule as a tar: a
+// folder relative to itself, a file on its own. Paths are the deliverable
+// paths a person or an agent names, so they are checked like tracked ones.
+func (d *Docker) BundleWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, path string, sink io.Writer) error {
+	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
+		return errors.New("composition has no live Docker capsule")
+	}
+	if !validTrackedPath(path) {
+		return fmt.Errorf("invalid bundle path %q", path)
+	}
+	script := `p='` + path + `'
+if [ -d "$p" ]; then cd "$p" && tar -cf - .
+elif [ -f "$p" ]; then cd "$(dirname "$p")" && tar -cf - "$(basename "$p")"
+else echo "$p: no such file or directory" >&2; exit 44
+fi`
+	cmd := exec.CommandContext(ctx, d.binary, "exec", runtime.ContainerID, "sh", "-c", script)
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = sink, &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("bundle %s: %s: %w", path, strings.TrimSpace(stderr.String()), err)
+	}
+	return nil
+}
+
+// PlaceBundle unpacks a tar stream at target: a folder target is emptied
+// first and receives the stream's tree; a file target receives the stream's
+// single file under its own name.
+func (d *Docker) PlaceBundle(ctx context.Context, runtime domain.CapsuleRuntime, target string, archive io.Reader) error {
+	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
+		return errors.New("composition has no live Docker capsule")
+	}
+	if !validTrackedPath(target) {
+		return fmt.Errorf("invalid bundle target %q", target)
+	}
+	script := `t='` + target + `'
+rm -rf "$t" && mkdir -p "$(dirname "$t")" && mkdir -p "$t" && tar -C "$t" -xf -`
+	cmd := exec.CommandContext(ctx, d.binary, "exec", "-i", runtime.ContainerID, "sh", "-c", script)
+	var stderr bytes.Buffer
+	cmd.Stdin, cmd.Stderr = archive, &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("place bundle at %s: %s: %w", target, strings.TrimSpace(stderr.String()), err)
+	}
+	return nil
+}

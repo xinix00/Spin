@@ -84,6 +84,10 @@ func (s *Server) workerRequest(r *http.Request) bool {
 	return s.authDisabled && s.validWorkerBearer(r.Header.Get("Authorization"))
 }
 
+// maxBundleUploadBytes bounds a deliverable bundle: a page with its assets,
+// an image, a PDF; never a build.
+const maxBundleUploadBytes = 25 << 20
+
 func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 	if s.database == nil {
 		writeError(w, fmt.Errorf("SQLite storage is not configured: %w", store.ErrConflict))
@@ -147,8 +151,23 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		upload.Snapshot, upload.Target, upload.Runner = archive, archive, true
 		upload.Digest = strings.TrimSpace(request.Snapshot.Digest)
+	case "bundle":
+		if !s.workerRequest(r) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "bundle uploads are sent by runners with the worker token"})
+			return
+		}
+		if request.Size <= 0 || request.Size > maxBundleUploadBytes {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "a deliverable bundle is at most 25 MiB"})
+			return
+		}
+		bundle, err := s.database.BeginBundleUpload(r.Context(), request.Size)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		upload.Snapshot, upload.Target, upload.Runner = bundle, bundle, true
 	default:
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "upload kind must be restore or snapshot"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "upload kind must be restore, snapshot or bundle"})
 		return
 	}
 	id, err := randomOAuthValue(24)
@@ -239,7 +258,7 @@ func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 	switch upload.Kind {
 	case "restore":
 		s.completeRestoreUpload(w, r, upload)
-	case "snapshot":
+	case "snapshot", "bundle":
 		info, err := upload.Snapshot.Complete(r.Context())
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "offset": upload.Target.Offset(), "size": upload.Size})

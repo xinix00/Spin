@@ -119,6 +119,32 @@ type TrackedFiles interface {
 
 // CapsuleInspector says what a running capsule changed outside its
 // workspace, by kind.
+// WorkspaceBundler streams a folder or file of a capsule as a tar: what a
+// visual deliverable is made of. The runner implements it.
+type WorkspaceBundler interface {
+	BundleWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, path string, sink io.Writer) error
+}
+
+// DeliverableBundler has a runner bundle a folder or file of a capsule and
+// deliver it to the server as a zip. The server's remote engine implements
+// it.
+type DeliverableBundler interface {
+	BundleDeliverable(ctx context.Context, runtime domain.CapsuleRuntime, path string) (domain.DeliverableBundle, error)
+}
+
+// BundlePlacer unpacks a tar stream at a path in a capsule: a folder is
+// replaced whole, a single file lands at the path itself. The runner
+// implements it.
+type BundlePlacer interface {
+	PlaceBundle(ctx context.Context, runtime domain.CapsuleRuntime, target string, archive io.Reader) error
+}
+
+// DeliverablePlacer has a runner fetch a bundle from the server and put it
+// at a path in a capsule. The server's remote engine implements it.
+type DeliverablePlacer interface {
+	PlaceDeliverable(ctx context.Context, runtime domain.CapsuleRuntime, target string, bundle domain.DeliverableBundle) error
+}
+
 type CapsuleInspector interface {
 	CaptureCapsuleChanges(ctx context.Context, runtime domain.CapsuleRuntime) (domain.LayerContents, error)
 }

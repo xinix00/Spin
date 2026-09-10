@@ -144,6 +144,14 @@ func normalizeWorkflowTemplateRequest(req domain.CreateWorkflowTemplateRequest) 
 			deliverable := &phase.Deliverables[deliverableIndex]
 			deliverable.Name = strings.TrimSpace(deliverable.Name)
 			deliverable.Description = strings.TrimSpace(deliverable.Description)
+			switch strings.ToLower(strings.TrimSpace(deliverable.Kind)) {
+			case "", domain.DeliverableKindMarkdown:
+				deliverable.Kind = domain.DeliverableKindMarkdown
+			case domain.DeliverableKindVisual:
+				deliverable.Kind = domain.DeliverableKindVisual
+			default:
+				return "", "", "", nil, fmt.Errorf("deliverable %s has unknown kind %q: %w", deliverable.Name, deliverable.Kind, ErrConflict)
+			}
 			key := strings.ToLower(deliverable.Name)
 			if key == "" || seenDeliverables[key] {
 				return "", "", "", nil, fmt.Errorf("phase %s has an empty or duplicate deliverable: %w", phase.Name, ErrConflict)
@@ -532,75 +540,30 @@ func (s *Store) RetryWorkflowSession(sessionID, operator string) (domain.CreateJ
 	return domain.CreateJobResponse{Job: job, Session: session}, previousCompositionID, nil
 }
 
-// AddWorkflowDeliverable stores a document as the next revision of a
-// declared deliverable: the whole content, so it is also how an agent
-// rewrites one. EditWorkflowDeliverable is the cheap path for a small change.
-func (s *Store) AddWorkflowDeliverable(sessionID, name, content string) (domain.Deliverable, error) {
+// PutWorkflowDeliverable stores what the agent put: a Markdown document
+// as text, a visual deliverable as the bundle the runner delivered. Either
+// becomes the revision of this step, as storeDeliverableLocked says.
+func (s *Store) PutWorkflowDeliverable(sessionID, name, content string, bundle *domain.DeliverableBundle) (domain.Deliverable, error) {
 	name = strings.TrimSpace(name)
 	content = strings.TrimSpace(content)
-	if name == "" || content == "" || len(content) > maxDeliverableBytes {
-		return domain.Deliverable{}, fmt.Errorf("deliverable name and content are required and content may be at most %d bytes: %w", maxDeliverableBytes, ErrConflict)
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	job, run, definition, err := s.deliverableTargetLocked(sessionID, name)
 	if err != nil {
 		return domain.Deliverable{}, err
 	}
-	return s.storeDeliverableLocked(job, run, sessionID, definition, content)
-}
-
-// EditWorkflowDeliverable replaces a piece of the latest revision of a
-// deliverable and stores the result as a new revision. The old text must
-// occur exactly once unless all is set, so a vague match never edits the
-// wrong place.
-func (s *Store) EditWorkflowDeliverable(sessionID, name, oldText, newText string, all bool) (domain.Deliverable, int, error) {
-	name = strings.TrimSpace(name)
-	if name == "" || oldText == "" {
-		return domain.Deliverable{}, 0, fmt.Errorf("deliverable name and old_text are required: %w", ErrConflict)
+	switch definition.Kind {
+	case domain.DeliverableKindVisual:
+		if bundle == nil || bundle.Ref == "" || bundle.Entry == "" {
+			return domain.Deliverable{}, fmt.Errorf("deliverable %s is visual: put a folder with index.html, an image or a PDF: %w", definition.Name, ErrConflict)
+		}
+		content = ""
+	default:
+		if bundle != nil || content == "" || len(content) > maxDeliverableBytes {
+			return domain.Deliverable{}, fmt.Errorf("deliverable %s is a Markdown document of at most %d bytes: %w", definition.Name, maxDeliverableBytes, ErrConflict)
+		}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	job, run, definition, err := s.deliverableTargetLocked(sessionID, name)
-	if err != nil {
-		return domain.Deliverable{}, 0, err
-	}
-	latest, ok := s.latestDeliverableLocked(job.ID, definition.Name)
-	if !ok {
-		return domain.Deliverable{}, 0, fmt.Errorf("deliverable %s has no revision yet; use add_deliverable first: %w", definition.Name, ErrConflict)
-	}
-	count := strings.Count(latest.Content, oldText)
-	switch {
-	case count == 0:
-		return domain.Deliverable{}, 0, fmt.Errorf("old_text does not occur in %s revision %d; read_deliverable shows the current text: %w", definition.Name, latest.Revision, ErrConflict)
-	case count > 1 && !all:
-		return domain.Deliverable{}, 0, fmt.Errorf("old_text occurs %d times in %s revision %d; include more surrounding text or set all: %w", count, definition.Name, latest.Revision, ErrConflict)
-	}
-	content := strings.TrimSpace(strings.ReplaceAll(latest.Content, oldText, newText))
-	if content == "" || len(content) > maxDeliverableBytes {
-		return domain.Deliverable{}, 0, fmt.Errorf("the edit leaves %s empty or larger than %d bytes: %w", definition.Name, maxDeliverableBytes, ErrConflict)
-	}
-	if content == latest.Content {
-		return domain.Deliverable{}, 0, fmt.Errorf("the edit changes nothing in %s revision %d: %w", definition.Name, latest.Revision, ErrConflict)
-	}
-	deliverable, err := s.storeDeliverableLocked(job, run, sessionID, definition, content)
-	return deliverable, count, err
-}
-
-// LatestDeliverable returns the newest revision of a deliverable of the
-// Session's Job, for an agent that wants to read before editing.
-func (s *Store) LatestDeliverable(sessionID, name string) (domain.Deliverable, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	job, _, definition, err := s.deliverableTargetLocked(sessionID, strings.TrimSpace(name))
-	if err != nil {
-		return domain.Deliverable{}, err
-	}
-	latest, ok := s.latestDeliverableLocked(job.ID, definition.Name)
-	if !ok {
-		return domain.Deliverable{}, fmt.Errorf("deliverable %s has no revision yet: %w", definition.Name, ErrNotFound)
-	}
-	return latest, nil
+	return s.storeDeliverableLocked(job, run, sessionID, definition, content, bundle)
 }
 
 // Deliverable returns one stored revision by ID.
@@ -652,11 +615,11 @@ func (s *Store) latestDeliverableLocked(jobID, name string) (domain.Deliverable,
 // updating that same revision with every later rewrite or edit. A run that
 // writes nothing leaves the previous revision as the latest. Comments
 // re-anchor on their quoted text, so an edit after a comment is fine.
-func (s *Store) storeDeliverableLocked(job domain.Job, run domain.PhaseRun, sessionID string, definition domain.DeliverableDefinition, content string) (domain.Deliverable, error) {
+func (s *Store) storeDeliverableLocked(job domain.Job, run domain.PhaseRun, sessionID string, definition domain.DeliverableDefinition, content string, bundle *domain.DeliverableBundle) (domain.Deliverable, error) {
 	revision := 1
 	if latest, ok := s.latestDeliverableLocked(job.ID, definition.Name); ok {
 		if latest.PhaseRunID == run.ID {
-			latest.Content = content
+			latest.Content, latest.Bundle, latest.Kind = content, bundle, definition.Kind
 			latest.UpdatedAt = time.Now().UTC()
 			s.state.Deliverables[latest.ID] = latest
 			return latest, s.saveLocked()
@@ -665,7 +628,7 @@ func (s *Store) storeDeliverableLocked(job domain.Job, run domain.PhaseRun, sess
 	}
 	deliverable := domain.Deliverable{
 		ID: newID("del"), JobID: job.ID, PhaseRunID: run.ID, SessionID: sessionID,
-		Name: definition.Name, Description: definition.Description, Content: content, Revision: revision, CreatedAt: time.Now().UTC(),
+		Name: definition.Name, Description: definition.Description, Content: content, Kind: definition.Kind, Bundle: bundle, Revision: revision, CreatedAt: time.Now().UTC(),
 	}
 	s.state.Deliverables[deliverable.ID] = deliverable
 	return deliverable, s.saveLocked()
@@ -705,11 +668,8 @@ func (s *Store) SetWorkflowActionResult(sessionID string, result domain.Workflow
 func (s *Store) AddDeliverableComment(deliverableID, author string, req domain.CreateDeliverableCommentRequest) (domain.DeliverableComment, error) {
 	author = normalizeSubject(author)
 	body := strings.TrimSpace(req.Body)
-	if author == "" || body == "" || strings.TrimSpace(req.SelectedText) == "" {
-		return domain.DeliverableComment{}, fmt.Errorf("author, selected text and comment are required: %w", ErrConflict)
-	}
-	if req.StartOffset < 0 || req.EndOffset <= req.StartOffset {
-		return domain.DeliverableComment{}, fmt.Errorf("comment selection offsets are invalid: %w", ErrConflict)
+	if author == "" || body == "" {
+		return domain.DeliverableComment{}, fmt.Errorf("author and comment are required: %w", ErrConflict)
 	}
 	if len(req.SelectedText) > 16<<10 || len(req.Prefix) > 512 || len(req.Suffix) > 512 || len(body) > 8<<10 {
 		return domain.DeliverableComment{}, fmt.Errorf("comment selection or body is too large: %w", ErrConflict)
@@ -720,6 +680,13 @@ func (s *Store) AddDeliverableComment(deliverableID, author string, req domain.C
 	deliverable, ok := s.state.Deliverables[strings.TrimSpace(deliverableID)]
 	if !ok {
 		return domain.DeliverableComment{}, ErrNotFound
+	}
+	// A document comment anchors on selected text; a comment on a visual
+	// deliverable is about the whole revision.
+	if deliverable.Kind == domain.DeliverableKindVisual {
+		req.SelectedText, req.StartOffset, req.EndOffset, req.Prefix, req.Suffix = "", 0, 0, "", ""
+	} else if strings.TrimSpace(req.SelectedText) == "" || req.StartOffset < 0 || req.EndOffset <= req.StartOffset {
+		return domain.DeliverableComment{}, fmt.Errorf("a comment on a document needs selected text with valid offsets: %w", ErrConflict)
 	}
 	latest := deliverable
 	for _, candidate := range s.state.Deliverables {

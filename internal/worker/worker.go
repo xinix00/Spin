@@ -494,6 +494,27 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 			return files, false, err
 		}
 		return nil, false, tracked.WriteTrackedFiles(ctx, payload.Runtime, payload.Files)
+	case methodBundleDeliverable:
+		var payload bundleDeliverablePayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		bundler, ok := w.engine.(capsule.WorkspaceBundler)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot bundle a workspace")
+		}
+		result, err := w.bundleDeliverable(ctx, bundler, payload.Runtime, payload.Path)
+		return result, false, err
+	case methodPlaceDeliverable:
+		var payload placeDeliverablePayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		placer, ok := w.engine.(capsule.BundlePlacer)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot place a bundle")
+		}
+		return nil, false, w.placeDeliverable(ctx, placer, payload.Runtime, payload.Target, payload.Bundle)
 	case methodInjectAttachments:
 		var payload injectAttachmentsPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {

@@ -161,14 +161,15 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), &testEngine{}, ServerOptions{DisableAuthentication: true, InternalURL: "http://spin.internal"})
+	engine := &deliverableTestEngine{files: map[string][]byte{"/root/deliverables/fo.md": []byte("# FO")}}
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true, InternalURL: "http://spin.internal"})
 	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
 	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "mcp", RemoteURL: "https://example.com/mcp.git"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Docs", Phases: []domain.WorkflowPhase{{
-		ID: "docs", Name: "Documenteer", Instructions: "Schrijf het FO", Deliverables: []domain.DeliverableDefinition{{Name: "FO", Required: true}},
+		ID: "docs", Name: "Documenteer", Instructions: "Schrijf het FO", Deliverables: []domain.DeliverableDefinition{{Name: "FO", Required: true}, {Name: "Preview", Kind: domain.DeliverableKindVisual}},
 		Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf},
 	}}})
 	if err != nil {
@@ -176,6 +177,9 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 	}
 	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Docs", Objective: "FO", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.useCapsule(context.Background(), domain.UseRequest{Selector: "session:" + created.Session.ID, Operator: "derek"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.MarkWorkflowPhaseRunning(created.Session.ID); err != nil {
@@ -204,7 +208,7 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 	}
 	listed := call(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	encoded, _ := json.Marshal(listed.Result)
-	for _, expected := range []string{`"ask"`, `"accept"`, `"reject"`, `"add_deliverable"`, `"edit_deliverable"`, `"read_deliverable"`} {
+	for _, expected := range []string{`"ask"`, `"accept"`, `"reject"`, `"put_deliverable"`} {
 		if !bytes.Contains(encoded, []byte(expected)) {
 			t.Fatalf("tools/list missing %s: %s", expected, encoded)
 		}
@@ -212,9 +216,14 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 	if bytes.Contains(encoded, []byte(`"commit"`)) {
 		t.Fatalf("commit leaked into document phase: %s", encoded)
 	}
-	delivered := call(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"add_deliverable","arguments":{"name":"FO","content":"# FO"}}}`)
-	if delivered.Error != nil || len(st.Snapshot().Deliverables) != 1 {
-		t.Fatalf("deliverable call = %+v", delivered)
+	outside := call(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"put_deliverable","arguments":{"name":"FO","path":"/tmp/fo.md"}}}`)
+	outsideText, _ := json.Marshal(outside)
+	if !bytes.Contains(outsideText, []byte("inside /root/deliverables")) || len(st.Snapshot().Deliverables) != 0 {
+		t.Fatalf("put outside the deliverable directory = %s", outsideText)
+	}
+	delivered := call(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"put_deliverable","arguments":{"name":"FO","path":"/root/deliverables/fo.md"}}}`)
+	if delivered.Error != nil || len(st.Snapshot().Deliverables) != 1 || st.Snapshot().Deliverables[0].Content != "# FO" {
+		t.Fatalf("deliverable call = %+v, deliverables = %+v", delivered, st.Snapshot().Deliverables)
 	}
 	firstRevision := st.Snapshot().Deliverables[0]
 	commentRequest := httptest.NewRequest(http.MethodPost, "/api/deliverables/"+firstRevision.ID+"/comments", bytes.NewBufferString(`{"operator":"mallory","selected_text":"FO","start_offset":0,"end_offset":2,"body":"Maak dit concreter."}`))
@@ -226,21 +235,33 @@ func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) 
 	if commentResponse.Code != http.StatusCreated || json.Unmarshal(commentResponse.Body.Bytes(), &comment) != nil || comment.Author != "derek" {
 		t.Fatalf("comment status=%d body=%s decoded=%+v", commentResponse.Code, commentResponse.Body.String(), comment)
 	}
-	// One revision per Session: the edit updates revision 1 in place.
-	edited := call(`{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"edit_deliverable","arguments":{"name":"FO","old_text":"# FO","new_text":"# FO v2"}}}`)
+	// One revision per Session: the agent edits on disk and puts again,
+	// which updates revision 1 in place.
+	engine.files["/root/deliverables/fo.md"] = []byte("# FO v2")
+	edited := call(`{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"put_deliverable","arguments":{"name":"FO","path":"/root/deliverables/fo.md"}}}`)
 	editedText, _ := json.Marshal(edited.Result)
 	if edited.Error != nil || !bytes.Contains(editedText, []byte("revisie 1")) || len(st.Snapshot().Deliverables) != 1 || st.Snapshot().Deliverables[0].Content != "# FO v2" {
-		t.Fatalf("edit call = %+v, deliverables = %+v", edited, st.Snapshot().Deliverables)
+		t.Fatalf("second put = %+v, deliverables = %+v", edited, st.Snapshot().Deliverables)
 	}
-	read := call(`{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"read_deliverable","arguments":{"name":"FO"}}}`)
-	readText, _ := json.Marshal(read.Result)
-	if read.Error != nil || !bytes.Contains(readText, []byte("# FO v2")) {
-		t.Fatalf("read call = %+v", read)
-	}
-	missing := call(`{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"edit_deliverable","arguments":{"name":"FO","old_text":"bestaat niet","new_text":"x"}}}`)
+	missing := call(`{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"put_deliverable","arguments":{"name":"FO","path":"/root/deliverables/bestaat-niet.md"}}}`)
 	missingText, _ := json.Marshal(missing)
-	if !bytes.Contains(missingText, []byte("does not occur")) || len(st.Snapshot().Deliverables) != 1 {
-		t.Fatalf("edit of missing text = %s", missingText)
+	if !bytes.Contains(missingText, []byte("does not exist")) || len(st.Snapshot().Deliverables) != 1 {
+		t.Fatalf("put of a missing file = %s", missingText)
+	}
+	// A visual deliverable is bundled by the runner and kept as such.
+	engine.bundle = domain.DeliverableBundle{Ref: "bundle:abc", Digest: "sha256:abc", Size: 1234, Files: 3, Entry: "index.html", ContentType: "text/html; charset=utf-8"}
+	visual := call(`{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"put_deliverable","arguments":{"name":"Preview","path":"/root/deliverables/preview/"}}}`)
+	if visual.Error != nil || engine.bundled != "/root/deliverables/preview" {
+		t.Fatalf("visual put = %+v, bundled %q", visual, engine.bundled)
+	}
+	var preview domain.Deliverable
+	for _, candidate := range st.Snapshot().Deliverables {
+		if candidate.Name == "Preview" {
+			preview = candidate
+		}
+	}
+	if preview.Kind != domain.DeliverableKindVisual || preview.Bundle == nil || preview.Bundle.Ref != "bundle:abc" || preview.Content != "" || preview.CapsulePath() != "/root/deliverables/preview" {
+		t.Fatalf("visual deliverable = %+v", preview)
 	}
 	downloadRequest := httptest.NewRequest(http.MethodGet, "/api/deliverables/"+firstRevision.ID+"/download", nil)
 	downloadResponse := httptest.NewRecorder()
@@ -304,12 +325,12 @@ func TestWorkflowPromptInjectsOnlySelectedLatestDeliverablesAndAlwaysGoal(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"OP TE LEVEREN", "FO (VERPLICHT): Functioneel ontwerp", `add_deliverable met name "FO"`, "TO (OPTIONEEL): Technisch ontwerp"} {
+	for _, expected := range []string{"OP TE LEVEREN", "FO (VERPLICHT): Functioneel ontwerp", "Markdown-bestand; bijvoorbeeld /root/deliverables/fo.md", "TO (OPTIONEEL): Technisch ontwerp", "put_deliverable(name, path)"} {
 		if !strings.Contains(designPrompt, expected) {
 			t.Fatalf("design prompt missing %q:\n%s", expected, designPrompt)
 		}
 	}
-	oldFO, err := st.AddWorkflowDeliverable(created.Session.ID, "FO", "oude FO")
+	oldFO, err := st.PutWorkflowDeliverable(created.Session.ID, "FO", "oude FO", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,14 +346,14 @@ func TestWorkflowPromptInjectsOnlySelectedLatestDeliverablesAndAlwaysGoal(t *tes
 	if _, err := st.MarkWorkflowPhaseRunning(designRetry); err != nil {
 		t.Fatal(err)
 	}
-	latestFO, err := st.AddWorkflowDeliverable(designRetry, "FO", "laatste FO")
+	latestFO, err := st.PutWorkflowDeliverable(designRetry, "FO", "laatste FO", nil)
 	if err != nil || latestFO.Revision != 2 {
 		t.Fatalf("latest FO = %+v, error = %v", latestFO, err)
 	}
 	if _, err := st.AddDeliverableComment(latestFO.ID, "derek", domain.CreateDeliverableCommentRequest{SelectedText: "laatste FO", StartOffset: 0, EndOffset: 10, Body: "Neem deelbetalingen expliciet op."}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.AddWorkflowDeliverable(designRetry, "TO", "geheim technisch ontwerp"); err != nil {
+	if _, err := st.PutWorkflowDeliverable(designRetry, "TO", "geheim technisch ontwerp", nil); err != nil {
 		t.Fatal(err)
 	}
 	advance, err := st.CompleteWorkflowPhase(designRetry, "accept", "documenten klaar")
@@ -343,37 +364,29 @@ func TestWorkflowPromptInjectsOnlySelectedLatestDeliverablesAndAlwaysGoal(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"Goal: Eén werkende switch", "GEÏNJECTEERDE DELIVERABLES", "FO (revisie 2)", "laatste FO", "COMMENTS OP ACTUELE DELIVERABLES", "Neem deelbetalingen expliciet op."} {
+	// The deliverables are files in the capsule: the prompt names them and
+	// which are required reading; their text is not in the prompt.
+	for _, expected := range []string{"Goal: Eén werkende switch", "DELIVERABLES", "FO: /root/deliverables/fo.md (revisie 2, Markdown)", "TO: /root/deliverables/to.md (revisie 1, Markdown)", "Verplichte context voor deze stap: FO.", "COMMENTS OP ACTUELE DELIVERABLES", "Neem deelbetalingen expliciet op."} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("prompt missing %q:\n%s", expected, prompt)
 		}
 	}
-	for _, excluded := range []string{"oude FO", "oude comment hoort bij r1", "geheim technisch ontwerp", "TO (revisie"} {
+	for _, excluded := range []string{"oude FO", "oude comment hoort bij r1", "geheim technisch ontwerp", "--- FO (revisie"} {
 		if strings.Contains(prompt, excluded) {
 			t.Fatalf("prompt unexpectedly contains %q:\n%s", excluded, prompt)
 		}
 	}
-	if !strings.Contains(prompt, "Deze fase vraagt geen deliverables; add_deliverable en edit_deliverable zijn daarom niet beschikbaar") || strings.Contains(prompt, "Lever ieder hierboven gevraagd document") {
+	if !strings.Contains(prompt, "Deze fase vraagt geen deliverables; put_deliverable is daarom niet beschikbaar") || strings.Contains(prompt, "Zet ieder hierboven gevraagd document") {
 		t.Fatalf("build prompt has ambiguous deliverable instructions:\n%s", prompt)
-	}
-	nativePrompt, err := srv.workflowPromptForACP(advance.NextSession.ID, acpPromptCapabilities{EmbeddedContext: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(nativePrompt, "FO (revisie 2) is als verplichte Markdown-bijlage") || strings.Contains(nativePrompt, "--- FO (revisie 2) ---") || strings.Contains(nativePrompt, "geheim technisch ontwerp") {
-		t.Fatalf("native ACP prompt does not describe selective deliverable attachment correctly:\n%s", nativePrompt)
 	}
 	resources, err := srv.acpPromptAttachments(advance.NextSession.ID, acpPromptCapabilities{EmbeddedContext: true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resources) != 1 || resources[0].ID != "deliverable:"+latestFO.ID || resources[0].Block["type"] != "resource" {
-		t.Fatalf("ACP deliverable resources = %#v", resources)
+	if len(resources) != 0 {
+		t.Fatalf("deliverables are files in the capsule, yet %d were attached: %#v", len(resources), resources)
 	}
-	resource := resources[0].Block["resource"].(map[string]any)
-	if resource["mimeType"] != "text/markdown" || resource["text"] != "laatste FO" {
-		t.Fatalf("ACP deliverable resource = %#v", resource)
-	}
+	_ = latestFO
 	if _, err := st.MarkWorkflowPhaseRunning(advance.NextSession.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -439,10 +452,10 @@ func TestForkedWorkflowReceivesPreviousGoalAndLatestDeliverables(t *testing.T) {
 	if _, err := st.MarkWorkflowPhaseRunning(source.Session.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.AddWorkflowDeliverable(source.Session.ID, "FO", "oude context"); err != nil {
+	if _, err := st.PutWorkflowDeliverable(source.Session.ID, "FO", "oude context", nil); err != nil {
 		t.Fatal(err)
 	}
-	latest, err := st.AddWorkflowDeliverable(source.Session.ID, "FO", "# Laatste FO\n\nVerwerk deelbetalingen.")
+	latest, err := st.PutWorkflowDeliverable(source.Session.ID, "FO", "# Laatste FO\n\nVerwerk deelbetalingen.", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,4 +572,42 @@ func TestWorkflowRetryEndpointStopsOldCompositionAndReturnsImmediately(t *testin
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("retry did not replace the previous composition while cleaning it in the background: %+v", st.Snapshot())
+}
+
+// deliverableTestEngine is the test engine with files a capsule holds and a
+// bundle the runner would deliver.
+type deliverableTestEngine struct {
+	testEngine
+	files   map[string][]byte
+	bundle  domain.DeliverableBundle
+	bundled string
+	placed  []string
+}
+
+func (e *deliverableTestEngine) ReadTrackedFiles(_ context.Context, _ domain.CapsuleRuntime, paths []string) (map[string][]byte, error) {
+	out := map[string][]byte{}
+	for _, path := range paths {
+		if data, ok := e.files[path]; ok {
+			out[path] = data
+		}
+	}
+	return out, nil
+}
+
+func (e *deliverableTestEngine) WriteTrackedFiles(_ context.Context, _ domain.CapsuleRuntime, files map[string][]byte) error {
+	for path, data := range files {
+		e.files[path] = data
+		e.placed = append(e.placed, path)
+	}
+	return nil
+}
+
+func (e *deliverableTestEngine) BundleDeliverable(_ context.Context, _ domain.CapsuleRuntime, path string) (domain.DeliverableBundle, error) {
+	e.bundled = path
+	return e.bundle, nil
+}
+
+func (e *deliverableTestEngine) PlaceDeliverable(_ context.Context, _ domain.CapsuleRuntime, target string, _ domain.DeliverableBundle) error {
+	e.placed = append(e.placed, target)
+	return nil
 }

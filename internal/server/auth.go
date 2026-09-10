@@ -97,7 +97,7 @@ func publicAPIPath(r *http.Request) bool {
 
 func workerAPIPath(r *http.Request) bool {
 	path := r.URL.Path
-	return path == "/api/runner/ws" || path == "/api/clients/register" || path == "/api/sessions/claim" || strings.HasPrefix(path, "/api/sessions/") || strings.HasPrefix(path, "/api/activations/") || path == "/api/uploads" || strings.HasPrefix(path, "/api/uploads/") || strings.HasPrefix(path, "/api/snapshots/")
+	return path == "/api/runner/ws" || path == "/api/clients/register" || path == "/api/sessions/claim" || strings.HasPrefix(path, "/api/sessions/") || strings.HasPrefix(path, "/api/activations/") || path == "/api/uploads" || strings.HasPrefix(path, "/api/uploads/") || strings.HasPrefix(path, "/api/snapshots/") || strings.HasPrefix(path, "/api/blobs/")
 }
 
 func isMutation(method string) bool {

@@ -22,9 +22,13 @@ import (
 type SnapshotUpload struct {
 	database *SQLite
 	snapshot domain.CapsuleSnapshot
-	objectID int64
-	size     int64
-	chunks   *chunkAssembler
+	// kind and refPrefix describe an object that is not a snapshot: a
+	// deliverable bundle is kept under bundle:<digest>.
+	kind      string
+	refPrefix string
+	objectID  int64
+	size      int64
+	chunks    *chunkAssembler
 
 	mu        sync.Mutex
 	completed bool
@@ -39,7 +43,21 @@ func (s *SQLite) BeginSnapshotUpload(ctx context.Context, snapshot domain.Capsul
 	if size <= 0 {
 		return nil, errors.New("snapshot size must be positive")
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO spin_objects(kind) VALUES('docker-snapshot')`)
+	return s.beginObjectUpload(ctx, "docker-snapshot", "", snapshot, size)
+}
+
+// BeginBundleUpload receives a deliverable bundle (a zip) the way a
+// snapshot arrives: in chunks, published under bundle:<digest> once
+// complete.
+func (s *SQLite) BeginBundleUpload(ctx context.Context, size int64) (*SnapshotUpload, error) {
+	if size <= 0 {
+		return nil, errors.New("bundle size must be positive")
+	}
+	return s.beginObjectUpload(ctx, "deliverable-bundle", "bundle:", domain.CapsuleSnapshot{}, size)
+}
+
+func (s *SQLite) beginObjectUpload(ctx context.Context, kind, refPrefix string, snapshot domain.CapsuleSnapshot, size int64) (*SnapshotUpload, error) {
+	result, err := s.db.ExecContext(ctx, `INSERT INTO spin_objects(kind) VALUES(?)`, kind)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +65,7 @@ func (s *SQLite) BeginSnapshotUpload(ctx context.Context, snapshot domain.Capsul
 	if err != nil {
 		return nil, err
 	}
-	upload := &SnapshotUpload{database: s, snapshot: snapshot, objectID: objectID, size: size}
+	upload := &SnapshotUpload{database: s, snapshot: snapshot, kind: kind, refPrefix: refPrefix, objectID: objectID, size: size}
 	upload.chunks = newChunkAssembler(blobSink{upload}, size)
 	return upload, nil
 }
@@ -149,6 +167,9 @@ func (u *SnapshotUpload) Complete(ctx context.Context) (BlobInfo, error) {
 		return BlobInfo{}, err
 	}
 	ref := snapshotRef(u.snapshot)
+	if u.refPrefix != "" {
+		ref = u.refPrefix + strings.TrimPrefix(digest, "sha256:")
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO spin_object_refs(ref, object_id) VALUES(?, ?)
 		ON CONFLICT(ref) DO UPDATE SET object_id = excluded.object_id`, ref, objectID); err != nil {
 		_ = tx.Rollback()
@@ -158,7 +179,7 @@ func (u *SnapshotUpload) Complete(ctx context.Context) (BlobInfo, error) {
 		return BlobInfo{}, err
 	}
 	u.completed = true
-	return BlobInfo{Ref: ref, Digest: digest, Kind: "docker-snapshot", Size: size}, nil
+	return BlobInfo{Ref: ref, Digest: digest, Kind: u.kind, Size: size}, nil
 }
 
 // Close abandons an upload that did not complete and drops its rows.

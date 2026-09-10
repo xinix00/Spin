@@ -274,24 +274,8 @@ func (s *Server) acpPromptAttachments(sessionID string, capabilities acpPromptCa
 			latest[key] = deliverable
 		}
 	}
-	for _, name := range phase.Inject {
-		deliverable, ok := latest[strings.ToLower(strings.TrimSpace(name))]
-		if !ok {
-			return nil, fmt.Errorf("injected deliverable %s is not available for phase %s", name, phase.Name)
-		}
-		attachmentID := "deliverable:" + deliverable.ID
-		if alreadySent[attachmentID] {
-			continue
-		}
-		uri := (&url.URL{Scheme: "spin", Host: "deliverables", Path: "/" + deliverable.ID + "/document.md"}).String()
-		blocks = append(blocks, acpPromptAttachment{ID: attachmentID, Block: map[string]any{
-			"type": "resource",
-			"resource": map[string]any{
-				"uri": uri, "mimeType": "text/markdown", "text": deliverable.Content,
-			},
-			"_meta": map[string]any{"name": deliverable.Name, "revision": deliverable.Revision},
-		}})
-	}
+	// The Job's deliverables sit in the capsule as files; nothing is attached.
+	_, _ = phase, latest
 	if job.ForkedFromJobID != "" {
 		sourceLatest := map[string]domain.Deliverable{}
 		for _, deliverable := range snapshot.Deliverables {

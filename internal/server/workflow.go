@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -81,6 +82,10 @@ func (s *Server) downloadDeliverable(w http.ResponseWriter, r *http.Request) {
 	deliverable, err := s.store.Deliverable(r.PathValue("deliverableID"))
 	if err != nil {
 		writeError(w, err)
+		return
+	}
+	if deliverable.Kind == domain.DeliverableKindVisual && deliverable.Bundle != nil {
+		s.downloadBundle(w, r, deliverable)
 		return
 	}
 	filename := fmt.Sprintf("%s-r%d.md", safeFilename(deliverable.Name), deliverable.Revision)
@@ -305,19 +310,10 @@ func (s *Server) workflowTools(sessionID string) ([]workflowTool, error) {
 			names = append(names, definition.Name)
 		}
 		tools = append(tools,
-			workflowTool{Name: "add_deliverable", Title: "Schrijf deliverable", Description: "Bewaar een benoemd Markdown-document volledig als nieuwe revisie: voor het eerste opleveren en voor een herschrijving. Gebruik edit_deliverable voor een kleine wijziging.", InputSchema: object(map[string]any{
-				"name":    map[string]any{"type": "string", "enum": names},
-				"content": map[string]any{"type": "string", "description": "Volledige Markdown-inhoud; vervangt het hele document"},
-			}, "name", "content")},
-			workflowTool{Name: "edit_deliverable", Title: "Bewerk deliverable", Description: "Vervang een stuk tekst in de laatste revisie van een deliverable en bewaar het resultaat als nieuwe revisie. old_text moet letterlijk en precies één keer voorkomen; neem anders meer omliggende tekst mee of zet all.", InputSchema: object(map[string]any{
-				"name":     map[string]any{"type": "string", "enum": names},
-				"old_text": map[string]any{"type": "string", "description": "Letterlijke tekst die vervangen wordt"},
-				"new_text": map[string]any{"type": "string", "description": "Nieuwe tekst; leeg verwijdert old_text"},
-				"all":      map[string]any{"type": "boolean", "description": "Vervang alle voorkomens van old_text"},
-			}, "name", "old_text", "new_text")},
-			workflowTool{Name: "read_deliverable", Title: "Lees deliverable", Description: "Geef de laatste revisie van een deliverable terug, om precies te zien wat er nu staat voordat je bewerkt.", InputSchema: object(map[string]any{
+			workflowTool{Name: "put_deliverable", Title: "Lever deliverable op", Description: "Zet een bestand of map uit " + domain.DeliverableDirectory + " als nieuwe revisie van een deliverable: een Markdown-bestand voor een document, een map met index.html (eigen CSS, JS en afbeeldingen mogen los) of een afbeelding of PDF voor een visuele deliverable. Bewerk het bestand op schijf en put het opnieuw voor een volgende versie.", InputSchema: object(map[string]any{
 				"name": map[string]any{"type": "string", "enum": names},
-			}, "name")},
+				"path": map[string]any{"type": "string", "description": "Absoluut pad binnen " + domain.DeliverableDirectory + ", bijvoorbeeld " + domain.DeliverableDirectory + "/fo.md of " + domain.DeliverableDirectory + "/website/"},
+			}, "name", "path")},
 		)
 	}
 	return tools, nil
@@ -341,27 +337,12 @@ func (s *Server) callWorkflowTool(ctx context.Context, sessionID, name string, a
 			noun = fmt.Sprintf("%d vragen staan", len(question.Items))
 		}
 		return noun + " klaar voor de gebruiker: " + question.Question + ". Beëindig nu je beurt; dezelfde ACP Session wordt met de antwoorden hervat.", nil
-	case "add_deliverable":
-		deliverable, err := s.store.AddWorkflowDeliverable(sessionID, stringArgument("name"), stringArgument("content"))
+	case "put_deliverable":
+		deliverable, err := s.putWorkflowDeliverable(ctx, sessionID, stringArgument("name"), stringArgument("path"))
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("Deliverable %s revisie %d is opgeslagen en zichtbaar als bijlage.", deliverable.Name, deliverable.Revision), nil
-	case "edit_deliverable":
-		oldText, _ := arguments["old_text"].(string)
-		newText, _ := arguments["new_text"].(string)
-		all, _ := arguments["all"].(bool)
-		deliverable, replaced, err := s.store.EditWorkflowDeliverable(sessionID, stringArgument("name"), oldText, newText, all)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("Deliverable %s revisie %d is opgeslagen: %d vervanging(en).", deliverable.Name, deliverable.Revision, replaced), nil
-	case "read_deliverable":
-		deliverable, err := s.store.LatestDeliverable(sessionID, stringArgument("name"))
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("%s revisie %d:\n\n%s", deliverable.Name, deliverable.Revision, deliverable.Content), nil
+		return fmt.Sprintf("Deliverable %s revisie %d is opgeslagen; de reviewer ziet hem in Spin.", deliverable.Name, deliverable.Revision), nil
 	case "accept", "reject":
 		detail := stringArgument("summary")
 		if name == "reject" {
@@ -611,8 +592,8 @@ func (s *Server) workflowPrompt(sessionID string) (string, error) {
 	return s.workflowPromptWithOptions(sessionID, false)
 }
 
-func (s *Server) workflowPromptForACP(sessionID string, capabilities acpPromptCapabilities) (string, error) {
-	return s.workflowPromptWithOptions(sessionID, capabilities.EmbeddedContext)
+func (s *Server) workflowPromptForACP(sessionID string, _ acpPromptCapabilities) (string, error) {
+	return s.workflowPromptWithOptions(sessionID, false)
 }
 
 func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliverables bool) (string, error) {
@@ -705,34 +686,44 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 		}
 		prompt.WriteString(".\n")
 	}
+	if len(latest) > 0 || len(phase.Deliverables) > 0 {
+		fmt.Fprintf(&prompt, "\nDELIVERABLES\nDe deliverables van deze Job staan in %s, elk als bestand of map; lees wat je nodig hebt.\n", domain.DeliverableDirectory)
+		names := make([]string, 0, len(latest))
+		for name := range latest {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			deliverable := latest[name]
+			fmt.Fprintf(&prompt, "- %s: %s (revisie %d, %s)\n", deliverable.Name, deliverable.CapsulePath(), deliverable.Revision, deliverableShape(deliverable))
+		}
+		if len(phase.Inject) > 0 {
+			fmt.Fprintf(&prompt, "Verplichte context voor deze stap: %s.\n", strings.Join(phase.Inject, ", "))
+		}
+	}
 	if len(phase.Deliverables) > 0 {
-		prompt.WriteString("\nOP TE LEVEREN\nMaak de onderstaande documenten volledig in Markdown en sla ieder document op met add_deliverable. Gebruik de naam exact zoals vermeld.\n")
+		fmt.Fprintf(&prompt, "\nOP TE LEVEREN\nMaak of bewerk het bestand op schijf en zet het met put_deliverable(name, path) als nieuwe revisie; het pad ligt altijd binnen %s. Gebruik de naam exact zoals vermeld.\n", domain.DeliverableDirectory)
 		for _, definition := range phase.Deliverables {
 			requirement := "OPTIONEEL"
 			if definition.Required {
 				requirement = "VERPLICHT"
 			}
 			description := strings.TrimSpace(definition.Description)
+			slug := domain.DeliverableSlug(definition.Name)
+			if definition.Kind == domain.DeliverableKindVisual {
+				if description == "" {
+					description = "Visuele deliverable voor deze workflowfase"
+				}
+				fmt.Fprintf(&prompt, "- %s (%s): %s\n  Map met index.html (eigen CSS, JS en afbeeldingen mogen los), of een afbeelding of PDF; bijvoorbeeld %s/%s/\n", definition.Name, requirement, description, domain.DeliverableDirectory, slug)
+				continue
+			}
 			if description == "" {
 				description = "Markdown-document voor deze workflowfase"
 			}
-			fmt.Fprintf(&prompt, "- %s (%s): %s\n  Tool: add_deliverable met name %q en de volledige Markdown-inhoud.\n", definition.Name, requirement, description, definition.Name)
+			fmt.Fprintf(&prompt, "- %s (%s): %s\n  Markdown-bestand; bijvoorbeeld %s/%s.md\n", definition.Name, requirement, description, domain.DeliverableDirectory, slug)
 		}
 	}
-	if len(phase.Inject) > 0 {
-		prompt.WriteString("\nGEÏNJECTEERDE DELIVERABLES\nDeze documenten zijn verplichte context voor deze fase; gebruik steeds de laatste revisie.\n")
-		for _, name := range phase.Inject {
-			deliverable, ok := latest[strings.ToLower(strings.TrimSpace(name))]
-			if !ok {
-				return "", fmt.Errorf("injected deliverable %s is not available for phase %s", name, phase.Name)
-			}
-			if attachInjectedDeliverables {
-				fmt.Fprintf(&prompt, "- %s (revisie %d) is als verplichte Markdown-bijlage aan dit ACP-bericht toegevoegd.\n", deliverable.Name, deliverable.Revision)
-			} else {
-				fmt.Fprintf(&prompt, "\n--- %s (revisie %d) ---\n%s\n", deliverable.Name, deliverable.Revision, deliverable.Content)
-			}
-		}
-	}
+	_ = attachInjectedDeliverables
 	commentsWritten := false
 	for _, deliverable := range deliverables {
 		current := latest[strings.ToLower(strings.TrimSpace(deliverable.Name))]
@@ -864,9 +855,9 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 	}
 	prompt.WriteString("\nWERKWIJZE\nGebruik uitsluitend de aangeboden Spin workflowtools om workflowstate te wijzigen. ask stelt één formulier met één of meer vragen, elk met de antwoordopties die je verwacht; stel alleen wat je niet zelf kunt uitzoeken en bundel alles in één ask. ")
 	if len(phase.Deliverables) > 0 {
-		prompt.WriteString("Lever ieder hierboven gevraagd document volledig als Markdown aan met add_deliverable; dat overschrijft het hele document en is ook de weg voor een herschrijving. Voor een kleine wijziging in een bestaand document gebruik je edit_deliverable (zoek/vervang op letterlijke tekst) en read_deliverable laat de huidige tekst zien. ")
+		prompt.WriteString("Zet ieder hierboven gevraagd document of visueel resultaat met put_deliverable als revisie; dat overschrijft de vorige revisie van deze stap. ")
 	} else {
-		prompt.WriteString("Deze fase vraagt geen deliverables; add_deliverable en edit_deliverable zijn daarom niet beschikbaar en je hoeft geen document op te leveren. ")
+		prompt.WriteString("Deze fase vraagt geen deliverables; put_deliverable is daarom niet beschikbaar en je hoeft niets op te leveren. ")
 	}
 	prompt.WriteString("Commit of push nooit zelf. Sluit de fase altijd af met accept, of reject met een concrete reden. ACCEPT laat Spin de Session gecontroleerd in de Job-branch opnemen.\n")
 	return prompt.String(), nil

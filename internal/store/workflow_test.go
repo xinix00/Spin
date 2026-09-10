@@ -53,7 +53,7 @@ func TestWorkflowTemplateMovesJobThroughDeliverablesQuestionsAndRejectLimit(t *t
 	if _, err := st.CompleteWorkflowPhase(created.Session.ID, "accept", "klaar"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("accept without FO error = %v", err)
 	}
-	deliverable, err := st.AddWorkflowDeliverable(created.Session.ID, "FO", "# Functioneel ontwerp")
+	deliverable, err := st.PutWorkflowDeliverable(created.Session.ID, "FO", "# Functioneel ontwerp", nil)
 	if err != nil || deliverable.Revision != 1 {
 		t.Fatalf("deliverable = %+v, error = %v", deliverable, err)
 	}
@@ -63,26 +63,23 @@ func TestWorkflowTemplateMovesJobThroughDeliverablesQuestionsAndRejectLimit(t *t
 	if err != nil || historicalComment.Author != "john" {
 		t.Fatalf("historical comment = %+v, error = %v", historicalComment, err)
 	}
-	if _, _, err := st.EditWorkflowDeliverable(created.Session.ID, "FO", "ontbreekt", "x", false); !errors.Is(err, ErrConflict) {
-		t.Fatalf("edit of absent text error = %v", err)
-	}
 	// One revision per Session: the same run rewrites its own revision 1,
 	// the historical comment re-anchors on its quoted text.
-	deliverable, err = st.AddWorkflowDeliverable(created.Session.ID, "FO", "# Functioneel ontwerp v2\n\nStap: login\nStap: logout")
+	deliverable, err = st.PutWorkflowDeliverable(created.Session.ID, "FO", "# Functioneel ontwerp v2\n\nStap: login\nStap: logout", nil)
 	if err != nil || deliverable.Revision != 1 || deliverable.ID != historicalComment.DeliverableID {
 		t.Fatalf("deliverable revision = %+v, error = %v", deliverable, err)
 	}
-	if _, _, err := st.EditWorkflowDeliverable(created.Session.ID, "FO", "Stap:", "Fase:", false); !errors.Is(err, ErrConflict) {
-		t.Fatalf("ambiguous edit error = %v", err)
+	edited := deliverable
+	if edited.UpdatedAt.IsZero() || edited.Kind != domain.DeliverableKindMarkdown {
+		t.Fatalf("rewrite in place = %+v", edited)
 	}
-	edited, replaced, err := st.EditWorkflowDeliverable(created.Session.ID, "FO", "Stap:", "Fase:", true)
-	if err != nil || replaced != 2 || edited.ID != deliverable.ID || edited.Revision != 1 || edited.Content != "# Functioneel ontwerp v2\n\nFase: login\nFase: logout" || edited.UpdatedAt.IsZero() {
-		t.Fatalf("edit all = %+v (%d), error = %v", edited, replaced, err)
+	if _, err := st.PutWorkflowDeliverable(created.Session.ID, "FO", "", nil); !errors.Is(err, ErrConflict) {
+		t.Fatalf("empty document error = %v", err)
 	}
-	if latest, err := st.LatestDeliverable(created.Session.ID, "fo"); err != nil || latest.ID != edited.ID || latest.Content != edited.Content {
-		t.Fatalf("latest = %+v, error = %v", latest, err)
+	if _, err := st.PutWorkflowDeliverable(created.Session.ID, "FO", "x", &domain.DeliverableBundle{Ref: "bundle:x", Entry: "index.html"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("bundle for a document error = %v", err)
 	}
-	deliverable, err = st.AddWorkflowDeliverable(created.Session.ID, "FO", "# Functioneel ontwerp v2")
+	deliverable, err = st.PutWorkflowDeliverable(created.Session.ID, "FO", "# Functioneel ontwerp v2", nil)
 	if err != nil || deliverable.ID != edited.ID || deliverable.Revision != 1 || len(st.Snapshot().Deliverables) != 1 {
 		t.Fatalf("rewrite in same run = %+v, error = %v", deliverable, err)
 	}
@@ -95,7 +92,7 @@ func TestWorkflowTemplateMovesJobThroughDeliverablesQuestionsAndRejectLimit(t *t
 	if _, err := st.MarkWorkflowPhaseRunning(designRetry.ID); err != nil {
 		t.Fatal(err)
 	}
-	deliverable, err = st.AddWorkflowDeliverable(designRetry.ID, "FO", "# Functioneel ontwerp v2")
+	deliverable, err = st.PutWorkflowDeliverable(designRetry.ID, "FO", "# Functioneel ontwerp v2", nil)
 	if err != nil || deliverable.Revision != 2 || deliverable.ID == edited.ID {
 		t.Fatalf("second attempt revision = %+v, error = %v", deliverable, err)
 	}
@@ -626,7 +623,7 @@ func TestClosedJobForkStartsFromRemoteResultAndPreservesContextReference(t *test
 	if _, err := st.MarkWorkflowPhaseRunning(source.Session.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.AddWorkflowDeliverable(source.Session.ID, "FO", "# Bestaand ontwerp\n\nGebruik dit in vervolgwerk."); err != nil {
+	if _, err := st.PutWorkflowDeliverable(source.Session.ID, "FO", "# Bestaand ontwerp\n\nGebruik dit in vervolgwerk.", nil); err != nil {
 		t.Fatal(err)
 	}
 	closed, err := st.CloseJob(source.Job.ID, "derek")

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"easyacp/internal/domain"
@@ -397,6 +398,66 @@ func (s *SQLite) ReadBlob(ctx context.Context, ref string, limit int64) ([]byte,
 		return nil, BlobInfo{}, err
 	}
 	return builder.Bytes(), info, nil
+}
+
+// BlobReaderAt reads a blob at random offsets, one chunk at a time with
+// the last chunk kept: what a zip reader needs to serve one file out of a
+// bundle without loading the bundle.
+func (s *SQLite) BlobReaderAt(ctx context.Context, ref string) (io.ReaderAt, BlobInfo, error) {
+	info, err := s.BlobInfo(ctx, ref)
+	if err != nil {
+		return nil, BlobInfo{}, err
+	}
+	return &blobReaderAt{database: s, ctx: ctx, ref: ref, size: info.Size}, info, nil
+}
+
+type blobReaderAt struct {
+	database *SQLite
+	ctx      context.Context
+	ref      string
+	size     int64
+
+	mu     sync.Mutex
+	cached int64
+	chunk  []byte
+}
+
+func (r *blobReaderAt) ReadAt(target []byte, offset int64) (int, error) {
+	if offset < 0 {
+		return 0, errors.New("negative blob offset")
+	}
+	total := 0
+	for total < len(target) && offset+int64(total) < r.size {
+		position := offset + int64(total)
+		start := position - position%blobChunkSize
+		chunk, err := r.chunkAt(start)
+		if err != nil {
+			return total, err
+		}
+		copied := copy(target[total:], chunk[position-start:])
+		if copied == 0 {
+			break
+		}
+		total += copied
+	}
+	if total < len(target) {
+		return total, io.EOF
+	}
+	return total, nil
+}
+
+func (r *blobReaderAt) chunkAt(start int64) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.chunk != nil && r.cached == start {
+		return r.chunk, nil
+	}
+	chunk, _, err := r.database.ReadBlobChunk(r.ctx, r.ref, start)
+	if err != nil {
+		return nil, err
+	}
+	r.chunk, r.cached = chunk, start
+	return chunk, nil
 }
 
 func (s *SQLite) DeleteBlob(ctx context.Context, ref string) error {

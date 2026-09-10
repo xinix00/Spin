@@ -322,6 +322,26 @@ func (e *RemoteEngine) ReadTrackedFiles(ctx context.Context, runtime domain.Caps
 	return files, err
 }
 
+// BundleDeliverable has the runner zip a folder or file of the capsule and
+// upload it; the result names the bundle in the archive.
+func (e *RemoteEngine) BundleDeliverable(ctx context.Context, runtime domain.CapsuleRuntime, path string) (domain.DeliverableBundle, error) {
+	var bundle domain.DeliverableBundle
+	if !e.broker.Connected(runtime.ClientID) {
+		return bundle, fmt.Errorf("bundle on %s: %w", runtime.ClientID, ErrRunnerOffline)
+	}
+	_, err := e.broker.call(ctx, runtime.ClientID, methodBundleDeliverable, bundleDeliverablePayload{Runtime: runtime, Path: path}, &bundle)
+	return bundle, err
+}
+
+// PlaceDeliverable has the runner fetch a bundle and unpack it at target.
+func (e *RemoteEngine) PlaceDeliverable(ctx context.Context, runtime domain.CapsuleRuntime, target string, bundle domain.DeliverableBundle) error {
+	if !e.broker.Connected(runtime.ClientID) {
+		return fmt.Errorf("place on %s: %w", runtime.ClientID, ErrRunnerOffline)
+	}
+	_, err := e.broker.call(ctx, runtime.ClientID, methodPlaceDeliverable, placeDeliverablePayload{Runtime: runtime, Target: target, Bundle: bundle}, nil)
+	return err
+}
+
 func (e *RemoteEngine) WriteTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, files map[string][]byte) error {
 	if !e.broker.Connected(runtime.ClientID) {
 		return fmt.Errorf("write on %s: %w", runtime.ClientID, ErrRunnerOffline)

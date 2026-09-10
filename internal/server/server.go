@@ -514,6 +514,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/jobs/{jobID}", s.deleteJob)
 	s.mux.HandleFunc("POST /api/deliverables/{deliverableID}/comments", s.createDeliverableComment)
 	s.mux.HandleFunc("GET /api/deliverables/{deliverableID}/download", s.downloadDeliverable)
+	s.mux.HandleFunc("GET /preview/{deliverableID}/{file...}", s.previewDeliverable)
+	s.mux.HandleFunc("GET /api/blobs/{ref}", s.blobChunkHandler)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/retry", s.retryWorkflowSession)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/app/start", s.startAppHandler)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/app/stop", s.stopAppHandler)
@@ -1023,11 +1025,13 @@ func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	bundles := s.jobBundleRefs(job.ID)
 	deleted, err := s.store.DeleteJob(job.ID, operator)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	s.removeUnusedBundles(bundles)
 	for _, attachmentID := range deleted.AttachmentIDs {
 		if s.attachments != nil {
 			if removeErr := s.attachments.Remove(attachmentID); removeErr != nil {

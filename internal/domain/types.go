@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"path/filepath"
+	"strings"
+	"time"
+)
 
 type JobStatus string
 
@@ -64,10 +68,70 @@ type WorkflowTransition struct {
 	Exhausted string `json:"exhausted,omitempty"`
 }
 
+// DeliverableKindMarkdown is a document the agent writes through the tool;
+// DeliverableKindVisual is a folder or file the agent puts in /deliverables
+// of its capsule (a page with its own CSS and JS, an image, a PDF), kept as
+// a bundle and served to the reviewer.
+const (
+	DeliverableKindMarkdown = "markdown"
+	DeliverableKindVisual   = "visual"
+)
+
 type DeliverableDefinition struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Required    bool   `json:"required"`
+	Kind        string `json:"kind,omitempty"`
+}
+
+// DeliverableDirectory is where a Job's deliverables live in every capsule
+// of the Job: each as a file or folder named after the deliverable, put
+// there when a step starts and read back when the agent puts one.
+const DeliverableDirectory = "/root/deliverables"
+
+// DeliverableSlug is the file name a deliverable goes by in the capsule.
+func DeliverableSlug(name string) string {
+	var out []rune
+	dash := false
+	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			out = append(out, r)
+			dash = false
+		case !dash && len(out) > 0:
+			out = append(out, '-')
+			dash = true
+		}
+	}
+	slug := strings.TrimRight(string(out), "-")
+	if slug == "" {
+		return "deliverable"
+	}
+	return slug
+}
+
+// CapsulePath is where this revision sits in a capsule: a Markdown file, a
+// folder, or a single file with the entry's extension.
+func (d Deliverable) CapsulePath() string {
+	slug := DeliverableSlug(d.Name)
+	if d.Kind != DeliverableKindVisual || d.Bundle == nil {
+		return DeliverableDirectory + "/" + slug + ".md"
+	}
+	if d.Bundle.Entry == "index.html" {
+		return DeliverableDirectory + "/" + slug
+	}
+	return DeliverableDirectory + "/" + slug + strings.ToLower(filepath.Ext(d.Bundle.Entry))
+}
+
+// DeliverableBundle is a visual deliverable as the runner delivered it: a
+// zip in the database, its entry file and what that file is.
+type DeliverableBundle struct {
+	Ref         string `json:"ref"`
+	Digest      string `json:"digest"`
+	Size        int64  `json:"size"`
+	Files       int    `json:"files"`
+	Entry       string `json:"entry"`
+	ContentType string `json:"content_type"`
 }
 
 type WorkflowPhase struct {
@@ -155,6 +219,10 @@ type Deliverable struct {
 	// UpdatedAt is set when the same phase run rewrote or edited this
 	// revision in place.
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	// Kind is markdown or visual; a visual revision has a Bundle and no
+	// Content.
+	Kind   string             `json:"kind,omitempty"`
+	Bundle *DeliverableBundle `json:"bundle,omitempty"`
 }
 
 // DeliverableComment is immutable review history on one exact deliverable

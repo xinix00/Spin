@@ -563,6 +563,9 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 		loginCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		s.restoreLoginState(loginCtx, composition)
 		cancel()
+		placeCtx, cancelPlace := context.WithTimeout(context.Background(), 3*time.Minute)
+		s.placeDeliverables(placeCtx, session.JobID, composition)
+		cancelPlace()
 	}
 	active, err := s.openACP(composition, operator, mcpServers)
 	if err != nil {

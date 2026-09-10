@@ -97,7 +97,16 @@ func (c *uploadClient) create(ctx context.Context, snapshot domain.CapsuleSnapsh
 	// The archive keeps the image, not the manifest: the listing can run to
 	// tens of thousands of paths and has no place in this request.
 	snapshot.Contents = nil
-	body, _ := json.Marshal(map[string]any{"kind": "snapshot", "name": snapshot.Ref, "size": size, "snapshot": snapshot})
+	return c.createUpload(ctx, map[string]any{"kind": "snapshot", "name": snapshot.Ref, "size": size, "snapshot": snapshot})
+}
+
+// createBundle opens an upload for a deliverable bundle.
+func (c *uploadClient) createBundle(ctx context.Context, name string, size int64) (uploadSession, error) {
+	return c.createUpload(ctx, map[string]any{"kind": "bundle", "name": name, "size": size})
+}
+
+func (c *uploadClient) createUpload(ctx context.Context, request map[string]any) (uploadSession, error) {
+	body, _ := json.Marshal(request)
 	status, payload, err := c.do(ctx, http.MethodPost, "", bytes.NewReader(body), int64(len(body)), map[string]string{"Content-Type": "application/json"})
 	if err != nil {
 		return uploadSession{}, err

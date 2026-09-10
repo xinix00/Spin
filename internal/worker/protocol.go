@@ -37,6 +37,8 @@ const (
 	methodInspectRange      = "workspace.inspect_range"
 	methodInjectAttachments = "workspace.inject_attachments"
 	methodReadTracked       = "files.read"
+	methodBundleDeliverable = "deliverable.bundle"
+	methodPlaceDeliverable  = "deliverable.place"
 	methodCapsuleChanges    = "capsule.changes"
 	methodWriteTracked      = "files.write"
 	methodAcceptWorkspace   = "workspace.accept"
@@ -161,6 +163,17 @@ type inspectRangePayload struct {
 type attachmentPayload struct {
 	TargetPath string `json:"target_path"`
 	Data       []byte `json:"data"`
+}
+
+type bundleDeliverablePayload struct {
+	Runtime domain.CapsuleRuntime `json:"runtime"`
+	Path    string                `json:"path"`
+}
+
+type placeDeliverablePayload struct {
+	Runtime domain.CapsuleRuntime    `json:"runtime"`
+	Target  string                   `json:"target"`
+	Bundle  domain.DeliverableBundle `json:"bundle"`
 }
 
 type trackedFilesPayload struct {
