@@ -172,20 +172,84 @@ func (t *Tenants) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// the page asks again.
 		tenant = t.awaitOpen(r.Context(), t.startOpen(domain), domain, 2*time.Second)
 	}
-	if tenant == nil {
-		_, opening := t.lookup(domain)
-		stage := opening
-		if stage.Stage == "" {
-			stage = openingStage{Stage: "start", Message: "Deze Spin wordt geopend", StartedAt: time.Now().UTC()}
-		}
+	if r.URL.Path == openingStatusPath {
+		// Where the open stands; an open Spin says it is open.
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		if tenant != nil {
+			_ = json.NewEncoder(w).Encode(map[string]any{"opening": false})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(t.openingStatus(domain))
+		return
+	}
+	if tenant == nil {
+		status := t.openingStatus(domain)
 		w.Header().Set("Retry-After", "2")
+		w.Header().Set("Cache-Control", "no-store")
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/healthz" {
+			// A page that is already loaded, and a probe, ask again until
+			// the Spin is open.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(status)
+			return
+		}
+		// A browser arriving now gets the splash page, which shows the
+		// stages and loads the Spin once it is open.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": stage.Message, "opening": stage.Error == "", "stage": stage.Stage, "message": stage.Message, "started_at": stage.StartedAt, "failure": stage.Error})
+		_, _ = io.WriteString(w, openingPage)
 		return
 	}
 	tenant.Handler.ServeHTTP(w, r)
 }
+
+const openingStatusPath = "/api/opening"
+
+func (t *Tenants) openingStatus(domain string) map[string]any {
+	_, stage := t.lookup(domain)
+	if stage.Stage == "" {
+		stage = openingStage{Stage: "start", Message: "Deze Spin wordt geopend", StartedAt: time.Now().UTC()}
+	}
+	return map[string]any{"error": stage.Message, "opening": stage.Error == "", "stage": stage.Stage, "message": stage.Message, "started_at": stage.StartedAt, "failure": stage.Error}
+}
+
+// openingPage is the splash a browser sees while its Spin opens: the same
+// card as the login gate, the current stage, the time it has taken, and a
+// reload the moment the Spin answers. It carries its own style because the
+// assets sit behind the Spin that is still opening.
+const openingPage = `<!doctype html>
+<html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Spin wordt geopend</title>
+<style>
+:root{color-scheme:dark;--surface:#151a20;--line:#2b343e;--muted:#8e99a5;--text:#e9edf1;--accent:#6488b0;--red:#dc7b82}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#0d1014 radial-gradient(circle at 20% 0,#1a2633 0,transparent 32rem);color:var(--text);font:14px/1.5 Inter,ui-sans-serif,system-ui,sans-serif}
+.card{width:min(460px,100%);border:1px solid var(--line);background:var(--surface);border-radius:16px;box-shadow:0 30px 100px #000b;padding:28px 30px}
+.eyebrow{color:var(--accent);font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}h1{margin:4px 0 14px;font-size:28px}
+.status{display:flex;align-items:flex-start;gap:10px;color:var(--muted);margin:0}.status.failed{color:var(--red)}
+.spinner{flex:0 0 auto;width:14px;height:14px;margin-top:4px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.elapsed{display:block;margin-top:6px;font-size:11.5px;color:var(--muted)}
+</style></head><body>
+<main class="card"><div class="eyebrow">EasyACP</div><h1>Spin</h1>
+<p class="status" id="status"><span class="spinner" id="spinner"></span><span><span id="message">Deze Spin wordt geopend</span><span class="elapsed" id="elapsed"></span></span></p></main>
+<script>
+(function(){
+  var message=document.getElementById('message'),elapsed=document.getElementById('elapsed'),status=document.getElementById('status'),spinner=document.getElementById('spinner');
+  function seconds(value){var total=Math.max(0,Math.round(value/1000)),m=Math.floor(total/60),s=total%60;return m?m+' min '+s+' s':s+' s';}
+  function ask(){
+    fetch('` + openingStatusPath + `',{cache:'no-store',credentials:'same-origin'}).then(function(response){return response.json();}).then(function(state){
+      if(!state.opening&&!state.failure){location.reload();return;}
+      message.textContent=state.failure?'Openen mislukt: '+state.failure:state.message;
+      elapsed.textContent=state.started_at&&!state.failure?'Bezig sinds '+seconds(Date.now()-new Date(state.started_at).getTime()):'';
+      status.classList.toggle('failed',Boolean(state.failure));spinner.hidden=Boolean(state.failure);
+      setTimeout(ask,state.failure?10000:2000);
+    }).catch(function(){message.textContent='Verbinden met de server…';setTimeout(ask,2000);});
+  }
+  ask();
+})();
+</script></body></html>
+`
 
 func (t *Tenants) count() int {
 	t.mu.Lock()

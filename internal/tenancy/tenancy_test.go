@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -136,22 +137,34 @@ func TestSlowOpenAnswersWithItsStage(t *testing.T) {
 		},
 	})
 	defer tenants.Close()
-	get := func() *httptest.ResponseRecorder {
-		request := httptest.NewRequest(http.MethodGet, "http://slow.test/healthz", nil)
+	get := func(path string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, "http://slow.test"+path, nil)
 		request.Host = "slow.test"
 		response := httptest.NewRecorder()
 		tenants.ServeHTTP(response, request)
 		return response
 	}
-	first := get()
+	// A probe and a loaded page get the stage as JSON.
+	first := get("/healthz")
 	var body map[string]any
 	if first.Code != http.StatusServiceUnavailable || json.Unmarshal(first.Body.Bytes(), &body) != nil || body["opening"] != true || body["stage"] == "" {
 		t.Fatalf("while opening = %d %s", first.Code, first.Body.String())
 	}
+	if status := get(openingStatusPath); status.Code != http.StatusOK || json.Unmarshal(status.Body.Bytes(), &body) != nil || body["opening"] != true || body["message"] == "" {
+		t.Fatalf("opening status = %d %s", status.Code, status.Body.String())
+	}
+	// A browser arriving now gets the splash page, which asks the status.
+	page := get("/")
+	if page.Code != http.StatusServiceUnavailable || !strings.HasPrefix(page.Header().Get("Content-Type"), "text/html") || !strings.Contains(page.Body.String(), openingStatusPath) || !strings.Contains(page.Body.String(), "<html") {
+		t.Fatalf("splash page = %d %s %s", page.Code, page.Header().Get("Content-Type"), page.Body.String())
+	}
 	close(release)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if response := get(); response.Code == http.StatusOK {
+		if response := get("/healthz"); response.Code == http.StatusOK {
+			if status := get(openingStatusPath); status.Code != http.StatusOK || json.Unmarshal(status.Body.Bytes(), &body) != nil || body["opening"] != false {
+				t.Fatalf("status after opening = %d %s", status.Code, status.Body.String())
+			}
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
