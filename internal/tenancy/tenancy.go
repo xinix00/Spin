@@ -231,7 +231,7 @@ const openingPage = `<!doctype html>
 @keyframes spin{to{transform:rotate(360deg)}}
 .elapsed{display:block;margin-top:6px;font-size:11.5px;color:var(--muted)}
 </style></head><body>
-<main class="card"><div class="eyebrow">EasyACP</div><h1>Spin</h1>
+<main class="card"><h1>Spin</h1>
 <p class="status" id="status"><span class="spinner" id="spinner"></span><span><span id="message">Deze Spin wordt geopend</span><span class="elapsed" id="elapsed"></span></span></p></main>
 <script>
 (function(){
