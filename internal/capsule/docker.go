@@ -1014,6 +1014,9 @@ func (d *Docker) InspectWorkspaceRange(ctx context.Context, runtime domain.Capsu
 	if strings.ContainsAny(comparison.CommitMessageMatch, "\r\n\x00") || len(comparison.CommitMessageMatch) > 256 {
 		return changes, errors.New("invalid Git commit match")
 	}
+	if comparison.MergeCommit != "" && !validCommitHash(comparison.MergeCommit) {
+		return changes, errors.New("invalid Git merge commit")
+	}
 	authentication := comparison.Authentication
 	if authentication == nil {
 		authentication = &GitAuthentication{}
@@ -1025,6 +1028,7 @@ func (d *Docker) InspectWorkspaceRange(ctx context.Context, runtime domain.Capsu
 		"-e", "SPIN_COMPARE_BASE="+comparison.BaseRef,
 		"-e", "SPIN_COMPARE_HEAD="+comparison.HeadRef,
 		"-e", "SPIN_COMPARE_COMMIT_MATCH="+comparison.CommitMessageMatch,
+		"-e", "SPIN_COMPARE_MERGE="+comparison.MergeCommit,
 		runtime.ContainerID, "sh", "-lc", compareWorkspaceScript,
 	)
 	if err != nil {
@@ -1056,6 +1060,9 @@ func (d *Docker) CompareRepository(ctx context.Context, request RepositoryCompar
 	if strings.ContainsAny(comparison.CommitMessageMatch, "\r\n\x00") || len(comparison.CommitMessageMatch) > 256 {
 		return changes, errors.New("invalid Git commit match")
 	}
+	if comparison.MergeCommit != "" && !validCommitHash(comparison.MergeCommit) {
+		return changes, errors.New("invalid Git merge commit")
+	}
 	key := strings.TrimSpace(request.CacheKey)
 	if key == "" {
 		sum := sha256.Sum256([]byte(request.RemoteURL))
@@ -1079,6 +1086,7 @@ func (d *Docker) CompareRepository(ctx context.Context, request RepositoryCompar
 		"-e", "SPIN_COMPARE_BASE="+comparison.BaseRef,
 		"-e", "SPIN_COMPARE_HEAD="+comparison.HeadRef,
 		"-e", "SPIN_COMPARE_COMMIT_MATCH="+comparison.CommitMessageMatch,
+		"-e", "SPIN_COMPARE_MERGE="+comparison.MergeCommit,
 		"--entrypoint", "sh", browseImage, "-c", compareRepositoryScript,
 	)
 	if err != nil {
@@ -1118,6 +1126,18 @@ else
   git remote set-url origin "$SPIN_GIT_REMOTE"
 fi
 git fetch -q --depth=256 origin "+refs/heads/$SPIN_COMPARE_BASE:refs/remotes/spin/base" "+refs/heads/$SPIN_COMPARE_HEAD:refs/remotes/spin/head"
+# A merged Job: the base branch holds the Job now, so the merge itself is
+# the comparison: its first parent against the merge commit.
+if [ -n "$SPIN_COMPARE_MERGE" ]; then
+  if ! git cat-file -e "$SPIN_COMPARE_MERGE^{commit}" 2>/dev/null; then
+    git fetch -q --deepen=1024 origin "+refs/heads/$SPIN_COMPARE_BASE:refs/remotes/spin/base"
+  fi
+  SPIN_COMPARE_BASE_COMMIT="$(git rev-parse "$SPIN_COMPARE_MERGE^1")"
+  SPIN_COMPARE_HEAD_COMMIT="$(git rev-parse "$SPIN_COMPARE_MERGE")"
+  printf 'SPIN_COMPARE base=%s head=%s\n' "$SPIN_COMPARE_BASE_COMMIT" "$SPIN_COMPARE_HEAD_COMMIT"
+  unset SPIN_GIT_PASSWORD
+  exit 0
+fi
 SPIN_COMPARE_BASE_COMMIT="$(git merge-base refs/remotes/spin/base refs/remotes/spin/head || true)"
 if [ -z "$SPIN_COMPARE_BASE_COMMIT" ]; then
   git fetch -q --deepen=1024 origin "+refs/heads/$SPIN_COMPARE_BASE:refs/remotes/spin/base" "+refs/heads/$SPIN_COMPARE_HEAD:refs/remotes/spin/head"
@@ -1141,6 +1161,18 @@ if [ -n "$SPIN_GIT_PASSWORD" ]; then
   ` + gitCredentialEnvironmentScript + `
 fi
 git fetch -q --depth=256 origin "+refs/heads/$SPIN_COMPARE_BASE:refs/remotes/spin/base" "+refs/heads/$SPIN_COMPARE_HEAD:refs/remotes/spin/head"
+# A merged Job: the base branch holds the Job now, so the merge itself is
+# the comparison: its first parent against the merge commit.
+if [ -n "$SPIN_COMPARE_MERGE" ]; then
+  if ! git cat-file -e "$SPIN_COMPARE_MERGE^{commit}" 2>/dev/null; then
+    git fetch -q --deepen=1024 origin "+refs/heads/$SPIN_COMPARE_BASE:refs/remotes/spin/base"
+  fi
+  SPIN_COMPARE_BASE_COMMIT="$(git rev-parse "$SPIN_COMPARE_MERGE^1")"
+  SPIN_COMPARE_HEAD_COMMIT="$(git rev-parse "$SPIN_COMPARE_MERGE")"
+  printf 'SPIN_COMPARE base=%s head=%s\n' "$SPIN_COMPARE_BASE_COMMIT" "$SPIN_COMPARE_HEAD_COMMIT"
+  unset SPIN_GIT_PASSWORD
+  exit 0
+fi
 SPIN_COMPARE_BASE_COMMIT="$(git merge-base refs/remotes/spin/base HEAD || true)"
 if [ -z "$SPIN_COMPARE_BASE_COMMIT" ]; then
   git fetch -q --deepen=1024 origin "+refs/heads/$SPIN_COMPARE_BASE:refs/remotes/spin/base" "+refs/heads/$SPIN_COMPARE_HEAD:refs/remotes/spin/head"
@@ -2053,4 +2085,17 @@ rm -rf "$t" && mkdir -p "$(dirname "$t")" && mkdir -p "$t" && tar -C "$t" -xf -`
 		return fmt.Errorf("place bundle at %s: %s: %w", target, strings.TrimSpace(stderr.String()), err)
 	}
 	return nil
+}
+
+// validCommitHash is a full or abbreviated hex commit id.
+func validCommitHash(value string) bool {
+	if len(value) < 7 || len(value) > 64 {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
 }

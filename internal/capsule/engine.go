@@ -162,7 +162,12 @@ type WorkspaceComparison struct {
 	BaseRef            string
 	HeadRef            string
 	CommitMessageMatch string
-	Authentication     *GitAuthentication
+	// MergeCommit, when set, is the merge that landed the Job on its base
+	// branch: the comparison is then what that merge brought in, since
+	// the base branch now contains the Job and a merge-base would find
+	// nothing.
+	MergeCommit    string
+	Authentication *GitAuthentication
 }
 
 // WorkspaceRangeInspector compares the current worktree with the merge-base

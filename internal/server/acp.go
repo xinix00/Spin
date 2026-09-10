@@ -443,8 +443,21 @@ func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, session
 	if sessionID != "" {
 		comparison.CommitMessageMatch = "Spin-Session: " + sessionID
 	}
+	// Once the Job is merged, the base branch holds it and a merge-base
+	// would show nothing: the merge commit itself is the comparison.
+	merged := ""
+	for _, run := range snapshot.PhaseRuns {
+		if run.JobID == job.ID && run.ActionResult != nil && run.ActionResult.Type == domain.WorkflowActionGitMerge && run.ActionResult.ExternalID != "" {
+			merged = run.ActionResult.ExternalID
+		}
+	}
+	if sessionID == "" && merged != "" {
+		comparison.MergeCommit = merged
+	}
 	label := func(changes capsule.WorkspaceChanges) capsule.WorkspaceChanges {
 		switch {
+		case sessionID == "" && merged != "":
+			changes.Branch = job.BaseRef + " ← " + job.Branch + " · gemerged"
 		case sessionID == "":
 			changes.Branch = job.Branch + " ← " + job.BaseRef
 		case phaseName != "":

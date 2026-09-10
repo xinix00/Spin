@@ -236,6 +236,16 @@ func TestMergeStepLandsTheJobOnTheBaseBranch(t *testing.T) {
 	if len(engine.merged) != 1 || engine.merged[0].SourceRef != job.Branch || engine.merged[0].TargetRef != "develop" {
 		t.Fatalf("merged = %+v", engine.merged)
 	}
+	// The base branch holds the Job now: the Job's changes are the merge
+	// commit against its first parent, labelled as merged.
+	changes, err := srv.inspectJobChanges(context.Background(), job.ID, "derek", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := engine.comparisons[len(engine.comparisons)-1]
+	if last.MergeCommit != "abc123" || last.BaseRef != "develop" || last.HeadRef != job.Branch || !strings.HasSuffix(changes.Branch, "· gemerged") {
+		t.Fatalf("comparison of a merged Job = %+v, branch label %q", last, changes.Branch)
+	}
 	var mergeRun domain.PhaseRun
 	for _, run := range st.Snapshot().PhaseRuns {
 		if run.JobID == job.ID && run.PhaseID == "merge" {
