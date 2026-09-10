@@ -205,59 +205,6 @@ func (s *Store) ensureMaps() {
 	if s.state.WorkflowTemplates == nil {
 		s.state.WorkflowTemplates = map[string]domain.WorkflowTemplate{}
 	}
-	for id, template := range s.state.WorkflowTemplates {
-		changed := false
-		if template.Revision < 1 {
-			template.Revision = 1
-			changed = true
-		}
-		if template.GitSelector == "" {
-			if selector, err := s.defaultEnabledSelectorLocked(template.CreatedBy, "git", "default"); err == nil {
-				template.GitSelector = selector
-				changed = true
-			}
-		}
-		availableDeliverables := make([]string, 0)
-		seenDeliverables := map[string]bool{}
-		for index := range template.Phases {
-			phase := &template.Phases[index]
-			if phase.Executor == "" {
-				phase.Executor = domain.WorkflowExecutorAgent
-				changed = true
-			}
-			// Templates saved before explicit injection existed received every
-			// deliverable produced by an earlier phase. Preserve that behavior
-			// once, then persist an explicit (possibly empty) selection.
-			if phase.Inject == nil {
-				phase.Inject = append([]string{}, availableDeliverables...)
-				changed = true
-			}
-			for _, deliverable := range phase.Deliverables {
-				key := strings.ToLower(strings.TrimSpace(deliverable.Name))
-				if key == "" || seenDeliverables[key] {
-					continue
-				}
-				seenDeliverables[key] = true
-				availableDeliverables = append(availableDeliverables, strings.TrimSpace(deliverable.Name))
-			}
-		}
-		if changed {
-			s.state.WorkflowTemplates[id] = template
-		}
-	}
-	for id, job := range s.state.Jobs {
-		if job.TemplateID == "" {
-			continue
-		}
-		if job.TemplateSnapshot != nil {
-			continue
-		}
-		if template, ok := s.state.WorkflowTemplates[job.TemplateID]; ok {
-			frozen := cloneWorkflowTemplate(template)
-			job.TemplateSnapshot = &frozen
-			s.state.Jobs[id] = job
-		}
-	}
 	if s.state.PhaseRuns == nil {
 		s.state.PhaseRuns = map[string]domain.PhaseRun{}
 	}
