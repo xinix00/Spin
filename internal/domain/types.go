@@ -401,34 +401,19 @@ const (
 // process-state bit is explicit because a Docker image commit is restorable but
 // does not contain RAM, open sockets or a provider-side KV cache.
 // LayerContents is what a layer wrote (its real difference from the layer
-// under it) or what a Session changed outside its workspace, by kind.
+// under it) or what a Session changed outside its workspace.
 type LayerContents struct {
-	Files int           `json:"files"`
-	Bytes int64         `json:"bytes"`
-	Kinds []ContentKind `json:"kinds,omitempty"`
-	// Dropped is what sealing left out: files identical to the layer
-	// below, and caches.
+	Files int   `json:"files"`
+	Bytes int64 `json:"bytes"`
+	// DroppedIdentical is what sealing left out: files identical to the
+	// layer below.
 	DroppedIdentical ContentTotal `json:"dropped_identical,omitempty"`
-	DroppedCache     ContentTotal `json:"dropped_cache,omitempty"`
 	// Entries is the full listing, largest first. The runner fills it; the
 	// server keeps it as a file next to the state, not in the state.
 	Entries []ContentEntry `json:"entries,omitempty"`
 }
 
 type ContentEntry struct {
-	Path  string `json:"path"`
-	Bytes int64  `json:"bytes"`
-	Kind  string `json:"kind"`
-}
-
-type ContentKind struct {
-	Kind    string        `json:"kind"`
-	Files   int           `json:"files"`
-	Bytes   int64         `json:"bytes"`
-	Largest []ContentPath `json:"largest,omitempty"`
-}
-
-type ContentPath struct {
 	Path  string `json:"path"`
 	Bytes int64  `json:"bytes"`
 }

@@ -829,12 +829,10 @@ function renderRecording(){
 
 // A layer's manifest: its real difference by kind, and what sealing left
 // out because it was identical to the layer below or a cache.
-const kindLabel=kind=>({tool:'tool',login:'inlog',home:'home',config:'config',workspace:'workspace',cache:'cache',data:'data',system:'systeem'})[kind]||kind;
 function contentsLine(contents){
-  if(!contents||!contents.files&&!contents.dropped_identical?.files&&!contents.dropped_cache?.files)return '';
-  const kinds=(contents.kinds||[]).map(kind=>`<span title="${esc((kind.largest||[]).map(item=>`${item.path} ${formatBytes(item.bytes)}`).join('\n'))}">${esc(kindLabel(kind.kind))} ${esc(formatBytes(kind.bytes))}</span>`).join(' · ');
-  const dropped=[];if(contents.dropped_identical?.files)dropped.push(`${esc(formatBytes(contents.dropped_identical.bytes))} gelijk aan de laag eronder`);if(contents.dropped_cache?.files)dropped.push(`${esc(formatBytes(contents.dropped_cache.bytes))} cache`);
-  return `<small>${icon('inventory_2')} ${contents.files} bestand${contents.files===1?'':'en'} · ${esc(formatBytes(contents.bytes))}${kinds?` · ${kinds}`:''}${dropped.length?` · weggelaten: ${dropped.join(', ')}`:''}</small>`;
+  if(!contents||!contents.files&&!contents.dropped_identical?.files)return '';
+  const dropped=contents.dropped_identical?.files?` · weggelaten: ${esc(formatBytes(contents.dropped_identical.bytes))} gelijk aan de laag eronder`:'';
+  return `<small>${icon('inventory_2')} ${contents.files} bestand${contents.files===1?'':'en'} · ${esc(formatBytes(contents.bytes))}${dropped}</small>`;
 }
 function contentsButton(artifact){const tracked=(artifact.tracked_paths||[]).length;return artifact.snapshot?.contents?`<button class="small-button" data-contents-artifact="${esc(artifact.id)}" title="Alle paden van deze laag, per soort; vink aan wat Spin tussen Sessions bijhoudt">${icon('inventory_2')}Inhoud${tracked?` · ${tracked} bijgehouden`:''}</button>`:'';}
 // The contents dialog lists every path of a layer's manifest or a capsule's
@@ -847,15 +845,14 @@ async function openContents(url,title,artifact=null){
     contentsState.tracked=new Set(artifact?(artifact.tracked_paths||[]):[]);contentsOpenFolders.clear();
     document.getElementById('contents-save').hidden=!artifact;document.getElementById('contents-save').disabled=false;
     document.getElementById('contents-title').textContent=title;
-    const dropped=[];if(contents.dropped_identical?.files)dropped.push(`${formatBytes(contents.dropped_identical.bytes)} in ${contents.dropped_identical.files} bestand${contents.dropped_identical.files===1?'':'en'} gelijk aan de laag eronder`);if(contents.dropped_cache?.files)dropped.push(`${formatBytes(contents.dropped_cache.bytes)} cache`);
-    document.getElementById('contents-summary').textContent=`${contents.files||0} bestanden · ${formatBytes(contents.bytes||0)}${(contents.kinds||[]).length?' · '+contents.kinds.map(kind=>`${kindLabel(kind.kind)} ${formatBytes(kind.bytes)} (${kind.files})`).join(' · '):''}${dropped.length?' · weggelaten: '+dropped.join(', '):''}${entries.length?'':' · geen lijst bewaard voor deze laag'}`;
-    const kindSelect=document.getElementById('contents-kind');kindSelect.innerHTML=`<option value="">alle soorten</option>${[...new Set(entries.map(entry=>entry.kind))].map(kind=>`<option value="${esc(kind)}">${esc(kindLabel(kind))}</option>`).join('')}`;kindSelect.value='';
+    const dropped=contents.dropped_identical?.files?` · weggelaten: ${formatBytes(contents.dropped_identical.bytes)} in ${contents.dropped_identical.files} bestand${contents.dropped_identical.files===1?'':'en'} gelijk aan de laag eronder`:'';
+    document.getElementById('contents-summary').textContent=`${contents.files||0} bestanden · ${formatBytes(contents.bytes||0)}${dropped}${entries.length?'':' · geen lijst bewaard voor deze laag'}`;
     document.getElementById('contents-filter').value='';
     renderContentsList();openDialog('contents-dialog');
   }catch(error){showError(error);}
 }
 const contentsOpenFolders=new Set();
-function contentsTreeModel(entries){const root={dirs:new Map(),files:[]};entries.forEach(entry=>{const parts=entry.path.replace(/^\//,'').split('/');let node=root;parts.slice(0,-1).forEach(part=>{if(!node.dirs.has(part))node.dirs.set(part,{dirs:new Map(),files:[]});node=node.dirs.get(part);});node.files.push({name:parts.at(-1),path:entry.path,size:entry.bytes,kind:entry.kind});});return root;}
+function contentsTreeModel(entries){const root={dirs:new Map(),files:[]};entries.forEach(entry=>{const parts=entry.path.replace(/^\//,'').split('/');let node=root;parts.slice(0,-1).forEach(part=>{if(!node.dirs.has(part))node.dirs.set(part,{dirs:new Map(),files:[]});node=node.dirs.get(part);});node.files.push({name:parts.at(-1),path:entry.path,size:entry.bytes});});return root;}
 function contentsFilesBelow(node,out=[]){node.files.forEach(file=>out.push(file));node.dirs.forEach(child=>contentsFilesBelow(child,out));return out;}
 // Folders render their children when they open: a tool layer holds tens
 // of thousands of files, and drawing them all at once would freeze the page.
@@ -864,7 +861,7 @@ function renderContentsNode(node,depth,prefix,track,openAll){
   const dirs=[...node.dirs.entries()].sort((a,b)=>a[0].localeCompare(b[0])),files=node.files.sort((a,b)=>a.name.localeCompare(b.name));
   return dirs.map(([name,child])=>{const path=prefix?`${prefix}/${name}`:name,open=openAll||contentsOpenFolders.has(path),below=contentsFilesBelow(child),bytes=below.reduce((sum,file)=>sum+(file.size||0),0),all=below.length>0&&below.every(file=>contentsState.tracked.has(file.path)),some=below.some(file=>contentsState.tracked.has(file.path));
     return `<div class="tree-folder${open?' open':''}"><div class="tree-row">${track?`<input type="checkbox" data-track-folder="${esc(path)}" ${all?'checked':''} ${!all&&some?'data-indeterminate="1"':''} title="Alles in deze map bijhouden">`:''}<button type="button" class="tree-row-toggle" data-toggle-contents-folder="${esc(path)}" title="${esc('/'+path)}"><span class="material-symbols-outlined tree-slot" aria-hidden="true">chevron_right</span><span class="material-symbols-outlined tree-icon folder" aria-hidden="true">${open?'folder_open':'folder'}</span><span class="tree-name">${esc(name)}</span></button><span class="tree-size">${below.length} · ${esc(formatBytes(bytes))}</span></div><div class="tree-children" ${open?'':'hidden'}>${open?renderContentsNode(child,depth+1,path,track,openAll):''}</div></div>`;}).join('')+
-    files.slice(0,1500).map(file=>`<div class="tree-row tree-file">${track?`<input type="checkbox" data-track-path="${esc(file.path)}" ${contentsState.tracked.has(file.path)?'checked':''}>`:''}<span class="tree-slot"></span><span class="material-symbols-outlined tree-icon" aria-hidden="true">${fileIcon(file.name)}</span><span class="tree-name" title="${esc(file.path)}">${esc(file.name)}</span><span class="tag">${esc(kindLabel(file.kind))}</span><span class="tree-size">${esc(formatBytes(file.size||0))}</span></div>`).join('')+(files.length>1500?`<div class="tree-row tree-file"><span class="tree-slot"></span><span class="tree-name hint">nog ${files.length-1500} bestanden in deze map; filter op pad om ze te zien</span></div>`:'');
+    files.slice(0,1500).map(file=>`<div class="tree-row tree-file">${track?`<input type="checkbox" data-track-path="${esc(file.path)}" ${contentsState.tracked.has(file.path)?'checked':''}>`:''}<span class="tree-slot"></span><span class="material-symbols-outlined tree-icon" aria-hidden="true">${fileIcon(file.name)}</span><span class="tree-name" title="${esc(file.path)}">${esc(file.name)}</span><span class="tree-size">${esc(formatBytes(file.size||0))}</span></div>`).join('')+(files.length>1500?`<div class="tree-row tree-file"><span class="tree-slot"></span><span class="tree-name hint">nog ${files.length-1500} bestanden in deze map; filter op pad om ze te zien</span></div>`:'');
 }
 function bindContentsRows(root){
   root.querySelectorAll('[data-indeterminate]').forEach(box=>box.indeterminate=true);
@@ -873,16 +870,15 @@ function bindContentsRows(root){
   root.querySelectorAll('[data-track-folder]').forEach(box=>box.onchange=()=>{const prefix='/'+box.dataset.trackFolder+'/';contentsState.entries.filter(entry=>entry.path.startsWith(prefix)).forEach(entry=>{if(box.checked)contentsState.tracked.add(entry.path);else contentsState.tracked.delete(entry.path);});renderContentsList();});
 }
 function renderContentsList(){
-  const filter=document.getElementById('contents-filter').value.trim().toLowerCase(),kind=document.getElementById('contents-kind').value,root=document.getElementById('contents-body');
-  const rows=contentsState.entries.filter(entry=>(!kind||entry.kind===kind)&&(!filter||entry.path.toLowerCase().includes(filter)));
-  const track=Boolean(contentsState.artifactID),openAll=Boolean(filter||kind)&&rows.length<=1500;
+  const filter=document.getElementById('contents-filter').value.trim().toLowerCase(),root=document.getElementById('contents-body');
+  const rows=contentsState.entries.filter(entry=>!filter||entry.path.toLowerCase().includes(filter));
+  const track=Boolean(contentsState.artifactID),openAll=Boolean(filter)&&rows.length<=1500;
   contentsState.model=contentsTreeModel(rows);
-  root.innerHTML=rows.length?`${rows.length>1500&&(filter||kind)?`<p class="hint">${rows.length} bestanden passen; mappen staan dicht, klap open wat je zoekt of verfijn het filter.</p>`:''}<div class="code-tree contents-tree">${renderContentsNode(contentsState.model,0,'',track,openAll)}</div>`:'<div class="empty">Niets gevonden.</div>';
+  root.innerHTML=rows.length?`${rows.length>1500&&filter?`<p class="hint">${rows.length} bestanden passen; mappen staan dicht, klap open wat je zoekt of verfijn het filter.</p>`:''}<div class="code-tree contents-tree">${renderContentsNode(contentsState.model,0,'',track,openAll)}</div>`:'<div class="empty">Niets gevonden.</div>';
   bindContentsRows(root);
 }
 document.getElementById('contents-save').onclick=async()=>{const button=document.getElementById('contents-save');button.disabled=true;try{await api(`/api/artifacts/${encodeURIComponent(contentsState.artifactID)}/tracked`,{method:'PUT',body:JSON.stringify({paths:[...contentsState.tracked]})});showNotice(`${contentsState.tracked.size} bestand${contentsState.tracked.size===1?'':'en'} bijgehouden voor ${contentsState.title}`);await refresh(true);}catch(error){showError(error);}finally{button.disabled=false;}};
 document.getElementById('contents-filter').oninput=renderContentsList;
-document.getElementById('contents-kind').onchange=renderContentsList;
 function renderComposition(){
   const composition=snapshot.compositions.find(item=>item.operator===currentOperator()),root=region('composition');
   if(!composition){root.innerHTML='<div class="empty">Nog geen draaiende Composition.</div>';return;}
@@ -893,7 +889,7 @@ function renderComposition(){
   const mcp=composition.mcp_server_ids?.length?`<div class="binding"><span>MCP</span><span>${composition.mcp_server_ids.map(id=>esc(byID(snapshot.mcp_servers,id)?.name||id)).join(', ')}</span></div>`:'';
   const git=composition.git?`<div class="binding"><span>GIT</span><span>${esc(composition.git.repository_name)} · ${esc(composition.git.head_ref)} → ${esc(composition.git.target_ref)} · ${esc(composition.git.credential_scope||'public')}${composition.git.login?' · '+esc(composition.git.provider+':'+composition.git.login):''}</span></div>`:'';
   const runtime=composition.runtime?`<div class="binding"><span>capsule</span><span>${esc(composition.runtime.status)} · ${esc(composition.runtime.attach_command||'')}</span></div>`:'';
-  const changes=composition.capsule_changes?.files?`<div class="binding"><span>gewijzigd</span><span title="Buiten de workspace, sinds de start van de capsule">${(composition.capsule_changes.kinds||[]).map(kind=>`${esc(kindLabel(kind.kind))} ${esc(formatBytes(kind.bytes))} (${kind.files})`).join(' · ')} <button class="small-button" id="composition-changes-button">${icon('inventory_2')}Bekijk</button></span></div>`:'';
+  const changes=composition.capsule_changes?.files?`<div class="binding"><span>gewijzigd</span><span title="Buiten de workspace, sinds de start van de capsule">${composition.capsule_changes.files} bestand${composition.capsule_changes.files===1?'':'en'} · ${esc(formatBytes(composition.capsule_changes.bytes))} <button class="small-button" id="composition-changes-button">${icon('inventory_2')}Bekijk</button></span></div>`:'';
   const ready=composition.runtime&&composition.runtime.status!=='stopped';
   const acp=(composition.enabled||[]).some(item=>item.name==='acp');
   root.innerHTML=`<div class="meta"><span class="tag">${short(composition.id)}</span><span class="tag">${esc(composition.selector)}</span></div>${bindings}${withLayers}${enabled}${mcp}${git}${runtime}${changes}<div class="panel-actions" style="margin-top:9px">${ready&&acp?`<button class="small-button" data-action="probe" data-id="${esc(composition.id)}">ACP probe</button>`:''}${ready?`<button class="danger" data-action="stop" data-id="${esc(composition.id)}">Stop</button>`:''}</div>`;

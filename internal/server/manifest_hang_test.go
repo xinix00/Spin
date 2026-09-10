@@ -28,7 +28,7 @@ func TestManifestRoundTripThroughTheDatabase(t *testing.T) {
 	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), capsule.Journal{}, ServerOptions{DisableAuthentication: true, Database: database})
 	entries := []domain.ContentEntry{}
 	for i := 0; i < 10; i++ {
-		entries = append(entries, domain.ContentEntry{Path: "/root/.claude/file" + string(rune('a'+i)), Bytes: 12, Kind: "login"})
+		entries = append(entries, domain.ContentEntry{Path: "/root/.claude/file" + string(rune('a'+i)), Bytes: 12})
 	}
 	done := make(chan []domain.ContentEntry, 1)
 	go func() {

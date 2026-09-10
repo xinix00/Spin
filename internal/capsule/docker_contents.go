@@ -91,16 +91,12 @@ func (d *Docker) cleanLayer(ctx context.Context, tag, parentImage, recordingID s
 			contents.DroppedIdentical.Files++
 			contents.DroppedIdentical.Bytes += entry.Size
 			drop[entry.Path] = true
-		case entry.Kind == KindCache:
-			contents.DroppedCache.Files++
-			contents.DroppedCache.Bytes += entry.Size
-			drop[entry.Path] = true
 		default:
 			kept = append(kept, entry)
 		}
 	}
 	summary := summarize(kept)
-	summary.DroppedIdentical, summary.DroppedCache = contents.DroppedIdentical, contents.DroppedCache
+	summary.DroppedIdentical = contents.DroppedIdentical
 	if len(drop) == 0 {
 		return &summary, nil
 	}
@@ -117,7 +113,7 @@ func (d *Docker) cleanLayer(ctx context.Context, tag, parentImage, recordingID s
 	}()
 	if err := filterTar(diff, filtered, func(name string) bool {
 		clean := "/" + strings.TrimPrefix(strings.TrimPrefix(name, "./"), "/")
-		return !drop[clean] && ClassifyPath(clean) != KindCache
+		return !drop[clean]
 	}); err != nil {
 		return nil, err
 	}
@@ -152,7 +148,7 @@ func readDiffEntries(layer io.Reader) ([]contentEntry, map[string]string, error)
 		if _, err := io.Copy(hasher, reader); err != nil {
 			return nil, nil, err
 		}
-		entries = append(entries, contentEntry{Path: name, Size: header.Size, Kind: ClassifyPath(name)})
+		entries = append(entries, contentEntry{Path: name, Size: header.Size})
 		hashes[name] = hex.EncodeToString(hasher.Sum(nil))
 	}
 	return entries, hashes, nil
@@ -286,7 +282,7 @@ func (d *Docker) CaptureCapsuleChanges(ctx context.Context, runtime domain.Capsu
 			continue
 		}
 		name = path.Clean(name)
-		if ClassifyPath(name) == KindWorkspace || ClassifyPath(name) == KindCache {
+		if insideWorkspace(name) {
 			continue
 		}
 		changed = append(changed, name)
@@ -311,7 +307,7 @@ func (d *Docker) CaptureCapsuleChanges(ctx context.Context, runtime domain.Capsu
 			continue
 		}
 		size, _ := strconv.ParseInt(sizeText, 10, 64)
-		entries = append(entries, contentEntry{Path: name, Size: size, Kind: ClassifyPath(name)})
+		entries = append(entries, contentEntry{Path: name, Size: size})
 	}
 	return summarize(entries), nil
 }

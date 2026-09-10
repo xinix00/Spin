@@ -7,30 +7,8 @@ import (
 	"testing"
 )
 
-func TestClassifyPathNamesTheKinds(t *testing.T) {
-	cases := map[string]string{
-		"/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js": KindTool,
-		"/root/.claude/.credentials.json":                              KindLogin,
-		"/home/dev/.codex/auth.json":                                   KindLogin,
-		"/root/.claude.json":                                           KindLogin,
-		"/root/.npm/_cacache/index-v5/x":                               KindCache,
-		"/root/.cache/pip/wheels/a.whl":                                KindCache,
-		"/tmp/build.log":                                               KindCache,
-		"/root/notes.md":                                               KindHome,
-		"/etc/spin/enabled/acp.env":                                    KindConfig,
-		"/etc/hosts":                                                   KindSystem,
-		"/workspace/main.go":                                           KindWorkspace,
-		"/var/lib/apt/lists/x":                                         KindData,
-	}
-	for name, want := range cases {
-		if got := ClassifyPath(name); got != want {
-			t.Fatalf("ClassifyPath(%q) = %s, want %s", name, got, want)
-		}
-	}
-}
-
-// A diff is read file by file with its kind and hash; the summary orders
-// kinds by size and names the largest files of each.
+// A diff is read file by file with its hash; the summary lists the files
+// largest first.
 func TestReadDiffEntriesAndSummary(t *testing.T) {
 	var buffer bytes.Buffer
 	writer := tar.NewWriter(&buffer)
@@ -57,11 +35,11 @@ func TestReadDiffEntriesAndSummary(t *testing.T) {
 		t.Fatalf("entries = %+v hashes = %d", entries, len(hashes))
 	}
 	summary := summarize(entries)
-	if summary.Files != 3 || summary.Kinds[0].Kind != KindTool || summary.Kinds[0].Largest[0].Path != "/usr/local/bin/tool" {
+	if summary.Files != 3 || summary.Entries[0].Path != "/usr/local/bin/tool" {
 		t.Fatalf("summary = %+v", summary)
 	}
 	var kept bytes.Buffer
-	if err := filterTar(bytes.NewReader(raw), &kept, func(name string) bool { return ClassifyPath(name) != KindCache }); err != nil {
+	if err := filterTar(bytes.NewReader(raw), &kept, func(name string) bool { return !strings.Contains(name, "_cacache") }); err != nil {
 		t.Fatal(err)
 	}
 	remaining, _, err := readDiffEntries(&kept)

@@ -136,7 +136,7 @@ func TestCreateUploadLeavesTheManifestOut(t *testing.T) {
 	}
 	entries := make([]domain.ContentEntry, 20000)
 	for index := range entries {
-		entries[index] = domain.ContentEntry{Path: "/usr/local/lib/node_modules/some/package/file" + strconv.Itoa(index) + ".js", Bytes: 1234, Kind: "tool"}
+		entries[index] = domain.ContentEntry{Path: "/usr/local/lib/node_modules/some/package/file" + strconv.Itoa(index) + ".js", Bytes: 1234}
 	}
 	snapshot := domain.CapsuleSnapshot{Driver: "docker", Ref: "spin/artifact:rec_1", Digest: "sha256:abc", Contents: &domain.LayerContents{Files: len(entries), Entries: entries}}
 	if _, err := client.create(context.Background(), snapshot, 10); err != nil {
