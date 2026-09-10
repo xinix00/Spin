@@ -509,6 +509,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/code-reviews/{revisionID}/comments", s.createCodeReviewComment)
 	s.mux.HandleFunc("POST /api/jobs/{jobID}/close", s.closeJob)
 	s.mux.HandleFunc("PUT /api/jobs/{jobID}/assignee", s.assignJob)
+	s.mux.HandleFunc("PUT /api/jobs/{jobID}/environment", s.updateJobEnvironment)
 	s.mux.HandleFunc("POST /api/jobs/{jobID}/template", s.adoptJobTemplate)
 	s.mux.HandleFunc("DELETE /api/jobs/{jobID}", s.deleteJob)
 	s.mux.HandleFunc("POST /api/deliverables/{deliverableID}/comments", s.createDeliverableComment)
@@ -1048,6 +1049,19 @@ func (s *Server) assignJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job, err := s.store.AssignJob(r.PathValue("jobID"), s.requestOperator(r, ""), req.Assignee)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *Server) updateJobEnvironment(w http.ResponseWriter, r *http.Request) {
+	var req domain.UpdateJobEnvironmentRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	job, err := s.store.UpdateJobEnvironment(r.PathValue("jobID"), s.requestOperator(r, ""), req)
 	if err != nil {
 		writeError(w, err)
 		return

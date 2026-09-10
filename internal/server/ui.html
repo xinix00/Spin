@@ -333,6 +333,13 @@
         </div>
       </dialog>
 
+      <dialog id="job-environment-dialog">
+        <div class="dialog-head"><div><h2>Omgeving van de Job</h2><p id="job-environment-copy"></p></div><button class="icon-button" type="button" data-close-dialog="job-environment-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+        <form id="job-environment-form">
+          <div class="form-grid"><div class="wide"><label for="job-environment-selector">Agent/environment</label><select id="job-environment-selector" name="environment_selector"></select><small>Geldt voor stappen die hierna starten; een stap die al draait houdt wat hij kreeg. Jouw credential-laag op deze agent komt er automatisch bij.</small></div><div class="wide"><label for="job-environment-mcp">MCP-connecties</label><select id="job-environment-mcp" name="mcp_server_ids" multiple></select></div></div>
+          <div class="dialog-foot"><span class="hint">Branch, Template en geschiedenis blijven.</span><div class="panel-actions"><button class="small-button" type="button" data-close-dialog="job-environment-dialog">Annuleren</button><button class="primary" type="submit">Bewaren</button></div></div>
+        </form>
+      </dialog>
       <dialog id="adopt-template-dialog">
         <div class="dialog-head"><div><h2>Nieuwe Template-revisie</h2><p id="adopt-template-copy"></p></div><button class="icon-button" type="button" data-close-dialog="adopt-template-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
         <form id="adopt-template-form">

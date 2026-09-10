@@ -2158,6 +2158,41 @@ func (s *Store) PrepareJobDeletion(jobID, operator string) (domain.Job, []domain
 // persisted state transition so a browser refresh can never show it as live.
 // AssignJob hands a Job to a user: any signed-in colleague may do it, so a
 // Job can be put with someone "to have a look" and back again.
+// UpdateJobEnvironment changes the agent layer and the MCP connections a
+// Job's next steps start with; a wrong pick at creation is not for ever.
+func (s *Store) UpdateJobEnvironment(jobID, operator string, req domain.UpdateJobEnvironmentRequest) (domain.Job, error) {
+	operator = normalizeSubject(operator)
+	selector := strings.ToLower(strings.TrimSpace(req.EnvironmentSelector))
+	kind, name, err := parseArtifactSelector(selector)
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("environment_selector: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.state.Jobs[strings.TrimSpace(jobID)]
+	if !ok {
+		return domain.Job{}, ErrNotFound
+	}
+	if !job.AllowsOperator(operator) {
+		return domain.Job{}, fmt.Errorf("only the owner or assignee of the Job can change its environment: %w", ErrConflict)
+	}
+	if job.Status == domain.JobDone || job.Status == domain.JobCancelled {
+		return domain.Job{}, fmt.Errorf("a closed Job keeps its environment: %w", ErrConflict)
+	}
+	if _, ok := s.latestArtifactLocked(kind, normalizeName(name), job.Worker(), "default"); !ok {
+		return domain.Job{}, fmt.Errorf("environment %s: %w", selector, ErrNotFound)
+	}
+	mcpIDs := uniqueStrings(req.MCPServerIDs)
+	if _, err := s.mcpServersLocked(job.Worker(), mcpIDs); err != nil {
+		return domain.Job{}, err
+	}
+	job.EnvironmentSelector = selector
+	job.MCPServerIDs = mcpIDs
+	job.UpdatedAt = time.Now().UTC()
+	s.state.Jobs[job.ID] = job
+	return job, s.saveLocked()
+}
+
 func (s *Store) AssignJob(jobID, operator, assignee string) (domain.Job, error) {
 	operator = normalizeSubject(operator)
 	assignee = normalizeSubject(assignee)

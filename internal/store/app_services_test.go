@@ -361,3 +361,68 @@ func TestPhaseEnvironmentWithoutAgentKeepsTheJobsAgent(t *testing.T) {
 		}
 	}
 }
+
+// A Job's environment can change after creation: the next step starts
+// with the new agent layer, a running step keeps what it was started
+// with, and only the owner or assignee of an open Job may change it.
+func TestJobEnvironmentChangesForTheNextStep(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "codex", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "codex-acp"}}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "claude", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "claude-acp"}}})
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "shop", RemoteURL: "https://github.com/derek/shop.git", DefaultRef: "develop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Code", Phases: []domain.WorkflowPhase{
+		{ID: "plan", Name: "Plan", Instructions: "Plan", Accept: domain.WorkflowTransition{Target: "NEXT"}, Reject: domain.WorkflowTransition{Target: "SELF"}},
+		{ID: "dev", Name: "Dev", Instructions: "Bouw", AllowChanges: true, Accept: domain.WorkflowTransition{Target: "DONE"}, Reject: domain.WorkflowTransition{Target: "SELF"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Objective: "Werkend", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:codex", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Session.EnvironmentSelector != "tool:codex" {
+		t.Fatalf("first step environment = %q", created.Session.EnvironmentSelector)
+	}
+	if _, err := st.UpdateJobEnvironment(created.Job.ID, "john", domain.UpdateJobEnvironmentRequest{EnvironmentSelector: "tool:claude"}); err == nil {
+		t.Fatal("someone else changed the environment")
+	}
+	if _, err := st.UpdateJobEnvironment(created.Job.ID, "derek", domain.UpdateJobEnvironmentRequest{EnvironmentSelector: "tool:nonsense"}); err == nil {
+		t.Fatal("an unknown layer was accepted")
+	}
+	if _, err := st.UpdateJobEnvironment(created.Job.ID, "derek", domain.UpdateJobEnvironmentRequest{EnvironmentSelector: "tool:claude", MCPServerIDs: []string{"mcp_unknown"}}); err == nil {
+		t.Fatal("an unknown MCP connection was accepted")
+	}
+	job, err := st.UpdateJobEnvironment(created.Job.ID, "derek", domain.UpdateJobEnvironmentRequest{EnvironmentSelector: "tool:claude"})
+	if err != nil || job.EnvironmentSelector != "tool:claude" {
+		t.Fatalf("update = %+v, %v", job, err)
+	}
+	// The running step keeps codex; the next step starts with claude.
+	if _, err := st.MarkWorkflowPhaseRunning(created.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range st.Snapshot().Sessions {
+		if session.ID == created.Session.ID && session.EnvironmentSelector != "tool:codex" {
+			t.Fatalf("running step environment = %q", session.EnvironmentSelector)
+		}
+	}
+	advance, err := st.CompleteWorkflowPhase(created.Session.ID, "accept", "plan klaar")
+	if err != nil || advance.NextSession == nil {
+		t.Fatalf("accept = %+v, %v", advance, err)
+	}
+	if advance.NextSession.EnvironmentSelector != "tool:claude" {
+		t.Fatalf("next step environment = %q", advance.NextSession.EnvironmentSelector)
+	}
+	if _, err := st.CloseJob(created.Job.ID, "derek"); err == nil {
+		if _, err := st.UpdateJobEnvironment(created.Job.ID, "derek", domain.UpdateJobEnvironmentRequest{EnvironmentSelector: "tool:codex"}); err == nil {
+			t.Fatal("a closed Job changed its environment")
+		}
+	}
+}

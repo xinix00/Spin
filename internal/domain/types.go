@@ -1215,6 +1215,14 @@ type AssignJobRequest struct {
 	Assignee string `json:"assignee"`
 }
 
+// UpdateJobEnvironmentRequest changes what the next steps of a Job start
+// with: the agent layer and the MCP connections. Steps already running
+// keep what they were started with.
+type UpdateJobEnvironmentRequest struct {
+	EnvironmentSelector string   `json:"environment_selector"`
+	MCPServerIDs        []string `json:"mcp_server_ids"`
+}
+
 type CreateDeliverableCommentRequest struct {
 	Operator     string `json:"operator,omitempty"`
 	SelectedText string `json:"selected_text"`
