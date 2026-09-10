@@ -334,6 +334,13 @@
         </div>
       </dialog>
 
+      <dialog id="adopt-template-dialog">
+        <div class="dialog-head"><div><h2>Nieuwe Template-revisie</h2><p id="adopt-template-copy"></p></div><button class="icon-button" type="button" data-close-dialog="adopt-template-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+        <form id="adopt-template-form">
+          <div class="form-grid"><div class="wide"><label for="adopt-template-phase">Waar gaat de Job verder?</label><select id="adopt-template-phase" name="phase_id"></select><small>Een andere stap kiezen sluit de huidige stap af zonder oordeel en start de gekozen stap als nieuwe poging; een open vraag vervalt.</small></div></div>
+          <div class="dialog-foot"><span class="hint">De Job houdt zijn branch, deliverables en geschiedenis.</span><div class="panel-actions"><button class="small-button" type="button" data-close-dialog="adopt-template-dialog">Annuleren</button><button class="primary" type="submit">Overnemen</button></div></div>
+        </form>
+      </dialog>
       <dialog id="reject-dialog">
         <div class="dialog-head"><div><h2>Reject</h2><p>De reden wordt vastgelegd en aan de volgende poging meegegeven.</p></div><button class="icon-button" type="button" data-close-dialog="reject-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
         <form id="reject-form">

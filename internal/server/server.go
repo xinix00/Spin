@@ -509,6 +509,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/code-reviews/{revisionID}/comments", s.createCodeReviewComment)
 	s.mux.HandleFunc("POST /api/jobs/{jobID}/close", s.closeJob)
 	s.mux.HandleFunc("PUT /api/jobs/{jobID}/assignee", s.assignJob)
+	s.mux.HandleFunc("POST /api/jobs/{jobID}/template", s.adoptJobTemplate)
 	s.mux.HandleFunc("DELETE /api/jobs/{jobID}", s.deleteJob)
 	s.mux.HandleFunc("POST /api/deliverables/{deliverableID}/comments", s.createDeliverableComment)
 	s.mux.HandleFunc("GET /api/deliverables/{deliverableID}/download", s.downloadDeliverable)
@@ -1100,6 +1101,29 @@ func (s *Server) stopJobRuntimes(ctx context.Context, job domain.Job, operator s
 		}
 	}
 	return nil
+}
+
+// adoptJobTemplate moves a Job to the newest revision of its Template,
+// continuing at the chosen step or keeping its current one.
+func (s *Server) adoptJobTemplate(w http.ResponseWriter, r *http.Request) {
+	operator := s.requestOperator(r, r.URL.Query().Get("operator"))
+	var request struct {
+		PhaseID string `json:"phase_id"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	created, previousCompositionID, launched, err := s.store.AdoptWorkflowTemplate(r.PathValue("jobID"), operator, request.PhaseID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !launched {
+		writeJSON(w, http.StatusOK, created)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, created)
+	s.scheduleWorkflowRetry(created, operator, previousCompositionID)
 }
 
 func (s *Server) retryWorkflowSession(w http.ResponseWriter, r *http.Request) {

@@ -3,6 +3,7 @@ package store
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1646,4 +1647,94 @@ func (s *Store) newWorkflowSessionLocked(job *domain.Job, template domain.Workfl
 	job.PendingReason = ""
 	job.UpdatedAt = now
 	return session, run
+}
+
+// AdoptWorkflowTemplate moves an active Job to the newest revision of its
+// Template. With no phase the Job keeps its current step, which must still
+// exist in that revision; with a phase the current step is closed as
+// "overgezet" and the Job continues at the chosen step of the new
+// revision, as a new attempt. It reports the composition the closed step
+// was using, so the caller can stop it.
+func (s *Store) AdoptWorkflowTemplate(jobID, operator, phaseID string) (domain.CreateJobResponse, string, bool, error) {
+	operator = normalizeSubject(operator)
+	phaseID = normalizeName(phaseID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.state.Jobs[strings.TrimSpace(jobID)]
+	if !ok {
+		return domain.CreateJobResponse{}, "", false, ErrNotFound
+	}
+	if !job.AllowsOperator(operator) {
+		return domain.CreateJobResponse{}, "", false, fmt.Errorf("only the owner or assignee of the Job can move it to a newer Template: %w", ErrConflict)
+	}
+	if job.Status == domain.JobDone || job.Status == domain.JobCancelled || job.TemplateID == "" {
+		return domain.CreateJobResponse{}, "", false, fmt.Errorf("only an active workflow Job can move to a newer Template: %w", ErrConflict)
+	}
+	latest, ok := s.state.WorkflowTemplates[job.TemplateID]
+	if !ok {
+		return domain.CreateJobResponse{}, "", false, fmt.Errorf("the Job's Template no longer exists: %w", ErrNotFound)
+	}
+	template := cloneWorkflowTemplate(latest)
+	run, hasRun := s.state.PhaseRuns[job.CurrentPhaseRunID]
+	if phaseID == "" {
+		if hasRun {
+			if _, exists := workflowPhase(template, run.PhaseID); !exists {
+				return domain.CreateJobResponse{}, "", false, fmt.Errorf("the current step %q is not in revision %d; choose the step to continue at: %w", run.PhaseName, template.Revision, ErrConflict)
+			}
+		}
+		job.TemplateSnapshot = &template
+		job.UpdatedAt = time.Now().UTC()
+		s.state.Jobs[job.ID] = job
+		return domain.CreateJobResponse{Job: job}, "", false, s.saveLocked()
+	}
+	phase, exists := workflowPhase(template, phaseID)
+	if !exists || phase.ID == domain.WorkflowPullRequestPhaseID {
+		return domain.CreateJobResponse{}, "", false, fmt.Errorf("revision %d has no step %q: %w", template.Revision, phaseID, ErrConflict)
+	}
+	now := time.Now().UTC()
+	previousCompositionID := ""
+	if hasRun {
+		for id, question := range s.state.WorkflowQuestions {
+			if question.PhaseRunID != run.ID || question.Status != "open" {
+				continue
+			}
+			question.Status = "answered"
+			question.Answer = "retry"
+			question.Reason = "Job overgezet naar stap " + phase.Name + " (Template r" + strconv.Itoa(template.Revision) + ")"
+			question.AnsweredBy = operator
+			question.AnsweredAt = &now
+			s.state.WorkflowQuestions[id] = question
+		}
+		switch run.Status {
+		case domain.PhaseRunQueued, domain.PhaseRunRunning, domain.PhaseRunPending:
+			// Closed without a verdict: it is neither feedback for the next
+			// step nor a success, just where the Job left the old revision.
+			run.Status = domain.PhaseRunAccepted
+			run.Summary = "Overgezet naar stap " + phase.Name + " (Template r" + strconv.Itoa(template.Revision) + ") door " + operator
+			run.PendingReason, run.PendingOutcome = "", ""
+			run.CompletedAt = &now
+			s.state.PhaseRuns[run.ID] = run
+		}
+		if session, ok := s.state.Sessions[run.SessionID]; ok {
+			previousCompositionID = session.PreparedCompositionID
+			if session.Status == domain.SessionQueued || session.Status == domain.SessionRunning {
+				session.Status = domain.SessionCompleted
+				session.UpdatedAt = now
+				s.state.Sessions[session.ID] = session
+			}
+		}
+	}
+	job.TemplateSnapshot = &template
+	parent := ""
+	if hasRun {
+		parent = run.SessionID
+	}
+	session, nextRun := s.newWorkflowSessionLocked(&job, template, phase, parent)
+	s.state.Sessions[session.ID] = session
+	s.state.PhaseRuns[nextRun.ID] = nextRun
+	s.state.Jobs[job.ID] = job
+	if err := s.saveLocked(); err != nil {
+		return domain.CreateJobResponse{}, "", false, err
+	}
+	return domain.CreateJobResponse{Job: job, Session: session}, previousCompositionID, true, nil
 }

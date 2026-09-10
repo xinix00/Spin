@@ -529,3 +529,140 @@ func TestMergeStepRejectsOnConflictAndTheAIMergeStepReturnsToIt(t *testing.T) {
 		t.Fatalf("last phase = %+v", last)
 	}
 }
+
+// A Job runs on a copy of its Template; a newer revision is taken over on
+// request: keeping the current step when it still exists, or continuing
+// at a chosen step, which closes the current one without a verdict and
+// drops its open question.
+func TestJobAdoptsANewerTemplateRevision(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &appTestEngine{conflicts: 5}
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true})
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "shop", RemoteURL: "https://github.com/derek/shop.git", DefaultRef: "develop", CredentialScope: domain.CredentialScopePublic,
+		Services: []domain.AppService{{Name: "web", Run: "npm start", Ports: []int{3000}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Revision 1: test, then the generated merge finalizer, which conflicts.
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Test en merge", Finalize: domain.WorkflowFinalizeMerge, Phases: []domain.WorkflowPhase{{
+		ID: "test", Name: "Testen", Executor: domain.WorkflowExecutorExpose, Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: "SELF"},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Objective: "Werkend", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.launchQueuedWorkflowPhases("test")
+	openQuestion := func(sessionID string) domain.WorkflowQuestion {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			for _, candidate := range st.Snapshot().WorkflowQuestions {
+				if (sessionID == "" || candidate.SessionID == sessionID) && candidate.Status == "open" {
+					return candidate
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("no open question; failures=%+v", srv.sessionPreparations())
+		return domain.WorkflowQuestion{}
+	}
+	advance, err := st.AnswerWorkflowQuestion(openQuestion(created.Session.ID).ID, "derek", "accept", "")
+	if err != nil || advance.NextSession == nil {
+		t.Fatalf("accept did not queue the merge: %+v, %v", advance, err)
+	}
+	srv.startQueuedWorkflowLaunch(*advance.NextSession)
+	// The generated finalizer retries twice and then asks the person.
+	stuck := openQuestion("")
+	if stuck.PhaseRunID == "" {
+		t.Fatalf("question = %+v", stuck)
+	}
+	// Revision 2: the person's own merge step and an AI merge step.
+	updated, err := st.UpdateWorkflowTemplate(template.ID, domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Test en merge", Phases: []domain.WorkflowPhase{
+		{ID: "test", Name: "Testen", Executor: domain.WorkflowExecutorExpose, Accept: domain.WorkflowTransition{Target: "merge"}, Reject: domain.WorkflowTransition{Target: "SELF"}},
+		{ID: "merge", Name: "Merge", Executor: domain.WorkflowExecutorAction, Action: &domain.WorkflowAction{Type: domain.WorkflowActionGitMerge}, Accept: domain.WorkflowTransition{Target: "DONE"}, Reject: domain.WorkflowTransition{Target: "ai-merge"}},
+		{ID: "ai-merge", Name: "AI merge", Executor: domain.WorkflowExecutorAgent, Instructions: "Merge origin/develop in de Job-branch.", AllowChanges: true, Accept: domain.WorkflowTransition{Target: "merge"}, Reject: domain.WorkflowTransition{Target: "ASK_USER"}},
+	}})
+	if err != nil || updated.Revision != 2 {
+		t.Fatalf("update = r%d, %v", updated.Revision, err)
+	}
+	if job := st.Snapshot().Jobs[0]; job.TemplateSnapshot == nil || job.TemplateSnapshot.Revision != 1 {
+		t.Fatalf("the update changed the running Job's copy: %+v", job.TemplateSnapshot)
+	}
+	// Keeping the current step works: the generated finalizer exists in
+	// both revisions.
+	kept, _, launched, err := st.AdoptWorkflowTemplate(created.Job.ID, "derek", "")
+	if err != nil || launched || kept.Job.TemplateSnapshot == nil || kept.Job.TemplateSnapshot.Revision != 2 {
+		t.Fatalf("adopt keeping the step = %+v launched=%v, %v", kept.Job.TemplateSnapshot, launched, err)
+	}
+	if _, _, _, err := st.AdoptWorkflowTemplate(created.Job.ID, "derek", "nonsense"); err == nil {
+		t.Fatal("an unknown step was accepted")
+	}
+	if _, _, _, err := st.AdoptWorkflowTemplate(created.Job.ID, "john", "ai-merge"); err == nil {
+		t.Fatal("someone else moved the Job")
+	}
+	// Continuing at the AI merge step: the stuck question is gone, the
+	// finalizer run is closed without a verdict, and the new step is queued.
+	moved, previousComposition, launched, err := st.AdoptWorkflowTemplate(created.Job.ID, "derek", "ai-merge")
+	if err != nil || !launched || moved.Session.ID == "" {
+		t.Fatalf("adopt at a step = %+v launched=%v, %v", moved, launched, err)
+	}
+	_ = previousComposition
+	snapshot := st.Snapshot()
+	for _, question := range snapshot.WorkflowQuestions {
+		if question.ID == stuck.ID && question.Status == "open" {
+			t.Fatal("the stuck question is still open")
+		}
+	}
+	var closedRun, newRun domain.PhaseRun
+	for _, run := range snapshot.PhaseRuns {
+		if run.ID == stuck.PhaseRunID {
+			closedRun = run
+		}
+		if run.SessionID == moved.Session.ID {
+			newRun = run
+		}
+	}
+	if closedRun.Status != domain.PhaseRunAccepted || !strings.Contains(closedRun.Summary, "Overgezet naar stap AI merge") {
+		t.Fatalf("closed run = %+v", closedRun)
+	}
+	if newRun.PhaseID != "ai-merge" || newRun.Status != domain.PhaseRunQueued || snapshot.Jobs[0].CurrentPhaseRunID != newRun.ID || snapshot.Jobs[0].WorkflowStatus != domain.WorkflowBusy {
+		t.Fatalf("new run = %+v, job = %+v", newRun, snapshot.Jobs[0])
+	}
+	// The move itself is not feedback for the AI merge step; the conflict
+	// the old step ran into is.
+	prompt, err := srv.workflowPrompt(moved.Session.ID)
+	if err != nil || strings.Contains(prompt, "Overgezet") || !strings.Contains(prompt, "conflicteert met develop") {
+		t.Fatalf("prompt = %q, %v", prompt, err)
+	}
+	// From here the AI merge step's accept returns to the person's merge
+	// step of revision 2, which merges cleanly and ends the Job.
+	engine.mu.Lock()
+	engine.conflicts = 0
+	engine.mu.Unlock()
+	if _, err := st.MarkWorkflowPhaseRunning(moved.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	advance, err = st.CompleteWorkflowPhase(moved.Session.ID, "accept", "Opgelost.")
+	if err != nil || advance.NextSession == nil {
+		t.Fatalf("accept of the AI merge step = %+v, %v", advance, err)
+	}
+	if _, _, _, nextPhase, _, _, err := st.WorkflowForSession(advance.NextSession.ID); err != nil || nextPhase.ID != "merge" {
+		t.Fatalf("next phase = %q, %v", nextPhase.ID, err)
+	}
+	srv.startQueuedWorkflowLaunch(*advance.NextSession)
+	deadline := time.Now().Add(10 * time.Second)
+	var job domain.Job
+	for job.WorkflowStatus != domain.WorkflowDone && time.Now().Before(deadline) {
+		job = st.Snapshot().Jobs[0]
+		time.Sleep(10 * time.Millisecond)
+	}
+	if job.WorkflowStatus != domain.WorkflowDone {
+		t.Fatalf("job = %s", job.WorkflowStatus)
+	}
+}
