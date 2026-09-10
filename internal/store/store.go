@@ -1884,8 +1884,11 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 		selector = "tool:" + normalizeName(req.Tool)
 	}
 	_, selectorName, selectorErr := parseArtifactSelector(selector)
-	if strings.TrimSpace(req.Title) == "" || strings.TrimSpace(req.Objective) == "" || (strings.TrimSpace(req.GitRepositoryID) == "" && strings.TrimSpace(req.ForkedFromJobID) == "") || selectorErr != nil {
+	if strings.TrimSpace(req.Title) == "" || (strings.TrimSpace(req.Objective) == "" && !req.Brainstorm) || (strings.TrimSpace(req.GitRepositoryID) == "" && strings.TrimSpace(req.ForkedFromJobID) == "") || selectorErr != nil {
 		return domain.CreateJobResponse{}, fmt.Errorf("title, objective, git_repository_id and a valid environment_selector are required: %w", ErrConflict)
+	}
+	if req.Brainstorm && strings.TrimSpace(req.TemplateID) == "" {
+		return domain.CreateJobResponse{}, fmt.Errorf("a brainstorm needs a Template to start the process with: %w", ErrConflict)
 	}
 	requestedWith, err := normalizeArtifactSelectors(req.WithSelectors)
 	if err != nil {
@@ -2080,7 +2083,11 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 		s.state.JobAttachments[attachment.ID] = attachment
 	}
 	if workflowTemplate.ID != "" {
-		session, run := s.newWorkflowSessionLocked(&job, workflowTemplate, workflowTemplate.Phases[0], "")
+		first := workflowTemplate.Phases[0]
+		if req.Brainstorm {
+			first = domain.BrainstormPhase()
+		}
+		session, run := s.newWorkflowSessionLocked(&job, workflowTemplate, first, "")
 		s.state.Jobs[jobID] = job
 		s.state.Sessions[session.ID] = session
 		s.state.PhaseRuns[run.ID] = run

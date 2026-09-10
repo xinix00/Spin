@@ -611,3 +611,94 @@ func (e *deliverableTestEngine) PlaceDeliverable(_ context.Context, _ domain.Cap
 	e.placed = append(e.placed, target)
 	return nil
 }
+
+// A brainstorm chat offers one tool, start_process; its prompt says the
+// goal is still open, and calling the tool sets the goal and queues the
+// Template's first step.
+func TestBrainstormOffersOnlyStartProcess(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), &testEngine{}, ServerOptions{DisableAuthentication: true, InternalURL: "http://spin.internal"})
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "shop", RemoteURL: "https://example.com/shop.git"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Code", Phases: []domain.WorkflowPhase{{
+		ID: "dev", Name: "Ontwikkel", Instructions: "Bouw het", AllowChanges: true, Deliverables: []domain.DeliverableDefinition{{Name: "FO", Required: true}},
+		Accept: domain.WorkflowTransition{Target: "DONE"}, Reject: domain.WorkflowTransition{Target: "SELF"},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Brainstorm: true, Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkWorkflowPhaseRunning(created.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := srv.workflowPrompt(created.Session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`workflowfase "Brainstorm"`, "Goal: (nog te bepalen", "Dit is een brainstorm, geen uitvoering", "start_process(goal)"} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("brainstorm prompt missing %q:\n%s", expected, prompt)
+		}
+	}
+	for _, excluded := range []string{"OP TE LEVEREN", "put_deliverable", "accept, of reject"} {
+		if strings.Contains(prompt, excluded) {
+			t.Fatalf("brainstorm prompt contains %q:\n%s", excluded, prompt)
+		}
+	}
+	internal, err := srv.workflowMCPServer(created.Session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(payload string) workflowMCPResponse {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/api/workflow/mcp/"+created.Session.ID, bytes.NewBufferString(payload))
+		request.Header.Set("Authorization", internal.Headers[0].Value)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(response, request)
+		var decoded workflowMCPResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		return decoded
+	}
+	listed, _ := json.Marshal(call(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`).Result)
+	if !bytes.Contains(listed, []byte(`"start_process"`)) || bytes.Contains(listed, []byte(`"accept"`)) || bytes.Contains(listed, []byte(`"ask"`)) || bytes.Contains(listed, []byte(`"put_deliverable"`)) {
+		t.Fatalf("brainstorm tools = %s", listed)
+	}
+	started := call(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"start_process","arguments":{"goal":"# Darkmode\n\nEén werkende switch."}}}`)
+	startedText, _ := json.Marshal(started.Result)
+	if started.Error != nil || !bytes.Contains(startedText, []byte("stap 1")) {
+		t.Fatalf("start_process = %+v", started)
+	}
+	snapshot := st.Snapshot()
+	if snapshot.Jobs[0].Objective != "# Darkmode\n\nEén werkende switch." {
+		t.Fatalf("goal after start_process = %q", snapshot.Jobs[0].Objective)
+	}
+	var next domain.PhaseRun
+	for _, run := range snapshot.PhaseRuns {
+		if run.PhaseID == "dev" {
+			next = run
+		}
+	}
+	if next.ID == "" || next.Status != domain.PhaseRunQueued {
+		t.Fatalf("first step after the brainstorm = %+v", next)
+	}
+	nextPrompt, err := srv.workflowPrompt(next.SessionID)
+	if err != nil || !strings.Contains(nextPrompt, "Goal: # Darkmode") {
+		t.Fatalf("next prompt = %q, %v", nextPrompt, err)
+	}
+	after, _ := json.Marshal(call(`{"jsonrpc":"2.0","id":3,"method":"tools/list"}`).Result)
+	if bytes.Contains(after, []byte(`"start_process"`)) {
+		t.Fatalf("a finished brainstorm still offers start_process: %s", after)
+	}
+}

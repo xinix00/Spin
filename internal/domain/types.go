@@ -1228,10 +1228,29 @@ func (j Job) AllowsOperator(operator string) bool {
 	return operator != "" && (j.Owner == operator || j.Assignee == operator)
 }
 
+// BrainstormPhaseID names the run a Job starts with when the person wants
+// to talk first: a chat in the Job's environment whose only tool is
+// start_process(goal). It is not a Template step; the Template's own
+// first step follows once the goal is set.
+const BrainstormPhaseID = "brainstorm"
+
+// BrainstormPhase is that run as a phase: an agent, no changes, no
+// deliverables, and instructions that say what the chat is for.
+func BrainstormPhase() WorkflowPhase {
+	return WorkflowPhase{
+		ID: BrainstormPhaseID, Name: "Brainstorm", Executor: WorkflowExecutorAgent,
+		Instructions: "Dit is een brainstorm, geen uitvoering. Alles van deze Job staat al vast (repository, omgeving, Template); alleen de goal nog niet. Verken de repository om te zien wat er al is, denk mee, leg mogelijkheden met voor- en nadelen naast elkaar en stel gerichte vragen in de chat. Bouw en wijzig niets. Werk toe naar één scherpe goal: wat er klaar moet zijn en waaraan je dat ziet. Zodra de gebruiker het eens is, leg je die goal vast met start_process; daarmee begint de gewone flow van de Template.",
+		Accept:       WorkflowTransition{Target: WorkflowTargetNext}, Reject: WorkflowTransition{Target: WorkflowTargetSelf},
+	}
+}
+
 type CreateJobRequest struct {
-	Title               string   `json:"title"`
-	Reference           string   `json:"reference,omitempty"`
-	Objective           string   `json:"objective"`
+	Title     string `json:"title"`
+	Reference string `json:"reference,omitempty"`
+	Objective string `json:"objective"`
+	// Brainstorm starts the Job with a chat that sets the goal instead of
+	// the Template's first step; Objective may then be empty.
+	Brainstorm          bool     `json:"brainstorm,omitempty"`
 	ForkedFromJobID     string   `json:"forked_from_job_id,omitempty"`
 	IdempotencyKey      string   `json:"idempotency_key,omitempty"`
 	AcceptanceCriteria  []string `json:"acceptance_criteria,omitempty"`

@@ -164,7 +164,7 @@
             <div><label for="job-template">Template</label><select id="job-template" name="template_id" required><option value="">maak eerst een Template</option></select></div>
             <div><label for="job-git">Repository</label><select id="job-git" name="git_repository_id" required><option value="">configureer eerst Git</option></select></div>
             <div><label for="job-base-ref">Start vanaf</label><input id="job-base-ref" name="base_ref" placeholder="repository default"></div>
-            <div class="wide"><label for="objective">Goal</label><textarea id="objective" name="objective" required placeholder="Werkende single switch voor darkmode"></textarea></div>
+            <div class="wide"><label for="objective">Goal</label><textarea id="objective" name="objective" required placeholder="Werkende single switch voor darkmode"></textarea><small>Leeg laten mag als je eerst brainstormt: dan komt de goal uit de chat.</small></div>
             <div class="wide"><label for="job-attachments">Bijlagen</label><input class="file-input" id="job-attachments" name="attachments" type="file" multiple accept="application/pdf,image/png,image/jpeg,image/webp,image/gif"><small>PDF of afbeelding · maximaal 8 bestanden, 15 MiB per bestand en 40 MiB totaal. Deze komen read-only buiten Git in iedere Session.</small><div class="attachment-selection" id="job-attachment-selection"></div></div>
             <input id="job-owner" name="owner" type="hidden" value="derek">
             <input id="job-forked-from" name="forked_from_job_id" type="hidden">
@@ -174,7 +174,7 @@
             <div class="wide recipe-check" id="job-recipe-check" aria-live="polite"></div>
             <div class="wide"><label for="job-mcp">MCP-connecties</label><select id="job-mcp" name="mcp_server_ids" multiple><option disabled>geen MCP geconfigureerd</option></select></div>
           </div>
-          <div class="dialog-foot"><button class="small-button" id="job-back" type="button" hidden>Terug</button><div class="panel-actions"><button class="small-button" type="button" data-close-dialog="job-dialog">Annuleren</button><button class="primary" id="job-next" type="button">Volgende</button><button id="job-submit" class="primary" type="submit" hidden>Job inschieten</button></div></div>
+          <div class="dialog-foot"><button class="small-button" id="job-back" type="button" hidden>Terug</button><div class="panel-actions"><button class="small-button" type="button" data-close-dialog="job-dialog">Annuleren</button><button class="primary" id="job-next" type="button">Volgende</button><button id="job-brainstorm" class="small-button" type="button" hidden title="Begin met een chat in de omgeving van de Job; de goal komt uit het gesprek, daarna loopt de Template zoals altijd">Eerst brainstormen</button><button id="job-submit" class="primary" type="submit" hidden>Job inschieten</button></div></div>
         </form>
       </dialog>
       <input id="add-job-attachment-input" type="file" multiple accept="application/pdf,image/png,image/jpeg,image/webp,image/gif" hidden>

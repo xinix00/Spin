@@ -1204,7 +1204,9 @@ func (d *Docker) inspectChanges(ctx context.Context, git gitRunner, diffBase, di
 	}
 	byPath := map[string]int{}
 	if diffBase != "HEAD" || diffHead != "" {
-		nameArgs := []string{"git", "diff", "--name-only", "-z", diffBase}
+		// A range names its files with what happened to them: A, M, D, or a
+		// rename with both names. That is what the list shows.
+		nameArgs := []string{"git", "diff", "--name-status", "-z", diffBase}
 		if diffHead != "" {
 			nameArgs = append(nameArgs, diffHead)
 		}
@@ -1212,12 +1214,18 @@ func (d *Docker) inspectChanges(ctx context.Context, git gitRunner, diffBase, di
 		if nameErr != nil && nameCode != 0 {
 			return changes, fmt.Errorf("git range names failed (exit %d): %s", nameCode, strings.TrimSpace(nameOutput))
 		}
-		for _, path := range strings.Split(nameOutput, "\x00") {
-			if path == "" {
+		fields := strings.Split(nameOutput, "\x00")
+		for index := 0; index+1 < len(fields); index += 2 {
+			status, path := fields[index], fields[index+1]
+			if status == "" || path == "" {
 				continue
 			}
+			if (strings.HasPrefix(status, "R") || strings.HasPrefix(status, "C")) && index+2 < len(fields) {
+				index++
+				path = fields[index+1]
+			}
 			byPath[path] = len(changes.Files)
-			changes.Files = append(changes.Files, WorkspaceFileChange{Path: path, Status: "M "})
+			changes.Files = append(changes.Files, WorkspaceFileChange{Path: path, Status: status[:1] + " "})
 		}
 	}
 	statusFields := strings.Split(statusOutput, "\x00")

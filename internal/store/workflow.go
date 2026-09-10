@@ -350,6 +350,9 @@ func cloneWorkflowTemplate(template domain.WorkflowTemplate) domain.WorkflowTemp
 }
 
 func workflowPhase(template domain.WorkflowTemplate, phaseID string) (domain.WorkflowPhase, bool) {
+	if phaseID == domain.BrainstormPhaseID {
+		return domain.BrainstormPhase(), true
+	}
 	for _, phase := range template.Phases {
 		if phase.ID == phaseID {
 			return phase, true
@@ -1564,4 +1567,48 @@ func (s *Store) AdoptWorkflowTemplate(jobID, operator, phaseID string) (domain.C
 		return domain.CreateJobResponse{}, "", false, err
 	}
 	return domain.CreateJobResponse{Job: job, Session: session}, previousCompositionID, true, nil
+}
+
+// StartProcess ends a Job's brainstorm with the goal the chat arrived at:
+// the goal goes on the Job, the brainstorm run is accepted with it as its
+// summary, and the Template's first step is queued. It reports the
+// composition the brainstorm was using, so the caller can let it go.
+func (s *Store) StartProcess(sessionID, goal string) (domain.CreateJobResponse, string, error) {
+	goal = strings.TrimSpace(goal)
+	if goal == "" {
+		return domain.CreateJobResponse{}, "", fmt.Errorf("a goal is required to start the process: %w", ErrConflict)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.state.Sessions[strings.TrimSpace(sessionID)]
+	if !ok || session.PhaseRunID == "" {
+		return domain.CreateJobResponse{}, "", ErrNotFound
+	}
+	job, template, run, _, err := s.workflowLocked(session)
+	if err != nil {
+		return domain.CreateJobResponse{}, "", err
+	}
+	if run.PhaseID != domain.BrainstormPhaseID || run.Status != domain.PhaseRunRunning || job.CurrentPhaseRunID != run.ID {
+		return domain.CreateJobResponse{}, "", fmt.Errorf("only a running brainstorm can start the process: %w", ErrConflict)
+	}
+	if len(template.Phases) == 0 {
+		return domain.CreateJobResponse{}, "", fmt.Errorf("the Template has no steps to start: %w", ErrConflict)
+	}
+	now := time.Now().UTC()
+	run.Status = domain.PhaseRunAccepted
+	run.Summary = goal
+	run.CompletedAt = &now
+	s.state.PhaseRuns[run.ID] = run
+	session.Status = domain.SessionCompleted
+	session.UpdatedAt = now
+	s.state.Sessions[session.ID] = session
+	job.Objective = goal
+	next, nextRun := s.newWorkflowSessionLocked(&job, template, template.Phases[0], session.ID)
+	s.state.Sessions[next.ID] = next
+	s.state.PhaseRuns[nextRun.ID] = nextRun
+	s.state.Jobs[job.ID] = job
+	if err := s.saveLocked(); err != nil {
+		return domain.CreateJobResponse{}, "", err
+	}
+	return domain.CreateJobResponse{Job: job, Session: next}, session.PreparedCompositionID, nil
 }

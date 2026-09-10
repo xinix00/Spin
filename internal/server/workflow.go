@@ -293,6 +293,12 @@ func (s *Server) workflowTools(sessionID string) ([]workflowTool, error) {
 		}
 		return schema
 	}
+	if phase.ID == domain.BrainstormPhaseID {
+		// A brainstorm decides one thing: the goal. Nothing else.
+		return []workflowTool{{Name: "start_process", Title: "Start het proces", Description: "Leg de goal vast waar de brainstorm op uitkwam en start daarmee de gewone flow van de Template. Roep dit pas aan als de gebruiker het eens is met de goal.", InputSchema: object(map[string]any{
+			"goal": map[string]any{"type": "string", "description": "De goal van de Job, in Markdown: wat er klaar moet zijn en waaraan je dat ziet"},
+		}, "goal")}}, nil
+	}
 	tools := []workflowTool{
 		{Name: "ask", Title: "Vraag de gebruiker", Description: "Stel de gebruiker één of meer concrete vragen tegelijk en pauzeer deze fase tot alles beantwoord is. Geef per vraag de antwoorden die je verwacht als options; de gebruiker kan altijd een eigen antwoord typen, dus voeg zelf geen optie 'anders' toe. Bundel alles wat je nu wilt weten in één ask.", InputSchema: object(map[string]any{
 			"question": map[string]any{"type": "string", "description": "Verkorte vorm: één open vraag zonder opties"},
@@ -337,6 +343,13 @@ func (s *Server) callWorkflowTool(ctx context.Context, sessionID, name string, a
 			noun = fmt.Sprintf("%d vragen staan", len(question.Items))
 		}
 		return noun + " klaar voor de gebruiker: " + question.Question + ". Beëindig nu je beurt; dezelfde ACP Session wordt met de antwoorden hervat.", nil
+	case "start_process":
+		created, _, err := s.store.StartProcess(sessionID, stringArgument("goal"))
+		if err != nil {
+			return "", err
+		}
+		s.startQueuedWorkflowLaunch(created.Session)
+		return "De goal staat vast en stap 1 van de Template start. Deze brainstorm is klaar; beëindig je beurt.", nil
 	case "put_deliverable":
 		deliverable, err := s.putWorkflowDeliverable(ctx, sessionID, stringArgument("name"), stringArgument("path"))
 		if err != nil {
@@ -613,7 +626,11 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 	if job.Reference != "" {
 		reference = "Referentie: " + job.Reference + "\n"
 	}
-	fmt.Fprintf(&prompt, "Je voert Spin workflowfase %q uit (poging %d).\n\nJOB\nNaam: %s\n%sGoal: %s\n\nINSTRUCTIES\n%s\n", phase.Name, run.Attempt, job.Title, reference, job.Objective, phase.Instructions)
+	goal := job.Objective
+	if phase.ID == domain.BrainstormPhaseID {
+		goal = "(nog te bepalen; daar gaat deze brainstorm over)"
+	}
+	fmt.Fprintf(&prompt, "Je voert Spin workflowfase %q uit (poging %d).\n\nJOB\nNaam: %s\n%sGoal: %s\n\nINSTRUCTIES\n%s\n", phase.Name, run.Attempt, job.Title, reference, goal, phase.Instructions)
 	snapshot := s.store.Snapshot()
 	if sessionIndex := slices.IndexFunc(snapshot.Sessions, func(candidate domain.Session) bool { return candidate.ID == sessionID }); sessionIndex >= 0 && job.Branch != "" {
 		var source *domain.Job
@@ -850,6 +867,10 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 				fmt.Fprintf(&prompt, "- %s (%s, %s) door %s:\n    %s\n  Opmerking: %s\n", location, comment.Side, previous.PhaseName, comment.Author, selected, body)
 			}
 		}
+	}
+	if phase.ID == domain.BrainstormPhaseID {
+		prompt.WriteString("\nWERKWIJZE\nDit is een chat: praat, vraag, stel voor. Je enige workflowtool is start_process(goal); roep die pas aan als de gebruiker het eens is met de goal, en beëindig daarna je beurt. Commit of push nooit; verander niets in de repository.\n")
+		return prompt.String(), nil
 	}
 	prompt.WriteString("\nWERKWIJZE\nGebruik uitsluitend de aangeboden Spin workflowtools om workflowstate te wijzigen. ask stelt één formulier met één of meer vragen, elk met de antwoordopties die je verwacht; stel alleen wat je niet zelf kunt uitzoeken en bundel alles in één ask. ")
 	if len(phase.Deliverables) > 0 {

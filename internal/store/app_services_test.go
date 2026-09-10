@@ -476,3 +476,75 @@ func TestDeliverableKindsAreCheckedOnPut(t *testing.T) {
 		}
 	}
 }
+
+// A Job may start with a brainstorm: a chat in the Job's environment, with
+// the goal still open. start_process sets the goal and queues the
+// Template's first step; nothing else about the Job changes.
+func TestBrainstormSetsTheGoalAndStartsTheTemplate(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal, Enables: []domain.Enablement{{Name: "git"}}})
+	recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "agent", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}, Enables: []domain.Enablement{{Name: "acp", Command: "agent-acp"}}})
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "shop", RemoteURL: "https://github.com/derek/shop.git", DefaultRef: "develop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Code", Phases: []domain.WorkflowPhase{
+		{ID: "dev", Name: "Ontwikkel", Instructions: "Bouw", AllowChanges: true, Accept: domain.WorkflowTransition{Target: "DONE"}, Reject: domain.WorkflowTransition{Target: "SELF"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID}); err == nil {
+		t.Fatal("a Job without a goal and without a brainstorm was accepted")
+	}
+	if _, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Brainstorm: true, Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent"}); err == nil {
+		t.Fatal("a brainstorm without a Template was accepted")
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Brainstorm: true, Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Job.Objective != "" || created.Session.Role != "Brainstorm" || created.Session.Executor != domain.WorkflowExecutorAgent {
+		t.Fatalf("brainstorm Job = %+v session = %+v", created.Job, created.Session)
+	}
+	_, _, run, phase, _, _, err := st.WorkflowForSession(created.Session.ID)
+	if err != nil || run.PhaseID != domain.BrainstormPhaseID || run.Status != domain.PhaseRunQueued || phase.Name != "Brainstorm" || phase.AllowChanges {
+		t.Fatalf("brainstorm run = %+v phase = %+v, %v", run, phase, err)
+	}
+	if _, _, err := st.StartProcess(created.Session.ID, "Een goal"); err == nil {
+		t.Fatal("a queued brainstorm started the process")
+	}
+	if _, err := st.MarkWorkflowPhaseRunning(created.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.StartProcess(created.Session.ID, "  "); err == nil {
+		t.Fatal("an empty goal started the process")
+	}
+	started, _, err := st.StartProcess(created.Session.ID, "# Darkmode\n\nEén werkende switch.")
+	if err != nil || started.Job.Objective != "# Darkmode\n\nEén werkende switch." || started.Session.ID == created.Session.ID {
+		t.Fatalf("start = %+v, %v", started, err)
+	}
+	if _, _, next, nextPhase, _, _, err := st.WorkflowForSession(started.Session.ID); err != nil || nextPhase.ID != "dev" || next.Status != domain.PhaseRunQueued || next.Attempt != 1 {
+		t.Fatalf("next step = %+v %+v, %v", next, nextPhase, err)
+	}
+	snapshot := st.Snapshot()
+	for _, candidate := range snapshot.PhaseRuns {
+		if candidate.ID == run.ID && (candidate.Status != domain.PhaseRunAccepted || candidate.Summary != started.Job.Objective) {
+			t.Fatalf("brainstorm run after start = %+v", candidate)
+		}
+	}
+	if snapshot.Jobs[0].CurrentPhaseRunID == run.ID || snapshot.Jobs[0].WorkflowStatus != domain.WorkflowBusy {
+		t.Fatalf("job after start = %+v", snapshot.Jobs[0])
+	}
+	if _, _, err := st.StartProcess(created.Session.ID, "Nog een goal"); err == nil {
+		t.Fatal("a finished brainstorm started the process again")
+	}
+	// A Job shot straight at a goal has no brainstorm.
+	direct, err := st.CreateJob(domain.CreateJobRequest{Title: "Direct", Objective: "Klaar", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil || direct.Session.Role != "Ontwikkel" {
+		t.Fatalf("direct Job session = %+v, %v", direct.Session, err)
+	}
+}
