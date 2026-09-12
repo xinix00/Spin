@@ -150,8 +150,18 @@ func (s *Server) answerWorkflowQuestion(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		// The answers are durable from here; delivering them is a second step.
-		// If the agent cannot be reached the operator can still open the chat,
-		// which sends into the same running phase.
+		// A step that waited gave its capsule up: the answer starts a new
+		// capsule and a fresh agent with the step's prompt, which carries
+		// the answered questions as recorded decisions.
+		if _, composition, compositionErr := s.sessionComposition(question.SessionID, operator); compositionErr != nil || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+			session := question.SessionID
+			s.beginTrackedLaunch(session, nil, func(ctx context.Context) { s.launchWorkflowSessionContext(ctx, session, "") })
+			writeJSON(w, http.StatusOK, domain.WorkflowAdvance{Question: &question})
+			return
+		}
+		// The agent is still up: it continues with the answers. If it cannot
+		// be reached the operator can still open the chat, which sends into
+		// the same running phase.
 		active, err := s.getOrStartACP(question.SessionID, operator)
 		if err == nil {
 			err = s.startACPPrompt(active, workflowAnswersPrompt(question))

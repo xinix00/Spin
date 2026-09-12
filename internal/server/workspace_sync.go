@@ -48,11 +48,17 @@ func (s *Server) gitAuthenticationFor(ctx context.Context, composition domain.Co
 // change code and its capsule runs. Calls closer together than the minimum
 // interval are dropped: the next turn pushes again anyway.
 func (s *Server) syncWorkspace(sessionID string) {
+	s.syncWorkspaceWithin(sessionID, workspaceSyncMinInterval)
+}
+
+// syncWorkspaceWithin syncs unless a sync ran less than minInterval ago;
+// zero syncs now, for a capsule that is about to go.
+func (s *Server) syncWorkspaceWithin(sessionID string, minInterval time.Duration) {
 	s.workspaceSyncs.mu.Lock()
 	if s.workspaceSyncs.last == nil {
 		s.workspaceSyncs.last = map[string]time.Time{}
 	}
-	if last, ok := s.workspaceSyncs.last[sessionID]; ok && time.Since(last) < workspaceSyncMinInterval {
+	if last, ok := s.workspaceSyncs.last[sessionID]; ok && time.Since(last) < minInterval {
 		s.workspaceSyncs.mu.Unlock()
 		return
 	}

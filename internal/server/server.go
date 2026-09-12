@@ -1297,9 +1297,22 @@ func (s *Server) restartSessionCapsule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID, operator := session.ID, normalizeOperator(session.Operator)
+	// A step that is still running (it waited for an answer that came)
+	// gets its agent back with the step's prompt; a step that is done, or
+	// a Session outside a Job, gets only its capsule: the chat says the rest.
+	running := false
+	if session.PhaseRunID != "" {
+		if _, _, run, _, _, _, err := s.store.WorkflowForSession(sessionID); err == nil && run.Status == domain.PhaseRunRunning {
+			running = true
+		}
+	}
 	s.beginTrackedLaunch(sessionID,
 		func() bool { return s.jobSessionNeedsLaunch(sessionID, false) },
 		func(ctx context.Context) {
+			if running {
+				s.launchWorkflowSessionContext(ctx, sessionID, operator)
+				return
+			}
 			materializeContext, cancel := s.launchContext(ctx, sessionID)
 			defer cancel()
 			_, err := s.useCapsule(materializeContext, domain.UseRequest{Selector: "session:" + sessionID, Operator: operator})

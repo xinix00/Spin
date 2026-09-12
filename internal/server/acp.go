@@ -591,19 +591,48 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 		if _, err := s.store.SettleWorkflowChatTurn(session.ID); err != nil {
 			s.logger.Warn("settle workflow phase after ACP turn", "session", session.ID, "error", err)
 		}
-		go s.syncWorkspace(session.ID)
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			if current, err := s.store.Composition(composition.ID); err == nil {
-				s.captureLoginState(ctx, current)
-			}
-		}()
+		go s.afterTurn(session.ID, composition.ID)
 	}
 	active.mu.Unlock()
 	s.rememberAgentOptions(composition, active)
 	s.acpSessions[sessionID] = active
 	return active, nil
+}
+
+// afterTurn is what follows an agent's turn: the work goes to the Job
+// branch and the login files are kept. A step that now waits for a
+// person's answer is done for the moment: its capsule goes, so the login
+// it held is free for the next capsule; the answer, or a chat, brings a
+// capsule back.
+func (s *Server) afterTurn(sessionID, compositionID string) {
+	waiting := s.stepWaitsForAnswer(sessionID)
+	if waiting {
+		s.syncWorkspaceWithin(sessionID, 0)
+	} else {
+		s.syncWorkspace(sessionID)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	composition, err := s.store.Composition(compositionID)
+	if err != nil || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+		return
+	}
+	s.captureLoginState(ctx, composition)
+	if !waiting {
+		return
+	}
+	if _, err := s.stopCapsule(ctx, composition.ID, composition.Operator); err != nil {
+		s.logger.Warn("close the capsule of a step that waits for an answer", "session", sessionID, "error", err)
+		return
+	}
+	s.logger.Info("step waits for an answer; its capsule is closed", "session", sessionID, "composition", composition.ID)
+}
+
+// stepWaitsForAnswer says whether the Session's step asked a person
+// something and waits for the answer.
+func (s *Server) stepWaitsForAnswer(sessionID string) bool {
+	_, _, run, _, _, _, err := s.store.WorkflowForSession(sessionID)
+	return err == nil && run.Status == domain.PhaseRunPending && run.PendingReason == "ask"
 }
 
 // openACP starts the agent in a running composition's capsule and takes it
