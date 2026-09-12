@@ -1905,11 +1905,15 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 		// A fork continues the work but starts where the source started:
 		// on the base branch, so it lands there too. The source's own branch
 		// is closed and stays reachable as context, not as a base.
-		req.GitRepositoryID = source.GitRepositoryID
-		req.BaseRef = source.BaseRef
-		req.Repositories = nil
-		for _, repository := range source.JobRepositories() {
-			req.Repositories = append(req.Repositories, domain.JobRepositoryRequest{RepositoryID: repository.RepositoryID, Mode: repository.Mode, BaseRef: repository.BaseRef})
+		// A fork may name its own repositories: the source's as a
+		// reference and another one to write in, say. Without them it
+		// continues in the source's repositories.
+		if len(req.Repositories) == 0 {
+			req.GitRepositoryID = source.GitRepositoryID
+			req.BaseRef = source.BaseRef
+			for _, repository := range source.JobRepositories() {
+				req.Repositories = append(req.Repositories, domain.JobRepositoryRequest{RepositoryID: repository.RepositoryID, Mode: repository.Mode, BaseRef: repository.BaseRef})
+			}
 		}
 		owner = operator
 	}
