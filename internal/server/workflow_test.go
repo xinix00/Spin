@@ -471,13 +471,15 @@ func TestForkedWorkflowReceivesPreviousGoalAndLatestDeliverables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"VERVOLGCONTEXT", closed.Title, closed.Branch, "Synchroniseer Exact dagelijks", "# Laatste FO", "Verwerk deelbetalingen."} {
+	// The previous Job's documents are files under vorige-job, named by path
+	// in the prompt; their text stays out of it.
+	for _, expected := range []string{"VERVOLGCONTEXT", closed.Title, closed.Branch, "Synchroniseer Exact dagelijks", domain.PreviousJobDeliverableDirectory + "/fo.md · FO (revisie"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("fork prompt missing %q:\n%s", expected, prompt)
 		}
 	}
-	if strings.Contains(prompt, "oude context") {
-		t.Fatalf("fork prompt contains stale deliverable revision:\n%s", prompt)
+	if strings.Contains(prompt, "# Laatste FO") || strings.Contains(prompt, "oude context") {
+		t.Fatalf("fork prompt carries deliverable text:\n%s", prompt)
 	}
 	resources, err := srv.acpPromptAttachments(fork.Session.ID, acpPromptCapabilities{EmbeddedContext: true}, nil)
 	if err != nil {
