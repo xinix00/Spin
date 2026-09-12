@@ -1115,6 +1115,8 @@ func acpNewSessionParams(servers []map[string]any) map[string]any {
 	}
 }
 
+// sessionComposition is the Session with its prepared composition. Without
+// one the Session still comes back, with ErrConflict.
 func (s *Server) sessionComposition(sessionID, operator string) (domain.Session, domain.Composition, error) {
 	operator = normalizeOperator(operator)
 	snapshot := s.store.Snapshot()
@@ -1142,7 +1144,7 @@ func (s *Server) sessionComposition(sessionID, operator string) (domain.Session,
 			return session, composition, nil
 		}
 	}
-	return domain.Session{}, domain.Composition{}, fmt.Errorf("session has no prepared composition: %w", store.ErrConflict)
+	return session, domain.Composition{}, fmt.Errorf("session has no prepared composition: %w", store.ErrConflict)
 }
 
 // jobAllowsOperator reports whether a Job is the operator's to work in: as

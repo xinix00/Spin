@@ -504,6 +504,11 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 		needsMaterialization = compositionIndex < 0 || snapshot.Compositions[compositionIndex].Runtime == nil || snapshot.Compositions[compositionIndex].Runtime.Status == "stopped"
 	}
 	if needsMaterialization {
+		// The capsules of the Job's earlier steps go first: a step that is
+		// done holds nothing the next one needs, and the login of a
+		// credential layer it still holds is the one the next capsule gets.
+		// A chat on an earlier step starts its capsule again when asked.
+		s.retireWorkflowCompositions(session.JobID, session.ID)
 		materializeContext, cancel := s.launchContext(ctx, session.ID)
 		_, materializeErr := s.useCapsule(materializeContext, domain.UseRequest{Selector: "session:" + session.ID, Operator: operator})
 		stalled := materializeContext.Err() != nil

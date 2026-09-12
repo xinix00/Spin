@@ -544,6 +544,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/artifacts/{artifactID}/tree", s.artifactTreeHandler)
 	s.mux.HandleFunc("PUT /api/artifacts/{artifactID}/tracked", s.setTrackedPathsHandler)
 	s.mux.HandleFunc("POST /api/compositions/{compositionID}/login", s.saveLoginHandler)
+	s.mux.HandleFunc("POST /api/sessions/{sessionID}/capsule", s.restartSessionCapsule)
 	s.mux.HandleFunc("DELETE /api/logins/{loginID}", s.deleteLoginHandler)
 	s.mux.HandleFunc("GET /api/compositions/{compositionID}/changes", s.compositionChangesHandler)
 	s.mux.HandleFunc("GET /api/runners/token", s.workerTokenHandler)
@@ -1275,6 +1276,39 @@ func (s *Server) jobSessionNeedsLaunch(sessionID string, workflow bool) bool {
 	}
 	compositionIndex := slices.IndexFunc(snapshot.Compositions, func(composition domain.Composition) bool { return composition.ID == session.PreparedCompositionID })
 	return compositionIndex < 0 || snapshot.Compositions[compositionIndex].Runtime == nil || snapshot.Compositions[compositionIndex].Runtime.Status == "stopped"
+}
+
+// restartSessionCapsule brings the capsule of a Session back when it was
+// closed: a step the Job moved past keeps nothing running, and a chat on
+// it starts the capsule again. The start is the same followable launch as
+// a Job's, so a second request while it runs joins it.
+func (s *Server) restartSessionCapsule(w http.ResponseWriter, r *http.Request) {
+	session, composition, err := s.sessionComposition(r.PathValue("sessionID"), s.requestOperator(r, ""))
+	if err != nil && !errors.Is(err, store.ErrConflict) {
+		writeError(w, err)
+		return
+	}
+	if err == nil && composition.Runtime != nil && composition.Runtime.Status != "stopped" {
+		writeJSON(w, http.StatusOK, composition)
+		return
+	}
+	if session.ID == "" {
+		writeError(w, err)
+		return
+	}
+	sessionID, operator := session.ID, normalizeOperator(session.Operator)
+	s.beginTrackedLaunch(sessionID,
+		func() bool { return s.jobSessionNeedsLaunch(sessionID, false) },
+		func(ctx context.Context) {
+			materializeContext, cancel := s.launchContext(ctx, sessionID)
+			defer cancel()
+			_, err := s.useCapsule(materializeContext, domain.UseRequest{Selector: "session:" + sessionID, Operator: operator})
+			if err != nil && !errors.Is(err, context.Canceled) {
+				s.logger.Warn("start Session capsule again", "session", sessionID, "error", err)
+			}
+			s.recordLaunchFailure(sessionID, err)
+		})
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (s *Server) createJobSession(w http.ResponseWriter, r *http.Request) {
