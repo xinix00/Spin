@@ -75,7 +75,13 @@ async function api(path,options={}) {
   }
   return response.status===204?null:response.json();
 }
-function openDialog(id){const dialog=document.getElementById(id);if(dialog&&!dialog.open)dialog.showModal();}
+// A modal locks the page behind it without moving it: the body is pinned
+// where it was scrolled (overflow:hidden on the root jumps to the top in
+// Safari) and comes back to the same spot when the last dialog closes.
+const scrollLock={y:0,count:0};
+function lockPageScroll(){if(scrollLock.count++>0)return;scrollLock.y=window.scrollY;document.body.style.top=`-${scrollLock.y}px`;document.body.classList.add('scroll-locked');}
+function unlockPageScroll(){if(--scrollLock.count>0)return;scrollLock.count=0;document.body.classList.remove('scroll-locked');document.body.style.top='';window.scrollTo(0,scrollLock.y);}
+function openDialog(id){const dialog=document.getElementById(id);if(!dialog||dialog.open)return;lockPageScroll();dialog.addEventListener('close',unlockPageScroll,{once:true});dialog.showModal();}
 function closeDialog(id){const dialog=document.getElementById(id);if(dialog?.open)dialog.close();}
 // The recorder has no command line: a RECORD is a form, END and CANCEL are
 // buttons, and the terminal is the capsule's shell. The log says in plain
