@@ -114,6 +114,7 @@ func (d *Docker) StartRecording(ctx context.Context, recording domain.Recording,
 		"--label", "spin.kind=recording",
 		"--label", "spin.recording_id="+recording.ID,
 		"--network", d.network,
+		"--env", "DISABLE_AUTOUPDATER=1",
 		"--workdir", "/workspace",
 		"--entrypoint", "sh",
 		base, "-lc", "trap 'exit 0' TERM INT; while :; do sleep 3600; done",
@@ -353,6 +354,10 @@ func (d *Docker) MaterializeWithGitAuthentication(ctx context.Context, compositi
 		"--label", "spin.composition_id=" + composition.ID,
 		"--label", "spin.operator=" + safeName(composition.Operator),
 		"--network", d.network,
+		// A tool that updates itself would write the update into whatever
+		// layer is being recorded (a login layer, say); the tool belongs
+		// in its own layer, updated there on purpose.
+		"--env", "DISABLE_AUTOUPDATER=1",
 	}
 	if workspaceRef != "" {
 		args = append(args, "--mount", "type=volume,src="+workspaceRef+",dst=/workspace")
