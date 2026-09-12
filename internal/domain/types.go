@@ -292,13 +292,16 @@ type CodeReviewRevision struct {
 }
 
 type CodeReviewFile struct {
-	Path      string `json:"path"`
-	Status    string `json:"status"`
-	Added     int    `json:"added"`
-	Deleted   int    `json:"deleted"`
-	Patch     string `json:"patch,omitempty"`
-	Binary    bool   `json:"binary,omitempty"`
-	Truncated bool   `json:"truncated,omitempty"`
+	Path       string `json:"path"`
+	Status     string `json:"status"`
+	Repository string `json:"repository,omitempty"`
+	Folder     string `json:"folder,omitempty"`
+	Head       string `json:"head,omitempty"`
+	Added      int    `json:"added"`
+	Deleted    int    `json:"deleted"`
+	Patch      string `json:"patch,omitempty"`
+	Binary     bool   `json:"binary,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
 }
 
 type CodeReviewRevisionSummary struct {

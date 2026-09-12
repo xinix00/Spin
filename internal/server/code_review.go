@@ -137,6 +137,7 @@ func (s *Server) captureCodeReview(ctx context.Context, jobID, sessionID string,
 	for _, file := range changes.Files {
 		revision.Files = append(revision.Files, domain.CodeReviewFile{
 			Path: file.Path, Status: file.Status, Added: file.Added, Deleted: file.Deleted,
+			Repository: file.Repository, Folder: file.Folder, Head: file.Head,
 			Patch: file.Patch, Binary: file.Binary, Truncated: file.Truncated,
 		})
 	}

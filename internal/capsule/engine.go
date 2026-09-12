@@ -80,17 +80,25 @@ type EnabledEngine interface {
 }
 
 type WorkspaceFileChange struct {
-	Path      string `json:"path"`
-	Status    string `json:"status"`
-	Added     int    `json:"added"`
-	Deleted   int    `json:"deleted"`
-	Patch     string `json:"patch,omitempty"`
-	Binary    bool   `json:"binary,omitempty"`
-	Truncated bool   `json:"truncated,omitempty"`
+	Path   string `json:"path"`
+	Status string `json:"status"`
+	// Repository and Folder say which repository of the Job the file is in
+	// and under which folder of the workspace; Head is the commit the new
+	// side of the diff is at, empty for a working tree. Together they let
+	// the whole file be fetched, not only the diff.
+	Repository string `json:"repository,omitempty"`
+	Folder     string `json:"folder,omitempty"`
+	Head       string `json:"head,omitempty"`
+	Added      int    `json:"added"`
+	Deleted    int    `json:"deleted"`
+	Patch      string `json:"patch,omitempty"`
+	Binary     bool   `json:"binary,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
 }
 
 type WorkspaceChanges struct {
 	Branch  string                `json:"branch,omitempty"`
+	Head    string                `json:"head,omitempty"` // the commit the new side is at; empty for a working tree
 	Added   int                   `json:"added"`
 	Deleted int                   `json:"deleted"`
 	Files   []WorkspaceFileChange `json:"files"`

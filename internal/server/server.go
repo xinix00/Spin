@@ -612,6 +612,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/compositions/{compositionID}/login", s.saveLoginHandler)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/capsule", s.restartSessionCapsule)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/capsule/stop", s.stopSessionCapsule)
+	s.mux.HandleFunc("GET /api/sessions/{sessionID}/file", s.sessionFileHandler)
 	s.mux.HandleFunc("DELETE /api/logins/{loginID}", s.deleteLoginHandler)
 	s.mux.HandleFunc("GET /api/compositions/{compositionID}/changes", s.compositionChangesHandler)
 	s.mux.HandleFunc("GET /api/runners/token", s.workerTokenHandler)

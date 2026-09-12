@@ -1393,9 +1393,17 @@ func (d *Docker) inspectChanges(ctx context.Context, git gitRunner, diffBase, di
 		file.Added, _ = strconv.Atoi(fields[0])
 		changes.Added += file.Added
 	}
+	// A range ends at a commit: the whole file can be read there later. A
+	// working tree has no such commit; its files are read from the capsule.
+	if diffHead != "" {
+		if head, headCode, _ := git(ctx, "git", "rev-parse", diffHead); headCode == 0 {
+			changes.Head = strings.TrimSpace(head)
+		}
+	}
 	remainingPatchBytes := maxTotalPatchBytes
 	for position := range changes.Files {
 		file := &changes.Files[position]
+		file.Head = changes.Head
 		if remainingPatchBytes == 0 {
 			file.Truncated = true
 			continue

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -374,7 +375,11 @@ func (s *Server) inspectSessionChanges(ctx context.Context, sessionID, operator 
 	defer cancel()
 	workspaces := composition.ChangedWorkspaces()
 	if len(workspaces) <= 1 && (len(workspaces) == 0 || workspaces[0].Path == "") {
-		return inspector.InspectWorkspace(inspectContext, *composition.Runtime)
+		changes, err := inspector.InspectWorkspace(inspectContext, *composition.Runtime)
+		if err == nil && len(workspaces) == 1 {
+			changes = gatherChanges(capsule.WorkspaceChanges{Files: []capsule.WorkspaceFileChange{}}, changes, "", workspaces[0])
+		}
+		return changes, err
 	}
 	at, ok := s.engine.(capsule.WorkspaceInspectorAt)
 	if !ok {
@@ -386,24 +391,77 @@ func (s *Server) inspectSessionChanges(ctx context.Context, sessionID, operator 
 		if err != nil {
 			return capsule.WorkspaceChanges{}, fmt.Errorf("%s: %w", workspace.RepositoryName, err)
 		}
-		total = gatherChanges(total, changes, workspace.Path+"/")
+		total = gatherChanges(total, changes, workspace.Path+"/", workspace)
 	}
 	return total, nil
 }
 
-// gatherChanges adds the changes of one repository to those of a Job with
-// several, its files under the repository's folder.
-func gatherChanges(total, changes capsule.WorkspaceChanges, prefix string) capsule.WorkspaceChanges {
+// gatherChanges adds the changes of one repository to those of a Job,
+// its files under the repository's folder and marked with the repository
+// they belong to, so the whole file can be fetched later.
+func gatherChanges(total, changes capsule.WorkspaceChanges, prefix string, workspace domain.GitWorkspace) capsule.WorkspaceChanges {
 	if total.Branch == "" {
 		total.Branch = changes.Branch
+	}
+	if total.Head == "" {
+		total.Head = changes.Head
 	}
 	total.Added += changes.Added
 	total.Deleted += changes.Deleted
 	for _, file := range changes.Files {
 		file.Path = prefix + strings.TrimPrefix(file.Path, "./")
+		file.Repository = workspace.RepositoryID
+		file.Folder = workspace.Path
+		if file.Head == "" {
+			file.Head = changes.Head
+		}
 		total.Files = append(total.Files, file)
 	}
 	return total
+}
+
+// sessionFileHandler returns one file of a running Session's workspace as
+// it is now: the whole file behind a working-tree diff.
+func (s *Server) sessionFileHandler(w http.ResponseWriter, r *http.Request) {
+	record, err := s.sessionRecord(r.PathValue("sessionID"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	_, composition, err := s.sessionComposition(record.ID, record.Operator)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+		writeError(w, fmt.Errorf("session has no running workspace: %w", store.ErrConflict))
+		return
+	}
+	path := strings.TrimPrefix(strings.TrimSpace(r.URL.Query().Get("path")), "/")
+	folder := strings.TrimSpace(r.URL.Query().Get("folder"))
+	if path == "" || strings.Contains(path, "..") || (folder != "" && (strings.Contains(folder, "/") || strings.Contains(folder, ".."))) {
+		writeError(w, fmt.Errorf("invalid file path: %w", store.ErrConflict))
+		return
+	}
+	tracked, ok := s.engine.(capsule.TrackedFiles)
+	if !ok {
+		writeError(w, fmt.Errorf("capsule engine %s cannot read files: %w", s.engine.Info().Driver, store.ErrConflict))
+		return
+	}
+	absolute := domain.WorkspaceDirectory(folder) + "/" + path
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	files, err := tracked.ReadTrackedFiles(ctx, *composition.Runtime, []string{absolute})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	content, ok := files[absolute]
+	if !ok {
+		writeError(w, fmt.Errorf("%s is not in the workspace, or larger than %d bytes: %w", path, capsule.TrackedFileLimit, store.ErrNotFound))
+		return
+	}
+	writeJSON(w, http.StatusOK, capsule.WorkspaceFile{Ref: "workspace", Path: path, Size: int64(len(content)), Content: string(content), Binary: bytes.IndexByte(content, 0) >= 0})
 }
 
 func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, sessionID string) (capsule.WorkspaceChanges, error) {
@@ -560,7 +618,7 @@ func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, session
 		if several {
 			prefix = workspace.Path + "/"
 		}
-		total = gatherChanges(total, changes, prefix)
+		total = gatherChanges(total, changes, prefix, workspace)
 	}
 	return label(total), nil
 }
