@@ -322,16 +322,6 @@ func (e *RemoteEngine) ReadTrackedFiles(ctx context.Context, runtime domain.Caps
 	return files, err
 }
 
-// SubscribeTrackedFiles has the runner watch the capsule's tracked files
-// and report changes as events.
-func (e *RemoteEngine) SubscribeTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, paths []string) error {
-	if !e.broker.Connected(runtime.ClientID) {
-		return fmt.Errorf("watch on %s: %w", runtime.ClientID, ErrRunnerOffline)
-	}
-	_, err := e.broker.call(ctx, runtime.ClientID, methodWatchTracked, trackedFilesPayload{Runtime: runtime, Paths: paths}, nil)
-	return err
-}
-
 // BundleDeliverable has the runner zip a folder or file of the capsule and
 // upload it; the result names the bundle in the archive.
 func (e *RemoteEngine) BundleDeliverable(ctx context.Context, runtime domain.CapsuleRuntime, path string) (domain.DeliverableBundle, error) {

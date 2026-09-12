@@ -206,6 +206,12 @@ func (s *Server) useCapsule(ctx context.Context, req domain.UseRequest) (domain.
 	if err != nil {
 		return domain.Composition{}, err
 	}
+	// A credential layer with every login in use has nothing for one more
+	// capsule; say so before the slow part.
+	if err := s.loginsAvailable(composition); err != nil {
+		_ = s.store.DiscardComposition(composition.ID, composition.Operator)
+		return domain.Composition{}, err
+	}
 	artifacts := s.store.Snapshot().Artifacts
 	var runtime domain.CapsuleRuntime
 	if account, authenticated, accountErr := s.gitAccountForWorkspace(ctx, composition.Git, composition.Operator); accountErr != nil {
@@ -241,6 +247,16 @@ func (s *Server) useCapsule(ctx context.Context, req domain.UseRequest) (domain.
 		_ = s.engine.Stop(context.Background(), runtime)
 		return domain.Composition{}, err
 	}
+	// The capsule runs: it gets its logins now, so a concurrent start of
+	// the same layer cannot get the same one.
+	if err := s.handOutLogins(ctx, materialized); err != nil {
+		_ = s.engine.Stop(context.Background(), runtime)
+		_ = s.store.DiscardComposition(composition.ID, composition.Operator)
+		return domain.Composition{}, err
+	}
+	if materialized, err = s.store.Composition(composition.ID); err != nil {
+		return domain.Composition{}, err
+	}
 	if composition.SessionID != "" && runtime.ClientID != "" {
 		if _, err := s.store.BindSessionClient(composition.SessionID, runtime.ClientID); err != nil {
 			_ = s.engine.Stop(context.Background(), runtime)
@@ -267,7 +283,6 @@ func (s *Server) stopCapsule(ctx context.Context, compositionID, operator string
 	if s.engineConnected(composition.Runtime.ClientID) {
 		s.captureLoginState(ctx, composition)
 	}
-	s.delivered.forget(composition.ID)
 	if err := s.engine.Stop(ctx, *composition.Runtime); err != nil {
 		if !errors.Is(err, worker.ErrRunnerOffline) {
 			return domain.Composition{}, fmt.Errorf("stop composition capsule: %w", err)
@@ -278,7 +293,13 @@ func (s *Server) stopCapsule(ctx context.Context, compositionID, operator string
 	}
 	runtime := *composition.Runtime
 	runtime.Status = "stopped"
-	return s.store.SetCompositionRuntime(composition.ID, composition.Operator, runtime)
+	stopped, err := s.store.SetCompositionRuntime(composition.ID, composition.Operator, runtime)
+	if err == nil && len(composition.Logins) > 0 {
+		// The logins this capsule held are free: a Job that waited for one
+		// can start.
+		go s.launchQueuedWorkflowPhases("login released")
+	}
+	return stopped, err
 }
 
 func normalizeOperator(value string) string {

@@ -21,9 +21,6 @@ const (
 	messageStreamClose  = "stream_close"
 	messageStreamExit   = "stream_exit"
 	messageGoodbye      = "goodbye"
-	// messageEvent is a message the runner sends on its own: something it
-	// watches changed. It has no request and expects no answer.
-	messageEvent = "event"
 )
 
 const (
@@ -40,8 +37,6 @@ const (
 	methodInspectRange      = "workspace.inspect_range"
 	methodInjectAttachments = "workspace.inject_attachments"
 	methodReadTracked       = "files.read"
-	methodWatchTracked      = "files.watch"
-	methodTrackedChanged    = "files.changed"
 	methodBundleDeliverable = "deliverable.bundle"
 	methodPlaceDeliverable  = "deliverable.place"
 	methodCapsuleChanges    = "capsule.changes"

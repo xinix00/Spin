@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -1093,20 +1094,21 @@ func TestWorkerTokenLivesInTheStore(t *testing.T) {
 	}
 }
 
-// A login state is kept per credential layer and user, encrypted on disk,
-// and comes back after a reopen; saving the same files again is a no-op.
-func TestLoginStateIsKeptEncrypted(t *testing.T) {
+// A login is kept encrypted on disk and comes back after a reopen; saving
+// the same files again is a no-op. A login kept the old way, one per
+// layer, becomes the layer's first login at open and the old form is gone.
+func TestLoginsAreKeptEncrypted(t *testing.T) {
 	path := t.TempDir() + "/state.json"
 	st, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := map[string][]byte{".claude/.credentials.json": []byte(`{"refresh":"rotated-token"}`)}
-	changed, err := st.SaveLoginState("derek/credential:claude", files)
-	if err != nil || !changed {
-		t.Fatalf("first save changed=%v err=%v", changed, err)
+	files := map[string][]byte{"/root/.claude/.credentials.json": []byte(`{"refresh":"rotated-token"}`)}
+	login, err := st.CreateLogin("", "derek/credential:claude", files)
+	if err != nil || login.Number != 1 {
+		t.Fatalf("create: %+v %v", login, err)
 	}
-	if changed, err := st.SaveLoginState("derek/credential:claude", files); err != nil || changed {
+	if changed, err := st.SaveLoginFiles(login.ID, files); err != nil || changed {
 		t.Fatalf("same files changed=%v err=%v", changed, err)
 	}
 	raw, err := os.ReadFile(path)
@@ -1114,15 +1116,45 @@ func TestLoginStateIsKeptEncrypted(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(raw), "rotated-token") {
-		t.Fatal("login state is stored in plaintext")
+		t.Fatal("login is stored in plaintext")
 	}
 	reopened, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, ok := reopened.LoginState("derek/credential:claude")
-	if !ok || string(state.Files[".claude/.credentials.json"]) != `{"refresh":"rotated-token"}` {
-		t.Fatalf("reopened login state = %+v, %v", state, ok)
+	if kept, ok := reopened.Login(login.ID); !ok || string(kept.Files["/root/.claude/.credentials.json"]) != `{"refresh":"rotated-token"}` {
+		t.Fatalf("reopened login = %+v, %v", kept, ok)
+	}
+
+	// The old form: one login_states entry per layer, sealed per layer key.
+	legacyPath := t.TempDir() + "/state.json"
+	legacy, err := Open(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := legacy.secrets.encrypt(base64.StdEncoding.EncodeToString([]byte("old-token")), "login:derek/credential:codex:/root/.codex/auth.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.state.LoginStates = map[string]legacyLoginState{"derek/credential:codex": {Key: "derek/credential:codex", Files: map[string][]byte{"/root/.codex/auth.json": []byte(sealed)}, UpdatedAt: time.Now().UTC()}}
+	encoded, err := json.Marshal(legacy.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	converted, err := Open(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logins := converted.LoginsFor("derek/credential:codex")
+	if len(logins) != 1 || logins[0].Number != 1 || string(logins[0].Files["/root/.codex/auth.json"]) != "old-token" {
+		t.Fatalf("converted logins = %+v", logins)
+	}
+	raw, _ = os.ReadFile(legacyPath)
+	if strings.Contains(string(raw), "login_states") || strings.Contains(string(raw), "old-token") {
+		t.Fatal("the old form or the token is still in the file")
 	}
 }
 

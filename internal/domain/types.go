@@ -563,13 +563,36 @@ type AgentOption struct {
 // AgentSettings is the chosen way to start an ACP layer's agent. Empty
 // fields mean automatic: full access when the agent offers it, and the
 // agent's own default model and reasoning effort.
-// LoginState is what a credential layer's recording wrote under HOME, as
-// it last was in a capsule: an agent's login with its rotated tokens. Kept
-// per credential layer and user so the next Session starts logged in.
-type LoginState struct {
-	Key       string            `json:"key"`
+// Login is one logged-in instance of a layer's tracked files: the files a
+// person chose in the layer's contents (a token the agent rotates, a
+// config it keeps), as they were last read from a capsule. A credential
+// layer hands its logins out: every running capsule holds one of them and
+// no two capsules hold the same one, so a refresh in one capsule never
+// invalidates another; a person logs in as often as there should be
+// capsules at once. Any other layer has one login that every capsule
+// shares. The layer's own files are its first login.
+type Login struct {
+	ID string `json:"id"`
+	// Key names the layer across its versions: subject/kind:name.
+	Key string `json:"key"`
+	// Number is the login's place in the layer's list, for people: Login 1,
+	// Login 2. Removing one leaves the others their numbers.
+	Number    int               `json:"number"`
 	Files     map[string][]byte `json:"files"`
+	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
+}
+
+// LoginSummary is a login without its files, as the browser sees it.
+type LoginSummary struct {
+	ID        string    `json:"id"`
+	Key       string    `json:"key"`
+	Number    int       `json:"number"`
+	Files     int       `json:"files"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	// CompositionID is the running capsule that holds the login, if any.
+	CompositionID string `json:"composition_id,omitempty"`
 }
 
 type AgentSettings struct {
@@ -729,7 +752,14 @@ type Composition struct {
 	// CapsuleChanges is what the capsule changed outside the workspace,
 	// taken after a turn and at stop, by kind.
 	CapsuleChanges *LayerContents `json:"capsule_changes,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
+	// Logins is which login of each layer this capsule holds, by layer
+	// key, from its start until it stops.
+	Logins map[string]string `json:"logins,omitempty"`
+	// ForLogin marks a capsule started to log in once more: it holds no
+	// login and keeps the layer's own files until a person saves what they
+	// logged in as a new login.
+	ForLogin  bool      `json:"for_login,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Job struct {
@@ -1111,6 +1141,7 @@ type Snapshot struct {
 	GitRepositories     []GitRepository             `json:"git_repositories"`
 	GitAccounts         []GitAccount                `json:"git_accounts"`
 	Users               []PublicUser                `json:"users"`
+	Logins              []LoginSummary              `json:"logins"`
 }
 
 type Recommendation struct {
@@ -1174,6 +1205,8 @@ type UseRequest struct {
 	Profile       string   `json:"profile,omitempty"`
 	SessionID     string   `json:"session_id,omitempty"`
 	Tool          string   `json:"tool,omitempty"` // accepted for old API clients
+	// ForLogin starts the capsule to log in once more; see Composition.
+	ForLogin bool `json:"for_login,omitempty"`
 }
 
 type StopCompositionRequest struct {

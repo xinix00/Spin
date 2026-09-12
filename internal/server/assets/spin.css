@@ -82,3 +82,5 @@ input,textarea,select,.job-state-tabs,.segments{background:#11161c}.job,.templat
 @media(max-width:760px){.messages{inset:8px auto auto 50%;width:calc(100vw - 16px)}}
 /* A modal dialog owns the scroll: the page behind it stays put, and a scroll that reaches the end of the dialog does not carry over. */
 html:has(dialog:modal){overflow:hidden}dialog{overscroll-behavior:contain}
+
+.logins-body{padding:12px 16px;display:grid;gap:8px;max-height:min(60vh,520px);overflow:auto}.login-row{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:var(--raised);font-size:12px}.login-row .login-main{flex:1 1 auto;min-width:0}.login-row small{display:block;color:var(--muted);font:10.5px var(--mono);margin-top:3px;overflow-wrap:anywhere}.login-row .tag.free{color:var(--green)}.login-row .tag.held{color:var(--amber)}.logins-body .empty{padding:18px}

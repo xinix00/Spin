@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	cryptorand "crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -62,8 +61,6 @@ type Worker struct {
 	streams       map[string]localStream
 	liveWorkloads int
 	connections   uint64
-	// watchers holds the tracked-file watcher per capsule.
-	watchers map[string]context.CancelFunc
 }
 
 func New(config Config, logger *slog.Logger) *Worker {
@@ -497,12 +494,6 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 			return files, false, err
 		}
 		return nil, false, tracked.WriteTrackedFiles(ctx, payload.Runtime, payload.Files)
-	case methodWatchTracked:
-		var payload trackedFilesPayload
-		if err := json.Unmarshal(request.Payload, &payload); err != nil {
-			return nil, false, err
-		}
-		return nil, false, w.watchTracked(payload.Runtime, payload.Paths)
 	case methodBundleDeliverable:
 		var payload bundleDeliverablePayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {
@@ -992,79 +983,4 @@ func (p *snapshotTransferProcess) Wait() (capsule.Execution, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.execution, p.err
-}
-
-// watchTracked keeps one watcher per capsule: the runner watches the
-// tracked files inside it and, when one changes, reads them and sends
-// them to the server as an event. A second request for the same capsule
-// replaces the first (the paths may have changed).
-func (w *Worker) watchTracked(runtime domain.CapsuleRuntime, paths []string) error {
-	watcher, ok := w.engine.(capsule.TrackedWatcher)
-	if !ok {
-		return errors.New("runner engine cannot watch tracked files")
-	}
-	tracked, ok := w.engine.(capsule.TrackedFiles)
-	if !ok {
-		return errors.New("runner engine cannot read tracked files")
-	}
-	key := runtime.ContainerID
-	ctx, cancel := context.WithCancel(context.Background())
-	w.mu.Lock()
-	if w.watchers == nil {
-		w.watchers = map[string]context.CancelFunc{}
-	}
-	if previous, exists := w.watchers[key]; exists {
-		previous()
-	}
-	w.watchers[key] = cancel
-	w.mu.Unlock()
-	go func() {
-		defer func() {
-			// Only the watcher that still owns the key forgets it; a
-			// replacement keeps its own entry.
-			w.mu.Lock()
-			if ctx.Err() == nil {
-				cancel()
-				delete(w.watchers, key)
-			}
-			w.mu.Unlock()
-		}()
-		last := map[string]string{}
-		report := func() {
-			readCtx, cancelRead := context.WithTimeout(ctx, 20*time.Second)
-			files, err := tracked.ReadTrackedFiles(readCtx, runtime, paths)
-			cancelRead()
-			if err != nil {
-				return
-			}
-			changed := false
-			for path, data := range files {
-				sum := sha256.Sum256(data)
-				hash := hex.EncodeToString(sum[:])
-				if last[path] != hash {
-					last[path] = hash
-					changed = true
-				}
-			}
-			if !changed {
-				return
-			}
-			payload, err := json.Marshal(trackedFilesPayload{Runtime: runtime, Files: files})
-			if err != nil {
-				return
-			}
-			w.enqueue(wireMessage{Version: ProtocolVersion, Type: messageEvent, Method: methodTrackedChanged, Payload: payload})
-		}
-		// The first read is the baseline; only changes after it travel.
-		if files, err := tracked.ReadTrackedFiles(ctx, runtime, paths); err == nil {
-			for path, data := range files {
-				sum := sha256.Sum256(data)
-				last[path] = hex.EncodeToString(sum[:])
-			}
-		}
-		if err := watcher.WatchTrackedFiles(ctx, runtime, paths, report); err != nil && ctx.Err() == nil {
-			w.logger.Warn("watch tracked files", "container", runtime.ContainerID, "error", err)
-		}
-	}()
-	return nil
 }

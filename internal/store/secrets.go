@@ -183,17 +183,19 @@ func (s *Store) encryptedStateLocked() (persistedState, error) {
 		}
 		out.GitAccounts[id] = account
 	}
-	out.LoginStates = make(map[string]domain.LoginState, len(s.state.LoginStates))
-	for key, state := range s.state.LoginStates {
-		sealed := domain.LoginState{Key: state.Key, UpdatedAt: state.UpdatedAt, Files: make(map[string][]byte, len(state.Files))}
-		for path, data := range state.Files {
-			value, err := s.secrets.encrypt(base64.StdEncoding.EncodeToString(data), "login:"+key+":"+path)
+	out.LoginStates = nil
+	out.Logins = make(map[string]domain.Login, len(s.state.Logins))
+	for id, login := range s.state.Logins {
+		sealed := login
+		sealed.Files = make(map[string][]byte, len(login.Files))
+		for path, data := range login.Files {
+			value, err := s.secrets.encrypt(base64.StdEncoding.EncodeToString(data), "login:"+id+":"+path)
 			if err != nil {
 				return persistedState{}, err
 			}
 			sealed.Files[path] = []byte(value)
 		}
-		out.LoginStates[key] = sealed
+		out.Logins[id] = sealed
 	}
 	workerToken, err := s.secrets.encrypt(s.state.WorkerToken, "runners:worker-token")
 	if err != nil {
@@ -213,22 +215,48 @@ func (s *Store) encryptedStateLocked() (persistedState, error) {
 }
 
 func (s *Store) decryptSecretsLocked() error {
+	for id, login := range s.state.Logins {
+		for path, sealed := range login.Files {
+			value, err := s.secrets.decrypt(string(sealed), "login:"+id+":"+path)
+			if err != nil {
+				return fmt.Errorf("login %s %s: %w", id, path, err)
+			}
+			if strings.HasPrefix(string(sealed), encryptedValuePrefix) {
+				data, err := base64.StdEncoding.DecodeString(value)
+				if err != nil {
+					return fmt.Errorf("login %s %s: %w", id, path, err)
+				}
+				login.Files[path] = data
+			}
+		}
+		s.state.Logins[id] = login
+	}
+	// A login kept the old way, one per layer, becomes the layer's first
+	// login; the file is written without the old form right after.
 	for key, state := range s.state.LoginStates {
+		files := make(map[string][]byte, len(state.Files))
 		for path, sealed := range state.Files {
 			value, err := s.secrets.decrypt(string(sealed), "login:"+key+":"+path)
 			if err != nil {
 				return fmt.Errorf("login state %s %s: %w", key, path, err)
 			}
+			data := []byte(value)
 			if strings.HasPrefix(string(sealed), encryptedValuePrefix) {
-				data, err := base64.StdEncoding.DecodeString(value)
-				if err != nil {
+				if data, err = base64.StdEncoding.DecodeString(value); err != nil {
 					return fmt.Errorf("login state %s %s: %w", key, path, err)
 				}
-				state.Files[path] = data
 			}
+			files[path] = data
 		}
-		s.state.LoginStates[key] = state
+		if s.state.Logins == nil {
+			s.state.Logins = map[string]domain.Login{}
+		}
+		if len(files) > 0 && len(s.loginsForLocked(key)) == 0 {
+			id := newID("lgn")
+			s.state.Logins[id] = domain.Login{ID: id, Key: key, Number: 1, Files: files, CreatedAt: state.UpdatedAt, UpdatedAt: state.UpdatedAt}
+		}
 	}
+	s.state.LoginStates = nil
 	workerToken, err := s.secrets.decrypt(s.state.WorkerToken, "runners:worker-token")
 	if err != nil {
 		return fmt.Errorf("worker token: %w", err)

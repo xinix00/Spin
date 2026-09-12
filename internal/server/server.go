@@ -26,8 +26,6 @@ import (
 
 type Server struct {
 	inflight        inflight
-	loginMu         sync.Mutex
-	delivered       deliveredFiles
 	store           *store.Store
 	logger          *slog.Logger
 	mux             *http.ServeMux
@@ -168,9 +166,6 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 	if reporter, ok := engine.(placementReporter); ok {
 		reporter.OnPlacement(s.recordLaunchPlacement)
 	}
-	if s.runnerBroker != nil {
-		s.runnerBroker.OnTrackedFilesChanged(s.trackedFilesChanged)
-	}
 	go s.resumeQueuedWorkflowActions()
 	s.resumeStartingRecordings()
 	s.pruneLater()
@@ -189,18 +184,12 @@ func (s *Server) sweepQueuedWorkflowPhases() {
 	defer ticker.Stop()
 	clients := time.NewTicker(time.Hour)
 	defer clients.Stop()
-	tracked := time.NewTicker(trackedSyncInterval)
-	defer tracked.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			s.launchQueuedWorkflowPhases("sweep")
 		case <-clients.C:
 			s.pruneClients()
-		case <-tracked.C:
-			// Tracked files (a login an agent rotates) travel between
-			// running capsules as they change, not only after a turn.
-			s.syncAllTrackedFiles()
 		}
 	}
 }
@@ -554,6 +543,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/artifacts/{artifactID}/contents", s.artifactContentsHandler)
 	s.mux.HandleFunc("GET /api/artifacts/{artifactID}/tree", s.artifactTreeHandler)
 	s.mux.HandleFunc("PUT /api/artifacts/{artifactID}/tracked", s.setTrackedPathsHandler)
+	s.mux.HandleFunc("POST /api/compositions/{compositionID}/login", s.saveLoginHandler)
+	s.mux.HandleFunc("DELETE /api/logins/{loginID}", s.deleteLoginHandler)
 	s.mux.HandleFunc("GET /api/compositions/{compositionID}/changes", s.compositionChangesHandler)
 	s.mux.HandleFunc("GET /api/runners/token", s.workerTokenHandler)
 	s.mux.HandleFunc("POST /api/runners/token", s.workerTokenHandler)
