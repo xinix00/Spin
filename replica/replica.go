@@ -257,8 +257,25 @@ func (r *Replica) Prepare(ctx context.Context) error {
 // SnapshotDue reports whether the next sync copies the whole database: a
 // Spin runs that copy before it opens, because it holds the database.
 func (r *Replica) SnapshotDue() bool {
+	return r.SnapshotReason() != ""
+}
+
+// SnapshotReason says why the next sync copies the whole database, or is
+// empty when it does not: no generation yet, an interrupted generation,
+// a generation past its age, or more shipped than the database is worth.
+func (r *Replica) SnapshotReason() string {
 	current := r.getMarker()
-	return current.Generation == "" || !current.Complete || r.compactionDue(current)
+	switch {
+	case current.Generation == "":
+		return "no generation yet"
+	case !current.Complete:
+		return "the last sync of generation " + current.Generation + " did not complete"
+	case r.now().Sub(current.StartedAt) > r.config.Generation:
+		return fmt.Sprintf("generation %s is %s old, the limit is %s", current.Generation, r.now().Sub(current.StartedAt).Round(time.Hour), r.config.Generation)
+	case current.Bytes > 2*current.Size+64<<20:
+		return fmt.Sprintf("generation %s shipped %d MiB against a database of %d MiB", current.Generation, current.Bytes>>20, current.Size>>20)
+	}
+	return ""
 }
 
 // Attach supplies the database adapter. Start or Sync drives replication.

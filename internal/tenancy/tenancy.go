@@ -470,8 +470,9 @@ func (t *Tenants) open(domain string) (*Tenant, error) {
 		rep.Attach(database)
 		// A whole-database copy holds the database; it runs before the
 		// Spin opens, not while it serves.
-		if rep.SnapshotDue() {
-			t.setStage(domain, "snapshot", "Volledige kopie van de database naar de bucket")
+		if reason := rep.SnapshotReason(); reason != "" {
+			logger.Info("replica: a new generation starts with a full copy", "reason", reason)
+			t.setStage(domain, "snapshot", "Volledige kopie van de database naar de bucket · "+reason)
 			if err := rep.Sync(t.ctx); err != nil {
 				logger.Warn("replica: first snapshot", "error", err)
 			}
