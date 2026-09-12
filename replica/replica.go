@@ -254,10 +254,24 @@ func (r *Replica) Prepare(ctx context.Context) error {
 	return r.tracker.rewriteLog("", 0)
 }
 
-// SnapshotDue reports whether the next sync copies the whole database: a
-// Spin runs that copy before it opens, because it holds the database.
+// SnapshotDue reports whether the next sync copies the whole database.
 func (r *Replica) SnapshotDue() bool {
 	return r.SnapshotReason() != ""
+}
+
+// SnapshotRequiredBeforeServing says why a Spin must copy its database
+// before it opens, or is empty: only when the bucket has no complete
+// generation to fall back on. A generation that is merely old or heavy
+// renews itself in the background while the Spin serves.
+func (r *Replica) SnapshotRequiredBeforeServing() string {
+	current := r.getMarker()
+	switch {
+	case current.Generation == "":
+		return "no generation yet"
+	case !current.Complete:
+		return "the last sync of generation " + current.Generation + " did not complete"
+	}
+	return ""
 }
 
 // SnapshotReason says why the next sync copies the whole database, or is
@@ -329,7 +343,15 @@ func (r *Replica) Status() Status {
 }
 
 // Sync ships what changed: one pass, segments of at most SegmentBytes.
-func (r *Replica) Sync(ctx context.Context) error {
+// Sync ships what changed while the Spin serves; a snapshot it needs goes
+// in short transactions so the database stays usable.
+func (r *Replica) Sync(ctx context.Context) error { return r.run(ctx, false) }
+
+// SyncAtOpen ships what changed before the Spin serves; a snapshot it
+// needs holds the database, which nothing else uses yet.
+func (r *Replica) SyncAtOpen(ctx context.Context) error { return r.run(ctx, true) }
+
+func (r *Replica) run(ctx context.Context, blocking bool) error {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -347,7 +369,7 @@ func (r *Replica) Sync(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	stopCancel := context.AfterFunc(r.lifetime, cancel)
 	defer func() { stopCancel(); cancel() }()
-	err := r.sync(ctx, db)
+	err := r.sync(ctx, db, blocking)
 	r.mu.Lock()
 	r.syncing = false
 	if err != nil {
@@ -360,7 +382,7 @@ func (r *Replica) Sync(ctx context.Context) error {
 	return err
 }
 
-func (r *Replica) sync(ctx context.Context, db Database) error {
+func (r *Replica) sync(ctx context.Context, db Database, blocking bool) error {
 	current := r.getMarker()
 	// An incomplete attempt is never resumed: a fresh snapshot and fresh keys
 	// also make a timeout after a successful PUT safe to retry.
@@ -373,9 +395,13 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 	}
 	started := r.now()
 	if fresh {
-		r.logger.Info("replica: snapshot copy starts; the database is usable meanwhile", "domain", r.domain, "generation", current.Generation)
+		if blocking {
+			r.logger.Info("replica: snapshot copy starts before the Spin opens", "domain", r.domain, "generation", current.Generation)
+		} else {
+			r.logger.Info("replica: snapshot copy starts in the background; the database stays usable", "domain", r.domain, "generation", current.Generation, "reason", r.SnapshotReason())
+		}
 	}
-	captured, err := r.capture(ctx, db, fresh)
+	captured, err := r.capture(ctx, db, fresh, blocking)
 	if err != nil {
 		return err
 	}
