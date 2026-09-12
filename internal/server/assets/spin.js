@@ -590,7 +590,18 @@ function enterApp(status){
 }
 // A banner shows where the person is: inside the open dialog (a modal
 // covers the page) or at the top of the page.
-function showBanner(text,kind){const dialog=document.querySelector('dialog[open]');let box=document.getElementById('error');if(dialog){box=dialog.querySelector('.dialog-banner');if(!box){box=document.createElement('div');box.className='error-banner dialog-banner';dialog.prepend(box);}}box.textContent=text;box.classList.toggle('notice',kind==='notice');box.style.display='block';clearTimeout(box._hide);box._hide=setTimeout(()=>box.style.display='none',kind==='notice'?4500:6500);}
+// One message center: every error, notice and success floats at the top,
+// above dialogs too, with a cross to dismiss it; the page never shifts.
+function showBanner(text,kind){
+  const center=document.getElementById('messages'),item=document.createElement('div');item.className=`message ${kind==='notice'?'notice':'error'}`;
+  item.innerHTML=`<span class="material-symbols-outlined" aria-hidden="true">${kind==='notice'?'check_circle':'error'}</span><span class="message-text">${esc(String(text||''))}</span><button class="message-close" type="button" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>`;
+  const close=()=>{clearTimeout(item._hide);item.remove();if(!center.children.length){try{center.hidePopover();}catch(_){}}};
+  item.querySelector('.message-close').onclick=close;item.onmouseenter=()=>clearTimeout(item._hide);item.onmouseleave=()=>{item._hide=setTimeout(close,2500);};
+  center.prepend(item);while(center.children.length>4)center.lastElementChild.remove();
+  // Re-raising the popover puts it above a dialog that opened after it.
+  try{if(center.matches(':popover-open'))center.hidePopover();center.showPopover();}catch(_){}
+  item._hide=setTimeout(close,kind==='notice'?4500:8000);
+}
 function showError(error){showBanner(error.message||error,'error');}
 function showNotice(text){showBanner(text,'notice');}
 // One vocabulary for everything that starts on a runner: a recording, a
