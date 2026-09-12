@@ -233,8 +233,10 @@ func (s *Server) saveLoginHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, summaries)
 }
 
-// deleteLoginHandler removes a login nobody holds; the layer's owner or an
-// admin may.
+// deleteLoginHandler removes a login; the layer's owner or an admin may.
+// A login a capsule holds goes too: that capsule is closed first, and
+// marked stopped even when its runner cannot be reached, so a login can
+// always be taken away when something hangs.
 func (s *Server) deleteLoginHandler(w http.ResponseWriter, r *http.Request) {
 	login, ok := s.store.Login(r.PathValue("loginID"))
 	if !ok {
@@ -245,6 +247,20 @@ func (s *Server) deleteLoginHandler(w http.ResponseWriter, r *http.Request) {
 	if identity, authenticated := identityFromRequest(r); authenticated && identity.User.Role != "admin" && identity.User.Username != subject {
 		writeError(w, fmt.Errorf("only %s or an admin removes this login: %w", subject, store.ErrConflict))
 		return
+	}
+	for _, composition := range s.store.RunningCompositions() {
+		if composition.Logins[login.Key] != login.ID {
+			continue
+		}
+		if _, err := s.stopCapsule(r.Context(), composition.ID, composition.Operator); err != nil {
+			s.logger.Warn("close the capsule that holds a removed login", "composition", composition.ID, "error", err)
+			runtime := *composition.Runtime
+			runtime.Status = "stopped"
+			if _, err := s.store.SetCompositionRuntime(composition.ID, composition.Operator, runtime); err != nil {
+				writeError(w, fmt.Errorf("the capsule that holds this login could not be closed: %w", err))
+				return
+			}
+		}
 	}
 	if _, err := s.store.DeleteLogin(login.ID); err != nil {
 		writeError(w, err)
