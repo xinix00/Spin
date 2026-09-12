@@ -858,7 +858,19 @@ function renderRecording(){
   ensureShell();
   const recording=activeRecording(),status=region('terminal-status'),root=document.getElementById('recording-section');
   renderRecordFromOptions();
-  if(!recording){status.className='terminal-status';status.innerHTML='<span class="rec-dot"></span><span>idle</span>';root.innerHTML=`<div class="recorder-idle"><p>${activeComposition()?`Shell van <strong>${esc(activeComposition().selector)}</strong>. Er wordt niets opgenomen.`:'Geen opname. Een nieuwe laag begint met een opname in een verse capsule.'}</p><button class="primary" type="button" id="recorder-new-layer">${icon('fiber_manual_record')}Nieuwe laag</button></div>`;root.querySelector('#recorder-new-layer').onclick=()=>openLayerDialog({scope:'user'});updateTerminalControls();return;}
+  if(!recording){
+    status.className='terminal-status';status.innerHTML='<span class="rec-dot"></span><span>idle</span>';
+    const composition=activeComposition();
+    if(composition?.for_login){
+      // A capsule started to log in once more: only the tracked files
+      // matter here, saved as a new login; nothing is recorded.
+      const saved=Object.keys(composition.logins||{}).length>0;
+      root.innerHTML=`<div class="recorder-idle"><p>Shell van <strong>${esc(composition.selector)}</strong> om in te loggen. ${saved?'Login bewaard; wat je hier nog doet komt in die login. Stop de capsule als je klaar bent.':'Log in via de shell en druk daarna op Bewaar login: alleen de bijgehouden bestanden worden bewaard, er komt geen laag bij.'}</p>${saved?`<button class="danger" type="button" id="recorder-stop-login">${icon('stop')}Stop</button>`:`<button class="primary" type="button" id="recorder-save-login">${icon('key')}Bewaar login</button>`}</div>`;
+      const save=root.querySelector('#recorder-save-login');if(save)save.onclick=()=>{save.disabled=true;saveLogin(composition.id);};
+      const stop=root.querySelector('#recorder-stop-login');if(stop)stop.onclick=()=>stopComposition(composition.id);
+      updateTerminalControls();return;
+    }
+    root.innerHTML=`<div class="recorder-idle"><p>${composition?`Shell van <strong>${esc(composition.selector)}</strong>. Er wordt niets opgenomen.`:'Geen opname. Een nieuwe laag begint met een opname in een verse capsule.'}</p><button class="primary" type="button" id="recorder-new-layer">${icon('fiber_manual_record')}Nieuwe laag</button></div>`;root.querySelector('#recorder-new-layer').onclick=()=>openLayerDialog({scope:'user'});updateTerminalControls();return;}
   if(!terminalSessions.size){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>REC ${esc(recording.kind)}:${esc(recording.name)}</span>`;}
   // A recording without a capsule is being started by a job on the server;
   // attach to that job when this browser is not following it yet (after a
