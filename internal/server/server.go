@@ -545,6 +545,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/artifacts/{artifactID}/tracked", s.setTrackedPathsHandler)
 	s.mux.HandleFunc("POST /api/compositions/{compositionID}/login", s.saveLoginHandler)
 	s.mux.HandleFunc("POST /api/sessions/{sessionID}/capsule", s.restartSessionCapsule)
+	s.mux.HandleFunc("POST /api/sessions/{sessionID}/capsule/stop", s.stopSessionCapsule)
 	s.mux.HandleFunc("DELETE /api/logins/{loginID}", s.deleteLoginHandler)
 	s.mux.HandleFunc("GET /api/compositions/{compositionID}/changes", s.compositionChangesHandler)
 	s.mux.HandleFunc("GET /api/runners/token", s.workerTokenHandler)
@@ -1276,6 +1277,26 @@ func (s *Server) jobSessionNeedsLaunch(sessionID string, workflow bool) bool {
 	}
 	compositionIndex := slices.IndexFunc(snapshot.Compositions, func(composition domain.Composition) bool { return composition.ID == session.PreparedCompositionID })
 	return compositionIndex < 0 || snapshot.Compositions[compositionIndex].Runtime == nil || snapshot.Compositions[compositionIndex].Runtime.Status == "stopped"
+}
+
+// stopSessionCapsule closes the capsule of a Session by hand: a chat that
+// brought a capsule back holds a login until someone closes it.
+func (s *Server) stopSessionCapsule(w http.ResponseWriter, r *http.Request) {
+	session, composition, err := s.sessionComposition(r.PathValue("sessionID"), s.requestOperator(r, ""))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+		writeJSON(w, http.StatusOK, composition)
+		return
+	}
+	stopped, err := s.stopCapsule(r.Context(), composition.ID, session.Operator)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, stopped)
 }
 
 // restartSessionCapsule brings the capsule of a Session back when it was
