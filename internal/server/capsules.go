@@ -250,8 +250,7 @@ func (s *Server) useCapsule(ctx context.Context, req domain.UseRequest) (domain.
 	// The capsule runs: it gets its logins now, so a concurrent start of
 	// the same layer cannot get the same one.
 	if err := s.handOutLogins(ctx, materialized); err != nil {
-		_ = s.engine.Stop(context.Background(), runtime)
-		_ = s.store.DiscardComposition(composition.ID, composition.Operator)
+		s.abandonCapsule(composition, runtime)
 		return domain.Composition{}, err
 	}
 	if materialized, err = s.store.Composition(composition.ID); err != nil {
@@ -259,12 +258,49 @@ func (s *Server) useCapsule(ctx context.Context, req domain.UseRequest) (domain.
 	}
 	if composition.SessionID != "" && runtime.ClientID != "" {
 		if _, err := s.store.BindSessionClient(composition.SessionID, runtime.ClientID); err != nil {
-			_ = s.engine.Stop(context.Background(), runtime)
-			_ = s.store.DiscardComposition(composition.ID, composition.Operator)
+			s.abandonCapsule(composition, runtime)
 			return domain.Composition{}, fmt.Errorf("pin Session to runner: %w", err)
 		}
 	}
 	return materialized, nil
+}
+
+// abandonCapsule gives up a capsule whose start failed after its runtime
+// was recorded: the container goes and the composition is marked stopped.
+// A composition with a runtime cannot be discarded, and one left "ready"
+// without a container would be launched into forever ("No such
+// container") and would hold its logins.
+func (s *Server) abandonCapsule(composition domain.Composition, runtime domain.CapsuleRuntime) {
+	_ = s.engine.Stop(context.Background(), runtime)
+	runtime.Status = "stopped"
+	if _, err := s.store.SetCompositionRuntime(composition.ID, composition.Operator, runtime); err != nil {
+		s.logger.Warn("mark abandoned capsule stopped", "composition", composition.ID, "error", err)
+	}
+}
+
+// forgetLostCapsule marks a Session's composition stopped when its
+// container turned out to be gone, so the next launch builds a new one
+// instead of failing into the same hole.
+func (s *Server) forgetLostCapsule(sessionID string, err error) bool {
+	if err == nil || !strings.Contains(err.Error(), "No such container") {
+		return false
+	}
+	record, recordErr := s.sessionRecord(sessionID)
+	if recordErr != nil {
+		return false
+	}
+	_, composition, compositionErr := s.sessionComposition(sessionID, record.Operator)
+	if compositionErr != nil || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+		return false
+	}
+	runtime := *composition.Runtime
+	runtime.Status = "stopped"
+	if _, setErr := s.store.SetCompositionRuntime(composition.ID, composition.Operator, runtime); setErr != nil {
+		s.logger.Warn("mark lost capsule stopped", "composition", composition.ID, "error", setErr)
+		return false
+	}
+	s.logger.Warn("capsule container is gone; composition marked stopped", "composition", composition.ID, "session", sessionID, "container", runtime.ContainerID)
+	return true
 }
 
 func (s *Server) stopCapsule(ctx context.Context, compositionID, operator string) (domain.Composition, error) {

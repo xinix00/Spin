@@ -559,6 +559,9 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 	// the sweep tries again, rather than a running step with nothing behind it.
 	requeue := func(what string, err error) {
 		s.logger.Warn(what, "session", session.ID, "error", err)
+		// A container that is gone is not coming back: the composition is
+		// marked stopped so the next attempt builds a new capsule.
+		s.forgetLostCapsule(session.ID, err)
 		s.recordLaunchFailure(session.ID, fmt.Errorf("%s: %w", what, err))
 		if _, requeueErr := s.store.RequeueWorkflowPhase(session.ID); requeueErr != nil {
 			s.logger.Warn("requeue workflow phase", "session", session.ID, "error", requeueErr)
