@@ -186,12 +186,18 @@ func (s *Server) sweepQueuedWorkflowPhases() {
 	defer ticker.Stop()
 	clients := time.NewTicker(time.Hour)
 	defer clients.Stop()
+	tracked := time.NewTicker(trackedSyncInterval)
+	defer tracked.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			s.launchQueuedWorkflowPhases("sweep")
 		case <-clients.C:
 			s.pruneClients()
+		case <-tracked.C:
+			// Tracked files (a login an agent rotates) travel between
+			// running capsules as they change, not only after a turn.
+			s.syncAllTrackedFiles()
 		}
 	}
 }

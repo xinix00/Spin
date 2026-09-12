@@ -830,6 +830,20 @@ func (s *Store) SetCompositionChanges(compositionID string, changes domain.Layer
 	return s.saveLocked()
 }
 
+// RunningCompositions lists the compositions with a live capsule, without
+// copying the rest of the state: a sweep asks every few seconds.
+func (s *Store) RunningCompositions() []domain.Composition {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var running []domain.Composition
+	for _, composition := range s.state.Compositions {
+		if composition.Runtime != nil && composition.Runtime.Status != "stopped" {
+			running = append(running, composition)
+		}
+	}
+	return running
+}
+
 func (s *Store) Composition(compositionID string) (domain.Composition, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

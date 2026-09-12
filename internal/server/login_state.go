@@ -14,12 +14,17 @@ import (
 // A layer can track files: a login an agent rotates, a config it keeps.
 // Chosen by a person in the layer's contents. The server holds the one
 // copy, encrypted in the database per layer and user; every capsule gets
-// it before its agent starts, and after every turn and at stop the files
-// are read back. Only a file the capsule itself changed goes to the
-// server (a capsule that still has what it was given never overwrites a
-// newer copy), and a change reaches every other running capsule of the
-// same layer and user at once, so two Sessions on two runners keep one
-// token between them.
+// it before its agent starts, and the files are read back every few
+// seconds while a capsule runs, after every turn and at stop. Only a file
+// the capsule itself changed goes to the server (a capsule that still has
+// what it was given never overwrites a newer copy), and a change reaches
+// every other running capsule of the same layer and user at once, so two
+// Sessions on two runners keep one token between them. Reading is one
+// exec on the runner; the database is written only when a file changed,
+// which is what a server on one connection and one core needs.
+
+// trackedSyncInterval is how often running capsules are read.
+const trackedSyncInterval = 4 * time.Second
 
 type trackedTarget struct {
 	key   string
@@ -113,14 +118,33 @@ func (s *Server) restoreLoginState(ctx context.Context, composition domain.Compo
 	}
 }
 
-// captureLoginState reads the tracked files back from a running capsule:
-// what the capsule changed goes to the server and to every other running
-// capsule of the same layer and user; what the server has newer than this
-// capsule goes into it. It also notes what else the capsule changed.
+// captureLoginState is the full look at a capsule at the end of a turn and
+// at stop: its tracked files, and what else it changed.
 func (s *Server) captureLoginState(ctx context.Context, composition domain.Composition) {
 	if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
 		return
 	}
+	s.captureCapsuleChanges(ctx, composition)
+	s.syncTrackedFiles(ctx, composition)
+}
+
+// syncAllTrackedFiles reads the tracked files of every running capsule
+// whose runner is reachable; the sweep calls it every few seconds.
+func (s *Server) syncAllTrackedFiles() {
+	// Nothing running is the common case; it must cost nothing on a server
+	// with one core and one database connection.
+	for _, composition := range s.store.RunningCompositions() {
+		if !s.engineConnected(composition.Runtime.ClientID) || len(s.trackedTargets(composition)) == 0 {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		s.syncTrackedFiles(ctx, composition)
+		cancel()
+	}
+}
+
+// captureCapsuleChanges notes what a capsule changed outside its workspace.
+func (s *Server) captureCapsuleChanges(ctx context.Context, composition domain.Composition) {
 	if inspector, ok := s.engine.(capsule.CapsuleInspector); ok {
 		changes, err := inspector.CaptureCapsuleChanges(ctx, *composition.Runtime)
 		if err != nil {
@@ -131,6 +155,16 @@ func (s *Server) captureLoginState(ctx context.Context, composition domain.Compo
 				s.logger.Warn("record capsule changes", "composition", composition.ID, "error", err)
 			}
 		}
+	}
+}
+
+// syncTrackedFiles reads the tracked files back from a running capsule:
+// what the capsule changed goes to the server and to every other running
+// capsule of the same layer and user; what the server has newer than this
+// capsule goes into it.
+func (s *Server) syncTrackedFiles(ctx context.Context, composition domain.Composition) {
+	if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+		return
 	}
 	tracked, ok := s.engine.(capsule.TrackedFiles)
 	if !ok {

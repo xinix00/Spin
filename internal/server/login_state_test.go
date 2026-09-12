@@ -106,9 +106,11 @@ func TestTrackedFilesAreSharedBetweenRunningCapsules(t *testing.T) {
 	if state, _ := st.LoginState("derek/credential:claude"); string(state.Files[path]) != "token-3" {
 		t.Fatalf("the server holds %q; expected token-3", state.Files[path])
 	}
-	// The second capsule rotates now; the first follows.
+	// Between turns the sweep reads every running capsule: a rotation in
+	// the second capsule reaches the first within seconds, without a turn
+	// ending.
 	engine.files[second.Runtime.ContainerID][path] = []byte("token-4")
-	srv.captureLoginState(ctx, second)
+	srv.syncAllTrackedFiles()
 	if got := string(engine.files[first.Runtime.ContainerID][path]); got != "token-4" {
 		t.Fatalf("the first capsule holds %q; expected token-4", got)
 	}
