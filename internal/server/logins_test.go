@@ -181,3 +181,31 @@ func TestSharedLayerHasOneLoginForEveryCapsule(t *testing.T) {
 		t.Fatalf("a new capsule starts with %q; expected token-2", got)
 	}
 }
+
+// A stack with two versions of one credential layer is one login target:
+// saving a new login makes one login, not one per version.
+func TestTwoVersionsOfOneLayerAreOneLoginTarget(t *testing.T) {
+	const path = "/root/.claude/.credentials.json"
+	srv, st, engine, key := newLoginTestServer(t, domain.ArtifactCredential, path)
+	// A new version of the credential layer, on the same key.
+	layers := buildLayers(t, srv, "derek", layerSpec{Kind: domain.ArtifactCredential, Name: "claude", Scope: domain.ScopeUser, From: "credential:claude", Install: "relogin"})
+	if _, err := st.SetArtifactTrackedPaths(layers[0].ID, []string{path}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	fresh, err := srv.useCapsule(ctx, domain.UseRequest{Operator: "derek", Selector: "credential:claude", Profile: "default", ForLogin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if targets := srv.trackedTargets(fresh); len(targets) != 1 || targets[0].key != key {
+		t.Fatalf("targets = %+v", targets)
+	}
+	engine.capsule(fresh.Runtime.ContainerID)[path] = []byte("token-B")
+	saved, err := srv.saveNewLogin(ctx, fresh.ID, "derek")
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("saved=%+v err=%v", saved, err)
+	}
+	if logins := st.LoginsFor(key); len(logins) != 1 {
+		t.Fatalf("saving once made %d logins", len(logins))
+	}
+}

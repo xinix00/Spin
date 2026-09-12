@@ -34,13 +34,23 @@ type trackedTarget struct {
 // trackedTargets are the layers of a composition that track files, keyed
 // per user and layer name across versions.
 func (s *Server) trackedTargets(composition domain.Composition) []trackedTarget {
+	// A stack holds every version of a layer, the newer right above the
+	// older; both carry the tracked paths. One layer is one target, with the
+	// newest version's paths, or a saved login would be made twice.
 	var targets []trackedTarget
+	index := map[string]int{}
 	for _, artifactID := range capsule.CompositionLayers(composition) {
 		artifact, err := s.store.Artifact(artifactID)
 		if err != nil || len(artifact.TrackedPaths) == 0 {
 			continue
 		}
-		targets = append(targets, trackedTarget{key: store.LayerKey(artifact), label: string(artifact.Kind) + ":" + artifact.Name, paths: artifact.TrackedPaths, exclusive: artifact.Kind == domain.ArtifactCredential})
+		target := trackedTarget{key: store.LayerKey(artifact), label: string(artifact.Kind) + ":" + artifact.Name, paths: artifact.TrackedPaths, exclusive: artifact.Kind == domain.ArtifactCredential}
+		if at, seen := index[target.key]; seen {
+			targets[at] = target
+			continue
+		}
+		index[target.key] = len(targets)
+		targets = append(targets, target)
 	}
 	return targets
 }
@@ -203,12 +213,18 @@ func (s *Server) saveNewLogin(ctx context.Context, compositionID, operator strin
 	return logins, nil
 }
 
-// saveLoginHandler saves a new login from a capsule started for it.
+// saveLoginHandler saves a new login from a capsule started for it, and
+// closes that capsule: it did what it was for, and the login it now holds
+// is free for the next capsule right away.
 func (s *Server) saveLoginHandler(w http.ResponseWriter, r *http.Request) {
-	logins, err := s.saveNewLogin(r.Context(), r.PathValue("compositionID"), s.requestOperator(r, ""))
+	operator := s.requestOperator(r, "")
+	logins, err := s.saveNewLogin(r.Context(), r.PathValue("compositionID"), operator)
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+	if _, err := s.stopCapsule(r.Context(), r.PathValue("compositionID"), operator); err != nil {
+		s.logger.Warn("close the capsule after saving a login", "composition", r.PathValue("compositionID"), "error", err)
 	}
 	summaries := make([]domain.LoginSummary, 0, len(logins))
 	for _, login := range logins {
