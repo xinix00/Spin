@@ -684,7 +684,7 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 			}
 		}
 		if len(sourceLatest) > 0 {
-			prompt.WriteString("Gebruik ook de laatste documenten uit die Job als context:\n")
+			fmt.Fprintf(&prompt, "De laatste documenten uit die Job staan als bestanden in %s; lees wat je nodig hebt:\n", domain.PreviousJobDeliverableDirectory)
 			sourceDeliverables := make([]domain.Deliverable, 0, len(sourceLatest))
 			for _, deliverable := range sourceLatest {
 				sourceDeliverables = append(sourceDeliverables, deliverable)
@@ -693,11 +693,7 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 				return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
 			})
 			for _, deliverable := range sourceDeliverables {
-				if attachInjectedDeliverables {
-					fmt.Fprintf(&prompt, "- %s (revisie %d) is als Markdown-bijlage aan dit ACP-bericht toegevoegd.\n", deliverable.Name, deliverable.Revision)
-				} else {
-					fmt.Fprintf(&prompt, "\n--- Vorige Job · %s (revisie %d) ---\n%s\n", deliverable.Name, deliverable.Revision, deliverable.Content)
-				}
+				fmt.Fprintf(&prompt, "- %s · %s (revisie %d)\n", deliverable.CapsulePathIn(domain.PreviousJobDeliverableDirectory), deliverable.Name, deliverable.Revision)
 			}
 		}
 		for _, sourceRun := range snapshot.PhaseRuns {

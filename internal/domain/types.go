@@ -101,6 +101,10 @@ type DeliverableDefinition struct {
 // there when a step starts and read back when the agent puts one.
 const DeliverableDirectory = "/root/deliverables"
 
+// PreviousJobDeliverableDirectory is where a fork finds the last documents
+// of the Job it continues: files to read when needed, not prompt text.
+const PreviousJobDeliverableDirectory = DeliverableDirectory + "/vorige-job"
+
 // DeliverableSlug is the file name a deliverable goes by in the capsule.
 func DeliverableSlug(name string) string {
 	var out []rune
@@ -124,15 +128,19 @@ func DeliverableSlug(name string) string {
 
 // CapsulePath is where this revision sits in a capsule: a Markdown file, a
 // folder, or a single file with the entry's extension.
-func (d Deliverable) CapsulePath() string {
+func (d Deliverable) CapsulePath() string { return d.CapsulePathIn(DeliverableDirectory) }
+
+// CapsulePathIn is the deliverable's path under another directory: the
+// previous Job's documents live under PreviousJobDeliverableDirectory.
+func (d Deliverable) CapsulePathIn(directory string) string {
 	slug := DeliverableSlug(d.Name)
 	if !DeliverableIsBundle(d.Kind) || d.Bundle == nil {
-		return DeliverableDirectory + "/" + slug + ".md"
+		return directory + "/" + slug + ".md"
 	}
 	if d.Bundle.Folder {
-		return DeliverableDirectory + "/" + slug
+		return directory + "/" + slug
 	}
-	return DeliverableDirectory + "/" + slug + strings.ToLower(filepath.Ext(d.Bundle.Entry))
+	return directory + "/" + slug + strings.ToLower(filepath.Ext(d.Bundle.Entry))
 }
 
 // DeliverableBundle is a visual deliverable as the runner delivered it: a

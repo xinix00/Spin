@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,19 @@ func (s *Server) placeDeliverables(ctx context.Context, jobID string, compositio
 	if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
 		return
 	}
+	s.placeJobDeliverables(ctx, composition, jobID, domain.DeliverableDirectory)
+	// A fork gets the last documents of the Job it continues as files next
+	// to its own, to read when it needs them, instead of their text in the
+	// prompt.
+	for _, job := range s.store.Snapshot().Jobs {
+		if job.ID == jobID && job.ForkedFromJobID != "" {
+			s.placeJobDeliverables(ctx, composition, job.ForkedFromJobID, domain.PreviousJobDeliverableDirectory)
+		}
+	}
+}
+
+// latestDeliverables are the newest revision of every deliverable of a Job.
+func (s *Server) latestDeliverables(jobID string) []domain.Deliverable {
 	latest := map[string]domain.Deliverable{}
 	for _, deliverable := range s.store.Snapshot().Deliverables {
 		if deliverable.JobID != jobID {
@@ -44,12 +58,22 @@ func (s *Server) placeDeliverables(ctx context.Context, jobID string, compositio
 			latest[key] = deliverable
 		}
 	}
+	out := make([]domain.Deliverable, 0, len(latest))
+	for _, deliverable := range latest {
+		out = append(out, deliverable)
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
+	return out
+}
+
+func (s *Server) placeJobDeliverables(ctx context.Context, composition domain.Composition, jobID, directory string) {
+	latest := s.latestDeliverables(jobID)
 	if len(latest) == 0 {
 		return
 	}
 	documents := map[string][]byte{}
 	for _, deliverable := range latest {
-		target := deliverable.CapsulePath()
+		target := deliverable.CapsulePathIn(directory)
 		if domain.DeliverableIsBundle(deliverable.Kind) && deliverable.Bundle != nil {
 			placer, ok := s.engine.(capsule.DeliverablePlacer)
 			if !ok {
