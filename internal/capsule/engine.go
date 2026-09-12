@@ -119,6 +119,19 @@ type TrackedFiles interface {
 
 // CapsuleInspector says what a running capsule changed outside its
 // workspace, by kind.
+// TrackedWatcher watches tracked files in a capsule and calls changed
+// whenever one of them changes, until the capsule ends or ctx is done. The
+// runner implements it.
+type TrackedWatcher interface {
+	WatchTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, paths []string, changed func()) error
+}
+
+// TrackedSubscriber asks a runner to watch a capsule's tracked files and
+// report changes as they happen. The server's remote engine implements it.
+type TrackedSubscriber interface {
+	SubscribeTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, paths []string) error
+}
+
 // WorkspaceBundler streams a folder or file of a capsule as a tar: what a
 // visual deliverable is made of. The runner implements it.
 type WorkspaceBundler interface {

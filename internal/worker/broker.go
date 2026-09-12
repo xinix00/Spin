@@ -259,6 +259,8 @@ type Broker struct {
 	// questions.
 	instance string
 	nextID   atomic.Uint64
+	// trackedChanged hears a runner report that tracked files changed.
+	trackedChanged func(clientID string, runtime domain.CapsuleRuntime, files map[string][]byte)
 }
 
 func NewBroker(st *store.Store, logger *slog.Logger) *Broker {
@@ -402,6 +404,18 @@ func (b *Broker) readLoop(ctx context.Context, peer *runnerPeer, connection *web
 					stream.deliver(message.Data)
 				} else {
 					stream.finish(message.Execution, message.Error)
+				}
+			}
+		case messageEvent:
+			if message.Method == methodTrackedChanged {
+				var payload trackedFilesPayload
+				if err := json.Unmarshal(message.Payload, &payload); err == nil {
+					b.mu.Lock()
+					handler := b.trackedChanged
+					b.mu.Unlock()
+					if handler != nil {
+						go handler(peer.id, payload.Runtime, payload.Files)
+					}
 				}
 			}
 		case messageGoodbye:
@@ -658,4 +672,12 @@ func (b *Broker) info() domain.CapsuleEngineInfo {
 		}
 	}
 	return domain.CapsuleEngineInfo{Driver: "runner", Available: false, Detail: "waiting for a connected Docker runner"}
+}
+
+// OnTrackedFilesChanged sets who hears a runner's report that the tracked
+// files of a capsule changed.
+func (b *Broker) OnTrackedFilesChanged(handler func(clientID string, runtime domain.CapsuleRuntime, files map[string][]byte)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.trackedChanged = handler
 }

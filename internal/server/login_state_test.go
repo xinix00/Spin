@@ -114,11 +114,21 @@ func TestTrackedFilesAreSharedBetweenRunningCapsules(t *testing.T) {
 	if got := string(engine.files[first.Runtime.ContainerID][path]); got != "token-4" {
 		t.Fatalf("the first capsule holds %q; expected token-4", got)
 	}
+	// A runner that watches reports a change as it happens: the report is
+	// handled like a read, and the other capsule follows at once.
+	engine.files[first.Runtime.ContainerID][path] = []byte("token-5")
+	srv.trackedFilesChanged(first.Runtime.ClientID, *first.Runtime, map[string][]byte{path: []byte("token-5")})
+	if got := string(engine.files[second.Runtime.ContainerID][path]); got != "token-5" {
+		t.Fatalf("the second capsule holds %q after the runner's report; expected token-5", got)
+	}
+	if state, _ := st.LoginState("derek/credential:claude"); string(state.Files[path]) != "token-5" {
+		t.Fatalf("the server holds %q after the runner's report", state.Files[path])
+	}
 	// A new capsule starts with the newest token.
 	third := useLayers(t, srv, "derek", "credential:claude")
 	engine.files[third.Runtime.ContainerID] = map[string][]byte{path: []byte("token-1")}
 	srv.restoreLoginState(ctx, third)
-	if got := string(engine.files[third.Runtime.ContainerID][path]); got != "token-4" {
-		t.Fatalf("a new capsule starts with %q; expected token-4", got)
+	if got := string(engine.files[third.Runtime.ContainerID][path]); got != "token-5" {
+		t.Fatalf("a new capsule starts with %q; expected token-5", got)
 	}
 }

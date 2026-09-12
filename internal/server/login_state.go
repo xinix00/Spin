@@ -23,8 +23,9 @@ import (
 // exec on the runner; the database is written only when a file changed,
 // which is what a server on one connection and one core needs.
 
-// trackedSyncInterval is how often running capsules are read.
-const trackedSyncInterval = 4 * time.Second
+// trackedSyncInterval is how often running capsules are read as a safety
+// net; a runner that watches reports changes the moment they happen.
+const trackedSyncInterval = 30 * time.Second
 
 type trackedTarget struct {
 	key   string
@@ -116,6 +117,32 @@ func (s *Server) restoreLoginState(ctx context.Context, composition domain.Compo
 		}
 		s.delivered.set(composition.ID, target.key, files)
 	}
+	// From here the runner watches: a change travels the moment it happens.
+	if subscriber, ok := s.engine.(capsule.TrackedSubscriber); ok {
+		var paths []string
+		for _, target := range s.trackedTargets(composition) {
+			paths = append(paths, target.paths...)
+		}
+		if len(paths) > 0 {
+			if err := subscriber.SubscribeTrackedFiles(ctx, *composition.Runtime, paths); err != nil {
+				s.logger.Warn("watch tracked files", "composition", composition.ID, "error", err)
+			}
+		}
+	}
+}
+
+// trackedFilesChanged is a runner's report that tracked files of a capsule
+// changed: the same handling as a read, with the files already in hand.
+func (s *Server) trackedFilesChanged(clientID string, runtime domain.CapsuleRuntime, files map[string][]byte) {
+	for _, composition := range s.store.RunningCompositions() {
+		if composition.Runtime.ContainerID != runtime.ContainerID || (clientID != "" && composition.Runtime.ClientID != "" && composition.Runtime.ClientID != clientID) {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		s.applyTrackedFiles(ctx, composition, files)
+		cancel()
+		return
+	}
 }
 
 // captureLoginState is the full look at a capsule at the end of a turn and
@@ -170,13 +197,40 @@ func (s *Server) syncTrackedFiles(ctx context.Context, composition domain.Compos
 	if !ok {
 		return
 	}
+	var paths []string
+	for _, target := range s.trackedTargets(composition) {
+		paths = append(paths, target.paths...)
+	}
+	if len(paths) == 0 {
+		return
+	}
+	files, err := tracked.ReadTrackedFiles(ctx, *composition.Runtime, paths)
+	if err != nil {
+		s.logger.Warn("read tracked files", "composition", composition.ID, "error", err)
+		return
+	}
+	s.applyTrackedFiles(ctx, composition, files)
+}
+
+// applyTrackedFiles takes the tracked files of a capsule as they are now,
+// read or reported, and settles them with the server's copy and the other
+// running capsules.
+func (s *Server) applyTrackedFiles(ctx context.Context, composition domain.Composition, all map[string][]byte) {
+	if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+		return
+	}
+	tracked, ok := s.engine.(capsule.TrackedFiles)
+	if !ok {
+		return
+	}
 	s.loginMu.Lock()
 	defer s.loginMu.Unlock()
 	for _, target := range s.trackedTargets(composition) {
-		files, err := tracked.ReadTrackedFiles(ctx, *composition.Runtime, target.paths)
-		if err != nil {
-			s.logger.Warn("read tracked files", "composition", composition.ID, "layer", target.key, "error", err)
-			continue
+		files := map[string][]byte{}
+		for _, path := range target.paths {
+			if data, present := all[path]; present {
+				files[path] = data
+			}
 		}
 		delivered := s.delivered.get(composition.ID, target.key)
 		changed := map[string][]byte{}
