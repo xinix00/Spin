@@ -184,13 +184,79 @@ func (s *Server) sweepQueuedWorkflowPhases() {
 	defer ticker.Stop()
 	clients := time.NewTicker(time.Hour)
 	defer clients.Stop()
+	capsules := time.NewTicker(time.Minute)
+	defer capsules.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			s.launchQueuedWorkflowPhases("sweep")
 		case <-clients.C:
 			s.pruneClients()
+		case <-capsules.C:
+			s.sweepIdleCapsules()
 		}
+	}
+}
+
+// sweepIdleCapsules closes the capsule of every Job step that is over: a
+// step the Job moved past, a Job that is done or closed, a step waiting
+// for a person's answer, a Session that no longer exists. Each of those
+// is closed the moment it happens as well; the sweep is what catches the
+// ones that slipped through (a server restart at the wrong moment, an
+// older version), so runners do not fill up with capsules nobody uses
+// and the logins they hold come free.
+func (s *Server) sweepIdleCapsules() {
+	snapshot := s.store.Snapshot()
+	sessions := map[string]domain.Session{}
+	for _, session := range snapshot.Sessions {
+		sessions[session.ID] = session
+	}
+	jobs := map[string]domain.Job{}
+	for _, job := range snapshot.Jobs {
+		jobs[job.ID] = job
+	}
+	runs := map[string]domain.PhaseRun{}
+	for _, run := range snapshot.PhaseRuns {
+		runs[run.ID] = run
+	}
+	for _, composition := range snapshot.Compositions {
+		if composition.SessionID == "" || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+			continue
+		}
+		reason := ""
+		session, ok := sessions[composition.SessionID]
+		switch {
+		case !ok:
+			reason = "its Session no longer exists"
+		case session.PhaseRunID == "":
+			continue // a person's own Session: theirs to stop
+		default:
+			job, hasJob := jobs[session.JobID]
+			run, hasRun := runs[session.PhaseRunID]
+			switch {
+			case !hasJob:
+				reason = "its Job no longer exists"
+			case job.Status == domain.JobDone || job.Status == domain.JobCancelled:
+				reason = "its Job is " + string(job.Status)
+			case job.CurrentPhaseRunID != session.PhaseRunID:
+				reason = "the Job moved past its step"
+			case hasRun && run.Status == domain.PhaseRunPending && run.PendingReason == "ask":
+				reason = "its step waits for an answer"
+			case hasRun && run.Status != domain.PhaseRunQueued && run.Status != domain.PhaseRunRunning && run.Status != domain.PhaseRunPending:
+				reason = "its step is " + string(run.Status)
+			}
+		}
+		if reason == "" {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, err := s.stopCapsule(ctx, composition.ID, composition.Operator)
+		cancel()
+		if err != nil {
+			s.logger.Warn("close idle capsule", "composition", composition.ID, "reason", reason, "error", err)
+			continue
+		}
+		s.logger.Info("idle capsule closed", "composition", composition.ID, "session", composition.SessionID, "reason", reason)
 	}
 }
 

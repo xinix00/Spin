@@ -297,7 +297,9 @@ function connectACPChat(sessionID){
     // A step the Job moved past has no capsule any more; the chat asks for
     // it back once and follows the start like any other.
     const closed=byID(snapshot.compositions,session?.prepared_composition_id),run=snapshot.phase_runs.find(item=>item.id===session?.phase_run_id),waitsForAnswer=run?.status==='pending'&&run?.pending_reason==='ask';
-    if(closed?.runtime?.status==='stopped'){
+    // No capsule, or a closed one: the same request either way; the
+    // server joins a start that is already under way.
+    if(!closed||closed.runtime?.status==='stopped'){
       if(chatState.restartAllowed===sessionID){chatState.restartAllowed='';chatSystem(waitsForAnswer?'De stap wacht op je antwoord; de capsule is gesloten. Omdat je de chat opent komt hij terug.':'De capsule van deze stap was gesloten; hij wordt opnieuw gestart.');api(`/api/sessions/${encodeURIComponent(sessionID)}/capsule`,{method:'POST'}).catch(error=>chatSystem(error.message||String(error),true));}
       else if(waitsForAnswer){status.innerHTML='<span class="dot"></span><span>Stap wacht op je antwoord · capsule gesloten</span>';if(!chatState.waitingShown){chatState.waitingShown=true;chatSystem('De stap wacht op je antwoord en heeft zijn capsule vrijgegeven. Beantwoord de vraag; de agent gaat dan verder in een nieuwe capsule.');}clearTimeout(chatState.reconnectTimer);chatState.reconnectTimer=setTimeout(()=>{if(document.getElementById('chat-dialog').open&&chatState.sessionID===sessionID)connectACPChat(sessionID);},4000);return;}
     }status.innerHTML=`<span class="dot"></span><span>${esc(chatWaitingLabel(session))}</span>`;if(!chatState.waitingShown){chatState.waitingShown=true;chatSystem('De omgeving van deze Session wordt klaargezet. Zodra de agent er is, kun je typen.');}clearTimeout(chatState.reconnectTimer);chatState.reconnectTimer=setTimeout(()=>{if(document.getElementById('chat-dialog').open&&chatState.sessionID===sessionID)connectACPChat(sessionID);},1500);return;}
