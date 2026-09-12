@@ -204,11 +204,14 @@ type PhaseRun struct {
 }
 
 type WorkflowActionResult struct {
-	Type       string    `json:"type"`
-	ExternalID string    `json:"external_id,omitempty"`
-	URL        string    `json:"url,omitempty"`
-	Detail     string    `json:"detail,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	Type       string `json:"type"`
+	ExternalID string `json:"external_id,omitempty"`
+	URL        string `json:"url,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+	// Results holds the outcome per repository of a Job with several: the
+	// merge commit or pull request URL, by repository ID.
+	Results   map[string]string `json:"results,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
 }
 
 // WorkflowAgentOutcome is an immutable audit event for every accept/reject
@@ -706,6 +709,54 @@ type ResolvedArtifact struct {
 // is app-owned user state, not an Artifact/layer. Only non-secret identity
 // metadata is copied into a Composition; the server resolves the token just in
 // time for the short-lived checkout helper.
+// RepositoryMode is what a Job does with one of its repositories: change
+// it on the Job branch, or only read it.
+type RepositoryMode string
+
+const (
+	RepositoryModeChange    RepositoryMode = "change"
+	RepositoryModeReference RepositoryMode = "reference"
+)
+
+// WorkspaceRoot is where the repositories of a Job are checked out in a
+// capsule: the one repository of a Job at the root, several each in a
+// folder of their own below it.
+const WorkspaceRoot = "/workspace"
+
+// JobRepository is one repository of a Job. Every repository the Job
+// changes gets the same Job branch and Session branches, and lands on its
+// own base; a reference repository is checked out at its base, read-only.
+type JobRepository struct {
+	RepositoryID    string          `json:"repository_id"`
+	Name            string          `json:"name"`
+	RemoteURL       string          `json:"remote_url"`
+	Provider        string          `json:"provider,omitempty"`
+	CredentialScope CredentialScope `json:"credential_scope,omitempty"`
+	BaseRef         string          `json:"base_ref"`
+	Mode            RepositoryMode  `json:"mode"`
+	// Path is the folder under the workspace root, empty for a Job with one
+	// repository, which sits at the root.
+	Path string `json:"path,omitempty"`
+}
+
+// Directory is where the repository is checked out in a capsule.
+func (r JobRepository) Directory() string { return WorkspaceDirectory(r.Path) }
+
+// WorkspaceDirectory is the checkout directory for a workspace path.
+func WorkspaceDirectory(path string) string {
+	if path == "" {
+		return WorkspaceRoot
+	}
+	return WorkspaceRoot + "/" + path
+}
+
+// JobRepositoryRequest names a repository for a new Job.
+type JobRepositoryRequest struct {
+	RepositoryID string         `json:"repository_id"`
+	Mode         RepositoryMode `json:"mode,omitempty"`
+	BaseRef      string         `json:"base_ref,omitempty"`
+}
+
 type GitWorkspace struct {
 	RepositoryID   string `json:"repository_id"`
 	RepositoryName string `json:"repository_name"`
@@ -714,6 +765,11 @@ type GitWorkspace struct {
 	BootstrapRef   string `json:"bootstrap_ref"`
 	HeadRef        string `json:"head_ref"`
 	TargetRef      string `json:"target_ref"`
+	// Path is the folder under the workspace root; empty is the root.
+	Path string `json:"path,omitempty"`
+	// Mode says whether the Session changes this repository or only reads
+	// it; empty means change.
+	Mode RepositoryMode `json:"mode,omitempty"`
 	// ContextRefs are branches fetched read-only next to the Job's own, such
 	// as the branch of the Job this one continues.
 	ContextRefs     []string        `json:"context_refs,omitempty"`
@@ -725,6 +781,12 @@ type GitWorkspace struct {
 	AuthorName  string `json:"author_name,omitempty"`
 	AuthorEmail string `json:"author_email,omitempty"`
 }
+
+// Directory is where the workspace is checked out in a capsule.
+func (w GitWorkspace) Directory() string { return WorkspaceDirectory(w.Path) }
+
+// Changes says whether the Session may change this repository.
+func (w GitWorkspace) Changes() bool { return w.Mode != RepositoryModeReference }
 
 type Composition struct {
 	ID                   string   `json:"id"`
@@ -747,8 +809,12 @@ type Composition struct {
 	Enabled           []Enablement       `json:"enabled,omitempty"`
 	MCPServerIDs      []string           `json:"mcp_server_ids,omitempty"`
 	Git               *GitWorkspace      `json:"git,omitempty"`
-	Warnings          []string           `json:"warnings,omitempty"`
-	Runtime           *CapsuleRuntime    `json:"runtime,omitempty"`
+	// Workspaces are all repositories of the Job in this capsule, Git
+	// (the first one the Job changes) among them; empty for a capsule with
+	// one repository, which is Git alone.
+	Workspaces []GitWorkspace  `json:"workspaces,omitempty"`
+	Warnings   []string        `json:"warnings,omitempty"`
+	Runtime    *CapsuleRuntime `json:"runtime,omitempty"`
 	// CapsuleChanges is what the capsule changed outside the workspace,
 	// taken after a turn and at stop, by kind.
 	CapsuleChanges *LayerContents `json:"capsule_changes,omitempty"`
@@ -760,6 +826,52 @@ type Composition struct {
 	// logged in as a new login.
 	ForLogin  bool      `json:"for_login,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// GitWorkspaces are the repositories in the capsule: Workspaces when the
+// Job has several, else Git alone.
+func (c Composition) GitWorkspaces() []GitWorkspace {
+	if len(c.Workspaces) > 0 {
+		return c.Workspaces
+	}
+	if c.Git != nil {
+		return []GitWorkspace{*c.Git}
+	}
+	return nil
+}
+
+// ChangedWorkspaces are the repositories the Session may change.
+func (c Composition) ChangedWorkspaces() []GitWorkspace {
+	var changed []GitWorkspace
+	for _, workspace := range c.GitWorkspaces() {
+		if workspace.Changes() {
+			changed = append(changed, workspace)
+		}
+	}
+	return changed
+}
+
+// JobRepositories are the Job's repositories: Repositories when set, else
+// the one repository of the Git fields, changed, at the workspace root.
+func (j Job) JobRepositories() []JobRepository {
+	if len(j.Repositories) > 0 {
+		return j.Repositories
+	}
+	if j.GitRepositoryID == "" {
+		return nil
+	}
+	return []JobRepository{{RepositoryID: j.GitRepositoryID, Name: j.GitRepositoryName, RemoteURL: j.GitRemoteURL, Provider: j.GitProvider, CredentialScope: j.GitCredentialScope, BaseRef: j.BaseRef, Mode: RepositoryModeChange}}
+}
+
+// ChangedRepositories are the repositories the Job changes, in order.
+func (j Job) ChangedRepositories() []JobRepository {
+	var changed []JobRepository
+	for _, repository := range j.JobRepositories() {
+		if repository.Mode != RepositoryModeReference {
+			changed = append(changed, repository)
+		}
+	}
+	return changed
 }
 
 type Job struct {
@@ -775,14 +887,18 @@ type Job struct {
 	Owner              string   `json:"owner,omitempty"`
 	// Assignee is who the Job is with right now; the owner at creation,
 	// handed to a colleague to look at it. Empty means the owner.
-	Assignee            string            `json:"assignee,omitempty"`
-	GitRepositoryID     string            `json:"git_repository_id"`
-	GitRepositoryName   string            `json:"git_repository_name,omitempty"`
-	GitRemoteURL        string            `json:"git_remote_url,omitempty"`
-	GitProvider         string            `json:"git_provider,omitempty"`
-	GitCredentialScope  CredentialScope   `json:"git_credential_scope,omitempty"`
-	BaseRef             string            `json:"base_ref,omitempty"`
-	Branch              string            `json:"branch"`
+	Assignee           string          `json:"assignee,omitempty"`
+	GitRepositoryID    string          `json:"git_repository_id"`
+	GitRepositoryName  string          `json:"git_repository_name,omitempty"`
+	GitRemoteURL       string          `json:"git_remote_url,omitempty"`
+	GitProvider        string          `json:"git_provider,omitempty"`
+	GitCredentialScope CredentialScope `json:"git_credential_scope,omitempty"`
+	BaseRef            string          `json:"base_ref,omitempty"`
+	Branch             string          `json:"branch"`
+	// Repositories are all repositories of the Job; the Git fields above
+	// describe the first one it changes. Empty for a Job made before
+	// several repositories were possible: that one repository is meant.
+	Repositories        []JobRepository   `json:"repositories,omitempty"`
 	WithSelectors       []string          `json:"with_selectors,omitempty"`
 	MCPServerIDs        []string          `json:"mcp_server_ids,omitempty"`
 	AttachmentIDs       []string          `json:"attachment_ids,omitempty"`
@@ -1283,22 +1399,26 @@ type CreateJobRequest struct {
 	Objective string `json:"objective"`
 	// Brainstorm starts the Job with a chat that sets the goal instead of
 	// the Template's first step; Objective may then be empty.
-	Brainstorm          bool     `json:"brainstorm,omitempty"`
-	ForkedFromJobID     string   `json:"forked_from_job_id,omitempty"`
-	IdempotencyKey      string   `json:"idempotency_key,omitempty"`
-	AcceptanceCriteria  []string `json:"acceptance_criteria,omitempty"`
-	Owner               string   `json:"owner,omitempty"`
-	Operator            string   `json:"operator,omitempty"`
-	GitRepositoryID     string   `json:"git_repository_id"`
-	BaseRef             string   `json:"base_ref,omitempty"`
-	Tool                string   `json:"tool,omitempty"`
-	EnvironmentSelector string   `json:"environment_selector,omitempty"`
-	WithSelectors       []string `json:"with_selectors,omitempty"`
-	MCPServerIDs        []string `json:"mcp_server_ids,omitempty"`
-	AttachmentIDs       []string `json:"attachment_ids,omitempty"`
-	Model               string   `json:"model,omitempty"`
-	Run                 bool     `json:"run,omitempty"` // legacy; Jobs always initialize asynchronously
-	TemplateID          string   `json:"template_id,omitempty"`
+	Brainstorm         bool     `json:"brainstorm,omitempty"`
+	ForkedFromJobID    string   `json:"forked_from_job_id,omitempty"`
+	IdempotencyKey     string   `json:"idempotency_key,omitempty"`
+	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
+	Owner              string   `json:"owner,omitempty"`
+	Operator           string   `json:"operator,omitempty"`
+	GitRepositoryID    string   `json:"git_repository_id"`
+	BaseRef            string   `json:"base_ref,omitempty"`
+	// Repositories are the Job's repositories with what the Job does in
+	// each; the first one to change is the Job's main repository. Empty
+	// means GitRepositoryID and BaseRef alone.
+	Repositories        []JobRepositoryRequest `json:"repositories,omitempty"`
+	Tool                string                 `json:"tool,omitempty"`
+	EnvironmentSelector string                 `json:"environment_selector,omitempty"`
+	WithSelectors       []string               `json:"with_selectors,omitempty"`
+	MCPServerIDs        []string               `json:"mcp_server_ids,omitempty"`
+	AttachmentIDs       []string               `json:"attachment_ids,omitempty"`
+	Model               string                 `json:"model,omitempty"`
+	Run                 bool                   `json:"run,omitempty"` // legacy; Jobs always initialize asynchronously
+	TemplateID          string                 `json:"template_id,omitempty"`
 }
 
 type CreateJobAttachmentRequest struct {

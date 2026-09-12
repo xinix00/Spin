@@ -372,7 +372,38 @@ func (s *Server) inspectSessionChanges(ctx context.Context, sessionID, operator 
 	}
 	inspectContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	return inspector.InspectWorkspace(inspectContext, *composition.Runtime)
+	workspaces := composition.ChangedWorkspaces()
+	if len(workspaces) <= 1 && (len(workspaces) == 0 || workspaces[0].Path == "") {
+		return inspector.InspectWorkspace(inspectContext, *composition.Runtime)
+	}
+	at, ok := s.engine.(capsule.WorkspaceInspectorAt)
+	if !ok {
+		return capsule.WorkspaceChanges{}, fmt.Errorf("capsule engine %s cannot inspect a Job with several repositories: %w", s.engine.Info().Driver, store.ErrConflict)
+	}
+	total := capsule.WorkspaceChanges{Files: []capsule.WorkspaceFileChange{}}
+	for _, workspace := range workspaces {
+		changes, err := at.InspectWorkspaceAt(inspectContext, *composition.Runtime, workspace.Path)
+		if err != nil {
+			return capsule.WorkspaceChanges{}, fmt.Errorf("%s: %w", workspace.RepositoryName, err)
+		}
+		total = gatherChanges(total, changes, workspace.Path+"/")
+	}
+	return total, nil
+}
+
+// gatherChanges adds the changes of one repository to those of a Job with
+// several, its files under the repository's folder.
+func gatherChanges(total, changes capsule.WorkspaceChanges, prefix string) capsule.WorkspaceChanges {
+	if total.Branch == "" {
+		total.Branch = changes.Branch
+	}
+	total.Added += changes.Added
+	total.Deleted += changes.Deleted
+	for _, file := range changes.Files {
+		file.Path = prefix + strings.TrimPrefix(file.Path, "./")
+		total.Files = append(total.Files, file)
+	}
+	return total
 }
 
 func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, sessionID string) (capsule.WorkspaceChanges, error) {
@@ -424,39 +455,25 @@ func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, session
 	if !ok {
 		return capsule.WorkspaceChanges{}, fmt.Errorf("capsule engine %s cannot compare Job workspaces: %w", s.engine.Info().Driver, store.ErrConflict)
 	}
-	authentication := &capsule.GitAuthentication{}
-	account, authenticated, accountErr := s.gitAccountForWorkspace(ctx, composition.Git, composition.Operator)
-	if accountErr != nil {
-		return capsule.WorkspaceChanges{}, accountErr
-	}
-	if authenticated {
-		username := account.Login
-		if account.Provider == "gitlab" {
-			username = "oauth2"
-		}
-		authentication.Username = username
-		authentication.Password = account.AccessToken
-	}
-	comparison := capsule.WorkspaceComparison{
-		BaseRef: job.BaseRef, HeadRef: job.Branch, Authentication: authentication,
-	}
-	if sessionID != "" {
-		comparison.CommitMessageMatch = "Spin-Session: " + sessionID
-	}
-	// Once the Job is merged, the base branch holds it and a merge-base
-	// would show nothing: the merge commit itself is the comparison.
-	merged := ""
+	// The merge that landed the Job, per repository: after it the base
+	// holds the Job and a merge-base would show nothing, so the merge commit
+	// itself is compared.
+	merges := map[string]string{}
 	for _, run := range snapshot.PhaseRuns {
-		if run.JobID == job.ID && run.ActionResult != nil && run.ActionResult.Type == domain.WorkflowActionGitMerge && run.ActionResult.ExternalID != "" {
-			merged = run.ActionResult.ExternalID
+		if run.JobID != job.ID || run.ActionResult == nil || run.ActionResult.Type != domain.WorkflowActionGitMerge {
+			continue
+		}
+		for repositoryID, head := range run.ActionResult.Results {
+			merges[repositoryID] = head
+		}
+		if run.ActionResult.ExternalID != "" && composition.Git != nil {
+			merges[composition.Git.RepositoryID] = run.ActionResult.ExternalID
 		}
 	}
-	if sessionID == "" && merged != "" {
-		comparison.MergeCommit = merged
-	}
+	merged := sessionID == "" && len(merges) > 0
 	label := func(changes capsule.WorkspaceChanges) capsule.WorkspaceChanges {
 		switch {
-		case sessionID == "" && merged != "":
+		case merged:
 			changes.Branch = job.BaseRef + " ← " + job.Branch + " · gemerged"
 		case sessionID == "":
 			changes.Branch = job.Branch + " ← " + job.BaseRef
@@ -467,51 +484,85 @@ func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, session
 		}
 		return changes
 	}
+	workspaces := composition.ChangedWorkspaces()
+	several := len(workspaces) > 1
 	runtime := composition.Runtime
+	var comparer capsule.RepositoryComparer
 	if runtime.Status == "stopped" {
-		// Under the proxy's request limit either way.
-		comparisonContext, cancel := context.WithTimeout(ctx, 85*time.Second)
-		defer cancel()
 		// Everything the Job did is on the remote; a stopped composition is
 		// compared on the runner's own clone, without restoring its images.
-		if comparer, ok := s.engine.(capsule.RepositoryComparer); ok && strings.TrimSpace(composition.Git.RemoteURL) != "" {
-			changes, err := comparer.CompareRepository(comparisonContext, capsule.RepositoryComparison{
-				RemoteURL: composition.Git.RemoteURL, CacheKey: composition.Git.RepositoryID, Comparison: comparison,
-			})
-			if err != nil {
-				return capsule.WorkspaceChanges{}, fmt.Errorf("compare Job branches: %w", err)
-			}
-			return label(changes), nil
-		}
-		var restored domain.CapsuleRuntime
-		if authenticated {
-			materializer, supported := s.engine.(capsule.SecretMaterializer)
-			if !supported {
-				return capsule.WorkspaceChanges{}, fmt.Errorf("capsule engine cannot restore a private Job workspace: %w", store.ErrConflict)
-			}
-			restored, err = materializer.MaterializeWithGitAuthentication(comparisonContext, *composition, snapshot.Artifacts, authentication)
+		if candidate, ok := s.engine.(capsule.RepositoryComparer); ok && strings.TrimSpace(composition.Git.RemoteURL) != "" {
+			comparer = candidate
 		} else {
-			restored, err = s.engine.Materialize(comparisonContext, *composition, snapshot.Artifacts)
-		}
-		if err != nil {
-			return capsule.WorkspaceChanges{}, fmt.Errorf("restore Job workspace for comparison: %w", err)
-		}
-		runtime = &restored
-		defer func() {
-			cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cleanupCancel()
-			if stopErr := s.engine.Stop(cleanupContext, restored); stopErr != nil {
-				s.logger.Warn("stop transient Job comparison", "job", job.ID, "error", stopErr)
+			// Under the proxy's request limit either way.
+			comparisonContext, cancel := context.WithTimeout(ctx, 85*time.Second)
+			defer cancel()
+			authentication, err := s.gitAuthenticationForWorkspace(ctx, composition.Git, composition.Operator)
+			if err != nil {
+				return capsule.WorkspaceChanges{}, err
 			}
-		}()
+			var restored domain.CapsuleRuntime
+			if authentication.Password != "" {
+				materializer, supported := s.engine.(capsule.SecretMaterializer)
+				if !supported {
+					return capsule.WorkspaceChanges{}, fmt.Errorf("capsule engine cannot restore a private Job workspace: %w", store.ErrConflict)
+				}
+				restored, err = materializer.MaterializeWithGitAuthentication(comparisonContext, *composition, snapshot.Artifacts, authentication)
+			} else {
+				restored, err = s.engine.Materialize(comparisonContext, *composition, snapshot.Artifacts)
+			}
+			if err != nil {
+				return capsule.WorkspaceChanges{}, fmt.Errorf("restore Job workspace for comparison: %w", err)
+			}
+			runtime = &restored
+			defer func() {
+				cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cleanupCancel()
+				if stopErr := s.engine.Stop(cleanupContext, restored); stopErr != nil {
+					s.logger.Warn("stop transient Job comparison", "job", job.ID, "error", stopErr)
+				}
+			}()
+		}
 	}
-	inspectContext, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	changes, err := inspector.InspectWorkspaceRange(inspectContext, *runtime, comparison)
-	if err != nil {
-		return capsule.WorkspaceChanges{}, err
+	total := capsule.WorkspaceChanges{Files: []capsule.WorkspaceFileChange{}}
+	for _, workspace := range workspaces {
+		authentication, err := s.gitAuthenticationForWorkspace(ctx, &workspace, composition.Operator)
+		if err != nil {
+			return capsule.WorkspaceChanges{}, err
+		}
+		base := workspace.BootstrapRef
+		if base == "" {
+			base = job.BaseRef
+		}
+		comparison := capsule.WorkspaceComparison{Path: workspace.Path, BaseRef: base, HeadRef: job.Branch, Authentication: &capsule.GitAuthentication{Username: authentication.Username, Password: authentication.Password}}
+		if sessionID != "" {
+			comparison.CommitMessageMatch = "Spin-Session: " + sessionID
+		} else {
+			comparison.MergeCommit = merges[workspace.RepositoryID]
+		}
+		var changes capsule.WorkspaceChanges
+		if comparer != nil {
+			comparisonContext, cancel := context.WithTimeout(ctx, 85*time.Second)
+			changes, err = comparer.CompareRepository(comparisonContext, capsule.RepositoryComparison{RemoteURL: workspace.RemoteURL, CacheKey: workspace.RepositoryID, Comparison: comparison})
+			cancel()
+			if err != nil {
+				return capsule.WorkspaceChanges{}, fmt.Errorf("compare Job branches of %s: %w", workspace.RepositoryName, err)
+			}
+		} else {
+			inspectContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+			changes, err = inspector.InspectWorkspaceRange(inspectContext, *runtime, comparison)
+			cancel()
+			if err != nil {
+				return capsule.WorkspaceChanges{}, fmt.Errorf("%s: %w", workspace.RepositoryName, err)
+			}
+		}
+		prefix := ""
+		if several {
+			prefix = workspace.Path + "/"
+		}
+		total = gatherChanges(total, changes, prefix)
 	}
-	return label(changes), nil
+	return label(total), nil
 }
 
 // sessionRecord is the Session itself, whoever runs it.

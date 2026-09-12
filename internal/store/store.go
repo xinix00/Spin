@@ -943,47 +943,69 @@ func (s *Store) Use(req domain.UseRequest) (domain.Composition, error) {
 		if !ok || job.GitRepositoryID == "" || session.GitRepositoryID != job.GitRepositoryID {
 			return domain.Composition{}, fmt.Errorf("Session has no valid Git repository binding: %w", ErrConflict)
 		}
-		repository, ok := s.state.GitRepositories[job.GitRepositoryID]
-		if !ok {
-			return domain.Composition{}, fmt.Errorf("Git repository: %w", ErrNotFound)
+		var workspaces []domain.GitWorkspace
+		for _, jobRepository := range job.JobRepositories() {
+			repository, ok := s.state.GitRepositories[jobRepository.RepositoryID]
+			if !ok {
+				return domain.Composition{}, fmt.Errorf("Git repository: %w", ErrNotFound)
+			}
+			repositoryName, remoteURL, provider, credentialScope, base := jobRepository.Name, jobRepository.RemoteURL, jobRepository.Provider, jobRepository.CredentialScope, jobRepository.BaseRef
+			if repositoryName == "" {
+				repositoryName = repository.Name
+			}
+			if remoteURL == "" {
+				remoteURL = repository.RemoteURL
+			}
+			if provider == "" {
+				provider = repository.Provider
+			}
+			if credentialScope == "" {
+				credentialScope = repository.CredentialScope
+			}
+			if base == "" {
+				base = repository.DefaultRef
+			}
+			workspace := domain.GitWorkspace{
+				RepositoryID: repository.ID, RepositoryName: repositoryName, RemoteURL: remoteURL,
+				Path: jobRepository.Path, Mode: jobRepository.Mode,
+				CredentialScope: credentialScope, Provider: provider,
+			}
+			if jobRepository.Mode == domain.RepositoryModeReference {
+				// Read only: the base as it is, nothing of the Job on it.
+				workspace.BaseRef, workspace.BootstrapRef = base, base
+			} else {
+				workspace.BaseRef, workspace.BootstrapRef, workspace.HeadRef, workspace.TargetRef = job.Branch, base, session.GitRef, job.Branch
+				if job.ForkedFromJobID != "" {
+					if source, ok := s.state.Jobs[job.ForkedFromJobID]; ok && strings.TrimSpace(source.Branch) != "" {
+						workspace.ContextRefs = []string{source.Branch}
+					}
+				}
+			}
+			if credentialScope != domain.CredentialScopePublic {
+				account, err := s.resolveGitAccountForLocked(repositoryName, remoteURL, provider, credentialScope, operator)
+				if err != nil {
+					return domain.Composition{}, err
+				}
+				workspace.Provider = account.Provider
+				workspace.Login = account.Login
+				workspace.AuthorName = account.Name
+				workspace.AuthorEmail = account.Email
+			}
+			workspaces = append(workspaces, workspace)
 		}
-		repositoryName, remoteURL, provider, credentialScope := job.GitRepositoryName, job.GitRemoteURL, job.GitProvider, job.GitCredentialScope
-		if repositoryName == "" {
-			repositoryName = repository.Name
-		}
-		if remoteURL == "" {
-			remoteURL = repository.RemoteURL
-		}
-		if provider == "" {
-			provider = repository.Provider
-		}
-		if credentialScope == "" {
-			credentialScope = repository.CredentialScope
-		}
-		workspace := domain.GitWorkspace{
-			RepositoryID: repository.ID, RepositoryName: repositoryName, RemoteURL: remoteURL,
-			BaseRef: job.Branch, BootstrapRef: job.BaseRef, HeadRef: session.GitRef, TargetRef: job.Branch,
-			CredentialScope: credentialScope, Provider: provider,
-		}
-		if job.ForkedFromJobID != "" {
-			if source, ok := s.state.Jobs[job.ForkedFromJobID]; ok && strings.TrimSpace(source.Branch) != "" {
-				workspace.ContextRefs = []string{source.Branch}
+		for index := range workspaces {
+			if workspaces[index].Changes() {
+				primary := workspaces[index]
+				composition.Git = &primary
+				break
 			}
 		}
-		if workspace.BootstrapRef == "" {
-			workspace.BootstrapRef = repository.DefaultRef
+		if composition.Git == nil {
+			return domain.Composition{}, fmt.Errorf("the Job changes none of its repositories: %w", ErrConflict)
 		}
-		if credentialScope != domain.CredentialScopePublic {
-			account, err := s.resolveGitAccountForLocked(repositoryName, remoteURL, provider, credentialScope, operator)
-			if err != nil {
-				return domain.Composition{}, err
-			}
-			workspace.Provider = account.Provider
-			workspace.Login = account.Login
-			workspace.AuthorName = account.Name
-			workspace.AuthorEmail = account.Email
+		if len(workspaces) > 1 {
+			composition.Workspaces = workspaces
 		}
-		composition.Git = &workspace
 	}
 	s.state.Compositions[composition.ID] = composition
 	if sessionID != "" {
@@ -1738,8 +1760,10 @@ func (s *Store) DeleteGitRepository(repositoryID, operator string) (domain.GitRe
 		return domain.GitRepository{}, ErrConflict
 	}
 	for _, job := range s.state.Jobs {
-		if job.GitRepositoryID == repository.ID {
-			return domain.GitRepository{}, fmt.Errorf("Git repository is used by job %s: %w", job.ID, ErrConflict)
+		for _, used := range job.JobRepositories() {
+			if used.RepositoryID == repository.ID {
+				return domain.GitRepository{}, fmt.Errorf("Git repository is used by job %s: %w", job.ID, ErrConflict)
+			}
 		}
 	}
 	delete(s.state.GitRepositories, repository.ID)
@@ -1839,7 +1863,7 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 		selector = "tool:" + normalizeName(req.Tool)
 	}
 	_, selectorName, selectorErr := parseArtifactSelector(selector)
-	if strings.TrimSpace(req.Title) == "" || (strings.TrimSpace(req.Objective) == "" && !req.Brainstorm) || (strings.TrimSpace(req.GitRepositoryID) == "" && strings.TrimSpace(req.ForkedFromJobID) == "") || selectorErr != nil {
+	if strings.TrimSpace(req.Title) == "" || (strings.TrimSpace(req.Objective) == "" && !req.Brainstorm) || (strings.TrimSpace(req.GitRepositoryID) == "" && len(req.Repositories) == 0 && strings.TrimSpace(req.ForkedFromJobID) == "") || selectorErr != nil {
 		return domain.CreateJobResponse{}, fmt.Errorf("title, objective, git_repository_id and a valid environment_selector are required: %w", ErrConflict)
 	}
 	if req.Brainstorm && strings.TrimSpace(req.TemplateID) == "" {
@@ -1883,8 +1907,25 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 		// is closed and stays reachable as context, not as a base.
 		req.GitRepositoryID = source.GitRepositoryID
 		req.BaseRef = source.BaseRef
+		req.Repositories = nil
+		for _, repository := range source.JobRepositories() {
+			req.Repositories = append(req.Repositories, domain.JobRepositoryRequest{RepositoryID: repository.RepositoryID, Mode: repository.Mode, BaseRef: repository.BaseRef})
+		}
 		owner = operator
 	}
+	// The Job's repositories: the ones named, or the one of the Git fields.
+	// The first repository the Job changes is its main one, the one the
+	// Git fields describe.
+	repositoryRequests := req.Repositories
+	if len(repositoryRequests) == 0 {
+		repositoryRequests = []domain.JobRepositoryRequest{{RepositoryID: req.GitRepositoryID, Mode: domain.RepositoryModeChange, BaseRef: req.BaseRef}}
+	}
+	repositories, err := s.jobRepositoriesLocked(repositoryRequests, owner)
+	if err != nil {
+		return domain.CreateJobResponse{}, err
+	}
+	req.GitRepositoryID = repositories[0].RepositoryID
+	req.BaseRef = repositories[0].BaseRef
 	idempotencyKey := strings.TrimSpace(req.IdempotencyKey)
 	if len(idempotencyKey) > 128 {
 		return domain.CreateJobResponse{}, fmt.Errorf("idempotency_key may be at most 128 characters: %w", ErrConflict)
@@ -2018,6 +2059,7 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 		GitCredentialScope:  repository.CredentialScope,
 		BaseRef:             baseRef,
 		Branch:              branch,
+		Repositories:        repositories,
 		WithSelectors:       append([]string{}, withSelectors...),
 		MCPServerIDs:        append([]string{}, mcpIDs...),
 		AttachmentIDs:       append([]string{}, attachmentIDs...),
@@ -3774,6 +3816,80 @@ func ensureJobBranch(job *domain.Job) string {
 	}
 	job.Branch = "jobs/" + gitSlug(job.Title) + "-" + suffix + "/main"
 	return job.Branch
+}
+
+// jobRepositoriesLocked resolves what a new Job does with which
+// repositories: each must exist, be reachable for the owner, have a valid
+// base, and at least one must be changed. One repository sits at the
+// workspace root; several each get a folder named after them.
+func (s *Store) jobRepositoriesLocked(requests []domain.JobRepositoryRequest, owner string) ([]domain.JobRepository, error) {
+	var repositories []domain.JobRepository
+	seen := map[string]bool{}
+	for _, request := range requests {
+		id := strings.TrimSpace(request.RepositoryID)
+		repository, ok := s.state.GitRepositories[id]
+		if !ok {
+			return nil, fmt.Errorf("Git repository: %w", ErrNotFound)
+		}
+		if seen[id] {
+			return nil, fmt.Errorf("repository %s is named twice: %w", repository.Name, ErrConflict)
+		}
+		seen[id] = true
+		mode := domain.RepositoryMode(strings.ToLower(strings.TrimSpace(string(request.Mode))))
+		switch mode {
+		case "":
+			mode = domain.RepositoryModeChange
+		case domain.RepositoryModeChange, domain.RepositoryModeReference:
+		default:
+			return nil, fmt.Errorf("unknown repository mode %q; use change or reference: %w", request.Mode, ErrConflict)
+		}
+		base := strings.TrimSpace(request.BaseRef)
+		if base == "" {
+			base = repository.DefaultRef
+		}
+		if !validGitBaseRef(base) {
+			return nil, fmt.Errorf("invalid Git base ref %q for %s: %w", base, repository.Name, ErrConflict)
+		}
+		if repository.CredentialScope != domain.CredentialScopePublic {
+			if _, err := s.resolveGitAccountLocked(repository, owner); err != nil {
+				return nil, fmt.Errorf("Git identity for %s: %w", repository.Name, err)
+			}
+		}
+		if err := s.validateProjectLayerSelectorsLocked(owner, repository.LayerSelectors, "default"); err != nil {
+			return nil, fmt.Errorf("Git repository %s: %w", repository.Name, err)
+		}
+		repositories = append(repositories, domain.JobRepository{
+			RepositoryID: repository.ID, Name: repository.Name, RemoteURL: repository.RemoteURL, Provider: repository.Provider,
+			CredentialScope: repository.CredentialScope, BaseRef: base, Mode: mode,
+		})
+	}
+	if len(repositories) == 0 {
+		return nil, fmt.Errorf("a Job needs a repository: %w", ErrConflict)
+	}
+	// The first repository the Job changes leads: it is the one the Git
+	// fields describe.
+	sort.SliceStable(repositories, func(i, j int) bool {
+		return repositories[i].Mode == domain.RepositoryModeChange && repositories[j].Mode != domain.RepositoryModeChange
+	})
+	if repositories[0].Mode != domain.RepositoryModeChange {
+		return nil, fmt.Errorf("a Job changes at least one repository; the others may be references: %w", ErrConflict)
+	}
+	if len(repositories) > 1 {
+		paths := map[string]bool{}
+		for index := range repositories {
+			path := gitSlug(repositories[index].Name)
+			if path == "" {
+				path = "repo"
+			}
+			candidate := path
+			for suffix := 2; paths[candidate]; suffix++ {
+				candidate = fmt.Sprintf("%s-%d", path, suffix)
+			}
+			paths[candidate] = true
+			repositories[index].Path = candidate
+		}
+	}
+	return repositories, nil
 }
 
 func sessionGitRef(job domain.Job, sessionID string) string {

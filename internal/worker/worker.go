@@ -458,6 +458,17 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		}
 		result, err := inspector.InspectWorkspace(ctx, payload.Runtime)
 		return result, false, err
+	case methodInspectWorkspaceAt:
+		var payload workspacePathPayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		inspector, ok := w.engine.(capsule.WorkspaceInspectorAt)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot inspect a repository of the workspace")
+		}
+		result, err := inspector.InspectWorkspaceAt(ctx, payload.Runtime, payload.Path)
+		return result, false, err
 	case methodInspectRange:
 		var payload inspectRangePayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {

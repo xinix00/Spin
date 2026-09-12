@@ -446,22 +446,6 @@ func (s *Server) acceptWorkflowWorkspace(ctx context.Context, sessionID, summary
 	if !ok || composition.Runtime == nil {
 		return capsule.WorkspaceAcceptanceResult{}, fmt.Errorf("capsule engine cannot accept workspaces: %w", store.ErrConflict)
 	}
-	authentication := &capsule.GitAuthentication{}
-	if account, authenticated, accountErr := s.gitAccountForWorkspace(ctx, composition.Git, composition.Operator); accountErr != nil {
-		return capsule.WorkspaceAcceptanceResult{}, accountErr
-	} else if authenticated {
-		username := account.Login
-		if account.Provider == "gitlab" {
-			username = "oauth2"
-		}
-		authentication = &capsule.GitAuthentication{
-			Username: username, Password: account.AccessToken,
-			AuthorName: account.Name, AuthorEmail: account.Email,
-		}
-	} else if composition.Git != nil {
-		authentication.AuthorName = composition.Git.AuthorName
-		authentication.AuthorEmail = composition.Git.AuthorEmail
-	}
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
 		summary = strings.TrimSpace(run.Summary)
@@ -477,12 +461,29 @@ func (s *Server) acceptWorkflowWorkspace(ctx context.Context, sessionID, summary
 		acceptedBy = "agent"
 	}
 	commitBody := fmt.Sprintf("%s\n\nSpin-Job: %s\nSpin-Session: %s\nSpin-Phase: %s\nSpin-Accepted-By: %s", summary, job.ID, sessionID, phase.ID, acceptedBy)
-	acceptContext, cancel := context.WithTimeout(ctx, 60*time.Second)
+	acceptContext, cancel := context.WithTimeout(ctx, 60*time.Second*time.Duration(max(1, len(composition.ChangedWorkspaces()))))
 	defer cancel()
-	return acceptor.AcceptWorkspace(acceptContext, *composition.Runtime, capsule.WorkspaceAcceptance{
-		AllowChanges: phaseAllowsChanges(phase), CommitSubject: "workflow(" + phase.ID + "): accepted",
-		CommitBody: commitBody, RemoteRef: job.Branch, Authentication: authentication,
-	})
+	// Every repository the Session changes lands on the Job branch of that
+	// repository, each as its own result commit; the main repository's
+	// result is what the caller sees.
+	var primary capsule.WorkspaceAcceptanceResult
+	for index, workspace := range composition.ChangedWorkspaces() {
+		authentication, err := s.gitAuthenticationForWorkspace(ctx, &workspace, composition.Operator)
+		if err != nil {
+			return capsule.WorkspaceAcceptanceResult{}, fmt.Errorf("%s: %w", workspace.RepositoryName, err)
+		}
+		result, err := acceptor.AcceptWorkspace(acceptContext, *composition.Runtime, capsule.WorkspaceAcceptance{
+			Path: workspace.Path, AllowChanges: phaseAllowsChanges(phase), CommitSubject: "workflow(" + phase.ID + "): accepted",
+			CommitBody: commitBody, RemoteRef: job.Branch, Authentication: authentication,
+		})
+		if err != nil {
+			return capsule.WorkspaceAcceptanceResult{}, fmt.Errorf("%s: %w", workspace.RepositoryName, err)
+		}
+		if index == 0 {
+			primary = result
+		}
+	}
+	return primary, nil
 }
 
 func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, operator string) {
@@ -965,6 +966,17 @@ func workflowGitSection(job domain.Job, session domain.Session, source *domain.J
 	}
 	var section strings.Builder
 	section.WriteString("\nGIT\n")
+	if repositories := job.JobRepositories(); len(repositories) > 1 {
+		section.WriteString("Deze Job werkt in meer repositories; elke repository staat in zijn eigen map onder " + domain.WorkspaceRoot + ":\n")
+		for _, repository := range repositories {
+			if repository.Mode == domain.RepositoryModeReference {
+				fmt.Fprintf(&section, "- %s · %s · ALLEEN TER REFERENTIE op branch %s: lees erin, wijzig er niets en push er niets; wat je erin verandert gaat nergens heen.\n", repository.Directory(), repository.Name, repository.BaseRef)
+				continue
+			}
+			fmt.Fprintf(&section, "- %s · %s · AANPASSEN: dezelfde Job-branch en jouw branch als hieronder, basis %s.\n", repository.Directory(), repository.Name, repository.BaseRef)
+		}
+		section.WriteString("De branches hieronder gelden in elke repository die je aanpast; de basisbranch is per repository de genoemde.\n")
+	}
 	fmt.Fprintf(&section, "Basisbranch: %s · waar deze Job uiteindelijk op landt; lokaal origin/%s.\n", base, base)
 	fmt.Fprintf(&section, "Job-branch: %s · het geaccepteerde werk van alle eerdere fases van deze Job; lokaal origin/%s. Elke fase komt hierop als één commit.\n", job.Branch, job.Branch)
 	fmt.Fprintf(&section, "Jouw branch: %s · HEAD in deze workspace, begonnen op de Job-branch.\n", session.GitRef)

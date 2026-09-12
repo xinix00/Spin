@@ -24,38 +24,39 @@ const (
 )
 
 const (
-	methodStartRecording    = "capsule.start_recording"
-	methodExecute           = "capsule.execute"
-	methodSeal              = "capsule.seal"
-	methodCancelRecording   = "capsule.cancel_recording"
-	methodMaterialize       = "capsule.materialize"
-	methodStop              = "capsule.stop"
-	methodProbeEnabled      = "capsule.probe_enabled"
-	methodStartEnabled      = "capsule.start_enabled"
-	methodStartInteractive  = "capsule.start_interactive"
-	methodInspectWorkspace  = "workspace.inspect"
-	methodInspectRange      = "workspace.inspect_range"
-	methodInjectAttachments = "workspace.inject_attachments"
-	methodReadTracked       = "files.read"
-	methodBundleDeliverable = "deliverable.bundle"
-	methodPlaceDeliverable  = "deliverable.place"
-	methodCapsuleChanges    = "capsule.changes"
-	methodWriteTracked      = "files.write"
-	methodAcceptWorkspace   = "workspace.accept"
-	methodMergeWorkspace    = "workspace.merge"
-	methodSyncWorkspace     = "workspace.sync"
-	methodBrowseRepository  = "repository.browse"
-	methodCompareRepository = "repository.compare"
-	methodPullSnapshot      = "snapshot.pull"
-	methodRemoveSnapshot    = "snapshot.remove"
-	methodExportSnapshot    = "snapshot.export"
-	methodImportSnapshot    = "snapshot.import"
-	methodArchiveSnapshot   = "snapshot.archive"
-	methodHasSnapshot       = "snapshot.has"
-	methodStartApp          = "app.start"
-	methodStopApp           = "app.stop"
-	methodAppStatus         = "app.status"
-	methodAppLogs           = "app.logs"
+	methodStartRecording     = "capsule.start_recording"
+	methodExecute            = "capsule.execute"
+	methodSeal               = "capsule.seal"
+	methodCancelRecording    = "capsule.cancel_recording"
+	methodMaterialize        = "capsule.materialize"
+	methodStop               = "capsule.stop"
+	methodProbeEnabled       = "capsule.probe_enabled"
+	methodStartEnabled       = "capsule.start_enabled"
+	methodStartInteractive   = "capsule.start_interactive"
+	methodInspectWorkspace   = "workspace.inspect"
+	methodInspectWorkspaceAt = "workspace.inspect_at"
+	methodInspectRange       = "workspace.inspect_range"
+	methodInjectAttachments  = "workspace.inject_attachments"
+	methodReadTracked        = "files.read"
+	methodBundleDeliverable  = "deliverable.bundle"
+	methodPlaceDeliverable   = "deliverable.place"
+	methodCapsuleChanges     = "capsule.changes"
+	methodWriteTracked       = "files.write"
+	methodAcceptWorkspace    = "workspace.accept"
+	methodMergeWorkspace     = "workspace.merge"
+	methodSyncWorkspace      = "workspace.sync"
+	methodBrowseRepository   = "repository.browse"
+	methodCompareRepository  = "repository.compare"
+	methodPullSnapshot       = "snapshot.pull"
+	methodRemoveSnapshot     = "snapshot.remove"
+	methodExportSnapshot     = "snapshot.export"
+	methodImportSnapshot     = "snapshot.import"
+	methodArchiveSnapshot    = "snapshot.archive"
+	methodHasSnapshot        = "snapshot.has"
+	methodStartApp           = "app.start"
+	methodStopApp            = "app.stop"
+	methodAppStatus          = "app.status"
+	methodAppLogs            = "app.logs"
 )
 
 // wireMessage is the single versioned control and stream envelope used in
@@ -105,6 +106,12 @@ type materializePayload struct {
 
 type runtimePayload struct {
 	Runtime domain.CapsuleRuntime `json:"runtime"`
+}
+
+// workspacePathPayload names one repository of a capsule by its folder.
+type workspacePathPayload struct {
+	Runtime domain.CapsuleRuntime `json:"runtime"`
+	Path    string                `json:"path,omitempty"`
 }
 
 type mergePayload struct {

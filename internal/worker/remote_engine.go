@@ -298,6 +298,13 @@ func (e *RemoteEngine) InspectWorkspace(ctx context.Context, runtime domain.Caps
 	return changes, err
 }
 
+// InspectWorkspaceAt inspects one repository of a capsule with several.
+func (e *RemoteEngine) InspectWorkspaceAt(ctx context.Context, runtime domain.CapsuleRuntime, path string) (capsule.WorkspaceChanges, error) {
+	var changes capsule.WorkspaceChanges
+	_, err := e.broker.call(ctx, runtime.ClientID, methodInspectWorkspaceAt, workspacePathPayload{Runtime: runtime, Path: path}, &changes)
+	return changes, err
+}
+
 func (e *RemoteEngine) InspectWorkspaceRange(ctx context.Context, runtime domain.CapsuleRuntime, comparison capsule.WorkspaceComparison) (capsule.WorkspaceChanges, error) {
 	var changes capsule.WorkspaceChanges
 	_, err := e.broker.call(ctx, runtime.ClientID, methodInspectRange, inspectRangePayload{Runtime: runtime, Comparison: comparison}, &changes)
@@ -837,6 +844,7 @@ var (
 	_ capsule.EnabledEngine               = (*RemoteEngine)(nil)
 	_ capsule.EnabledProber               = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceInspector          = (*RemoteEngine)(nil)
+	_ capsule.WorkspaceInspectorAt        = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceRangeInspector     = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceAttachmentInjector = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceAcceptor           = (*RemoteEngine)(nil)

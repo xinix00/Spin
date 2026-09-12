@@ -77,30 +77,56 @@ func (s *Server) launchWorkflowMerge(session domain.Session, operator string) {
 		s.finishWorkflowAction(session.ID, "reject", "de capsule engine kan geen branches mergen")
 		return
 	}
-	authentication, err := s.gitAuthenticationFor(context.Background(), composition)
-	if err != nil {
-		s.finishWorkflowAction(session.ID, "reject", "Git-account voor het mergen: "+err.Error())
-		return
-	}
-	target := strings.TrimSpace(job.BaseRef)
-	if target == "" {
-		s.finishWorkflowAction(session.ID, "reject", "de Job heeft geen basisbranch om in te mergen")
-		return
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	result, err := merger.MergeWorkspace(ctx, *composition.Runtime, capsule.WorkspaceMerge{
-		SourceRef: job.Branch, TargetRef: target,
-		CommitSubject:  fmt.Sprintf("Merge %s: %s", job.Branch, job.Title),
-		CommitBody:     fmt.Sprintf("%s\n\nSpin-Job: %s\nSpin-Merged-By: spin", strings.TrimSpace(job.Objective), job.ID),
-		Authentication: authentication,
-	})
-	if err != nil {
-		s.finishWorkflowAction(session.ID, "reject", mergeFailureReason(err))
-		return
+	// Every repository the Job changes lands on its own base; one that
+	// cannot be merged stops the step with its name in the reason.
+	workspaces := composition.ChangedWorkspaces()
+	several := len(workspaces) > 1
+	action := domain.WorkflowActionResult{Type: domain.WorkflowActionGitMerge, Results: map[string]string{}, CreatedAt: time.Now().UTC()}
+	var details []string
+	for index, workspace := range workspaces {
+		authentication, err := s.gitAuthenticationForWorkspace(ctx, &workspace, composition.Operator)
+		if err != nil {
+			s.finishWorkflowAction(session.ID, "reject", "Git-account voor het mergen van "+workspace.RepositoryName+": "+err.Error())
+			return
+		}
+		target := strings.TrimSpace(workspace.BootstrapRef)
+		if target == "" {
+			target = strings.TrimSpace(job.BaseRef)
+		}
+		if target == "" {
+			s.finishWorkflowAction(session.ID, "reject", "de Job heeft geen basisbranch om in te mergen")
+			return
+		}
+		result, err := merger.MergeWorkspace(ctx, *composition.Runtime, capsule.WorkspaceMerge{
+			Path: workspace.Path, SourceRef: job.Branch, TargetRef: target,
+			CommitSubject:  fmt.Sprintf("Merge %s: %s", job.Branch, job.Title),
+			CommitBody:     fmt.Sprintf("%s\n\nSpin-Job: %s\nSpin-Merged-By: spin", strings.TrimSpace(job.Objective), job.ID),
+			Authentication: authentication,
+		})
+		if err != nil {
+			reason := mergeFailureReason(err)
+			if several {
+				reason = workspace.RepositoryName + ": " + reason
+			}
+			s.finishWorkflowAction(session.ID, "reject", reason)
+			return
+		}
+		action.Results[workspace.RepositoryID] = result.Head
+		line := fmt.Sprintf("%s gemerged in %s met merge-commit %s", job.Branch, target, result.Head)
+		if several {
+			line = workspace.RepositoryName + ": " + line
+		}
+		details = append(details, line)
+		if index == 0 {
+			action.ExternalID = result.Head
+			action.URL = commitURL(workspace.RemoteURL, workspace.Provider, result.Head)
+		}
 	}
-	detail := fmt.Sprintf("%s gemerged in %s met merge-commit %s", job.Branch, target, result.Head)
-	if _, err := s.store.SetWorkflowActionResult(session.ID, domain.WorkflowActionResult{Type: domain.WorkflowActionGitMerge, ExternalID: result.Head, URL: commitURL(job.GitRemoteURL, job.GitProvider, result.Head), Detail: detail, CreatedAt: time.Now().UTC()}); err != nil {
+	detail := strings.Join(details, "; ")
+	action.Detail = detail
+	if _, err := s.store.SetWorkflowActionResult(session.ID, action); err != nil {
 		s.finishWorkflowAction(session.ID, "reject", "merge slaagde maar het resultaat kon niet worden opgeslagen: "+err.Error())
 		return
 	}
@@ -137,15 +163,48 @@ func (s *Server) finishWorkflowAction(sessionID, outcome, detail string) {
 }
 
 func (s *Server) createGitHubPullRequest(ctx context.Context, job domain.Job) (domain.WorkflowActionResult, error) {
+	// One pull request per repository the Job changes; the first one is the
+	// result people see first, the others are named with it.
+	repositories := job.ChangedRepositories()
+	several := len(repositories) > 1
+	var primary domain.WorkflowActionResult
+	var details []string
+	results := map[string]string{}
+	for index, repository := range repositories {
+		result, err := s.createGitHubPullRequestFor(ctx, job, repository)
+		if err != nil {
+			if several {
+				return domain.WorkflowActionResult{}, fmt.Errorf("%s: %w", repository.Name, err)
+			}
+			return domain.WorkflowActionResult{}, err
+		}
+		results[repository.RepositoryID] = result.URL
+		if several {
+			details = append(details, repository.Name+": "+result.Detail)
+		} else {
+			details = append(details, result.Detail)
+		}
+		if index == 0 {
+			primary = result
+		}
+	}
+	primary.Detail = strings.Join(details, "; ")
+	if several {
+		primary.Results = results
+	}
+	return primary, nil
+}
+
+func (s *Server) createGitHubPullRequestFor(ctx context.Context, job domain.Job, jobRepository domain.JobRepository) (domain.WorkflowActionResult, error) {
 	snapshot := s.store.Snapshot()
-	repositoryIndex := slices.IndexFunc(snapshot.GitRepositories, func(repository domain.GitRepository) bool { return repository.ID == job.GitRepositoryID })
+	repositoryIndex := slices.IndexFunc(snapshot.GitRepositories, func(repository domain.GitRepository) bool { return repository.ID == jobRepository.RepositoryID })
 	if repositoryIndex < 0 {
 		return domain.WorkflowActionResult{}, fmt.Errorf("Git repository is unavailable")
 	}
 	repository := snapshot.GitRepositories[repositoryIndex]
 	workspace := &domain.GitWorkspace{
-		RepositoryID: repository.ID, RepositoryName: job.GitRepositoryName, RemoteURL: job.GitRemoteURL,
-		Provider: job.GitProvider, CredentialScope: job.GitCredentialScope,
+		RepositoryID: repository.ID, RepositoryName: jobRepository.Name, RemoteURL: jobRepository.RemoteURL,
+		Provider: jobRepository.Provider, CredentialScope: jobRepository.CredentialScope,
 	}
 	if workspace.RepositoryName == "" {
 		workspace.RepositoryName = repository.Name
@@ -173,7 +232,11 @@ func (s *Server) createGitHubPullRequest(ctx context.Context, job domain.Job) (d
 	if err != nil {
 		return domain.WorkflowActionResult{}, err
 	}
-	base := strings.TrimPrefix(strings.TrimPrefix(job.BaseRef, "refs/heads/"), "origin/")
+	baseRef := jobRepository.BaseRef
+	if baseRef == "" {
+		baseRef = job.BaseRef
+	}
+	base := strings.TrimPrefix(strings.TrimPrefix(baseRef, "refs/heads/"), "origin/")
 	head := strings.TrimPrefix(job.Branch, "refs/heads/")
 	if existing, ok, err := s.findGitHubPullRequest(ctx, account.AccessToken, owner, name, head, base); err != nil {
 		return domain.WorkflowActionResult{}, err

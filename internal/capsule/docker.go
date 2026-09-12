@@ -340,8 +340,8 @@ func (d *Docker) MaterializeWithGitAuthentication(ctx context.Context, compositi
 		}()
 	}
 	workspaceRef := ""
-	if composition.Git != nil {
-		workspaceRef, err = d.prepareGitWorkspace(ctx, composition, selected, authentication)
+	if len(composition.GitWorkspaces()) > 0 {
+		workspaceRef, err = d.prepareGitWorkspaces(ctx, composition, selected, authentication)
 		if err != nil {
 			return domain.CapsuleRuntime{}, fmt.Errorf("prepare Git workspace: %w", err)
 		}
@@ -387,17 +387,28 @@ func (d *Docker) MaterializeWithGitAuthentication(ctx context.Context, compositi
 	}, nil
 }
 
-func (d *Docker) prepareGitWorkspace(ctx context.Context, composition domain.Composition, selected domain.Artifact, authentication *GitAuthentication) (string, error) {
-	workspace := composition.Git
-	if workspace == nil || composition.SessionID == "" {
+// workspaceDirectory is the checkout directory of a repository in the
+// capsule: the workspace root, or a folder below it for a Job with several
+// repositories. The folder name is checked like any path a person names.
+func workspaceDirectory(path string) (string, error) {
+	if path == "" {
+		return domain.WorkspaceRoot, nil
+	}
+	if !validHomePath(path) || strings.Contains(path, "/") {
+		return "", fmt.Errorf("invalid workspace folder %q", path)
+	}
+	return domain.WorkspaceDirectory(path), nil
+}
+
+// prepareGitWorkspaces makes the Session's workspace volume with every
+// repository of the Job checked out in it: the ones the Session changes on
+// their Session branch, the reference ones at their base, read-only.
+func (d *Docker) prepareGitWorkspaces(ctx context.Context, composition domain.Composition, selected domain.Artifact, authentication *GitAuthentication) (string, error) {
+	if composition.SessionID == "" {
 		return "", errors.New("Git workspace requires a Session")
 	}
 	if selected.Snapshot.Driver != "docker" || !selected.Snapshot.Restorable || selected.Snapshot.Ref == "" {
 		return "", fmt.Errorf("Git helper artifact %s is not a restorable Docker snapshot", selected.ID)
-	}
-	requiresAuthentication := workspace.AccountID != "" || workspace.CredentialScope == domain.CredentialScopeUser || workspace.CredentialScope == domain.CredentialScopeGlobal
-	if requiresAuthentication && (authentication == nil || authentication.Password == "") {
-		return "", errors.New("Git account is bound but no checkout authentication was supplied")
 	}
 	volume := runtimeName("spin-work", composition.SessionID)
 	if _, err := d.control(ctx,
@@ -409,6 +420,27 @@ func (d *Docker) prepareGitWorkspace(ctx context.Context, composition domain.Com
 	); err != nil {
 		return "", err
 	}
+	for _, workspace := range composition.GitWorkspaces() {
+		if err := d.prepareGitWorkspace(ctx, volume, workspace, selected, authentication); err != nil {
+			return "", fmt.Errorf("%s: %w", workspace.RepositoryName, err)
+		}
+	}
+	return volume, nil
+}
+
+func (d *Docker) prepareGitWorkspace(ctx context.Context, volume string, workspace domain.GitWorkspace, selected domain.Artifact, authentication *GitAuthentication) error {
+	directory, err := workspaceDirectory(workspace.Path)
+	if err != nil {
+		return err
+	}
+	requiresAuthentication := workspace.AccountID != "" || workspace.CredentialScope == domain.CredentialScopeUser || workspace.CredentialScope == domain.CredentialScopeGlobal
+	if requiresAuthentication && (authentication == nil || authentication.Password == "") {
+		return errors.New("Git account is bound but no checkout authentication was supplied")
+	}
+	script := gitWorkspaceScript
+	if !workspace.Changes() {
+		script = gitReferenceScript
+	}
 	secretInput := []byte("\n\n\n\n")
 	if authentication != nil {
 		secretInput = []byte(strings.Join([]string{
@@ -418,7 +450,7 @@ func (d *Docker) prepareGitWorkspace(ctx context.Context, composition domain.Com
 			authentication.AuthorEmail,
 		}, "\n") + "\n")
 	}
-	_, err := d.controlInput(ctx, secretInput,
+	_, err = d.controlInput(ctx, secretInput,
 		"run", "-i", "--rm", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1m",
 		"--label", "spin.managed=true",
 		"--label", "spin.kind=git-checkout",
@@ -426,6 +458,7 @@ func (d *Docker) prepareGitWorkspace(ctx context.Context, composition domain.Com
 		"--mount", "type=volume,src="+volume+",dst=/workspace",
 		"--workdir", "/workspace",
 		"--env", "GIT_TERMINAL_PROMPT=0",
+		"--env", "SPIN_GIT_DIR="+directory,
 		"--env", "SPIN_GIT_REMOTE="+workspace.RemoteURL,
 		"--env", "SPIN_GIT_BASE="+workspace.BaseRef,
 		"--env", "SPIN_GIT_BOOTSTRAP="+workspace.BootstrapRef,
@@ -433,12 +466,9 @@ func (d *Docker) prepareGitWorkspace(ctx context.Context, composition domain.Com
 		"--env", "SPIN_GIT_CONTEXT="+strings.Join(workspace.ContextRefs, " "),
 		"--env", "SPIN_GIT_TARGET="+workspace.TargetRef,
 		"--entrypoint", "sh",
-		selected.Snapshot.Ref, "-lc", gitWorkspaceScript,
+		selected.Snapshot.Ref, "-lc", script,
 	)
-	if err != nil {
-		return "", err
-	}
-	return volume, nil
+	return err
 }
 
 const gitCredentialEnvironmentScript = `export SPIN_GIT_USERNAME SPIN_GIT_PASSWORD
@@ -446,8 +476,31 @@ export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=credential.helper
 export GIT_CONFIG_VALUE_0='!f() { printf "username=%s\npassword=%s\n" "$SPIN_GIT_USERNAME" "$SPIN_GIT_PASSWORD"; }; f'`
 
+// gitReferenceScript checks a repository out at its base for reading only:
+// shallow, on a local branch named after the base, with pushing disabled.
+const gitReferenceScript = `set -eu
+command -v git >/dev/null
+mkdir -p "${SPIN_GIT_DIR:-.}" && cd "${SPIN_GIT_DIR:-.}"
+IFS= read -r SPIN_GIT_USERNAME || true
+IFS= read -r SPIN_GIT_PASSWORD || true
+IFS= read -r SPIN_GIT_AUTHOR_NAME || true
+IFS= read -r SPIN_GIT_AUTHOR_EMAIL || true
+if [ -n "$SPIN_GIT_PASSWORD" ]; then
+  ` + gitCredentialEnvironmentScript + `
+fi
+if [ ! -d .git ]; then
+  git init -q
+  git remote add origin "$SPIN_GIT_REMOTE"
+fi
+git fetch -q --depth=1 origin "+refs/heads/${SPIN_GIT_BASE}:refs/remotes/origin/${SPIN_GIT_BASE}"
+git checkout -q -B "$SPIN_GIT_BASE" "refs/remotes/origin/${SPIN_GIT_BASE}"
+git remote set-url --push origin no_push
+git config spin.reference 1
+unset SPIN_GIT_PASSWORD`
+
 const gitWorkspaceScript = `set -eu
 command -v git >/dev/null
+mkdir -p "${SPIN_GIT_DIR:-.}" && cd "${SPIN_GIT_DIR:-.}"
 IFS= read -r SPIN_GIT_USERNAME || true
 IFS= read -r SPIN_GIT_PASSWORD || true
 IFS= read -r SPIN_GIT_AUTHOR_NAME || true
@@ -1027,8 +1080,12 @@ func (d *Docker) InspectWorkspaceRange(ctx context.Context, runtime domain.Capsu
 		authentication = &GitAuthentication{}
 	}
 	secretInput := []byte(strings.Join([]string{singleLine(authentication.Username), singleLine(authentication.Password)}, "\n") + "\n")
+	directory, err := workspaceDirectory(comparison.Path)
+	if err != nil {
+		return changes, err
+	}
 	output, err := d.controlInput(ctx, secretInput,
-		"exec", "-i", "-w", "/workspace",
+		"exec", "-i", "-w", directory,
 		"-e", "GIT_TERMINAL_PROMPT=0",
 		"-e", "SPIN_COMPARE_BASE="+comparison.BaseRef,
 		"-e", "SPIN_COMPARE_HEAD="+comparison.HeadRef,
@@ -1046,7 +1103,7 @@ func (d *Docker) InspectWorkspaceRange(ctx context.Context, runtime domain.Capsu
 	if comparison.CommitMessageMatch != "" && len(headCommit) < 7 {
 		return changes, nil
 	}
-	return d.inspectWorkspace(ctx, runtime, baseCommit, headCommit)
+	return d.inspectWorkspaceAt(ctx, runtime, comparison.Path, baseCommit, headCommit)
 }
 
 // CompareRepository compares two branches on the runner's own clone of the
@@ -1198,9 +1255,9 @@ unset SPIN_GIT_PASSWORD`
 // in a one-shot git container on a clone volume.
 type gitRunner func(ctx context.Context, args ...string) (string, int, error)
 
-func (d *Docker) containerGit(runtime domain.CapsuleRuntime) gitRunner {
+func (d *Docker) containerGit(runtime domain.CapsuleRuntime, directory string) gitRunner {
 	return func(ctx context.Context, args ...string) (string, int, error) {
-		return d.run(ctx, append([]string{"exec", "-w", "/workspace", runtime.ContainerID}, args...)...)
+		return d.run(ctx, append([]string{"exec", "-w", directory, runtime.ContainerID}, args...)...)
 	}
 }
 
@@ -1215,10 +1272,24 @@ func (d *Docker) volumeGit(volume string) gitRunner {
 }
 
 func (d *Docker) inspectWorkspace(ctx context.Context, runtime domain.CapsuleRuntime, diffBase, diffHead string) (WorkspaceChanges, error) {
+	return d.inspectWorkspaceAt(ctx, runtime, "", diffBase, diffHead)
+}
+
+func (d *Docker) inspectWorkspaceAt(ctx context.Context, runtime domain.CapsuleRuntime, path, diffBase, diffHead string) (WorkspaceChanges, error) {
 	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
 		return WorkspaceChanges{Files: []WorkspaceFileChange{}}, errors.New("composition has no live Docker capsule")
 	}
-	return d.inspectChanges(ctx, d.containerGit(runtime), diffBase, diffHead)
+	directory, err := workspaceDirectory(path)
+	if err != nil {
+		return WorkspaceChanges{Files: []WorkspaceFileChange{}}, err
+	}
+	return d.inspectChanges(ctx, d.containerGit(runtime, directory), diffBase, diffHead)
+}
+
+// InspectWorkspaceAt is InspectWorkspace for one repository of a capsule
+// with several.
+func (d *Docker) InspectWorkspaceAt(ctx context.Context, runtime domain.CapsuleRuntime, path string) (WorkspaceChanges, error) {
+	return d.inspectWorkspaceAt(ctx, runtime, path, "HEAD", "")
 }
 
 func (d *Docker) inspectChanges(ctx context.Context, git gitRunner, diffBase, diffHead string) (WorkspaceChanges, error) {
@@ -1398,8 +1469,12 @@ func (d *Docker) AcceptWorkspace(ctx context.Context, runtime domain.CapsuleRunt
 	if acceptance.AllowChanges {
 		allowChanges = "1"
 	}
+	directory, err := workspaceDirectory(acceptance.Path)
+	if err != nil {
+		return WorkspaceAcceptanceResult{}, err
+	}
 	output, err := d.controlInput(ctx, secretInput,
-		"exec", "-i", "-w", "/workspace",
+		"exec", "-i", "-w", directory,
 		"-e", "GIT_TERMINAL_PROMPT=0",
 		"-e", "SPIN_ALLOW_CHANGES="+allowChanges,
 		"-e", "SPIN_GIT_REF="+acceptance.RemoteRef,
@@ -1666,8 +1741,12 @@ func (d *Docker) SyncWorkspace(ctx context.Context, runtime domain.CapsuleRuntim
 		singleLine(authorName),
 		singleLine(authorEmail),
 	}, "\n") + "\n")
+	directory, err := workspaceDirectory(sync.Path)
+	if err != nil {
+		return WorkspaceSyncResult{}, err
+	}
 	output, err := d.controlInput(ctx, secretInput,
-		"exec", "-i", "-w", "/workspace",
+		"exec", "-i", "-w", directory,
 		"-e", "GIT_TERMINAL_PROMPT=0",
 		"-e", "SPIN_SESSION_REF="+sync.SessionRef,
 		runtime.ContainerID, "sh", "-lc", syncWorkspaceScript,
@@ -1747,8 +1826,12 @@ func (d *Docker) MergeWorkspace(ctx context.Context, runtime domain.CapsuleRunti
 		singleLine(authorName),
 		singleLine(authorEmail),
 	}, "\n") + "\n")
+	directory, err := workspaceDirectory(merge.Path)
+	if err != nil {
+		return WorkspaceMergeResult{}, err
+	}
 	output, err := d.controlInput(ctx, secretInput,
-		"exec", "-i", "-w", "/workspace",
+		"exec", "-i", "-w", directory,
 		"-e", "GIT_TERMINAL_PROMPT=0",
 		"-e", "SPIN_MERGE_SOURCE="+merge.SourceRef,
 		"-e", "SPIN_MERGE_TARGET="+merge.TargetRef,

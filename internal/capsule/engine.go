@@ -102,6 +102,12 @@ type WorkspaceInspector interface {
 	InspectWorkspace(context.Context, domain.CapsuleRuntime) (WorkspaceChanges, error)
 }
 
+// WorkspaceInspectorAt inspects one repository of a capsule with several,
+// by its folder under the workspace root; an empty path is the root.
+type WorkspaceInspectorAt interface {
+	InspectWorkspaceAt(ctx context.Context, runtime domain.CapsuleRuntime, path string) (WorkspaceChanges, error)
+}
+
 type WorkspaceAttachment struct {
 	SourcePath string
 	Data       []byte
@@ -157,6 +163,9 @@ type WorkspaceAttachmentInjector interface {
 }
 
 type WorkspaceComparison struct {
+	// Path is the repository's folder under the workspace root; empty is
+	// the root.
+	Path               string
 	BaseRef            string
 	HeadRef            string
 	CommitMessageMatch string
@@ -176,6 +185,7 @@ type WorkspaceRangeInspector interface {
 }
 
 type WorkspaceAcceptance struct {
+	Path           string // the repository's folder under the workspace root; empty is the root
 	AllowChanges   bool
 	CommitSubject  string
 	CommitBody     string
@@ -187,6 +197,7 @@ type WorkspaceAcceptance struct {
 // pushed, from a workspace that holds the operator's Git identity for the
 // moment of the push only.
 type WorkspaceMerge struct {
+	Path           string // the repository's folder under the workspace root; empty is the root
 	SourceRef      string // the Job branch
 	TargetRef      string // the base branch the Job lands on
 	CommitSubject  string
@@ -204,6 +215,7 @@ type WorkspaceMergeResult struct {
 // only in one Docker volume. Dirty files become a WIP commit first; ACCEPT
 // folds those commits away later.
 type WorkspaceSync struct {
+	Path           string // the repository's folder under the workspace root; empty is the root
 	SessionRef     string // the Session branch on the remote
 	Authentication *GitAuthentication
 }

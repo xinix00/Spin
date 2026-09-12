@@ -26,8 +26,14 @@ type workspaceSyncs struct {
 // composition's workspace, resolved late; without an account only the
 // author name and email are set.
 func (s *Server) gitAuthenticationFor(ctx context.Context, composition domain.Composition) (*capsule.GitAuthentication, error) {
+	return s.gitAuthenticationForWorkspace(ctx, composition.Git, composition.Operator)
+}
+
+// gitAuthenticationForWorkspace is the credential and author for one
+// repository of a composition; repositories of one Job may differ in scope.
+func (s *Server) gitAuthenticationForWorkspace(ctx context.Context, workspace *domain.GitWorkspace, operator string) (*capsule.GitAuthentication, error) {
 	authentication := &capsule.GitAuthentication{}
-	account, authenticated, err := s.gitAccountForWorkspace(ctx, composition.Git, composition.Operator)
+	account, authenticated, err := s.gitAccountForWorkspace(ctx, workspace, operator)
 	if err != nil {
 		return nil, err
 	}
@@ -36,10 +42,16 @@ func (s *Server) gitAuthenticationFor(ctx context.Context, composition domain.Co
 		if account.Provider == "gitlab" {
 			username = "oauth2"
 		}
-		return &capsule.GitAuthentication{Username: username, Password: account.AccessToken, AuthorName: account.Name, AuthorEmail: account.Email}, nil
+		authentication.Username, authentication.Password = username, account.AccessToken
+		authentication.AuthorName, authentication.AuthorEmail = account.Name, account.Email
 	}
-	if composition.Git != nil {
-		authentication.AuthorName, authentication.AuthorEmail = composition.Git.AuthorName, composition.Git.AuthorEmail
+	if workspace != nil {
+		if authentication.AuthorName == "" {
+			authentication.AuthorName = workspace.AuthorName
+		}
+		if authentication.AuthorEmail == "" {
+			authentication.AuthorEmail = workspace.AuthorEmail
+		}
 	}
 	return authentication, nil
 }
@@ -90,22 +102,26 @@ func (s *Server) syncWorkspaceWithin(sessionID string, minInterval time.Duration
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	authentication, err := s.gitAuthenticationFor(ctx, composition)
-	if err != nil {
-		s.logger.Warn("sync workspace: git account", "session", sessionID, "error", err)
-		return
-	}
-	result, err := syncer.SyncWorkspace(ctx, *composition.Runtime, capsule.WorkspaceSync{SessionRef: session.GitRef, Authentication: authentication})
-	if err != nil {
-		s.logger.Warn("sync workspace", "session", sessionID, "error", err)
-		return
-	}
-	if result.Pushed || session.SyncedHead != result.Head {
-		if _, err := s.store.SetSessionSync(sessionID, result.Head); err != nil {
-			s.logger.Warn("record workspace sync", "session", sessionID, "error", err)
+	// Every repository the Session changes goes to its own Session branch;
+	// the head kept on the Session is the main repository's.
+	for index, workspace := range composition.ChangedWorkspaces() {
+		authentication, err := s.gitAuthenticationForWorkspace(ctx, &workspace, composition.Operator)
+		if err != nil {
+			s.logger.Warn("sync workspace: git account", "session", sessionID, "repository", workspace.RepositoryName, "error", err)
+			return
 		}
-	}
-	if result.Pushed {
-		s.logger.Info("pushed work in progress", "session", sessionID, "ref", session.GitRef, "head", result.Head, "committed", result.Committed)
+		result, err := syncer.SyncWorkspace(ctx, *composition.Runtime, capsule.WorkspaceSync{Path: workspace.Path, SessionRef: session.GitRef, Authentication: authentication})
+		if err != nil {
+			s.logger.Warn("sync workspace", "session", sessionID, "repository", workspace.RepositoryName, "error", err)
+			return
+		}
+		if index == 0 && (result.Pushed || session.SyncedHead != result.Head) {
+			if _, err := s.store.SetSessionSync(sessionID, result.Head); err != nil {
+				s.logger.Warn("record workspace sync", "session", sessionID, "error", err)
+			}
+		}
+		if result.Pushed {
+			s.logger.Info("pushed work in progress", "session", sessionID, "repository", workspace.RepositoryName, "ref", session.GitRef, "head", result.Head, "committed", result.Committed)
+		}
 	}
 }
