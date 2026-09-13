@@ -52,7 +52,7 @@ func (s *Store) loginHolderLocked(login domain.Login) (domain.Composition, bool)
 func (s *Store) loginSummariesLocked() []domain.LoginSummary {
 	out := make([]domain.LoginSummary, 0, len(s.state.Logins))
 	for _, login := range s.state.Logins {
-		summary := domain.LoginSummary{ID: login.ID, Key: login.Key, Number: login.Number, Files: len(login.Files), CreatedAt: login.CreatedAt, UpdatedAt: login.UpdatedAt}
+		summary := domain.LoginSummary{ID: login.ID, Key: login.Key, Number: login.Number, Owner: login.Owner, Files: len(login.Files), CreatedAt: login.CreatedAt, UpdatedAt: login.UpdatedAt}
 		for _, data := range login.Files {
 			summary.Bytes += int64(len(data))
 		}
@@ -89,7 +89,7 @@ func (s *Store) LoginsFor(key string) []domain.Login {
 // now: a shared layer always can, a credential layer when one is free or
 // when it has none yet (its own files then become the first). A look
 // ahead before the slow part of a start; HandOutLogin decides.
-func (s *Store) LoginsFree(key string, exclusive bool) bool {
+func (s *Store) LoginsFree(key string, exclusive bool, operator string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	logins := s.loginsForLocked(key)
@@ -97,11 +97,20 @@ func (s *Store) LoginsFree(key string, exclusive bool) bool {
 		return true
 	}
 	for _, login := range logins {
+		if !loginFor(login, operator) {
+			continue
+		}
 		if _, held := s.loginHolderLocked(login); !held {
 			return true
 		}
 	}
 	return false
+}
+
+// loginFor says whether a login may go to the operator: everyone's, or
+// the operator's own.
+func loginFor(login domain.Login, operator string) bool {
+	return login.Owner == "" || login.Owner == normalizeSubject(operator)
 }
 
 // HandOutLogin gives the running capsule a login of the layer: for a
@@ -127,7 +136,14 @@ func (s *Store) HandOutLogin(compositionID, key string, exclusive bool) (domain.
 	if len(logins) == 0 {
 		return domain.Login{}, ErrNotFound
 	}
+	// The operator's own logins first, then the shared ones.
+	sort.SliceStable(logins, func(i, j int) bool {
+		return logins[i].Owner != "" && logins[j].Owner == ""
+	})
 	for _, login := range logins {
+		if !loginFor(login, composition.Operator) {
+			continue
+		}
 		holder, held := s.loginHolderLocked(login)
 		if exclusive && held && holder.ID != compositionID {
 			continue
@@ -149,7 +165,7 @@ func (s *Store) holdLoginLocked(composition domain.Composition, login domain.Log
 // CreateLogin adds a login of the layer with these files and hands it to
 // the running capsule the files came from, so that capsule's later
 // changes keep it up to date; no capsule when compositionID is empty.
-func (s *Store) CreateLogin(compositionID, key string, files map[string][]byte) (domain.Login, error) {
+func (s *Store) CreateLogin(compositionID, key string, files map[string][]byte, owner string) (domain.Login, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	composition, ok := s.state.Compositions[compositionID]
@@ -166,7 +182,7 @@ func (s *Store) CreateLogin(compositionID, key string, files map[string][]byte) 
 		}
 	}
 	now := time.Now().UTC()
-	login := domain.Login{ID: newID("lgn"), Key: key, Number: number + 1, Files: copyFiles(files), CreatedAt: now, UpdatedAt: now}
+	login := domain.Login{ID: newID("lgn"), Key: key, Number: number + 1, Owner: normalizeSubject(owner), Files: copyFiles(files), CreatedAt: now, UpdatedAt: now}
 	s.state.Logins[login.ID] = login
 	if compositionID == "" {
 		return login, s.saveLocked()

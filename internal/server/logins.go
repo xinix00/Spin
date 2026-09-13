@@ -80,7 +80,7 @@ func (s *Server) loginsAvailable(composition domain.Composition) error {
 		return nil
 	}
 	for _, target := range s.trackedTargets(composition) {
-		if !s.store.LoginsFree(target.key, target.exclusive) {
+		if !s.store.LoginsFree(target.key, target.exclusive, composition.Operator) {
 			return s.loginsBusy(target)
 		}
 	}
@@ -164,7 +164,7 @@ func (s *Server) handOutLogins(ctx context.Context, composition domain.Compositi
 				s.logger.Warn("layer tracks files the capsule does not hold", "composition", composition.ID, "layer", target.key)
 				continue
 			}
-			if login, err = s.store.CreateLogin(composition.ID, target.key, files); err != nil {
+			if login, err = s.store.CreateLogin(composition.ID, target.key, files, ""); err != nil {
 				return fmt.Errorf("keep the first login of %s: %w", target.label, err)
 			}
 			s.logger.Info("login made from the layer's own files", "composition", composition.ID, "layer", target.key, "login", login.Number, "files", len(files))
@@ -203,6 +203,21 @@ func (s *Server) captureCapsuleChanges(ctx context.Context, composition domain.C
 			}
 		}
 	}
+}
+
+// keepLoginsWhenACPEnds reads a capsule's tracked files into its logins
+// the moment its agent process ends, however it ends: a chat closed, a
+// crash, a stop. A token the agent refreshed during its last turn is then
+// kept even when no turn end followed.
+func (s *Server) keepLoginsWhenACPEnds(active *activeACP, compositionID string) {
+	<-active.done
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	composition, err := s.store.Composition(compositionID)
+	if err != nil || composition.Runtime == nil || composition.Runtime.Status == "stopped" || len(composition.Logins) == 0 || !s.engineConnected(composition.Runtime.ClientID) {
+		return
+	}
+	s.keepLogins(ctx, composition)
 }
 
 // keepLogins reads the tracked files back from a running capsule into the
@@ -266,7 +281,11 @@ func (s *Server) saveNewLogin(ctx context.Context, compositionID, operator strin
 		if err != nil {
 			return nil, fmt.Errorf("read the files of %s: %w", target.label, err)
 		}
-		login, err := s.store.CreateLogin(composition.ID, target.key, files)
+		owner := ""
+		if composition.ForLoginPrivate {
+			owner = composition.Operator
+		}
+		login, err := s.store.CreateLogin(composition.ID, target.key, files, owner)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", target.label, err)
 		}
@@ -294,7 +313,7 @@ func (s *Server) saveLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	summaries := make([]domain.LoginSummary, 0, len(logins))
 	for _, login := range logins {
-		summaries = append(summaries, domain.LoginSummary{ID: login.ID, Key: login.Key, Number: login.Number, Files: len(login.Files), CreatedAt: login.CreatedAt, UpdatedAt: login.UpdatedAt})
+		summaries = append(summaries, domain.LoginSummary{ID: login.ID, Key: login.Key, Number: login.Number, Owner: login.Owner, Files: len(login.Files), CreatedAt: login.CreatedAt, UpdatedAt: login.UpdatedAt})
 	}
 	writeJSON(w, http.StatusCreated, summaries)
 }

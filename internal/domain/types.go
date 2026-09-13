@@ -501,6 +501,10 @@ type LayerContents struct {
 type ContentEntry struct {
 	Path  string `json:"path"`
 	Bytes int64  `json:"bytes"`
+	// Logins are the numbers of the layer's logins that hold this file;
+	// Source is "login" for a file that is only there, not in the layer.
+	Logins []int  `json:"logins,omitempty"`
+	Source string `json:"source,omitempty"`
 }
 
 type ContentTotal struct {
@@ -591,7 +595,10 @@ type Login struct {
 	Key string `json:"key"`
 	// Number is the login's place in the layer's list, for people: Login 1,
 	// Login 2. Removing one leaves the others their numbers.
-	Number    int               `json:"number"`
+	Number int `json:"number"`
+	// Owner is the operator this login is for; empty means everyone who
+	// runs the layer. A shared layer holds both kinds.
+	Owner     string            `json:"owner,omitempty"`
 	Files     map[string][]byte `json:"files"`
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
@@ -610,6 +617,7 @@ type LoginSummary struct {
 	Number    int       `json:"number"`
 	Files     int       `json:"files"`
 	Bytes     int64     `json:"bytes"`
+	Owner     string    `json:"owner,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	// CompositionID is the running capsule that holds the login, if any.
@@ -847,8 +855,9 @@ type Composition struct {
 	// ForLogin marks a capsule started to log in once more: it holds no
 	// login and keeps the layer's own files until a person saves what they
 	// logged in as a new login.
-	ForLogin  bool      `json:"for_login,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ForLogin        bool      `json:"for_login,omitempty"`
+	ForLoginPrivate bool      `json:"for_login_private,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // GitWorkspaces are the repositories in the capsule: Workspaces when the
@@ -1345,7 +1354,9 @@ type UseRequest struct {
 	SessionID     string   `json:"session_id,omitempty"`
 	Tool          string   `json:"tool,omitempty"` // accepted for old API clients
 	// ForLogin starts the capsule to log in once more; see Composition.
-	ForLogin bool `json:"for_login,omitempty"`
+	// ForLoginPrivate makes the login for the operator alone.
+	ForLogin        bool `json:"for_login,omitempty"`
+	ForLoginPrivate bool `json:"for_login_private,omitempty"`
 }
 
 type StopCompositionRequest struct {

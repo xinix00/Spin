@@ -913,6 +913,7 @@ func (s *Store) Use(req domain.UseRequest) (domain.Composition, error) {
 		MCPServerIDs:         append([]string{}, session.MCPServerIDs...),
 		Warnings:             []string{},
 		ForLogin:             req.ForLogin,
+		ForLoginPrivate:      req.ForLogin && req.ForLoginPrivate,
 		CreatedAt:            time.Now().UTC(),
 	}
 	for _, layer := range stack {

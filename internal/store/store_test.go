@@ -1104,7 +1104,7 @@ func TestLoginsAreKeptEncrypted(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := map[string][]byte{"/root/.claude/.credentials.json": []byte(`{"refresh":"rotated-token"}`)}
-	login, err := st.CreateLogin("", "derek/credential:claude", files)
+	login, err := st.CreateLogin("", "derek/credential:claude", files, "")
 	if err != nil || login.Number != 1 {
 		t.Fatalf("create: %+v %v", login, err)
 	}

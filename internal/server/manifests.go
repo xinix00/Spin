@@ -1,8 +1,10 @@
 package server
 
 import (
+	"easyacp/internal/store"
 	"encoding/json"
 	"net/http"
+	"sort"
 
 	"easyacp/internal/domain"
 	"easyacp/internal/persistence"
@@ -69,6 +71,28 @@ func (s *Server) artifactContentsHandler(w http.ResponseWriter, r *http.Request)
 	if entries == nil {
 		entries = []domain.ContentEntry{}
 	}
+	// What the logins of the layer hold comes into the list as well: the
+	// files an agent adds under a tracked folder show up here, marked with
+	// the logins they are in, so what to keep is chosen over the whole.
+	index := map[string]int{}
+	for position, entry := range entries {
+		index[entry.Path] = position
+	}
+	for _, login := range s.store.LoginsFor(store.LayerKey(artifact)) {
+		for path, data := range login.Files {
+			position, present := index[path]
+			if !present {
+				position = len(entries)
+				index[path] = position
+				entries = append(entries, domain.ContentEntry{Path: path, Bytes: int64(len(data)), Source: "login"})
+			}
+			entries[position].Logins = append(entries[position].Logins, login.Number)
+		}
+	}
+	for position := range entries {
+		sort.Ints(entries[position].Logins)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	writeJSON(w, http.StatusOK, manifestResponse{Contents: artifact.Snapshot.Contents, Entries: entries})
 }
 

@@ -705,6 +705,7 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 	active.mu.Unlock()
 	s.rememberAgentOptions(composition, active)
 	s.acpSessions[sessionID] = active
+	go s.keepLoginsWhenACPEnds(active, composition.ID)
 	return active, nil
 }
 
