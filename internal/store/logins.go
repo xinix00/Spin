@@ -198,14 +198,22 @@ func (s *Store) CreateLogin(compositionID, key string, files map[string][]byte, 
 // from it in the capsule goes from the login too. It reports whether
 // anything differed.
 func (s *Store) SaveLoginFiles(id string, files map[string][]byte, folders []string) (bool, error) {
+	changed, _, err := s.SaveLoginFilesReporting(id, files, folders)
+	return changed, err
+}
+
+// SaveLoginFilesReporting is SaveLoginFiles that also names the files it
+// dropped because they were gone from a kept folder.
+func (s *Store) SaveLoginFilesReporting(id string, files map[string][]byte, folders []string) (bool, []string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	login, ok := s.state.Logins[id]
 	if !ok {
-		return false, ErrNotFound
+		return false, nil, ErrNotFound
 	}
 	merged := copyFiles(login.Files)
 	changed := false
+	var dropped []string
 	for path := range merged {
 		if _, present := files[path]; present {
 			continue
@@ -213,11 +221,13 @@ func (s *Store) SaveLoginFiles(id string, files map[string][]byte, folders []str
 		for _, folder := range folders {
 			if domain.TrackedFolder(folder) && strings.HasPrefix(path, folder) {
 				delete(merged, path)
+				dropped = append(dropped, path)
 				changed = true
 				break
 			}
 		}
 	}
+	sort.Strings(dropped)
 	for path, data := range files {
 		if !bytes.Equal(merged[path], data) {
 			merged[path] = append([]byte(nil), data...)
@@ -225,12 +235,12 @@ func (s *Store) SaveLoginFiles(id string, files map[string][]byte, folders []str
 		}
 	}
 	if !changed {
-		return false, nil
+		return false, nil, nil
 	}
 	login.Files = merged
 	login.UpdatedAt = time.Now().UTC()
 	s.state.Logins[id] = login
-	return true, s.saveLocked()
+	return true, dropped, s.saveLocked()
 }
 
 // LoginFiles lists the files of a login with their sizes, in path order.

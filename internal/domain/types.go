@@ -210,10 +210,10 @@ type PhaseRun struct {
 	// Restarts counts how often a person started this attempt over with a
 	// fresh agent (the workspace kept); RestartNotes are what they said
 	// should go differently, one per restart that had a note.
-	Restarts     int       `json:"restarts,omitempty"`
-	RestartNotes []string  `json:"restart_notes,omitempty"`
-	StartedAt    time.Time `json:"started_at"`
-	CompletedAt    *time.Time             `json:"completed_at,omitempty"`
+	Restarts     int        `json:"restarts,omitempty"`
+	RestartNotes []string   `json:"restart_notes,omitempty"`
+	StartedAt    time.Time  `json:"started_at"`
+	CompletedAt  *time.Time `json:"completed_at,omitempty"`
 }
 
 type WorkflowActionResult struct {

@@ -230,13 +230,13 @@ func (s *Server) trackedFilesChanged(clientID string, runtime domain.CapsuleRunt
 					covered[path] = data
 				}
 			}
-			changed, err := s.store.SaveLoginFiles(loginID, covered, target.folders())
+			changed, dropped, err := s.store.SaveLoginFilesReporting(loginID, covered, target.folders())
 			if err != nil {
 				s.logger.Warn("keep login on change", "composition", composition.ID, "layer", target.key, "error", err)
 				continue
 			}
 			if changed {
-				s.logger.Info("login kept on change", "composition", composition.ID, "layer", target.key, "files", len(covered))
+				s.logger.Info("login kept on change", "composition", composition.ID, "layer", target.key, "files", len(covered), "dropped", dropped)
 			}
 		}
 		return
@@ -285,13 +285,13 @@ func (s *Server) keepLogins(ctx context.Context, composition domain.Composition)
 			s.logger.Warn("read tracked files", "composition", composition.ID, "layer", target.key, "error", err)
 			continue
 		}
-		changed, err := s.store.SaveLoginFiles(loginID, files, target.folders())
+		changed, dropped, err := s.store.SaveLoginFilesReporting(loginID, files, target.folders())
 		if err != nil {
 			s.logger.Warn("keep login", "composition", composition.ID, "layer", target.key, "error", err)
 			continue
 		}
 		if changed {
-			s.logger.Info("login kept", "composition", composition.ID, "layer", target.key, "files", len(files))
+			s.logger.Info("login kept", "composition", composition.ID, "layer", target.key, "files", len(files), "dropped", dropped)
 		}
 	}
 }
