@@ -206,9 +206,10 @@ func (s *Server) useCapsule(ctx context.Context, req domain.UseRequest) (domain.
 	if err != nil {
 		return domain.Composition{}, err
 	}
-	// A credential layer with every login in use has nothing for one more
-	// capsule; say so before the slow part.
-	if err := s.loginsAvailable(composition); err != nil {
+	// The logins are taken now, before the slow part: a credential layer
+	// with every login in use has nothing for one more capsule, and says so
+	// without building anything.
+	if err := s.reserveLogins(composition); err != nil {
 		_ = s.store.DiscardComposition(composition.ID, composition.Operator)
 		return domain.Composition{}, err
 	}
@@ -247,9 +248,8 @@ func (s *Server) useCapsule(ctx context.Context, req domain.UseRequest) (domain.
 		_ = s.engine.Stop(context.Background(), runtime)
 		return domain.Composition{}, err
 	}
-	// The capsule runs: it gets its logins now, so a concurrent start of
-	// the same layer cannot get the same one.
-	if err := s.handOutLogins(ctx, materialized); err != nil {
+	// The capsule runs: the reserved logins go in.
+	if err := s.placeLogins(ctx, materialized); err != nil {
 		s.abandonCapsule(composition, runtime)
 		return domain.Composition{}, err
 	}

@@ -73,15 +73,25 @@ func (s *Server) trackedTargets(composition domain.Composition) []trackedTarget 
 	return targets
 }
 
-// loginsAvailable says whether every layer of the composition can hand
-// the capsule a login right now; the cheap look before a capsule is built.
-func (s *Server) loginsAvailable(composition domain.Composition) error {
+// reserveLogins takes a login of every layer that tracks files for the
+// composition before its capsule is built: a start that would find every
+// login taken stops here, without any image work, and no two starts can
+// end up with the same login. A layer without a login yet gets its first
+// once the capsule runs (placeLogins). A capsule started to log in takes
+// nothing.
+func (s *Server) reserveLogins(composition domain.Composition) error {
 	if composition.ForLogin {
 		return nil
 	}
 	for _, target := range s.trackedTargets(composition) {
-		if !s.store.LoginsFree(target.key, target.exclusive, composition.Operator) {
+		_, err := s.store.HandOutLogin(composition.ID, target.key, target.exclusive)
+		switch {
+		case errors.Is(err, store.ErrLoginsBusy):
 			return s.loginsBusy(target)
+		case errors.Is(err, store.ErrNotFound):
+			continue
+		case err != nil:
+			return fmt.Errorf("reserve a login of %s: %w", target.label, err)
 		}
 	}
 	return nil
@@ -140,12 +150,11 @@ func (s *Server) describeHolder(snapshot domain.Snapshot, compositionID string) 
 	return "a capsule that is gone"
 }
 
-// handOutLogins gives the running capsule a login of every layer that
-// tracks files and puts that login's files in it. A layer without a login
-// yet gets its first from what the capsule holds: the layer's own files.
-// A capsule started to log in once more gets nothing and keeps the
-// layer's files.
-func (s *Server) handOutLogins(ctx context.Context, composition domain.Composition) error {
+// placeLogins puts the files of the reserved logins in the running
+// capsule. A layer without a login yet gets its first from what the
+// capsule holds: the layer's own files. A capsule started to log in once
+// more gets nothing and keeps the layer's files.
+func (s *Server) placeLogins(ctx context.Context, composition domain.Composition) error {
 	tracked, ok := s.engine.(capsule.TrackedFiles)
 	if !ok || composition.ForLogin || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
 		return nil

@@ -39,10 +39,12 @@ func (s *Store) loginsForLocked(key string) []domain.Login {
 	return logins
 }
 
-// loginHolderLocked is the running capsule that holds the login, if any.
+// loginHolderLocked is the capsule that holds the login, if any: one that
+// runs, or one still being built (a login is taken before the image work,
+// so no two starts can end up with the same one).
 func (s *Store) loginHolderLocked(login domain.Login) (domain.Composition, bool) {
 	for _, composition := range s.state.Compositions {
-		if composition.Runtime != nil && composition.Runtime.Status != "stopped" && composition.Logins[login.Key] == login.ID {
+		if (composition.Runtime == nil || composition.Runtime.Status != "stopped") && composition.Logins[login.Key] == login.ID {
 			return composition, true
 		}
 	}
@@ -124,8 +126,8 @@ func (s *Store) HandOutLogin(compositionID, key string, exclusive bool) (domain.
 	if !ok {
 		return domain.Login{}, ErrNotFound
 	}
-	if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
-		return domain.Login{}, fmt.Errorf("a login goes to a running capsule: %w", ErrConflict)
+	if composition.Runtime != nil && composition.Runtime.Status == "stopped" {
+		return domain.Login{}, fmt.Errorf("a login goes to a capsule that runs or is being built: %w", ErrConflict)
 	}
 	if id, held := composition.Logins[key]; held {
 		if login, ok := s.state.Logins[id]; ok {

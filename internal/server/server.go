@@ -219,7 +219,22 @@ func (s *Server) sweepIdleCapsules() {
 	for _, run := range snapshot.PhaseRuns {
 		runs[run.ID] = run
 	}
+	s.jobLaunchMu.Lock()
+	launching := map[string]bool{}
+	for sessionID := range s.jobLaunching {
+		launching[sessionID] = true
+	}
+	s.jobLaunchMu.Unlock()
 	for _, composition := range snapshot.Compositions {
+		// A composition that never got its capsule (a start that died with
+		// the server) still holds the logins it reserved: it goes once no
+		// launch is under way for it any more.
+		if composition.Runtime == nil && time.Since(composition.CreatedAt) > 10*time.Minute && !launching[composition.SessionID] {
+			if err := s.store.DiscardComposition(composition.ID, composition.Operator); err == nil {
+				s.logger.Info("composition without a capsule discarded", "composition", composition.ID, "session", composition.SessionID)
+			}
+			continue
+		}
 		if composition.SessionID == "" || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
 			continue
 		}
