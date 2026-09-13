@@ -1094,10 +1094,10 @@ func (d *Docker) ReadTrackedFiles(ctx context.Context, runtime domain.CapsuleRun
 		}
 		if domain.TrackedFolder(path) {
 			folder := strings.TrimSuffix(path, "/")
-			fmt.Fprintf(&script, "if [ -d '%s' ]; then find '%s' %s-type f ! -name '*.lock' ! -name '*.spin-tmp' -size -%dc -print | head -n %d | while IFS= read -r f; do case \"$f\" in *' '*|*\"'\"*|*'\"'*|*'\\'*|*'*'*|*'?'*|*'['*) continue;; esac; %s; done; fi\n", folder, folder, prune, TrackedFileLimit+1, TrackedFolderFileLimit, emit)
+			fmt.Fprintf(&script, "if [ -d '%s' ]; then n=0; find '%s' %s-type f ! -name '*.lock' ! -name '*.spin-tmp' -print | head -n 20000 | while IFS= read -r f; do case \"$f\" in *' '*|*\"'\"*|*'\"'*|*'\\'*|*'*'*|*'?'*|*'['*) continue;; esac; if [ \"$n\" -lt %d ] && [ \"$(wc -c < \"$f\")\" -le %d ]; then %s; n=$((n+1)); else printf 'SPIN_SKIP %%s\\n' \"$f\"; fi; done; fi\n", folder, folder, prune, TrackedFolderFileLimit, TrackedFileLimit, emit)
 			continue
 		}
-		fmt.Fprintf(&script, "if [ -f '%s' ] && [ \"$(wc -c < '%s')\" -le %d ]; then f='%s'; %s; fi\n", path, path, TrackedFileLimit, path, emit)
+		fmt.Fprintf(&script, "if [ -f '%s' ]; then f='%s'; if [ \"$(wc -c < '%s')\" -le %d ]; then %s; else printf 'SPIN_SKIP %%s\\n' \"$f\"; fi; fi\n", path, path, path, TrackedFileLimit, emit)
 	}
 	output, code, err := d.run(ctx, "exec", runtime.ContainerID, "sh", "-c", script.String())
 	if err != nil && code < 0 {
@@ -1106,22 +1106,33 @@ func (d *Docker) ReadTrackedFiles(ctx context.Context, runtime domain.CapsuleRun
 	return parseHomeFiles(output)
 }
 
+// parseHomeFiles reads the runner's file lines: SPIN_FILE with the content
+// (an empty file is an empty, non-nil slice), and SPIN_SKIP for a file that
+// is there but not carried (too large, beyond the folder limit): nil, so
+// the server knows it exists and keeps what it has of it.
 func parseHomeFiles(output string) (map[string][]byte, error) {
 	files := map[string][]byte{}
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] != "SPIN_FILE" {
+		if len(fields) < 2 {
 			continue
 		}
-		var data []byte
-		if len(fields) == 3 {
-			decoded, err := base64.StdEncoding.DecodeString(fields[2])
-			if err != nil {
-				return nil, fmt.Errorf("tracked file %s: %w", fields[1], err)
+		switch fields[0] {
+		case "SPIN_SKIP":
+			if _, present := files[fields[1]]; !present {
+				files[fields[1]] = nil
 			}
-			data = decoded
+		case "SPIN_FILE":
+			data := []byte{}
+			if len(fields) == 3 {
+				decoded, err := base64.StdEncoding.DecodeString(fields[2])
+				if err != nil {
+					return nil, fmt.Errorf("tracked file %s: %w", fields[1], err)
+				}
+				data = decoded
+			}
+			files[fields[1]] = data
 		}
-		files[fields[1]] = data
 	}
 	return files, nil
 }

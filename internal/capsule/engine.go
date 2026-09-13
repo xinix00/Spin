@@ -133,6 +133,10 @@ type TrackedSelection struct {
 // TrackedFolderFileLimit bounds what a tracked folder yields.
 const TrackedFolderFileLimit = 2000
 
+// A file in the map with a nil value is there in the capsule but was not
+// carried (too large, or beyond TrackedFolderFileLimit): it exists, keep
+// what is known of it, do not drop it.
+
 // TrackedFiles reads and writes the files a layer tracks (a login, a
 // config an agent rotates) in a running capsule, by absolute path. What
 // Spin keeps between Sessions travels through this; nothing else the

@@ -174,7 +174,7 @@ func (s *Store) CreateLogin(compositionID, key string, files map[string][]byte, 
 	if !ok && compositionID != "" {
 		return domain.Login{}, ErrNotFound
 	}
-	if len(files) == 0 {
+	if len(copyFiles(files)) == 0 {
 		return domain.Login{}, fmt.Errorf("the capsule holds none of the layer's tracked files: %w", ErrConflict)
 	}
 	number := 0
@@ -215,6 +215,7 @@ func (s *Store) SaveLoginFilesReporting(id string, files map[string][]byte, fold
 	changed := false
 	var dropped []string
 	for path := range merged {
+		// Present, carried or not (nil): it stays.
 		if _, present := files[path]; present {
 			continue
 		}
@@ -229,7 +230,10 @@ func (s *Store) SaveLoginFilesReporting(id string, files map[string][]byte, fold
 	}
 	sort.Strings(dropped)
 	for path, data := range files {
-		if !bytes.Equal(merged[path], data) {
+		if data == nil {
+			continue // seen, not carried: what the login has of it stays
+		}
+		if _, known := merged[path]; !known || !bytes.Equal(merged[path], data) {
 			merged[path] = append([]byte(nil), data...)
 			changed = true
 		}
@@ -303,9 +307,14 @@ func (s *Store) DeleteLogin(id string) (domain.Login, error) {
 	return login, s.saveLocked()
 }
 
+// copyFiles copies the files, leaving out the ones seen but not carried
+// (nil): a login holds content, never a placeholder.
 func copyFiles(files map[string][]byte) map[string][]byte {
 	copied := make(map[string][]byte, len(files))
 	for path, data := range files {
+		if data == nil {
+			continue
+		}
 		copied[path] = append([]byte(nil), data...)
 	}
 	return copied

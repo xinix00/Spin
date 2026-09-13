@@ -209,3 +209,22 @@ func TestTrackedPathsAndParsing(t *testing.T) {
 		t.Fatalf("parsed = %v, %v", files, err)
 	}
 }
+
+// A file the runner saw but did not carry (too large, beyond the limit)
+// comes back as present without content, never as absent; an empty file is
+// present with empty content.
+func TestParseHomeFilesKeepsSeenFilesApart(t *testing.T) {
+	files, err := parseHomeFiles("SPIN_FILE /root/a dG9r\nSPIN_SKIP /root/big\nSPIN_FILE /root/empty\nnoise\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(files["/root/a"]) != "tok" {
+		t.Fatalf("a = %q", files["/root/a"])
+	}
+	if data, present := files["/root/big"]; !present || data != nil {
+		t.Fatalf("big = %v present=%v; expected present without content", data, present)
+	}
+	if data, present := files["/root/empty"]; !present || data == nil || len(data) != 0 {
+		t.Fatalf("empty = %v present=%v; expected present and empty", data, present)
+	}
+}

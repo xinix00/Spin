@@ -78,3 +78,27 @@ func TestJobWithSeveralRepositoriesChecksOutEachInItsOwnFolder(t *testing.T) {
 		t.Fatalf("one repository at the root: %+v %v", composition.Git, err)
 	}
 }
+
+// A file seen but not carried keeps its place and content in the login; a
+// file no longer seen in a kept folder goes.
+func TestSaveLoginFilesKeepsSeenButUncarriedFiles(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := st.CreateLogin("", "derek/credential:claude", map[string][]byte{"/root/.claude/.credentials.json": []byte("tok"), "/root/.claude/gone": []byte("x"), "/root/.claude/big": nil}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := login.Files["/root/.claude/big"]; present {
+		t.Fatal("a placeholder was stored as content")
+	}
+	changed, dropped, err := st.SaveLoginFilesReporting(login.ID, map[string][]byte{"/root/.claude/.credentials.json": nil}, []string{"/root/.claude/"})
+	if err != nil || !changed || len(dropped) != 1 || dropped[0] != "/root/.claude/gone" {
+		t.Fatalf("changed=%v dropped=%v err=%v", changed, dropped, err)
+	}
+	kept, _ := st.Login(login.ID)
+	if string(kept.Files["/root/.claude/.credentials.json"]) != "tok" {
+		t.Fatalf("the uncarried file lost its content: %q", kept.Files["/root/.claude/.credentials.json"])
+	}
+}
