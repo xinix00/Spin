@@ -477,8 +477,12 @@ func (s *Store) MarkWorkflowPhaseRunning(sessionID string) (domain.PhaseRun, err
 // RetryWorkflowSession returns the current workflow phase to its queue without
 // creating a new phase attempt or Session. Runtime cleanup is deliberately a
 // server concern: the Store only records the explicit user decision.
-func (s *Store) RetryWorkflowSession(sessionID, operator string) (domain.CreateJobResponse, string, error) {
+func (s *Store) RetryWorkflowSession(sessionID, operator, note string) (domain.CreateJobResponse, string, error) {
 	operator = normalizeSubject(operator)
+	note = strings.TrimSpace(note)
+	if len(note) > 4000 {
+		return domain.CreateJobResponse{}, "", fmt.Errorf("the note for the new attempt exceeds 4000 characters: %w", ErrConflict)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	session, ok := s.state.Sessions[strings.TrimSpace(sessionID)]
@@ -519,6 +523,10 @@ func (s *Store) RetryWorkflowSession(sessionID, operator string) (domain.CreateJ
 	run.Summary = ""
 	run.RejectReason = ""
 	run.CompletedAt = nil
+	run.Restarts++
+	if note != "" {
+		run.RestartNotes = append(run.RestartNotes, note)
+	}
 	job.Status = domain.JobActive
 	job.WorkflowStatus = domain.WorkflowBusy
 	job.PendingReason = ""

@@ -1245,9 +1245,22 @@ func (s *Server) adoptJobTemplate(w http.ResponseWriter, r *http.Request) {
 	s.scheduleWorkflowRetry(created, operator, previousCompositionID)
 }
 
+// retryWorkflowSession starts the step over with a fresh agent: the work
+// in the workspace is pushed to the Session branch first and comes back in
+// the new capsule, the conversation does not. A note says what should go
+// differently.
 func (s *Server) retryWorkflowSession(w http.ResponseWriter, r *http.Request) {
 	operator := s.requestOperator(r, r.URL.Query().Get("operator"))
-	created, previousCompositionID, err := s.store.RetryWorkflowSession(r.PathValue("sessionID"), operator)
+	var request struct {
+		Note string `json:"note"`
+	}
+	if r.ContentLength != 0 {
+		if !decodeJSON(w, r, &request) {
+			return
+		}
+	}
+	s.syncWorkspaceWithin(r.PathValue("sessionID"), 0)
+	created, previousCompositionID, err := s.store.RetryWorkflowSession(r.PathValue("sessionID"), operator, request.Note)
 	if err != nil {
 		writeError(w, err)
 		return

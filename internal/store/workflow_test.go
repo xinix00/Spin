@@ -219,7 +219,7 @@ func TestWorkflowAskUserGatesAIOutcomeWithExplicitRoutes(t *testing.T) {
 	broken.BaseRef = created.Job.Branch
 	st.state.Sessions[broken.ID] = broken
 	st.mu.Unlock()
-	retried, _, err := st.RetryWorkflowSession(broken.ID, "derek")
+	retried, _, err := st.RetryWorkflowSession(broken.ID, "derek", "")
 	if err != nil || retried.Session.BaseRef != rejected.NextSession.BaseRef {
 		t.Fatalf("repaired retry = %+v, error = %v", retried, err)
 	}
@@ -518,7 +518,7 @@ func TestRetryWorkflowSessionRequeuesSameAttemptAndClosesOpenQuestion(t *testing
 	st.state.Sessions[prepared.ID] = prepared
 	st.mu.Unlock()
 
-	retried, compositionID, err := st.RetryWorkflowSession(created.Session.ID, "derek")
+	retried, compositionID, err := st.RetryWorkflowSession(created.Session.ID, "derek", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +532,7 @@ func TestRetryWorkflowSessionRequeuesSameAttemptAndClosesOpenQuestion(t *testing
 	if len(snapshot.WorkflowQuestions) != 1 || snapshot.WorkflowQuestions[0].ID != question.ID || snapshot.WorkflowQuestions[0].Status != "answered" || snapshot.WorkflowQuestions[0].Answer != "retry" {
 		t.Fatalf("question after retry = %+v", snapshot.WorkflowQuestions)
 	}
-	if _, _, err := st.RetryWorkflowSession(created.Session.ID, "john"); !errors.Is(err, ErrConflict) {
+	if _, _, err := st.RetryWorkflowSession(created.Session.ID, "john", ""); !errors.Is(err, ErrConflict) {
 		t.Fatalf("other user retry error = %v", err)
 	}
 }

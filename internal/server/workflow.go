@@ -856,6 +856,12 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 			fmt.Fprintf(&prompt, "- %s, poging %d, afwijzing door de gebruiker: %s\n", previous.PhaseName, previous.Attempt, own)
 		}
 	}
+	if run.Restarts > 0 {
+		fmt.Fprintf(&prompt, "\nOPNIEUW GESTART\nDeze poging is %d keer door de gebruiker opnieuw gestart met een verse agent. De workspace is bewaard: wat er al gedaan was staat erin, kijk daar eerst naar en ga verder in plaats van opnieuw te beginnen.\n", run.Restarts)
+		for _, note := range run.RestartNotes {
+			fmt.Fprintf(&prompt, "- Aanwijzing van de gebruiker: %s\n", note)
+		}
+	}
 	codeFeedbackWritten := false
 	for _, previous := range history {
 		if previous.JobID != job.ID || previous.ID == run.ID || previous.RejectReason == "" {
