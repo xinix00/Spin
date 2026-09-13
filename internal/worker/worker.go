@@ -1094,7 +1094,9 @@ func (w *Worker) watchTracked(runtime domain.CapsuleRuntime, selection capsule.T
 				if !changed {
 					continue
 				}
-				payload, err := json.Marshal(trackedFilesPayload{Runtime: runtime, Files: files})
+				// The report says what it was read with, so the server applies
+				// it to exactly that and to nothing chosen since.
+				payload, err := json.Marshal(trackedFilesPayload{Runtime: runtime, Paths: selection.Paths, Excludes: selection.Excludes, Files: files})
 				if err != nil {
 					continue
 				}

@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
 	"easyacp/internal/store"
 	"github.com/gorilla/websocket"
@@ -244,7 +245,7 @@ func containsMessageID(messages []wireMessage, id string) bool {
 // address their pinned ClientID.
 type Broker struct {
 	// trackedChanged hears a runner report that tracked files changed.
-	trackedChanged func(clientID string, runtime domain.CapsuleRuntime, files map[string][]byte)
+	trackedChanged func(clientID string, runtime domain.CapsuleRuntime, selection capsule.TrackedSelection, files map[string][]byte)
 	store          *store.Store
 	logger         *slog.Logger
 
@@ -414,7 +415,7 @@ func (b *Broker) readLoop(ctx context.Context, peer *runnerPeer, connection *web
 					handler := b.trackedChanged
 					b.mu.Unlock()
 					if handler != nil {
-						go handler(peer.id, payload.Runtime, payload.Files)
+						go handler(peer.id, payload.Runtime, capsule.TrackedSelection{Paths: payload.Paths, Excludes: payload.Excludes}, payload.Files)
 					}
 				}
 			}
@@ -676,7 +677,7 @@ func (b *Broker) info() domain.CapsuleEngineInfo {
 
 // OnTrackedFilesChanged sets who hears a runner's report that the tracked
 // files of a capsule changed.
-func (b *Broker) OnTrackedFilesChanged(handler func(clientID string, runtime domain.CapsuleRuntime, files map[string][]byte)) {
+func (b *Broker) OnTrackedFilesChanged(handler func(clientID string, runtime domain.CapsuleRuntime, selection capsule.TrackedSelection, files map[string][]byte)) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.trackedChanged = handler

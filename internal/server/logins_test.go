@@ -268,9 +268,39 @@ func TestRunnerReportKeepsLoginOnChange(t *testing.T) {
 	srv, st, engine, key := newLoginTestServer(t, domain.ArtifactCredential, path)
 	first := useLayers(t, srv, "derek", "credential:claude")
 	engine.capsule(first.Runtime.ContainerID)[path] = []byte("token-9")
-	srv.trackedFilesChanged(first.Runtime.ClientID, *first.Runtime, map[string][]byte{path: []byte("token-9"), "/root/elsewhere": []byte("x")})
+	srv.trackedFilesChanged(first.Runtime.ClientID, *first.Runtime, capsule.TrackedSelection{Paths: []string{path}}, map[string][]byte{path: []byte("token-9"), "/root/elsewhere": []byte("x")})
 	login, _ := st.Login(first.Logins[key])
 	if string(login.Files[path]) != "token-9" || login.Files["/root/elsewhere"] != nil {
 		t.Fatalf("login after the report = %v", keys(login.Files))
+	}
+}
+
+// A report from a watcher that still reads the old selection (the folder
+// was chosen after the capsule started) never drops the folder's files.
+func TestStaleWatcherReportDropsNothing(t *testing.T) {
+	const path = "/root/.claude/.credentials.json"
+	srv, st, engine, key := newLoginTestServer(t, domain.ArtifactCredential, path)
+	first := useLayers(t, srv, "derek", "credential:claude")
+	var credential domain.Artifact
+	for _, artifact := range st.Snapshot().Artifacts {
+		if artifact.Kind == domain.ArtifactCredential {
+			credential = artifact
+		}
+	}
+	// The person now keeps the whole folder; the login gets a second file
+	// from the folder at the next full read.
+	if _, err := st.SetArtifactTracked(credential.ID, []string{"/root/.claude/"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	engine.capsule(first.Runtime.ContainerID)["/root/.claude/settings.json"] = []byte("{}")
+	srv.captureLoginState(context.Background(), first)
+	if login, _ := st.Login(first.Logins[key]); len(login.Files) != 2 {
+		t.Fatalf("login after the full read = %v", keys(login.Files))
+	}
+	// The old watcher reports with its old selection: the one file.
+	srv.trackedFilesChanged(first.Runtime.ClientID, *first.Runtime, capsule.TrackedSelection{Paths: []string{path}}, map[string][]byte{path: []byte("token-3")})
+	login, _ := st.Login(first.Logins[key])
+	if string(login.Files[path]) != "token-3" || login.Files["/root/.claude/settings.json"] == nil {
+		t.Fatalf("a stale report changed the login to %v", keys(login.Files))
 	}
 }

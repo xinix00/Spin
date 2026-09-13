@@ -125,6 +125,7 @@ func (s *Server) setTrackedPathsHandler(w http.ResponseWriter, r *http.Request) 
 		writeError(w, err)
 		return
 	}
+	go s.rewatchLayer(updated)
 	writeJSON(w, http.StatusOK, updated)
 }
 

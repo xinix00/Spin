@@ -190,6 +190,23 @@ func (s *Server) placeLogins(ctx context.Context, composition domain.Composition
 	return nil
 }
 
+// rewatchLayer has every running capsule of the layer watch the layer's
+// current selection, after a person changed what it keeps.
+func (s *Server) rewatchLayer(artifact domain.Artifact) {
+	key := store.LayerKey(artifact)
+	for _, composition := range s.store.RunningCompositions() {
+		for _, target := range s.trackedTargets(composition) {
+			if target.key != key {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			s.watchLogins(ctx, composition)
+			cancel()
+			break
+		}
+	}
+}
+
 // watchLogins has the runner watch everything the capsule's layers track
 // and report changes as they happen; the server keeps each change in the
 // login at once. What a crash would lose is then already kept.
@@ -213,8 +230,10 @@ func (s *Server) watchLogins(ctx context.Context, composition domain.Composition
 
 // trackedFilesChanged is a runner's report of the tracked files of a
 // capsule as they are now: each held login takes what falls under its
-// layer.
-func (s *Server) trackedFilesChanged(clientID string, runtime domain.CapsuleRuntime, files map[string][]byte) {
+// layer. The report names the selection it was read with; a folder the
+// watcher was not yet reading (chosen after the capsule started) is left
+// alone, so a stale watcher can never empty a login.
+func (s *Server) trackedFilesChanged(clientID string, runtime domain.CapsuleRuntime, selection capsule.TrackedSelection, files map[string][]byte) {
 	for _, composition := range s.store.RunningCompositions() {
 		if composition.Runtime.ContainerID != runtime.ContainerID || (clientID != "" && composition.Runtime.ClientID != "" && composition.Runtime.ClientID != clientID) {
 			continue
@@ -224,13 +243,19 @@ func (s *Server) trackedFilesChanged(clientID string, runtime domain.CapsuleRunt
 			if !held {
 				continue
 			}
+			var readFolders []string
+			for _, folder := range target.folders() {
+				if slices.Contains(selection.Paths, folder) {
+					readFolders = append(readFolders, folder)
+				}
+			}
 			covered := map[string][]byte{}
 			for path, data := range files {
 				if domain.TrackedCovers(path, target.paths, target.excludes) {
 					covered[path] = data
 				}
 			}
-			changed, dropped, err := s.store.SaveLoginFilesReporting(loginID, covered, target.folders())
+			changed, dropped, err := s.store.SaveLoginFilesReporting(loginID, covered, readFolders)
 			if err != nil {
 				s.logger.Warn("keep login on change", "composition", composition.ID, "layer", target.key, "error", err)
 				continue
@@ -430,6 +455,7 @@ func (s *Server) excludeLoginPathHandler(w http.ResponseWriter, r *http.Request)
 		writeError(w, err)
 		return
 	}
+	go s.rewatchLayer(updated)
 	writeJSON(w, http.StatusOK, map[string]any{"artifact": updated, "removed": removed})
 }
 
