@@ -102,3 +102,24 @@ func TestSaveLoginFilesKeepsSeenButUncarriedFiles(t *testing.T) {
 		t.Fatalf("the uncarried file lost its content: %q", kept.Files["/root/.claude/.credentials.json"])
 	}
 }
+
+// A read that sees nothing under a kept folder drops nothing from it: an
+// empty read is a broken read, not an emptied folder.
+func TestEmptyFolderReadDropsNothing(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := st.CreateLogin("", "derek/credential:claude", map[string][]byte{"/root/.claude/.credentials.json": []byte("tok"), "/root/.claude.json": []byte("{}")}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, dropped, err := st.SaveLoginFilesReporting(login.ID, map[string][]byte{"/root/.claude.json": []byte("{}")}, []string{"/root/.claude/"})
+	if err != nil || changed || len(dropped) != 0 {
+		t.Fatalf("changed=%v dropped=%v err=%v; an empty folder read must drop nothing", changed, dropped, err)
+	}
+	changed, dropped, err = st.SaveLoginFilesReporting(login.ID, map[string][]byte{"/root/.claude/settings.json": []byte("{}")}, []string{"/root/.claude/"})
+	if err != nil || !changed || len(dropped) != 1 {
+		t.Fatalf("changed=%v dropped=%v err=%v; a read that sees the folder drops what is gone", changed, dropped, err)
+	}
+}

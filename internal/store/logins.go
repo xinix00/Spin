@@ -214,13 +214,25 @@ func (s *Store) SaveLoginFilesReporting(id string, files map[string][]byte, fold
 	merged := copyFiles(login.Files)
 	changed := false
 	var dropped []string
+	// A folder is emptied of the login's files only when the read saw at
+	// least one file in it: a read that yields nothing under a kept folder
+	// is a broken read (an old runner, a folder scan that failed), not a
+	// folder the agent emptied, and must never wipe a login.
+	seen := map[string]bool{}
+	for path := range files {
+		for _, folder := range folders {
+			if domain.TrackedFolder(folder) && strings.HasPrefix(path, folder) {
+				seen[folder] = true
+			}
+		}
+	}
 	for path := range merged {
 		// Present, carried or not (nil): it stays.
 		if _, present := files[path]; present {
 			continue
 		}
 		for _, folder := range folders {
-			if domain.TrackedFolder(folder) && strings.HasPrefix(path, folder) {
+			if domain.TrackedFolder(folder) && strings.HasPrefix(path, folder) && seen[folder] {
 				delete(merged, path)
 				dropped = append(dropped, path)
 				changed = true
