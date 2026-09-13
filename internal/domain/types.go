@@ -605,11 +605,11 @@ type LoginFile struct {
 
 // LoginSummary is a login without its files, as the browser sees it.
 type LoginSummary struct {
-	ID     string `json:"id"`
-	Key    string `json:"key"`
-	Number int    `json:"number"`
-	Files  int    `json:"files"`
-	Bytes  int64  `json:"bytes"`
+	ID        string    `json:"id"`
+	Key       string    `json:"key"`
+	Number    int       `json:"number"`
+	Files     int       `json:"files"`
+	Bytes     int64     `json:"bytes"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	// CompositionID is the running capsule that holds the login, if any.
