@@ -308,9 +308,17 @@ func (s *Server) deleteLoginHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, store.ErrNotFound)
 		return
 	}
+	// The layer's owner (its subject, or for a shared layer whoever
+	// recorded it) or an admin removes a login.
 	subject := strings.SplitN(login.Key, "/", 2)[0]
-	if identity, authenticated := identityFromRequest(r); authenticated && identity.User.Role != "admin" && identity.User.Username != subject {
-		writeError(w, fmt.Errorf("only %s or an admin removes this login: %w", subject, store.ErrConflict))
+	owners := map[string]bool{subject: true}
+	for _, artifact := range s.store.Snapshot().Artifacts {
+		if store.LayerKey(artifact) == login.Key {
+			owners[normalizeOperator(artifact.CreatedBy)] = true
+		}
+	}
+	if identity, authenticated := identityFromRequest(r); authenticated && identity.User.Role != "admin" && !owners[normalizeOperator(identity.User.Username)] {
+		writeError(w, fmt.Errorf("only the layer's owner or an admin removes this login: %w", store.ErrConflict))
 		return
 	}
 	for _, composition := range s.store.RunningCompositions() {

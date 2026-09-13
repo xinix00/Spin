@@ -3672,22 +3672,37 @@ func (s *Store) IdentityLayerFor(artifactID, operator string) (domain.Artifact, 
 	return s.identityLayerLocked(artifact, operator), nil
 }
 
+// identityLayerLocked is the credential layer a Session on the agent
+// layer runs with: the operator's own when they have one, else a shared
+// one (scope global) on the same agent. A shared credential layer holds no
+// personal login; its logins are a pool handed out per running capsule.
 func (s *Store) identityLayerLocked(artifact domain.Artifact, operator string) domain.Artifact {
-	var identity *domain.Artifact
+	var own, shared *domain.Artifact
 	for _, candidate := range s.state.Artifacts {
-		if candidate.Kind != domain.ArtifactCredential || candidate.Scope != domain.ScopeUser || candidate.Subject != operator || candidate.SupersededBy != "" {
+		if candidate.Kind != domain.ArtifactCredential || candidate.SupersededBy != "" {
+			continue
+		}
+		mine := candidate.Scope == domain.ScopeUser && candidate.Subject == operator
+		if !mine && candidate.Scope != domain.ScopeGlobal {
 			continue
 		}
 		if !s.dependsOnLineageLocked(candidate.ID, artifact) {
 			continue
 		}
 		candidate := candidate
-		if identity == nil || candidate.CreatedAt.After(identity.CreatedAt) {
-			identity = &candidate
+		slot := &shared
+		if mine {
+			slot = &own
+		}
+		if *slot == nil || candidate.CreatedAt.After((*slot).CreatedAt) {
+			*slot = &candidate
 		}
 	}
-	if identity != nil {
-		return *identity
+	if own != nil {
+		return *own
+	}
+	if shared != nil {
+		return *shared
 	}
 	return artifact
 }
