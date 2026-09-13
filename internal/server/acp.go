@@ -705,7 +705,6 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 	active.mu.Unlock()
 	s.rememberAgentOptions(composition, active)
 	s.acpSessions[sessionID] = active
-	go s.keepLoginsWhenACPEnds(active, composition.ID)
 	return active, nil
 }
 
@@ -727,7 +726,9 @@ func (s *Server) afterTurn(sessionID, compositionID string) {
 	if err != nil || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
 		return
 	}
-	s.captureLoginState(ctx, composition)
+	// The logins are kept as files change (the runner watches them); a
+	// turn's end only notes what the capsule changed.
+	s.captureCapsuleChanges(ctx, composition)
 	if !waiting {
 		return
 	}

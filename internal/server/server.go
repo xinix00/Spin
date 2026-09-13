@@ -166,6 +166,9 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 	if reporter, ok := engine.(placementReporter); ok {
 		reporter.OnPlacement(s.recordLaunchPlacement)
 	}
+	if s.runnerBroker != nil {
+		s.runnerBroker.OnTrackedFilesChanged(s.trackedFilesChanged)
+	}
 	go s.resumeQueuedWorkflowActions()
 	s.resumeStartingRecordings()
 	s.pruneLater()

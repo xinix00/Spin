@@ -17,6 +17,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -998,6 +1000,69 @@ func validTrackedPath(path string) bool {
 		}
 	}
 	return true
+}
+
+// WatchTrackedFiles runs a watcher in the capsule that prints a line when
+// something in the selection changes: inotify on the included folders and
+// the folders of the included files when the image has inotifywait, else
+// a one-second signature of the same, inside the capsule so no round trip
+// is spent while nothing happens. It returns when the capsule ends.
+func (d *Docker) WatchTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, selection TrackedSelection, changed func()) error {
+	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
+		return errors.New("composition has no live Docker capsule")
+	}
+	dirs := map[string]bool{}
+	for _, path := range selection.Paths {
+		if !validTrackedPath(path) {
+			return fmt.Errorf("invalid tracked path %q", path)
+		}
+		if domain.TrackedFolder(path) {
+			dirs[strings.TrimSuffix(path, "/")] = true
+		} else {
+			dirs[filepath.Dir(path)] = true
+		}
+	}
+	if len(dirs) == 0 {
+		return nil
+	}
+	var quoted []string
+	for dir := range dirs {
+		quoted = append(quoted, "'"+dir+"'")
+	}
+	sort.Strings(quoted)
+	list := strings.Join(quoted, " ")
+	script := `dirs="` + list + `"
+for d in $dirs; do mkdir -p "$d" 2>/dev/null; done
+if command -v inotifywait >/dev/null 2>&1; then
+  inotifywait -m -q -r -e close_write -e moved_to -e create -e delete -e attrib --format '%w%f' $dirs 2>/dev/null | while IFS= read -r f; do echo CHANGED; done
+else
+  prev=""
+  while :; do
+    cur="$(find $dirs -type f 2>/dev/null | head -n 5000 | while IFS= read -r f; do stat -c '%n %s %Y' "$f" 2>/dev/null; done | cksum)"
+    if [ -n "$prev" ] && [ "$cur" != "$prev" ]; then echo CHANGED; fi
+    prev="$cur"
+    sleep 1
+  done
+fi`
+	cmd := exec.CommandContext(ctx, d.binary, "exec", "-i", runtime.ContainerID, "sh", "-c", script)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) == "CHANGED" {
+			changed()
+		}
+	}
+	err = cmd.Wait()
+	if ctx.Err() != nil {
+		return nil
+	}
+	return err
 }
 
 // ReadTrackedFiles returns the tracked files that exist in the capsule,

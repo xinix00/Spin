@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	cryptorand "crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -61,6 +62,8 @@ type Worker struct {
 	streams       map[string]localStream
 	liveWorkloads int
 	connections   uint64
+	// watchers holds the tracked-file watcher per capsule.
+	watchers map[string]context.CancelFunc
 }
 
 func New(config Config, logger *slog.Logger) *Worker {
@@ -505,6 +508,12 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 			return files, false, err
 		}
 		return nil, false, tracked.WriteTrackedFiles(ctx, payload.Runtime, payload.Files)
+	case methodWatchTracked:
+		var payload trackedFilesPayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		return nil, false, w.watchTracked(payload.Runtime, capsule.TrackedSelection{Paths: payload.Paths, Excludes: payload.Excludes})
 	case methodBundleDeliverable:
 		var payload bundleDeliverablePayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {
@@ -994,4 +1003,104 @@ func (p *snapshotTransferProcess) Wait() (capsule.Execution, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.execution, p.err
+}
+
+// watchTracked keeps one watcher per capsule: the runner watches the
+// selection inside it and, when something changes, reads the selection
+// and sends its content to the server as an event, so a token an agent
+// rotates is kept the moment it is written, not at the end of a turn that
+// may never come. A second request for the same capsule replaces the
+// first (the selection may have changed).
+func (w *Worker) watchTracked(runtime domain.CapsuleRuntime, selection capsule.TrackedSelection) error {
+	watcher, ok := w.engine.(capsule.TrackedWatcher)
+	if !ok {
+		return errors.New("runner engine cannot watch tracked files")
+	}
+	tracked, ok := w.engine.(capsule.TrackedFiles)
+	if !ok {
+		return errors.New("runner engine cannot read tracked files")
+	}
+	key := runtime.ContainerID
+	ctx, cancel := context.WithCancel(context.Background())
+	w.mu.Lock()
+	if w.watchers == nil {
+		w.watchers = map[string]context.CancelFunc{}
+	}
+	if previous, exists := w.watchers[key]; exists {
+		previous()
+	}
+	w.watchers[key] = cancel
+	w.mu.Unlock()
+	go func() {
+		defer func() {
+			w.mu.Lock()
+			if ctx.Err() == nil {
+				cancel()
+				delete(w.watchers, key)
+			}
+			w.mu.Unlock()
+		}()
+		last := map[string]string{}
+		snapshot := func() (map[string][]byte, bool) {
+			readCtx, cancelRead := context.WithTimeout(ctx, 30*time.Second)
+			defer cancelRead()
+			files, err := tracked.ReadTrackedFiles(readCtx, runtime, selection)
+			if err != nil {
+				return nil, false
+			}
+			current := make(map[string]string, len(files))
+			for path, data := range files {
+				sum := sha256.Sum256(data)
+				current[path] = hex.EncodeToString(sum[:])
+			}
+			changed := len(current) != len(last)
+			if !changed {
+				for path, hash := range current {
+					if last[path] != hash {
+						changed = true
+						break
+					}
+				}
+			}
+			last = current
+			return files, changed
+		}
+		// The first read is the baseline; only changes after it travel.
+		snapshot()
+		var pending <-chan time.Time
+		events := make(chan struct{}, 1)
+		go func() {
+			if err := watcher.WatchTrackedFiles(ctx, runtime, selection, func() {
+				select {
+				case events <- struct{}{}:
+				default:
+				}
+			}); err != nil && ctx.Err() == nil {
+				w.logger.Warn("watch tracked files", "container", runtime.ContainerID, "error", err)
+			}
+			cancel()
+		}()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-events:
+				// A burst of writes (a tool rewriting several files) is one
+				// read, a moment after the last write.
+				pending = time.After(700 * time.Millisecond)
+			case <-pending:
+				pending = nil
+				files, changed := snapshot()
+				if !changed {
+					continue
+				}
+				payload, err := json.Marshal(trackedFilesPayload{Runtime: runtime, Files: files})
+				if err != nil {
+					continue
+				}
+				w.enqueue(wireMessage{Version: ProtocolVersion, Type: messageEvent, Method: methodTrackedChanged, Payload: payload})
+			}
+		}
+	}()
+	return nil
 }

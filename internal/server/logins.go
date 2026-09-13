@@ -186,7 +186,61 @@ func (s *Server) placeLogins(ctx context.Context, composition domain.Composition
 		}
 		s.logger.Info("login handed out", "composition", composition.ID, "layer", target.key, "login", login.Number, "files", len(login.Files), "kept_at", login.UpdatedAt.Format(time.RFC3339))
 	}
+	s.watchLogins(ctx, composition)
 	return nil
+}
+
+// watchLogins has the runner watch everything the capsule's layers track
+// and report changes as they happen; the server keeps each change in the
+// login at once. What a crash would lose is then already kept.
+func (s *Server) watchLogins(ctx context.Context, composition domain.Composition) {
+	subscriber, ok := s.engine.(capsule.TrackedSubscriber)
+	if !ok {
+		return
+	}
+	var selection capsule.TrackedSelection
+	for _, target := range s.trackedTargets(composition) {
+		selection.Paths = append(selection.Paths, target.paths...)
+		selection.Excludes = append(selection.Excludes, target.excludes...)
+	}
+	if len(selection.Paths) == 0 {
+		return
+	}
+	if err := subscriber.SubscribeTrackedFiles(ctx, *composition.Runtime, selection); err != nil {
+		s.logger.Warn("watch tracked files", "composition", composition.ID, "error", err)
+	}
+}
+
+// trackedFilesChanged is a runner's report of the tracked files of a
+// capsule as they are now: each held login takes what falls under its
+// layer.
+func (s *Server) trackedFilesChanged(clientID string, runtime domain.CapsuleRuntime, files map[string][]byte) {
+	for _, composition := range s.store.RunningCompositions() {
+		if composition.Runtime.ContainerID != runtime.ContainerID || (clientID != "" && composition.Runtime.ClientID != "" && composition.Runtime.ClientID != clientID) {
+			continue
+		}
+		for _, target := range s.trackedTargets(composition) {
+			loginID, held := composition.Logins[target.key]
+			if !held {
+				continue
+			}
+			covered := map[string][]byte{}
+			for path, data := range files {
+				if domain.TrackedCovers(path, target.paths, target.excludes) {
+					covered[path] = data
+				}
+			}
+			changed, err := s.store.SaveLoginFiles(loginID, covered, target.folders())
+			if err != nil {
+				s.logger.Warn("keep login on change", "composition", composition.ID, "layer", target.key, "error", err)
+				continue
+			}
+			if changed {
+				s.logger.Info("login kept on change", "composition", composition.ID, "layer", target.key, "files", len(covered))
+			}
+		}
+		return
+	}
 }
 
 // captureLoginState is the full look at a capsule at the end of a turn and
@@ -212,21 +266,6 @@ func (s *Server) captureCapsuleChanges(ctx context.Context, composition domain.C
 			}
 		}
 	}
-}
-
-// keepLoginsWhenACPEnds reads a capsule's tracked files into its logins
-// the moment its agent process ends, however it ends: a chat closed, a
-// crash, a stop. A token the agent refreshed during its last turn is then
-// kept even when no turn end followed.
-func (s *Server) keepLoginsWhenACPEnds(active *activeACP, compositionID string) {
-	<-active.done
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	composition, err := s.store.Composition(compositionID)
-	if err != nil || composition.Runtime == nil || composition.Runtime.Status == "stopped" || len(composition.Logins) == 0 || !s.engineConnected(composition.Runtime.ClientID) {
-		return
-	}
-	s.keepLogins(ctx, composition)
 }
 
 // keepLogins reads the tracked files back from a running capsule into the

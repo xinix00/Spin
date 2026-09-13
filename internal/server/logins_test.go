@@ -260,3 +260,17 @@ func keys(files map[string][]byte) []string {
 	}
 	return out
 }
+
+// A runner's report that tracked files changed is kept in the held login
+// at once: nothing waits for the end of a turn.
+func TestRunnerReportKeepsLoginOnChange(t *testing.T) {
+	const path = "/root/.claude/.credentials.json"
+	srv, st, engine, key := newLoginTestServer(t, domain.ArtifactCredential, path)
+	first := useLayers(t, srv, "derek", "credential:claude")
+	engine.capsule(first.Runtime.ContainerID)[path] = []byte("token-9")
+	srv.trackedFilesChanged(first.Runtime.ClientID, *first.Runtime, map[string][]byte{path: []byte("token-9"), "/root/elsewhere": []byte("x")})
+	login, _ := st.Login(first.Logins[key])
+	if string(login.Files[path]) != "token-9" || login.Files["/root/elsewhere"] != nil {
+		t.Fatalf("login after the report = %v", keys(login.Files))
+	}
+}

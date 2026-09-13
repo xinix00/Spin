@@ -298,6 +298,16 @@ func (e *RemoteEngine) InspectWorkspace(ctx context.Context, runtime domain.Caps
 	return changes, err
 }
 
+// SubscribeTrackedFiles has the runner watch the capsule's tracked files
+// and report their content as events when one changes.
+func (e *RemoteEngine) SubscribeTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, selection capsule.TrackedSelection) error {
+	if !e.broker.Connected(runtime.ClientID) {
+		return fmt.Errorf("watch on %s: %w", runtime.ClientID, ErrRunnerOffline)
+	}
+	_, err := e.broker.call(ctx, runtime.ClientID, methodWatchTracked, trackedFilesPayload{Runtime: runtime, Paths: selection.Paths, Excludes: selection.Excludes}, nil)
+	return err
+}
+
 // InspectWorkspaceAt inspects one repository of a capsule with several.
 func (e *RemoteEngine) InspectWorkspaceAt(ctx context.Context, runtime domain.CapsuleRuntime, path string) (capsule.WorkspaceChanges, error) {
 	var changes capsule.WorkspaceChanges
@@ -845,6 +855,7 @@ var (
 	_ capsule.EnabledProber               = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceInspector          = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceInspectorAt        = (*RemoteEngine)(nil)
+	_ capsule.TrackedSubscriber           = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceRangeInspector     = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceAttachmentInjector = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceAcceptor           = (*RemoteEngine)(nil)
