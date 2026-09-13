@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -298,6 +299,73 @@ func (s *Server) saveLoginHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, summaries)
 }
 
+// mayManageLogins says whether the request's user owns the layer of the
+// key (its subject, or whoever recorded a shared layer) or is an admin.
+func (s *Server) mayManageLogins(r *http.Request, key string) bool {
+	identity, authenticated := identityFromRequest(r)
+	if !authenticated || identity.User.Role == "admin" {
+		return true
+	}
+	user := normalizeOperator(identity.User.Username)
+	if user == strings.SplitN(key, "/", 2)[0] {
+		return true
+	}
+	for _, artifact := range s.store.Snapshot().Artifacts {
+		if store.LayerKey(artifact) == key && normalizeOperator(artifact.CreatedBy) == user {
+			return true
+		}
+	}
+	return false
+}
+
+// loginFilesHandler lists what a login holds, so a person sees what an
+// agent started to collect and can take it out of the layer's tracking.
+func (s *Server) loginFilesHandler(w http.ResponseWriter, r *http.Request) {
+	files, ok := s.store.LoginFiles(r.PathValue("loginID"))
+	if !ok {
+		writeError(w, store.ErrNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, files)
+}
+
+// excludeLoginPathHandler adds a file or folder to the layer's excludes
+// and takes it out of every login of the layer at once.
+func (s *Server) excludeLoginPathHandler(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Path string `json:"path"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	artifact, err := s.store.Artifact(r.PathValue("artifactID"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	key := store.LayerKey(artifact)
+	if !s.mayManageLogins(r, key) {
+		writeError(w, fmt.Errorf("only the layer's owner or an admin changes what it keeps: %w", store.ErrConflict))
+		return
+	}
+	path := strings.TrimSpace(request.Path)
+	updated, err := s.store.SetArtifactTracked(artifact.ID, artifact.TrackedPaths, append(append([]string{}, artifact.TrackedExcludes...), path))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !slices.Contains(updated.TrackedExcludes, path) {
+		writeError(w, fmt.Errorf("%s lies outside the folders the layer keeps; untick it in Inhoud instead: %w", path, store.ErrConflict))
+		return
+	}
+	removed, err := s.store.ExcludeFromLogins(key, path)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"artifact": updated, "removed": removed})
+}
+
 // deleteLoginHandler removes a login; the layer's owner or an admin may.
 // A login a capsule holds goes too: that capsule is closed first, and
 // marked stopped even when its runner cannot be reached, so a login can
@@ -308,16 +376,7 @@ func (s *Server) deleteLoginHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, store.ErrNotFound)
 		return
 	}
-	// The layer's owner (its subject, or for a shared layer whoever
-	// recorded it) or an admin removes a login.
-	subject := strings.SplitN(login.Key, "/", 2)[0]
-	owners := map[string]bool{subject: true}
-	for _, artifact := range s.store.Snapshot().Artifacts {
-		if store.LayerKey(artifact) == login.Key {
-			owners[normalizeOperator(artifact.CreatedBy)] = true
-		}
-	}
-	if identity, authenticated := identityFromRequest(r); authenticated && identity.User.Role != "admin" && !owners[normalizeOperator(identity.User.Username)] {
+	if !s.mayManageLogins(r, login.Key) {
 		writeError(w, fmt.Errorf("only the layer's owner or an admin removes this login: %w", store.ErrConflict))
 		return
 	}

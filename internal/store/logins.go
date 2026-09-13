@@ -53,6 +53,9 @@ func (s *Store) loginSummariesLocked() []domain.LoginSummary {
 	out := make([]domain.LoginSummary, 0, len(s.state.Logins))
 	for _, login := range s.state.Logins {
 		summary := domain.LoginSummary{ID: login.ID, Key: login.Key, Number: login.Number, Files: len(login.Files), CreatedAt: login.CreatedAt, UpdatedAt: login.UpdatedAt}
+		for _, data := range login.Files {
+			summary.Bytes += int64(len(data))
+		}
 		if holder, held := s.loginHolderLocked(login); held {
 			summary.CompositionID = holder.ID
 		}
@@ -210,6 +213,51 @@ func (s *Store) SaveLoginFiles(id string, files map[string][]byte, folders []str
 	login.UpdatedAt = time.Now().UTC()
 	s.state.Logins[id] = login
 	return true, s.saveLocked()
+}
+
+// LoginFiles lists the files of a login with their sizes, in path order.
+func (s *Store) LoginFiles(id string) ([]domain.LoginFile, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	login, ok := s.state.Logins[id]
+	if !ok {
+		return nil, false
+	}
+	files := make([]domain.LoginFile, 0, len(login.Files))
+	for path, data := range login.Files {
+		files = append(files, domain.LoginFile{Path: path, Size: int64(len(data))})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files, true
+}
+
+// ExcludeFromLogins takes a file, or a folder (path ending in "/"), out of
+// every login of the layer; it reports how many files went.
+func (s *Store) ExcludeFromLogins(key, path string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := 0
+	for id, login := range s.state.Logins {
+		if login.Key != key {
+			continue
+		}
+		changed := false
+		for file := range login.Files {
+			if file == path || (domain.TrackedFolder(path) && strings.HasPrefix(file, path)) {
+				delete(login.Files, file)
+				removed++
+				changed = true
+			}
+		}
+		if changed {
+			login.UpdatedAt = time.Now().UTC()
+			s.state.Logins[id] = login
+		}
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+	return removed, s.saveLocked()
 }
 
 // DeleteLogin removes a login nobody holds.
