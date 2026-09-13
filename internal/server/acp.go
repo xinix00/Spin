@@ -451,7 +451,7 @@ func (s *Server) sessionFileHandler(w http.ResponseWriter, r *http.Request) {
 	absolute := domain.WorkspaceDirectory(folder) + "/" + path
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	files, err := tracked.ReadTrackedFiles(ctx, *composition.Runtime, []string{absolute})
+	files, err := tracked.ReadTrackedFiles(ctx, *composition.Runtime, capsule.TrackedSelection{Paths: []string{absolute}})
 	if err != nil {
 		writeError(w, err)
 		return

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"easyacp/internal/domain"
@@ -170,10 +171,12 @@ func (s *Store) CreateLogin(compositionID, key string, files map[string][]byte) 
 	return login, s.holdLoginLocked(composition, login)
 }
 
-// SaveLoginFiles keeps the files as a capsule has them now, leaving files
-// the capsule did not report as they were; it reports whether anything
-// differed.
-func (s *Store) SaveLoginFiles(id string, files map[string][]byte) (bool, error) {
+// SaveLoginFiles keeps the files as a capsule has them now. A file the
+// capsule did not report stays as it was, unless it lies in one of the
+// folders (paths ending in "/"): a folder is kept whole, so a file gone
+// from it in the capsule goes from the login too. It reports whether
+// anything differed.
+func (s *Store) SaveLoginFiles(id string, files map[string][]byte, folders []string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	login, ok := s.state.Logins[id]
@@ -182,6 +185,18 @@ func (s *Store) SaveLoginFiles(id string, files map[string][]byte) (bool, error)
 	}
 	merged := copyFiles(login.Files)
 	changed := false
+	for path := range merged {
+		if _, present := files[path]; present {
+			continue
+		}
+		for _, folder := range folders {
+			if domain.TrackedFolder(folder) && strings.HasPrefix(path, folder) {
+				delete(merged, path)
+				changed = true
+				break
+			}
+		}
+	}
 	for path, data := range files {
 		if !bytes.Equal(merged[path], data) {
 			merged[path] = append([]byte(nil), data...)

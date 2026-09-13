@@ -90,12 +90,13 @@ func (s *Server) compositionChangesHandler(w http.ResponseWriter, r *http.Reques
 // Sessions.
 func (s *Server) setTrackedPathsHandler(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Paths []string `json:"paths"`
+		Paths    []string `json:"paths"`
+		Excludes []string `json:"excludes"`
 	}
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	updated, err := s.store.SetArtifactTrackedPaths(r.PathValue("artifactID"), request.Paths)
+	updated, err := s.store.SetArtifactTracked(r.PathValue("artifactID"), request.Paths, request.Excludes)
 	if err != nil {
 		writeError(w, err)
 		return

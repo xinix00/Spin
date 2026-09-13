@@ -985,7 +985,11 @@ func validHomePath(path string) bool {
 // validTrackedPath is an absolute path without spaces, quotes or parent
 // steps.
 func validTrackedPath(path string) bool {
-	if path == "" || len(path) > 300 || !strings.HasPrefix(path, "/") || strings.ContainsAny(path, " \t\r\n'\"\\") {
+	if path == "" || len(path) > 300 || !strings.HasPrefix(path, "/") || strings.ContainsAny(path, " \t\r\n'\"\\*?[]") {
+		return false
+	}
+	path = strings.TrimSuffix(path, "/")
+	if path == "" {
 		return false
 	}
 	for _, part := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
@@ -998,16 +1002,31 @@ func validTrackedPath(path string) bool {
 
 // ReadTrackedFiles returns the tracked files that exist in the capsule,
 // base64 over one exec so a handful of small files costs one round trip.
-func (d *Docker) ReadTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, paths []string) (map[string][]byte, error) {
+func (d *Docker) ReadTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, selection TrackedSelection) (map[string][]byte, error) {
 	if runtime.Driver != "docker" || runtime.ContainerID == "" || runtime.Status == "stopped" {
 		return nil, errors.New("composition has no live Docker capsule")
 	}
+	// A folder's files are found in the capsule: the excludes pruned, lock
+	// files and Spin's own temporaries left out, bounded in number and size.
+	var prune strings.Builder
+	for _, exclude := range selection.Excludes {
+		if !validTrackedPath(exclude) {
+			return nil, fmt.Errorf("invalid excluded path %q", exclude)
+		}
+		fmt.Fprintf(&prune, " -path '%s' -o", strings.TrimSuffix(exclude, "/"))
+	}
+	const emit = "printf 'SPIN_FILE %s ' \"$f\"; base64 < \"$f\" | tr -d '\\n'; printf '\\n'"
 	var script strings.Builder
-	for _, path := range paths {
+	for _, path := range selection.Paths {
 		if !validTrackedPath(path) {
 			return nil, fmt.Errorf("invalid tracked path %q", path)
 		}
-		fmt.Fprintf(&script, "if [ -f '%s' ] && [ \"$(wc -c < '%s')\" -le %d ]; then printf 'SPIN_FILE %s '; base64 < '%s' | tr -d '\\n'; printf '\\n'; fi\n", path, path, TrackedFileLimit, path, path)
+		if domain.TrackedFolder(path) {
+			folder := strings.TrimSuffix(path, "/")
+			fmt.Fprintf(&script, "if [ -d '%s' ]; then find '%s' \\( %s -false \\) -prune -o -type f ! -name '*.lock' ! -name '*.spin-tmp' -size -%dc -print 2>/dev/null | head -n %d | while IFS= read -r f; do case \"$f\" in *' '*|*\"'\"*|*'\"'*|*'\\'*|*'*'*|*'?'*|*'['*) continue;; esac; %s; done; fi\n", folder, folder, prune.String(), TrackedFileLimit+1, TrackedFolderFileLimit, emit)
+			continue
+		}
+		fmt.Fprintf(&script, "if [ -f '%s' ] && [ \"$(wc -c < '%s')\" -le %d ]; then f='%s'; %s; fi\n", path, path, TrackedFileLimit, path, emit)
 	}
 	output, code, err := d.run(ctx, "exec", runtime.ContainerID, "sh", "-c", script.String())
 	if err != nil && code < 0 {

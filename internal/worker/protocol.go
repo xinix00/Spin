@@ -184,9 +184,10 @@ type placeDeliverablePayload struct {
 }
 
 type trackedFilesPayload struct {
-	Runtime domain.CapsuleRuntime `json:"runtime"`
-	Paths   []string              `json:"paths,omitempty"`
-	Files   map[string][]byte     `json:"files,omitempty"`
+	Runtime  domain.CapsuleRuntime `json:"runtime"`
+	Paths    []string              `json:"paths,omitempty"`
+	Excludes []string              `json:"excludes,omitempty"`
+	Files    map[string][]byte     `json:"files,omitempty"`
 }
 
 type injectAttachmentsPayload struct {

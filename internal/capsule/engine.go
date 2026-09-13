@@ -122,12 +122,23 @@ type WorkspaceAttachment struct {
 	TargetPath string
 }
 
+// TrackedSelection names what to read from a capsule: files, and folders
+// (paths ending in "/") whose files are read apart from the excludes and
+// lock files. TrackedFolderFileLimit files at most come out of the folders.
+type TrackedSelection struct {
+	Paths    []string `json:"paths,omitempty"`
+	Excludes []string `json:"excludes,omitempty"`
+}
+
+// TrackedFolderFileLimit bounds what a tracked folder yields.
+const TrackedFolderFileLimit = 2000
+
 // TrackedFiles reads and writes the files a layer tracks (a login, a
 // config an agent rotates) in a running capsule, by absolute path. What
 // Spin keeps between Sessions travels through this; nothing else the
 // agent did in the capsule comes along.
 type TrackedFiles interface {
-	ReadTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, paths []string) (map[string][]byte, error)
+	ReadTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, selection TrackedSelection) (map[string][]byte, error)
 	WriteTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, files map[string][]byte) error
 }
 

@@ -1108,7 +1108,7 @@ func TestLoginsAreKeptEncrypted(t *testing.T) {
 	if err != nil || login.Number != 1 {
 		t.Fatalf("create: %+v %v", login, err)
 	}
-	if changed, err := st.SaveLoginFiles(login.ID, files); err != nil || changed {
+	if changed, err := st.SaveLoginFiles(login.ID, files, nil); err != nil || changed {
 		t.Fatalf("same files changed=%v err=%v", changed, err)
 	}
 	raw, err := os.ReadFile(path)

@@ -149,7 +149,7 @@ func (s *Server) putWorkflowDeliverable(ctx context.Context, sessionID, name, pu
 	if !ok {
 		return domain.Deliverable{}, fmt.Errorf("the engine cannot read a file: %w", store.ErrConflict)
 	}
-	files, err := tracked.ReadTrackedFiles(ctx, *composition.Runtime, []string{cleaned})
+	files, err := tracked.ReadTrackedFiles(ctx, *composition.Runtime, capsule.TrackedSelection{Paths: []string{cleaned}})
 	if err != nil {
 		return domain.Deliverable{}, err
 	}

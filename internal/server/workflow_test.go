@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
 	"easyacp/internal/store"
 )
@@ -586,9 +587,9 @@ type deliverableTestEngine struct {
 	placed  []string
 }
 
-func (e *deliverableTestEngine) ReadTrackedFiles(_ context.Context, _ domain.CapsuleRuntime, paths []string) (map[string][]byte, error) {
+func (e *deliverableTestEngine) ReadTrackedFiles(_ context.Context, _ domain.CapsuleRuntime, selection capsule.TrackedSelection) (map[string][]byte, error) {
 	out := map[string][]byte{}
-	for _, path := range paths {
+	for _, path := range selection.Paths {
 		if data, ok := e.files[path]; ok {
 			out[path] = data
 		}

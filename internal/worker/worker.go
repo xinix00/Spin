@@ -501,7 +501,7 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 			return nil, false, errors.New("runner engine cannot reach tracked files")
 		}
 		if request.Method == methodReadTracked {
-			files, err := tracked.ReadTrackedFiles(ctx, payload.Runtime, payload.Paths)
+			files, err := tracked.ReadTrackedFiles(ctx, payload.Runtime, capsule.TrackedSelection{Paths: payload.Paths, Excludes: payload.Excludes})
 			return files, false, err
 		}
 		return nil, false, tracked.WriteTrackedFiles(ctx, payload.Runtime, payload.Files)

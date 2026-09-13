@@ -659,7 +659,12 @@ type Artifact struct {
 	// contents, that Spin keeps between Sessions: read back from a capsule
 	// after every turn and at stop, put in place before the next agent
 	// starts. Absolute paths in the capsule. They move to a new version.
+	// A path ending in "/" is a folder: everything in it, apart from
+	// TrackedExcludes and lock files.
 	TrackedPaths []string `json:"tracked_paths,omitempty"`
+	// TrackedExcludes are files and folders (ending in "/") inside a tracked
+	// folder that are not kept: caches, history, what a login does not need.
+	TrackedExcludes []string `json:"tracked_excludes,omitempty"`
 	// AgentSettings is how Sessions on this layer start the agent: chosen
 	// from AgentOptions on the layer that ENABLES acp, kept as metadata (no
 	// re-seal) and carried to the next version.
@@ -1672,4 +1677,28 @@ type ForkSessionRequest struct {
 
 type SelectResultRequest struct {
 	ResultID string `json:"result_id"`
+}
+
+// TrackedFolder says whether a tracked path names a folder.
+func TrackedFolder(path string) bool { return strings.HasSuffix(path, "/") }
+
+// TrackedCovers says whether a file at path falls under the tracked paths
+// and outside the excludes.
+func TrackedCovers(path string, tracked, excludes []string) bool {
+	covered := false
+	for _, candidate := range tracked {
+		if candidate == path || (TrackedFolder(candidate) && strings.HasPrefix(path, candidate)) {
+			covered = true
+			break
+		}
+	}
+	if !covered {
+		return false
+	}
+	for _, exclude := range excludes {
+		if exclude == path || (TrackedFolder(exclude) && strings.HasPrefix(path, exclude)) {
+			return false
+		}
+	}
+	return true
 }

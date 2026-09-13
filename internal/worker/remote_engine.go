@@ -320,12 +320,12 @@ func (e *RemoteEngine) CaptureCapsuleChanges(ctx context.Context, runtime domain
 	return changes, err
 }
 
-func (e *RemoteEngine) ReadTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, paths []string) (map[string][]byte, error) {
+func (e *RemoteEngine) ReadTrackedFiles(ctx context.Context, runtime domain.CapsuleRuntime, selection capsule.TrackedSelection) (map[string][]byte, error) {
 	var files map[string][]byte
 	if !e.broker.Connected(runtime.ClientID) {
 		return nil, fmt.Errorf("read on %s: %w", runtime.ClientID, ErrRunnerOffline)
 	}
-	_, err := e.broker.call(ctx, runtime.ClientID, methodReadTracked, trackedFilesPayload{Runtime: runtime, Paths: paths}, &files)
+	_, err := e.broker.call(ctx, runtime.ClientID, methodReadTracked, trackedFilesPayload{Runtime: runtime, Paths: selection.Paths, Excludes: selection.Excludes}, &files)
 	return files, err
 }
 

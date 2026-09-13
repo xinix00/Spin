@@ -477,6 +477,7 @@ func (s *Store) EndRecording(recordingID string, req domain.EndRecordingRequest)
 		}
 		if len(artifact.TrackedPaths) == 0 {
 			artifact.TrackedPaths = previous.TrackedPaths
+			artifact.TrackedExcludes = previous.TrackedExcludes
 		}
 		s.state.Artifacts[artifact.ID] = artifact
 		s.state.Artifacts[previous.ID] = previous
@@ -2702,26 +2703,48 @@ func (s *Store) SetArtifactEnablementCommand(artifactID, name, command string) (
 // SetArtifactTrackedPaths stores which files of a layer Spin keeps between
 // Sessions.
 func (s *Store) SetArtifactTrackedPaths(artifactID string, paths []string) (domain.Artifact, error) {
+	return s.SetArtifactTracked(artifactID, paths, nil)
+}
+
+// SetArtifactTracked stores the files and folders (paths ending in "/") a
+// layer keeps between Sessions, and what inside those folders it leaves
+// out. An exclude outside every tracked folder is dropped.
+func (s *Store) SetArtifactTracked(artifactID string, paths, excludes []string) (domain.Artifact, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	artifact, ok := s.state.Artifacts[artifactID]
 	if !ok {
 		return domain.Artifact{}, ErrNotFound
 	}
+	tracked := cleanTrackedPaths(paths)
+	var kept []string
+	for _, exclude := range cleanTrackedPaths(excludes) {
+		for _, folder := range tracked {
+			if domain.TrackedFolder(folder) && strings.HasPrefix(exclude, folder) && exclude != folder {
+				kept = append(kept, exclude)
+				break
+			}
+		}
+	}
+	artifact.TrackedPaths = tracked
+	artifact.TrackedExcludes = kept
+	s.state.Artifacts[artifact.ID] = artifact
+	return artifact, s.saveLocked()
+}
+
+func cleanTrackedPaths(paths []string) []string {
 	cleaned := make([]string, 0, len(paths))
 	seen := map[string]bool{}
 	for _, candidate := range paths {
 		candidate = strings.TrimSpace(candidate)
-		if candidate == "" || !strings.HasPrefix(candidate, "/") || strings.Contains(candidate, "/../") || strings.HasSuffix(candidate, "/..") || strings.ContainsAny(candidate, " \t\r\n'\"\\") || seen[candidate] {
+		if candidate == "" || candidate == "/" || !strings.HasPrefix(candidate, "/") || strings.Contains(candidate, "/../") || strings.HasSuffix(candidate, "/..") || strings.ContainsAny(candidate, " \t\r\n'\"\\*?[]") || seen[candidate] {
 			continue
 		}
 		seen[candidate] = true
 		cleaned = append(cleaned, candidate)
 	}
 	sort.Strings(cleaned)
-	artifact.TrackedPaths = cleaned
-	s.state.Artifacts[artifact.ID] = artifact
-	return artifact, s.saveLocked()
+	return cleaned
 }
 
 // SetArtifactAgentSettings stores how Sessions on the layer start its agent.

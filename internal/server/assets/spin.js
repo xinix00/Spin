@@ -951,12 +951,36 @@ document.getElementById('logins-new').onclick=()=>{const artifact=byID(snapshot.
 function contentsButton(artifact){const tracked=(artifact.tracked_paths||[]).length;return artifact.snapshot?.contents?`<button class="small-button" data-contents-artifact="${esc(artifact.id)}" title="Alle paden van deze laag, per soort; vink aan wat Spin tussen Sessions bijhoudt">${icon('inventory_2')}Inhoud${tracked?` · ${tracked} bijgehouden`:''}</button>`:'';}
 // The contents dialog lists every path of a layer's manifest or a capsule's
 // changes, largest first, filtered by text and kind.
-const contentsState={entries:[],title:'',artifactID:'',tracked:new Set()};
+// What a layer keeps: files and folders (a path ending in "/") in
+// `tracked`, and files or folders inside a tracked folder that stay out in
+// `excluded`. A checkbox shows the effective state; ticking inside a
+// tracked folder lifts an exclude, unticking adds one.
+const contentsState={entries:[],title:'',artifactID:'',tracked:new Set(),excluded:new Set()};
+function trackedUnderFolder(path,set){for(const entry of set){if(entry.endsWith('/')&&path.startsWith(entry)&&path!==entry)return entry;}return '';}
+function isTracked(path){if(contentsState.tracked.has(path))return true;if(!trackedUnderFolder(path,contentsState.tracked))return false;return !contentsState.excluded.has(path)&&!trackedUnderFolder(path,contentsState.excluded);}
+function dropBelow(set,folder){[...set].forEach(entry=>{if(entry.startsWith(folder)&&entry!==folder)set.delete(entry);});}
+function setTracked(path,on){
+  // path: a file, or a folder written with a trailing slash.
+  const folder=path.endsWith('/');
+  if(on){
+    if(contentsState.excluded.has(path))contentsState.excluded.delete(path);
+    if(folder)dropBelow(contentsState.excluded,path);
+    if(!isTracked(path)){contentsState.tracked.add(path);}
+    if(folder)dropBelow(contentsState.tracked,path);
+    // A file excluded by a folder above it comes back by itself: it gets a
+    // tracked entry of its own, which wins over the exclude.
+    if(!folder&&!isTracked(path))contentsState.tracked.add(path);
+  }else{
+    contentsState.tracked.delete(path);
+    if(folder){dropBelow(contentsState.tracked,path);dropBelow(contentsState.excluded,path);}
+    if(trackedUnderFolder(path,contentsState.tracked)&&isTracked(path))contentsState.excluded.add(path);
+  }
+}
 async function openContents(url,title,artifact=null){
   try{
     const result=await api(url),contents=result.contents||{},entries=result.entries||[];
     contentsState.entries=entries;contentsState.title=title;contentsState.artifactID=artifact?artifact.id:'';
-    contentsState.tracked=new Set(artifact?(artifact.tracked_paths||[]):[]);contentsOpenFolders.clear();
+    contentsState.tracked=new Set(artifact?(artifact.tracked_paths||[]):[]);contentsState.excluded=new Set(artifact?(artifact.tracked_excludes||[]):[]);contentsOpenFolders.clear();
     document.getElementById('contents-save').hidden=!artifact;document.getElementById('contents-save').disabled=false;
     document.getElementById('contents-title').textContent=title;
     const dropped=contents.dropped_identical?.files?` · weggelaten: ${formatBytes(contents.dropped_identical.bytes)} in ${contents.dropped_identical.files} bestand${contents.dropped_identical.files===1?'':'en'} gelijk aan de laag eronder`:'';
@@ -973,15 +997,15 @@ function contentsFilesBelow(node,out=[]){node.files.forEach(file=>out.push(file)
 function contentsFolderNode(path){let node=contentsState.model;for(const part of path.split('/')){node=node?.dirs.get(part);if(!node)return null;}return node;}
 function renderContentsNode(node,depth,prefix,track,openAll){
   const dirs=[...node.dirs.entries()].sort((a,b)=>a[0].localeCompare(b[0])),files=node.files.sort((a,b)=>a.name.localeCompare(b.name));
-  return dirs.map(([name,child])=>{const path=prefix?`${prefix}/${name}`:name,open=openAll||contentsOpenFolders.has(path),below=contentsFilesBelow(child),bytes=below.reduce((sum,file)=>sum+(file.size||0),0),all=below.length>0&&below.every(file=>contentsState.tracked.has(file.path)),some=below.some(file=>contentsState.tracked.has(file.path));
-    return `<div class="tree-folder${open?' open':''}"><div class="tree-row">${track?`<input type="checkbox" data-track-folder="${esc(path)}" ${all?'checked':''} ${!all&&some?'data-indeterminate="1"':''} title="Alles in deze map bijhouden">`:''}<button type="button" class="tree-row-toggle" data-toggle-contents-folder="${esc(path)}" title="${esc('/'+path)}"><span class="material-symbols-outlined tree-slot" aria-hidden="true">chevron_right</span><span class="material-symbols-outlined tree-icon folder" aria-hidden="true">${open?'folder_open':'folder'}</span><span class="tree-name">${esc(name)}</span></button><span class="tree-size">${below.length} · ${esc(formatBytes(bytes))}</span></div><div class="tree-children" ${open?'':'hidden'}>${open?renderContentsNode(child,depth+1,path,track,openAll):''}</div></div>`;}).join('')+
-    files.slice(0,1500).map(file=>`<div class="tree-row tree-file">${track?`<input type="checkbox" data-track-path="${esc(file.path)}" ${contentsState.tracked.has(file.path)?'checked':''}>`:''}<span class="tree-slot"></span><span class="material-symbols-outlined tree-icon" aria-hidden="true">${fileIcon(file.name)}</span><span class="tree-name" title="${esc(file.path)}">${esc(file.name)}</span><span class="tree-size">${esc(formatBytes(file.size||0))}</span></div>`).join('')+(files.length>1500?`<div class="tree-row tree-file"><span class="tree-slot"></span><span class="tree-name hint">nog ${files.length-1500} bestanden in deze map; filter op pad om ze te zien</span></div>`:'');
+  return dirs.map(([name,child])=>{const path=prefix?`${prefix}/${name}`:name,folderPath='/'+path+'/',open=openAll||contentsOpenFolders.has(path),below=contentsFilesBelow(child),bytes=below.reduce((sum,file)=>sum+(file.size||0),0),whole=isTracked(folderPath),excludesBelow=[...contentsState.excluded].some(entry=>entry.startsWith(folderPath)),some=!whole&&below.some(file=>isTracked(file.path)),all=whole&&!excludesBelow;
+    return `<div class="tree-folder${open?' open':''}"><div class="tree-row">${track?`<input type="checkbox" data-track-folder="${esc(path)}" ${whole?'checked':''} ${(!whole&&some)||(whole&&excludesBelow)?'data-indeterminate="1"':''} title="${whole?(excludesBelow?'Deze map wordt bijgehouden, op de uitgevinkte delen na':'Deze map wordt helemaal bijgehouden, ook wat er later bij komt'):'Deze hele map bijhouden; vink daarna uit wat niet mee hoeft (caches)'}">`:''}<button type="button" class="tree-row-toggle" data-toggle-contents-folder="${esc(path)}" title="${esc('/'+path)}"><span class="material-symbols-outlined tree-slot" aria-hidden="true">chevron_right</span><span class="material-symbols-outlined tree-icon folder" aria-hidden="true">${open?'folder_open':'folder'}</span><span class="tree-name">${esc(name)}</span></button><span class="tree-size">${below.length} · ${esc(formatBytes(bytes))}</span></div><div class="tree-children" ${open?'':'hidden'}>${open?renderContentsNode(child,depth+1,path,track,openAll):''}</div></div>`;}).join('')+
+    files.slice(0,1500).map(file=>`<div class="tree-row tree-file">${track?`<input type="checkbox" data-track-path="${esc(file.path)}" ${isTracked(file.path)?'checked':''} ${file.name.endsWith('.lock')?'disabled title="Lock-bestanden gaan nooit mee"':''}>`:''}<span class="tree-slot"></span><span class="material-symbols-outlined tree-icon" aria-hidden="true">${fileIcon(file.name)}</span><span class="tree-name" title="${esc(file.path)}">${esc(file.name)}</span><span class="tree-size">${esc(formatBytes(file.size||0))}</span></div>`).join('')+(files.length>1500?`<div class="tree-row tree-file"><span class="tree-slot"></span><span class="tree-name hint">nog ${files.length-1500} bestanden in deze map; filter op pad om ze te zien</span></div>`:'');
 }
 function bindContentsRows(root){
   root.querySelectorAll('[data-indeterminate]').forEach(box=>box.indeterminate=true);
   root.querySelectorAll('[data-toggle-contents-folder]').forEach(button=>button.onclick=()=>{const path=button.dataset.toggleContentsFolder,folder=button.closest('.tree-folder'),children=folder.querySelector(':scope>.tree-children'),open=!folder.classList.contains('open');folder.classList.toggle('open',open);button.querySelector('.tree-icon').textContent=open?'folder_open':'folder';if(open){contentsOpenFolders.add(path);if(!children.innerHTML){const node=contentsFolderNode(path);if(node){children.innerHTML=renderContentsNode(node,path.split('/').length,path,Boolean(contentsState.artifactID),false);bindContentsRows(children);}}}else contentsOpenFolders.delete(path);children.hidden=!open;});
-  root.querySelectorAll('[data-track-path]').forEach(box=>box.onchange=()=>{if(box.checked)contentsState.tracked.add(box.dataset.trackPath);else contentsState.tracked.delete(box.dataset.trackPath);});
-  root.querySelectorAll('[data-track-folder]').forEach(box=>box.onchange=()=>{const prefix='/'+box.dataset.trackFolder+'/';contentsState.entries.filter(entry=>entry.path.startsWith(prefix)).forEach(entry=>{if(box.checked)contentsState.tracked.add(entry.path);else contentsState.tracked.delete(entry.path);});renderContentsList();});
+  root.querySelectorAll('[data-track-path]').forEach(box=>box.onchange=()=>{setTracked(box.dataset.trackPath,box.checked);renderContentsList();});
+  root.querySelectorAll('[data-track-folder]').forEach(box=>box.onchange=()=>{setTracked('/'+box.dataset.trackFolder+'/',box.checked);renderContentsList();});
 }
 function renderContentsList(){
   const filter=document.getElementById('contents-filter').value.trim().toLowerCase(),root=document.getElementById('contents-body');
@@ -991,7 +1015,7 @@ function renderContentsList(){
   root.innerHTML=rows.length?`${rows.length>1500&&filter?`<p class="hint">${rows.length} bestanden passen; mappen staan dicht, klap open wat je zoekt of verfijn het filter.</p>`:''}<div class="code-tree contents-tree">${renderContentsNode(contentsState.model,0,'',track,openAll)}</div>`:'<div class="empty">Niets gevonden.</div>';
   bindContentsRows(root);
 }
-document.getElementById('contents-save').onclick=async()=>{const button=document.getElementById('contents-save');button.disabled=true;try{await api(`/api/artifacts/${encodeURIComponent(contentsState.artifactID)}/tracked`,{method:'PUT',body:JSON.stringify({paths:[...contentsState.tracked]})});showNotice(`${contentsState.tracked.size} bestand${contentsState.tracked.size===1?'':'en'} bijgehouden voor ${contentsState.title}`);await refresh(true);}catch(error){showError(error);}finally{button.disabled=false;}};
+document.getElementById('contents-save').onclick=async()=>{const button=document.getElementById('contents-save');button.disabled=true;try{await api(`/api/artifacts/${encodeURIComponent(contentsState.artifactID)}/tracked`,{method:'PUT',body:JSON.stringify({paths:[...contentsState.tracked],excludes:[...contentsState.excluded]})});const folders=[...contentsState.tracked].filter(path=>path.endsWith('/')).length,files=contentsState.tracked.size-folders;showNotice(`${[folders?`${folders} map${folders===1?'':'pen'}`:'',files?`${files} bestand${files===1?'':'en'}`:''].filter(Boolean).join(' en ')||'niets'} bijgehouden voor ${contentsState.title}${contentsState.excluded.size?` · ${contentsState.excluded.size} uitgesloten`:''}`);await refresh(true);}catch(error){showError(error);}finally{button.disabled=false;}};
 document.getElementById('contents-filter').oninput=renderContentsList;
 function renderComposition(){
   const composition=snapshot.compositions.find(item=>item.operator===currentOperator()),root=region('composition');

@@ -28,7 +28,24 @@ type trackedTarget struct {
 	key       string
 	label     string
 	paths     []string
+	excludes  []string
 	exclusive bool // a credential layer: one login per running capsule
+}
+
+// selection is what to read from the capsule for this target.
+func (t trackedTarget) selection() capsule.TrackedSelection {
+	return capsule.TrackedSelection{Paths: t.paths, Excludes: t.excludes}
+}
+
+// folders are the tracked folders of the target, kept whole in a login.
+func (t trackedTarget) folders() []string {
+	var folders []string
+	for _, path := range t.paths {
+		if domain.TrackedFolder(path) {
+			folders = append(folders, path)
+		}
+	}
+	return folders
 }
 
 // trackedTargets are the layers of a composition that track files, keyed
@@ -44,7 +61,7 @@ func (s *Server) trackedTargets(composition domain.Composition) []trackedTarget 
 		if err != nil || len(artifact.TrackedPaths) == 0 {
 			continue
 		}
-		target := trackedTarget{key: store.LayerKey(artifact), label: string(artifact.Kind) + ":" + artifact.Name, paths: artifact.TrackedPaths, exclusive: artifact.Kind == domain.ArtifactCredential}
+		target := trackedTarget{key: store.LayerKey(artifact), label: string(artifact.Kind) + ":" + artifact.Name, paths: artifact.TrackedPaths, excludes: artifact.TrackedExcludes, exclusive: artifact.Kind == domain.ArtifactCredential}
 		if at, seen := index[target.key]; seen {
 			targets[at] = target
 			continue
@@ -138,7 +155,7 @@ func (s *Server) handOutLogins(ctx context.Context, composition domain.Compositi
 		case errors.Is(err, store.ErrLoginsBusy):
 			return s.loginsBusy(target)
 		case errors.Is(err, store.ErrNotFound):
-			files, readErr := tracked.ReadTrackedFiles(ctx, *composition.Runtime, target.paths)
+			files, readErr := tracked.ReadTrackedFiles(ctx, *composition.Runtime, target.selection())
 			if readErr != nil {
 				return fmt.Errorf("read the files of %s: %w", target.label, readErr)
 			}
@@ -199,12 +216,12 @@ func (s *Server) keepLogins(ctx context.Context, composition domain.Composition)
 		if !held {
 			continue
 		}
-		files, err := tracked.ReadTrackedFiles(ctx, *composition.Runtime, target.paths)
+		files, err := tracked.ReadTrackedFiles(ctx, *composition.Runtime, target.selection())
 		if err != nil {
 			s.logger.Warn("read tracked files", "composition", composition.ID, "layer", target.key, "error", err)
 			continue
 		}
-		changed, err := s.store.SaveLoginFiles(loginID, files)
+		changed, err := s.store.SaveLoginFiles(loginID, files, target.folders())
 		if err != nil {
 			s.logger.Warn("keep login", "composition", composition.ID, "layer", target.key, "error", err)
 			continue
@@ -244,7 +261,7 @@ func (s *Server) saveNewLogin(ctx context.Context, compositionID, operator strin
 		if _, held := composition.Logins[target.key]; held {
 			continue
 		}
-		files, err := tracked.ReadTrackedFiles(ctx, *composition.Runtime, target.paths)
+		files, err := tracked.ReadTrackedFiles(ctx, *composition.Runtime, target.selection())
 		if err != nil {
 			return nil, fmt.Errorf("read the files of %s: %w", target.label, err)
 		}

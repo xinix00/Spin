@@ -974,6 +974,7 @@ func workflowGitSection(job domain.Job, session domain.Session, source *domain.J
 			}
 			fmt.Fprintf(&section, "- %s · %s · AANPASSEN: dezelfde Job-branch en jouw branch als hieronder, basis %s.\n", repository.Directory(), repository.Name, repository.BaseRef)
 		}
+		section.WriteString("\n")
 		section.WriteString("De branches hieronder gelden in elke repository die je aanpast; de basisbranch is per repository de genoemde.\n")
 	}
 	fmt.Fprintf(&section, "Basisbranch: %s · waar deze Job uiteindelijk op landt; lokaal origin/%s.\n", base, base)

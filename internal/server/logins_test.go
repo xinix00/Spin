@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
+	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
 	"easyacp/internal/store"
 )
@@ -30,10 +32,10 @@ func (e *trackedTestEngine) capsule(container string) map[string][]byte {
 	return e.files[container]
 }
 
-func (e *trackedTestEngine) ReadTrackedFiles(_ context.Context, runtime domain.CapsuleRuntime, paths []string) (map[string][]byte, error) {
+func (e *trackedTestEngine) ReadTrackedFiles(_ context.Context, runtime domain.CapsuleRuntime, selection capsule.TrackedSelection) (map[string][]byte, error) {
 	out := map[string][]byte{}
-	for _, path := range paths {
-		if data, ok := e.capsule(runtime.ContainerID)[path]; ok {
+	for path, data := range e.capsule(runtime.ContainerID) {
+		if domain.TrackedCovers(path, selection.Paths, selection.Excludes) && !strings.HasSuffix(path, ".lock") {
 			out[path] = append([]byte(nil), data...)
 		}
 	}
@@ -208,4 +210,53 @@ func TestTwoVersionsOfOneLayerAreOneLoginTarget(t *testing.T) {
 	if logins := st.LoginsFor(key); len(logins) != 1 {
 		t.Fatalf("saving once made %d logins", len(logins))
 	}
+}
+
+// A tracked folder is kept whole: its files travel apart from the excludes
+// and lock files, and a file gone from the folder in the capsule goes from
+// the login too.
+func TestTrackedFolderIsKeptWholeWithoutExcludesAndLocks(t *testing.T) {
+	srv, st, engine, key := newLoginTestServer(t, domain.ArtifactCredential, "/root/.claude/.credentials.json")
+	layers := st.Snapshot().Artifacts
+	var credential domain.Artifact
+	for _, artifact := range layers {
+		if artifact.Kind == domain.ArtifactCredential {
+			credential = artifact
+		}
+	}
+	if _, err := st.SetArtifactTracked(credential.ID, []string{"/root/.claude/"}, []string{"/root/.claude/cache/", "/root/.claude/history.jsonl", "/elsewhere/"}); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := st.Artifact(credential.ID)
+	if len(updated.TrackedExcludes) != 2 {
+		t.Fatalf("excludes = %v; the one outside the folder should be dropped", updated.TrackedExcludes)
+	}
+	engine.image["/root/.claude/settings.json"] = []byte("{}")
+	engine.image["/root/.claude/cache/big.bin"] = []byte("cache")
+	engine.image["/root/.claude/history.jsonl"] = []byte("history")
+	engine.image["/root/.claude/.credentials.json.lock"] = []byte("lock")
+	ctx := context.Background()
+	first := useLayers(t, srv, "derek", "credential:claude")
+	login, _ := st.Login(first.Logins[key])
+	if len(login.Files) != 2 || login.Files["/root/.claude/settings.json"] == nil || login.Files["/root/.claude/.credentials.json"] == nil {
+		t.Fatalf("login 1 files = %v; expected the two kept files only", keys(login.Files))
+	}
+	// The agent rotates the token into a new file and drops the old one.
+	capsule := engine.capsule(first.Runtime.ContainerID)
+	delete(capsule, "/root/.claude/settings.json")
+	capsule["/root/.claude/.credentials.json"] = []byte("token-2")
+	capsule["/root/.claude/projects/notes.md"] = []byte("notes")
+	srv.captureLoginState(ctx, first)
+	login, _ = st.Login(first.Logins[key])
+	if login.Files["/root/.claude/settings.json"] != nil || string(login.Files["/root/.claude/.credentials.json"]) != "token-2" || login.Files["/root/.claude/projects/notes.md"] == nil || login.Files["/root/.claude/cache/big.bin"] != nil {
+		t.Fatalf("login 1 after the turn = %v", keys(login.Files))
+	}
+}
+
+func keys(files map[string][]byte) []string {
+	var out []string
+	for path := range files {
+		out = append(out, path)
+	}
+	return out
 }
