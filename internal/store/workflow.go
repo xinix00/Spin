@@ -477,11 +477,31 @@ func (s *Store) MarkWorkflowPhaseRunning(sessionID string) (domain.PhaseRun, err
 // RetryWorkflowSession returns the current workflow phase to its queue without
 // creating a new phase attempt or Session. Runtime cleanup is deliberately a
 // server concern: the Store only records the explicit user decision.
-func (s *Store) RetryWorkflowSession(sessionID, operator, note string) (domain.CreateJobResponse, string, error) {
+func (s *Store) RetryWorkflowSession(sessionID, operator, note string, transcript []domain.ChatLine) (domain.CreateJobResponse, string, error) {
 	operator = normalizeSubject(operator)
 	note = strings.TrimSpace(note)
 	if len(note) > 4000 {
 		return domain.CreateJobResponse{}, "", fmt.Errorf("the note for the new attempt exceeds 4000 characters: %w", ErrConflict)
+	}
+	// The conversation that comes along is bounded: the last 60 messages,
+	// each cut to 4000 characters.
+	if len(transcript) > 60 {
+		transcript = transcript[len(transcript)-60:]
+	}
+	kept := make([]domain.ChatLine, 0, len(transcript))
+	for _, line := range transcript {
+		text := strings.TrimSpace(line.Text)
+		if text == "" {
+			continue
+		}
+		if len(text) > 4000 {
+			text = text[:4000] + "…"
+		}
+		role := "agent"
+		if line.Role == "user" {
+			role = "user"
+		}
+		kept = append(kept, domain.ChatLine{Role: role, Text: text})
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -527,6 +547,7 @@ func (s *Store) RetryWorkflowSession(sessionID, operator, note string) (domain.C
 	if note != "" {
 		run.RestartNotes = append(run.RestartNotes, note)
 	}
+	run.RestartTranscript = kept
 	job.Status = domain.JobActive
 	job.WorkflowStatus = domain.WorkflowBusy
 	job.PendingReason = ""

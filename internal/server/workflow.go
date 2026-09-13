@@ -305,7 +305,7 @@ func (s *Server) workflowTools(sessionID string) ([]workflowTool, error) {
 	}
 	if phase.ID == domain.BrainstormPhaseID {
 		// A brainstorm decides one thing: the goal. Nothing else.
-		return []workflowTool{{Name: "start_process", Title: "Start het proces", Description: "Leg de goal vast waar de brainstorm op uitkwam en start daarmee de gewone flow van de Template. Roep dit pas aan als de gebruiker het eens is met de goal.", InputSchema: object(map[string]any{
+		return []workflowTool{{Name: "start_process", Title: "Start het proces", Description: "Leg de goal vast waar de brainstorm op uitkwam en start daarmee de gewone flow van de Template. Roep dit pas aan als de gebruiker het eens is met de goal. De goal is Markdown en wordt zo getoond: gebruik koppen, lijsten en acceptatiecriteria waar dat helpt.", InputSchema: object(map[string]any{
 			"goal": map[string]any{"type": "string", "description": "De goal van de Job, in Markdown: wat er klaar moet zijn en waaraan je dat ziet"},
 		}, "goal")}}, nil
 	}
@@ -861,6 +861,16 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 		for _, note := range run.RestartNotes {
 			fmt.Fprintf(&prompt, "- Aanwijzing van de gebruiker: %s\n", note)
 		}
+		if len(run.RestartTranscript) > 0 {
+			prompt.WriteString("\nGESPREK TOT DE HERSTART\nDe gebruiker ging terug naar een punt in het gesprek van de vorige poging en paste zijn bericht daar aan; dat aangepaste bericht is de laatste aanwijzing hierboven. Dit was het gesprek tot dat punt; wat daarna kwam vervalt.\n")
+			for _, line := range run.RestartTranscript {
+				who := "Agent"
+				if line.Role == "user" {
+					who = "Gebruiker"
+				}
+				fmt.Fprintf(&prompt, "%s: %s\n", who, strings.ReplaceAll(line.Text, "\n", "\n  "))
+			}
+		}
 	}
 	codeFeedbackWritten := false
 	for _, previous := range history {
@@ -890,7 +900,7 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 		}
 	}
 	if phase.ID == domain.BrainstormPhaseID {
-		prompt.WriteString("\nWERKWIJZE\nDit is een chat: praat, vraag, stel voor. Je enige workflowtool is start_process(goal); roep die pas aan als de gebruiker het eens is met de goal, en beëindig daarna je beurt. Commit of push nooit; verander niets in de repository.\n")
+		prompt.WriteString("\nWERKWIJZE\nDit is een chat: praat, vraag, stel voor. Je enige workflowtool is start_process(goal); roep die pas aan als de gebruiker het eens is met de goal, en beëindig daarna je beurt. De goal mag Markdown zijn (koppen, lijsten, acceptatiecriteria) en wordt zo op de Job getoond en aan elke stap meegegeven. Commit of push nooit; verander niets in de repository.\n")
 		return prompt.String(), nil
 	}
 	prompt.WriteString("\nWERKWIJZE\nGebruik uitsluitend de aangeboden Spin workflowtools om workflowstate te wijzigen. ask stelt één formulier met één of meer vragen, elk met de antwoordopties die je verwacht; stel alleen wat je niet zelf kunt uitzoeken en bundel alles in één ask. ")

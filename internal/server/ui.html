@@ -352,9 +352,9 @@
         </form>
       </dialog>
       <dialog id="retry-dialog">
-        <div class="dialog-head"><div><h2>Opnieuw met een verse agent</h2><p>De workspace blijft zoals hij is (gesynct naar de Session-branch); alleen het gesprek met de agent begint opnieuw.</p></div><button class="icon-button" type="button" data-close-dialog="retry-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+        <div class="dialog-head"><div><h2 id="retry-title">Opnieuw met een verse agent</h2><p>De workspace blijft zoals hij is (gesynct naar de Session-branch); alleen het gesprek met de agent begint opnieuw.</p><p id="retry-transcript-hint" class="contents-tracked" hidden></p></div><button class="icon-button" type="button" data-close-dialog="retry-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
         <form id="retry-form">
-          <div class="form-grid"><div class="wide"><label for="retry-note">Aanwijzing voor de nieuwe poging <span class="hint">optioneel</span></label><textarea id="retry-note" name="note" placeholder="Wat moet er anders? Bijvoorbeeld: formuleer de vraag aan de API anders, of sla stap X over."></textarea><small>Komt in de prompt van de nieuwe poging, samen met het feit dat de vorige poging strandde.</small></div></div>
+          <div class="form-grid"><div class="wide"><label for="retry-note">Aanwijzing voor de nieuwe poging <span class="hint">optioneel; bij een fork vanaf een bericht is dit dat bericht, pas het aan</span></label><textarea id="retry-note" name="note" placeholder="Wat moet er anders? Bijvoorbeeld: formuleer de vraag aan de API anders, of sla stap X over."></textarea><small>Komt in de prompt van de nieuwe poging, samen met het feit dat de vorige poging strandde.</small></div></div>
           <div class="dialog-foot"><span class="hint">Het werk in de workspace gaat niet verloren.</span><div class="panel-actions"><button class="small-button" type="button" data-close-dialog="retry-dialog">Annuleren</button><button class="primary" type="submit"><span class="material-symbols-outlined" aria-hidden="true">replay</span>Opnieuw starten</button></div></div>
         </form>
       </dialog>

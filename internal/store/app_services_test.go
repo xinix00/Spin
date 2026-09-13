@@ -179,7 +179,7 @@ func TestAssignJobHandsItToAKnownUser(t *testing.T) {
 	if retry.NextSession.Operator != "john" || created.Session.Operator != "derek" {
 		t.Fatalf("next session runs as %q, first ran as %q", retry.NextSession.Operator, created.Session.Operator)
 	}
-	if _, _, err := st.RetryWorkflowSession(retry.NextSession.ID, "john", ""); err != nil && !errors.Is(err, ErrConflict) {
+	if _, _, err := st.RetryWorkflowSession(retry.NextSession.ID, "john", "", nil); err != nil && !errors.Is(err, ErrConflict) {
 		t.Fatalf("assignee retry = %v", err)
 	}
 	back, err := st.AssignJob(created.Job.ID, "john", "derek")

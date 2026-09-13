@@ -212,8 +212,18 @@ type PhaseRun struct {
 	// should go differently, one per restart that had a note.
 	Restarts     int        `json:"restarts,omitempty"`
 	RestartNotes []string   `json:"restart_notes,omitempty"`
+	// RestartTranscript is the conversation of the previous attempt up to
+	// the message the person went back to, when they forked from a message
+	// rather than starting the attempt over blank.
+	RestartTranscript []ChatLine `json:"restart_transcript,omitempty"`
 	StartedAt    time.Time  `json:"started_at"`
 	CompletedAt  *time.Time `json:"completed_at,omitempty"`
+}
+
+// ChatLine is one message of a chat, as context for a fresh agent.
+type ChatLine struct {
+	Role string `json:"role"` // user or agent
+	Text string `json:"text"`
 }
 
 type WorkflowActionResult struct {

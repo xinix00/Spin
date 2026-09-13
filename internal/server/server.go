@@ -1252,7 +1252,8 @@ func (s *Server) adoptJobTemplate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) retryWorkflowSession(w http.ResponseWriter, r *http.Request) {
 	operator := s.requestOperator(r, r.URL.Query().Get("operator"))
 	var request struct {
-		Note string `json:"note"`
+		Note       string            `json:"note"`
+		Transcript []domain.ChatLine `json:"transcript"`
 	}
 	if r.ContentLength != 0 {
 		if !decodeJSON(w, r, &request) {
@@ -1260,7 +1261,7 @@ func (s *Server) retryWorkflowSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.syncWorkspaceWithin(r.PathValue("sessionID"), 0)
-	created, previousCompositionID, err := s.store.RetryWorkflowSession(r.PathValue("sessionID"), operator, request.Note)
+	created, previousCompositionID, err := s.store.RetryWorkflowSession(r.PathValue("sessionID"), operator, request.Note, request.Transcript)
 	if err != nil {
 		writeError(w, err)
 		return
