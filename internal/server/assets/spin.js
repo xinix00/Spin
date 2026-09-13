@@ -291,7 +291,9 @@ function renderChatBusy(){const ready=chatState.socket?.readyState===WebSocket.O
 function sendChat(message){if(chatState.socket?.readyState===WebSocket.OPEN)chatState.socket.send(JSON.stringify(message));}
 // The capsule of a fresh Session is still on its way; the chat shows where
 // it stands and connects the moment the agent can be reached.
-function chatSessionReady(sessionID){const session=byID(snapshot.sessions,sessionID),composition=byID(snapshot.compositions,session?.prepared_composition_id);return Boolean(composition?.runtime&&composition.runtime.status!=='stopped');}
+// Ready means a live capsule and no launch under way: a launch that is
+// still handing out logins may yet give the capsule up.
+function chatSessionReady(sessionID){const session=byID(snapshot.sessions,sessionID),composition=byID(snapshot.compositions,session?.prepared_composition_id),preparing=sessionPreparation(session);return Boolean(composition?.runtime&&composition.runtime.status!=='stopped')&&!(preparing&&!preparing.failure);}
 function chatWaitingLabel(session){const state=preparationText(sessionPreparation(session),session);return state.failed?state.text:`Even geduld · ${state.text}`;}
 function connectACPChat(sessionID){
   chatState.manualClose=false;

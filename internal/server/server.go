@@ -324,9 +324,27 @@ func (s *Server) recordLaunchFailure(sessionID string, err error) {
 	s.jobLaunchMu.Unlock()
 }
 
+// workflowRunNeedsLaunch says whether a phase run wants a launch: it is
+// queued, or it is running on paper while its agent Session has no live
+// capsule (an answer came while every login was taken, a capsule that
+// was lost); such a run is picked up again like a queued one.
+func workflowRunNeedsLaunch(snapshot domain.Snapshot, session domain.Session, run domain.PhaseRun) bool {
+	switch run.Status {
+	case domain.PhaseRunQueued:
+		return true
+	case domain.PhaseRunRunning:
+		if session.Executor == domain.WorkflowExecutorAction || session.Executor == domain.WorkflowExecutorExpose {
+			return false
+		}
+		index := slices.IndexFunc(snapshot.Compositions, func(composition domain.Composition) bool { return composition.ID == session.PreparedCompositionID })
+		return index < 0 || snapshot.Compositions[index].Runtime == nil || snapshot.Compositions[index].Runtime.Status == "stopped"
+	}
+	return false
+}
+
 // queuedWorkflowSessions returns the Sessions whose Job is parked on their own
-// phase run while that run is still queued: work Spin already decided to start
-// but never did.
+// phase run while that run still wants a launch: work Spin already decided
+// to start but never did, or lost its capsule.
 func (s *Server) queuedWorkflowSessions() []domain.Session {
 	snapshot := s.store.Snapshot()
 	var queued []domain.Session
@@ -337,10 +355,8 @@ func (s *Server) queuedWorkflowSessions() []domain.Session {
 		jobIndex := slices.IndexFunc(snapshot.Jobs, func(job domain.Job) bool {
 			return job.ID == session.JobID && job.CurrentPhaseRunID == session.PhaseRunID
 		})
-		runIndex := slices.IndexFunc(snapshot.PhaseRuns, func(run domain.PhaseRun) bool {
-			return run.ID == session.PhaseRunID && run.Status == domain.PhaseRunQueued
-		})
-		if jobIndex >= 0 && runIndex >= 0 {
+		runIndex := slices.IndexFunc(snapshot.PhaseRuns, func(run domain.PhaseRun) bool { return run.ID == session.PhaseRunID })
+		if jobIndex >= 0 && runIndex >= 0 && workflowRunNeedsLaunch(snapshot, session, snapshot.PhaseRuns[runIndex]) {
 			queued = append(queued, session)
 		}
 	}
@@ -1339,7 +1355,7 @@ func (s *Server) jobSessionNeedsLaunch(sessionID string, workflow bool) bool {
 	session := snapshot.Sessions[sessionIndex]
 	if workflow {
 		runIndex := slices.IndexFunc(snapshot.PhaseRuns, func(run domain.PhaseRun) bool { return run.ID == session.PhaseRunID })
-		return runIndex >= 0 && snapshot.PhaseRuns[runIndex].Status == domain.PhaseRunQueued
+		return runIndex >= 0 && workflowRunNeedsLaunch(snapshot, session, snapshot.PhaseRuns[runIndex])
 	}
 	if session.PreparedCompositionID == "" {
 		return true
