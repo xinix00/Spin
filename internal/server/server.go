@@ -1409,7 +1409,7 @@ func (s *Server) restartSessionCapsule(w http.ResponseWriter, r *http.Request) {
 			}
 			s.recordLaunchFailure(sessionID, err)
 		})
-	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "starting", "session_id": sessionID})
 }
 
 func (s *Server) createJobSession(w http.ResponseWriter, r *http.Request) {

@@ -69,9 +69,57 @@ func (s *Server) loginsAvailable(composition domain.Composition) error {
 	return nil
 }
 
+// loginsBusy says every login of the layer is held, and by what, so the
+// person knows which capsule to stop or that a login is to be added.
 func (s *Server) loginsBusy(target trackedTarget) error {
-	logins := s.store.LoginsFor(target.key)
-	return fmt.Errorf("every login of %s is in use (%d of %d); stop a capsule or add a login: %w", target.label, len(logins), len(logins), store.ErrLoginsBusy)
+	snapshot := s.store.Snapshot()
+	var holders []string
+	total := 0
+	for _, login := range snapshot.Logins {
+		if login.Key != target.key {
+			continue
+		}
+		total++
+		if login.CompositionID == "" {
+			continue
+		}
+		holders = append(holders, fmt.Sprintf("login %d by %s", login.Number, s.describeHolder(snapshot, login.CompositionID)))
+	}
+	detail := "stop a capsule or add a login"
+	if len(holders) > 0 {
+		detail = strings.Join(holders, ", ") + "; stop that capsule or add a login"
+	}
+	return fmt.Errorf("every login of %s is in use (%d of %d): %s: %w", target.label, len(holders), total, detail, store.ErrLoginsBusy)
+}
+
+// describeHolder names the capsule that holds a login the way a person
+// finds it: the Job and its step, a login capsule, or whose capsule.
+func (s *Server) describeHolder(snapshot domain.Snapshot, compositionID string) string {
+	for _, composition := range snapshot.Compositions {
+		if composition.ID != compositionID {
+			continue
+		}
+		if composition.ForLogin {
+			return "a capsule started to log in (" + composition.Operator + ")"
+		}
+		for _, session := range snapshot.Sessions {
+			if session.ID != composition.SessionID {
+				continue
+			}
+			for _, job := range snapshot.Jobs {
+				if job.ID == session.JobID {
+					step := session.Role
+					if step == "" {
+						step = "session"
+					}
+					return fmt.Sprintf("Job %q (%s)", job.Title, step)
+				}
+			}
+			return "a Session of " + composition.Operator
+		}
+		return "a capsule of " + composition.Operator
+	}
+	return "a capsule that is gone"
 }
 
 // handOutLogins gives the running capsule a login of every layer that

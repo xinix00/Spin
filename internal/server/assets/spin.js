@@ -73,7 +73,9 @@ async function api(path,options={}) {
     if(response.status===403&&/CSRF/.test(body.error||'')&&!options.retried){const status=await api('/api/auth/status');if(status?.csrf_token){authState=status;csrfToken=status.csrf_token;return api(path,{...options,retried:true});}}
     const error=new Error(body.error||response.statusText);error.status=response.status;error.body=body;throw error;
   }
-  return response.status===204?null:response.json();
+  // An answer without a body (204, or an accepted request) is null, not a
+  // JSON error.
+  if(response.status===204)return null;const text=await response.text();return text.trim()?JSON.parse(text):null;
 }
 // Native modal dialogs: showModal() puts the dialog in the top layer, fixed
 // and centred, and makes the page behind it inert; the stylesheet hides the
