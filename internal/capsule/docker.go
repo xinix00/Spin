@@ -1008,12 +1008,18 @@ func (d *Docker) ReadTrackedFiles(ctx context.Context, runtime domain.CapsuleRun
 	}
 	// A folder's files are found in the capsule: the excludes pruned, lock
 	// files and Spin's own temporaries left out, bounded in number and size.
-	var prune strings.Builder
+	// BusyBox find (Alpine images) has no -false, so the prune expression
+	// exists only when there is something to prune.
+	var pruned []string
 	for _, exclude := range selection.Excludes {
 		if !validTrackedPath(exclude) {
 			return nil, fmt.Errorf("invalid excluded path %q", exclude)
 		}
-		fmt.Fprintf(&prune, " -path '%s' -o", strings.TrimSuffix(exclude, "/"))
+		pruned = append(pruned, fmt.Sprintf("-path '%s'", strings.TrimSuffix(exclude, "/")))
+	}
+	prune := ""
+	if len(pruned) > 0 {
+		prune = "\\( " + strings.Join(pruned, " -o ") + " \\) -prune -o "
 	}
 	const emit = "printf 'SPIN_FILE %s ' \"$f\"; base64 < \"$f\" | tr -d '\\n'; printf '\\n'"
 	var script strings.Builder
@@ -1023,7 +1029,7 @@ func (d *Docker) ReadTrackedFiles(ctx context.Context, runtime domain.CapsuleRun
 		}
 		if domain.TrackedFolder(path) {
 			folder := strings.TrimSuffix(path, "/")
-			fmt.Fprintf(&script, "if [ -d '%s' ]; then find '%s' \\( %s -false \\) -prune -o -type f ! -name '*.lock' ! -name '*.spin-tmp' -size -%dc -print 2>/dev/null | head -n %d | while IFS= read -r f; do case \"$f\" in *' '*|*\"'\"*|*'\"'*|*'\\'*|*'*'*|*'?'*|*'['*) continue;; esac; %s; done; fi\n", folder, folder, prune.String(), TrackedFileLimit+1, TrackedFolderFileLimit, emit)
+			fmt.Fprintf(&script, "if [ -d '%s' ]; then find '%s' %s-type f ! -name '*.lock' ! -name '*.spin-tmp' -size -%dc -print | head -n %d | while IFS= read -r f; do case \"$f\" in *' '*|*\"'\"*|*'\"'*|*'\\'*|*'*'*|*'?'*|*'['*) continue;; esac; %s; done; fi\n", folder, folder, prune, TrackedFileLimit+1, TrackedFolderFileLimit, emit)
 			continue
 		}
 		fmt.Fprintf(&script, "if [ -f '%s' ] && [ \"$(wc -c < '%s')\" -le %d ]; then f='%s'; %s; fi\n", path, path, TrackedFileLimit, path, emit)
