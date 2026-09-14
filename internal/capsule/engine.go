@@ -329,6 +329,27 @@ type RepositoryComparer interface {
 	CompareRepository(ctx context.Context, comparison RepositoryComparison) (WorkspaceChanges, error)
 }
 
+// RepositoryAcceptance folds a Session branch into the Job branch on the
+// runner's own clone, without the Session's capsule: a step whose capsule
+// is gone (it waited for an answer, or the Job moved on) is accepted from
+// what it pushed.
+type RepositoryAcceptance struct {
+	RemoteURL      string
+	CacheKey       string
+	SessionRef     string // the Session branch on the remote
+	JobRef         string // the Job branch the result lands on
+	BootstrapRef   string // the base branch, for a Job branch that does not exist yet
+	AllowChanges   bool
+	CommitSubject  string
+	CommitBody     string
+	Authentication *GitAuthentication
+}
+
+// RepositoryAcceptor accepts a Session from the remote alone.
+type RepositoryAcceptor interface {
+	AcceptRepository(ctx context.Context, acceptance RepositoryAcceptance) (WorkspaceAcceptanceResult, error)
+}
+
 type RepositoryBrowser interface {
 	BrowseRepository(ctx context.Context, browse RepositoryBrowse) (RepositoryBrowseResult, error)
 }

@@ -396,6 +396,42 @@ func (s *Server) inspectSessionChanges(ctx context.Context, sessionID, operator 
 	return total, nil
 }
 
+// jobWorkspaces are the repositories a Job changes, as the Job itself
+// records them, filled in from the repository where the Job is thin: what
+// a comparison or an accept needs when no capsule of the Job is left.
+func (s *Server) jobWorkspaces(job domain.Job) []domain.GitWorkspace {
+	snapshot := s.store.Snapshot()
+	repositories := job.ChangedRepositories()
+	workspaces := make([]domain.GitWorkspace, 0, len(repositories))
+	for _, repository := range repositories {
+		workspace := domain.GitWorkspace{
+			RepositoryID: repository.RepositoryID, RepositoryName: repository.Name, RemoteURL: repository.RemoteURL,
+			Provider: repository.Provider, CredentialScope: repository.CredentialScope,
+			Path: repository.Path, BootstrapRef: repository.BaseRef, BaseRef: job.Branch, TargetRef: job.Branch,
+		}
+		if index := slices.IndexFunc(snapshot.GitRepositories, func(candidate domain.GitRepository) bool { return candidate.ID == repository.RepositoryID }); index >= 0 {
+			known := snapshot.GitRepositories[index]
+			if workspace.RemoteURL == "" {
+				workspace.RemoteURL = known.RemoteURL
+			}
+			if workspace.Provider == "" {
+				workspace.Provider = known.Provider
+			}
+			if workspace.CredentialScope == "" {
+				workspace.CredentialScope = known.CredentialScope
+			}
+			if workspace.BootstrapRef == "" {
+				workspace.BootstrapRef = known.DefaultRef
+			}
+		}
+		if workspace.RepositoryName == "" {
+			workspace.RepositoryName = repository.RepositoryID
+		}
+		workspaces = append(workspaces, workspace)
+	}
+	return workspaces
+}
+
 // gatherChanges adds the changes of one repository to those of a Job,
 // its files under the repository's folder and marked with the repository
 // they belong to, so the whole file can be fetched later.
@@ -541,33 +577,7 @@ func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, session
 	}
 	// The repositories as the Job itself records them: a Job whose capsules
 	// are long gone still compares.
-	workspaces := make([]domain.GitWorkspace, 0, len(repositories))
-	for _, repository := range repositories {
-		workspace := domain.GitWorkspace{
-			RepositoryID: repository.RepositoryID, RepositoryName: repository.Name, RemoteURL: repository.RemoteURL,
-			Provider: repository.Provider, CredentialScope: repository.CredentialScope,
-			Path: repository.Path, BootstrapRef: repository.BaseRef, BaseRef: job.Branch, TargetRef: job.Branch,
-		}
-		if index := slices.IndexFunc(snapshot.GitRepositories, func(candidate domain.GitRepository) bool { return candidate.ID == repository.RepositoryID }); index >= 0 {
-			known := snapshot.GitRepositories[index]
-			if workspace.RemoteURL == "" {
-				workspace.RemoteURL = known.RemoteURL
-			}
-			if workspace.Provider == "" {
-				workspace.Provider = known.Provider
-			}
-			if workspace.CredentialScope == "" {
-				workspace.CredentialScope = known.CredentialScope
-			}
-			if workspace.BootstrapRef == "" {
-				workspace.BootstrapRef = known.DefaultRef
-			}
-		}
-		if workspace.RepositoryName == "" {
-			workspace.RepositoryName = repository.RepositoryID
-		}
-		workspaces = append(workspaces, workspace)
-	}
+	workspaces := s.jobWorkspaces(job)
 	several := len(workspaces) > 1
 	operator := job.Worker()
 	var runtime *domain.CapsuleRuntime

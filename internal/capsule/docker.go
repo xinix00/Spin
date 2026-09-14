@@ -1677,6 +1677,136 @@ fi
 printf 'SPIN_ACCEPT committed=%s head=%s\n' "$SPIN_COMMITTED" "$SPIN_PUBLISH"
 unset SPIN_GIT_PASSWORD`
 
+// AcceptRepository folds a Session branch into the Job branch on the
+// runner's own clone: no capsule, no images. What the Session pushed is
+// the whole of its work, so its tree becomes one commit on the Job branch.
+func (d *Docker) AcceptRepository(ctx context.Context, acceptance RepositoryAcceptance) (WorkspaceAcceptanceResult, error) {
+	if strings.TrimSpace(acceptance.RemoteURL) == "" || !validRemoteURL(acceptance.RemoteURL) {
+		return WorkspaceAcceptanceResult{}, errors.New("repository remote URL is required")
+	}
+	if !validGitRef(acceptance.SessionRef) || !validGitRef(acceptance.JobRef) || (acceptance.BootstrapRef != "" && !validGitRef(acceptance.BootstrapRef)) {
+		return WorkspaceAcceptanceResult{}, fmt.Errorf("invalid Git refs %q → %q", acceptance.SessionRef, acceptance.JobRef)
+	}
+	subject := strings.TrimSpace(acceptance.CommitSubject)
+	if subject == "" || len(subject) > 200 || len(acceptance.CommitBody) > 4000 {
+		return WorkspaceAcceptanceResult{}, errors.New("accept commit subject must contain 1 to 200 characters and body at most 4000 characters")
+	}
+	authentication := acceptance.Authentication
+	if authentication == nil {
+		authentication = &GitAuthentication{}
+	}
+	authorName := strings.TrimSpace(authentication.AuthorName)
+	if authorName == "" {
+		authorName = "Spin Agent"
+	}
+	authorEmail := strings.TrimSpace(authentication.AuthorEmail)
+	if authorEmail == "" {
+		authorEmail = "spin@local.invalid"
+	}
+	secretInput := []byte(strings.Join([]string{
+		singleLine(authentication.Username), singleLine(authentication.Password),
+		singleLine(authorName), singleLine(authorEmail),
+	}, "\n") + "\n")
+	key := strings.TrimSpace(acceptance.CacheKey)
+	if key == "" {
+		sum := sha256.Sum256([]byte(acceptance.RemoteURL))
+		key = hex.EncodeToString(sum[:6])
+	}
+	allowChanges := "0"
+	if acceptance.AllowChanges {
+		allowChanges = "1"
+	}
+	output, err := d.controlInput(ctx, secretInput,
+		"run", "--rm", "-i",
+		"--label", "spin.managed=true", "--label", "spin.kind=accept",
+		"--mount", "type=volume,src="+runtimeName("spin-accept", key)+",dst=/repo",
+		"-w", "/repo",
+		"-e", "GIT_TERMINAL_PROMPT=0",
+		"-e", "SPIN_GIT_REMOTE="+acceptance.RemoteURL,
+		"-e", "SPIN_SESSION_REF="+acceptance.SessionRef,
+		"-e", "SPIN_GIT_REF="+acceptance.JobRef,
+		"-e", "SPIN_BOOTSTRAP_REF="+acceptance.BootstrapRef,
+		"-e", "SPIN_ALLOW_CHANGES="+allowChanges,
+		"-e", "SPIN_COMMIT_SUBJECT="+subject,
+		"-e", "SPIN_COMMIT_BODY="+strings.TrimSpace(acceptance.CommitBody),
+		"--entrypoint", "sh", browseImage, "-c", acceptRepositoryScript,
+	)
+	if err != nil {
+		return WorkspaceAcceptanceResult{}, fmt.Errorf("accept %s from the remote: %w", acceptance.SessionRef, err)
+	}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) != 3 || fields[0] != "SPIN_ACCEPT" {
+			continue
+		}
+		head := strings.TrimPrefix(fields[2], "head=")
+		if len(head) < 7 {
+			break
+		}
+		return WorkspaceAcceptanceResult{Committed: strings.TrimPrefix(fields[1], "committed=") == "1", Head: head}, nil
+	}
+	return WorkspaceAcceptanceResult{}, fmt.Errorf("accept did not report a result: %s", strings.TrimSpace(output))
+}
+
+// acceptRepositoryScript publishes what a Session pushed as one commit on
+// the Job branch, on a bare-ish clone. The Session branch holds everything
+// the Session did (Spin syncs it after every turn and when its capsule
+// closes), so its tree is the result; the Job branch must still be an
+// ancestor of it, or someone else moved the Job on.
+const acceptRepositoryScript = `set -eu
+command -v git >/dev/null
+IFS= read -r SPIN_GIT_USERNAME || true
+IFS= read -r SPIN_GIT_PASSWORD || true
+IFS= read -r SPIN_GIT_AUTHOR_NAME || true
+IFS= read -r SPIN_GIT_AUTHOR_EMAIL || true
+if [ -n "$SPIN_GIT_PASSWORD" ]; then
+  ` + gitCredentialEnvironmentScript + `
+fi
+if [ ! -d .git ]; then
+  git init -q
+  git remote add origin "$SPIN_GIT_REMOTE"
+else
+  git remote set-url origin "$SPIN_GIT_REMOTE"
+fi
+git fetch -q --depth=50 origin "+refs/heads/${SPIN_SESSION_REF}:refs/remotes/origin/${SPIN_SESSION_REF}"
+SPIN_SESSION_HEAD="$(git rev-parse "refs/remotes/origin/${SPIN_SESSION_REF}")"
+SPIN_JOB_HEAD=""
+if git ls-remote --exit-code origin "refs/heads/${SPIN_GIT_REF}" >/dev/null 2>&1; then
+  git fetch -q --depth=50 origin "+refs/heads/${SPIN_GIT_REF}:refs/remotes/origin/${SPIN_GIT_REF}"
+  SPIN_JOB_HEAD="$(git rev-parse "refs/remotes/origin/${SPIN_GIT_REF}")"
+elif [ -n "$SPIN_BOOTSTRAP_REF" ]; then
+  git fetch -q --depth=50 origin "+refs/heads/${SPIN_BOOTSTRAP_REF}:refs/remotes/origin/${SPIN_BOOTSTRAP_REF}"
+  SPIN_JOB_HEAD="$(git rev-parse "refs/remotes/origin/${SPIN_BOOTSTRAP_REF}")"
+fi
+if [ -z "$SPIN_JOB_HEAD" ]; then
+  echo 'Spin cannot find the Job branch to accept onto' >&2
+  exit 41
+fi
+if ! git merge-base --is-ancestor "$SPIN_JOB_HEAD" "$SPIN_SESSION_HEAD"; then
+  echo 'The Job branch advanced after this Session started; automatic ACCEPT cannot overwrite it' >&2
+  exit 43
+fi
+SPIN_COMMITTED=0
+SPIN_PUBLISH="$SPIN_JOB_HEAD"
+if [ "$SPIN_ALLOW_CHANGES" = 1 ] && [ "$SPIN_SESSION_HEAD" != "$SPIN_JOB_HEAD" ]; then
+  SPIN_TREE="$(git rev-parse "${SPIN_SESSION_HEAD}^{tree}")"
+  if [ "$SPIN_TREE" != "$(git rev-parse "${SPIN_JOB_HEAD}^{tree}")" ]; then
+    SPIN_PUBLISH="$(printf '%s\n\n%s\n' "$SPIN_COMMIT_SUBJECT" "$SPIN_COMMIT_BODY" | git -c user.name="$SPIN_GIT_AUTHOR_NAME" -c user.email="$SPIN_GIT_AUTHOR_EMAIL" commit-tree "$SPIN_TREE" -p "$SPIN_JOB_HEAD" -F -)"
+    SPIN_COMMITTED=1
+  fi
+fi
+if [ "$SPIN_PUBLISH" != "$SPIN_JOB_HEAD" ] || ! git ls-remote --exit-code origin "refs/heads/${SPIN_GIT_REF}" >/dev/null 2>&1; then
+  git push -q origin "$SPIN_PUBLISH:refs/heads/${SPIN_GIT_REF}"
+fi
+SPIN_REMOTE_HEAD="$(git ls-remote --exit-code origin "refs/heads/${SPIN_GIT_REF}" | cut -f1)"
+if [ "$SPIN_REMOTE_HEAD" != "$SPIN_PUBLISH" ]; then
+  echo 'Remote Job branch does not match the accepted Session HEAD after push' >&2
+  exit 44
+fi
+git push -q origin ":refs/heads/${SPIN_SESSION_REF}" >/dev/null 2>&1 || true
+printf 'SPIN_ACCEPT committed=%s head=%s\n' "$SPIN_COMMITTED" "$SPIN_PUBLISH"
+unset SPIN_GIT_PASSWORD`
+
 // splitSizeHeader finds the "SPIN_SIZE n" line a read script prints before
 // the content; git may have printed a warning before it.
 func splitSizeHeader(output string) (header, content string, ok bool) {

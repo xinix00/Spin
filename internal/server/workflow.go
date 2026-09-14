@@ -438,13 +438,14 @@ func (s *Server) acceptWorkflowWorkspace(ctx context.Context, sessionID, summary
 		return capsule.WorkspaceAcceptanceResult{}, fmt.Errorf("phase is %s: %w", run.Status, store.ErrConflict)
 	}
 	// The owner may open every Session of the Job, also one the assignee runs.
-	_, composition, err := s.sessionComposition(sessionID, job.Owner)
-	if err != nil {
-		return capsule.WorkspaceAcceptanceResult{}, err
-	}
+	session, composition, compositionErr := s.sessionComposition(sessionID, job.Owner)
+	running := compositionErr == nil && composition.Runtime != nil && composition.Runtime.Status != "stopped"
 	acceptor, ok := s.engine.(capsule.WorkspaceAcceptor)
-	if !ok || composition.Runtime == nil {
+	if !ok && running {
 		return capsule.WorkspaceAcceptanceResult{}, fmt.Errorf("capsule engine cannot accept workspaces: %w", store.ErrConflict)
+	}
+	if !running && session.ID == "" {
+		return capsule.WorkspaceAcceptanceResult{}, compositionErr
 	}
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
@@ -465,17 +466,39 @@ func (s *Server) acceptWorkflowWorkspace(ctx context.Context, sessionID, summary
 	defer cancel()
 	// Every repository the Session changes lands on the Job branch of that
 	// repository, each as its own result commit; the main repository's
-	// result is what the caller sees.
+	// result is what the caller sees. A step whose capsule is gone (it
+	// waited for an answer) is accepted from what it pushed: the Session
+	// branch on the remote holds everything it did.
+	workspaces := composition.ChangedWorkspaces()
+	operator := composition.Operator
+	if !running {
+		workspaces = s.jobWorkspaces(job)
+		operator = job.Worker()
+	}
 	var primary capsule.WorkspaceAcceptanceResult
-	for index, workspace := range composition.ChangedWorkspaces() {
-		authentication, err := s.gitAuthenticationForWorkspace(ctx, &workspace, composition.Operator)
+	for index, workspace := range workspaces {
+		authentication, err := s.gitAuthenticationForWorkspace(ctx, &workspace, operator)
 		if err != nil {
 			return capsule.WorkspaceAcceptanceResult{}, fmt.Errorf("%s: %w", workspace.RepositoryName, err)
 		}
-		result, err := acceptor.AcceptWorkspace(acceptContext, *composition.Runtime, capsule.WorkspaceAcceptance{
-			Path: workspace.Path, AllowChanges: phaseAllowsChanges(phase), CommitSubject: "workflow(" + phase.ID + "): accepted",
-			CommitBody: commitBody, RemoteRef: job.Branch, Authentication: authentication,
-		})
+		var result capsule.WorkspaceAcceptanceResult
+		if running {
+			result, err = acceptor.AcceptWorkspace(acceptContext, *composition.Runtime, capsule.WorkspaceAcceptance{
+				Path: workspace.Path, AllowChanges: phaseAllowsChanges(phase), CommitSubject: "workflow(" + phase.ID + "): accepted",
+				CommitBody: commitBody, RemoteRef: job.Branch, Authentication: authentication,
+			})
+		} else {
+			remote, supported := s.engine.(capsule.RepositoryAcceptor)
+			if !supported {
+				return capsule.WorkspaceAcceptanceResult{}, fmt.Errorf("this step has no capsule and no runner can accept from the remote: %w", store.ErrConflict)
+			}
+			result, err = remote.AcceptRepository(acceptContext, capsule.RepositoryAcceptance{
+				RemoteURL: workspace.RemoteURL, CacheKey: workspace.RepositoryID,
+				SessionRef: session.GitRef, JobRef: job.Branch, BootstrapRef: workspace.BootstrapRef,
+				AllowChanges: phaseAllowsChanges(phase), CommitSubject: "workflow(" + phase.ID + "): accepted",
+				CommitBody: commitBody, Authentication: authentication,
+			})
+		}
 		if err != nil {
 			return capsule.WorkspaceAcceptanceResult{}, fmt.Errorf("%s: %w", workspace.RepositoryName, err)
 		}

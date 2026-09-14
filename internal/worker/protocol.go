@@ -48,6 +48,7 @@ const (
 	methodCapsuleChanges     = "capsule.changes"
 	methodWriteTracked       = "files.write"
 	methodAcceptWorkspace    = "workspace.accept"
+	methodAcceptRepository   = "repository.accept"
 	methodMergeWorkspace     = "workspace.merge"
 	methodSyncWorkspace      = "workspace.sync"
 	methodBrowseRepository   = "repository.browse"
@@ -135,6 +136,10 @@ type repositoryBrowsePayload struct {
 
 type repositoryComparePayload struct {
 	Comparison capsule.RepositoryComparison `json:"comparison"`
+}
+
+type repositoryAcceptPayload struct {
+	Acceptance capsule.RepositoryAcceptance `json:"acceptance"`
 }
 
 type appPayload struct {

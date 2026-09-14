@@ -7,7 +7,7 @@ import (
 
 // frontendAssetVersion is part of every browser-asset URL. Increment it for
 // every frontend change; immutable CDN caches may retain older asset paths.
-const frontendAssetVersion = "165"
+const frontendAssetVersion = "166"
 
 //go:embed ui.html
 var dashboardHTML []byte
@@ -18,5 +18,5 @@ var dashboardDocument = bytes.ReplaceAll(dashboardHTML, []byte("__SPIN_UI_VERSIO
 // browser dependencies. They are served from Spin itself so the UI keeps
 // working in offline workspaces.
 //
-//go:embed assets/spin-mark.svg assets/spin.css assets/spin.js assets/vendor/*
+//go:embed assets/spin-mark.svg assets/spin.css assets/spin.js assets/ui/*.js assets/vendor/*
 var dashboardAssets embed.FS

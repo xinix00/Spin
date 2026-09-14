@@ -159,6 +159,63 @@ func TestWorkflowAcceptOwnsCommitAndPublishesSessionToJobBranch(t *testing.T) {
 	}
 }
 
+// A step whose capsule is gone is accepted from what it pushed: the
+// Session branch on the remote is folded into the Job branch on the
+// runner's own clone, and nothing is restored.
+func TestAcceptWithoutCapsuleUsesTheRemote(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &testEngine{}
+	srv := NewWithOptions(st, slog.New(slog.NewTextHandler(io.Discard, nil)), engine, ServerOptions{DisableAuthentication: true, InternalURL: "http://spin.internal"})
+	buildLayers(t, srv, "derek", gitLayer(), agentLayer("agent", "agent-acp"))
+	repository, err := st.CreateGitRepository(domain.CreateGitRepositoryRequest{Operator: "derek", Name: "remote-accept", RemoteURL: "https://github.com/derek/remote-accept.git", CredentialScope: domain.CredentialScopePublic, DefaultRef: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Flow", GitSelector: "tool:git", Phases: []domain.WorkflowPhase{
+		{ID: "build", Name: "Bouwen", Instructions: "Bouw", AllowChanges: true, Accept: domain.WorkflowTransition{Target: domain.WorkflowTargetDone}, Reject: domain.WorkflowTransition{Target: domain.WorkflowTargetSelf}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Zonder capsule", Objective: "Werkend", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.useCapsule(context.Background(), domain.UseRequest{Selector: "session:" + created.Session.ID, Operator: "derek"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkWorkflowPhaseRunning(created.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	compositionID := ""
+	for _, session := range st.Snapshot().Sessions {
+		if session.ID == created.Session.ID {
+			compositionID = session.PreparedCompositionID
+		}
+	}
+	if compositionID == "" {
+		t.Fatal("the Session has no composition")
+	}
+	if _, err := srv.stopCapsule(context.Background(), compositionID, "derek"); err != nil {
+		t.Fatal(err)
+	}
+	before := engine.materialized
+	result, err := srv.acceptWorkflowWorkspace(context.Background(), created.Session.ID, "klaar", "user:derek")
+	if err != nil {
+		t.Fatalf("accept without a capsule: %v", err)
+	}
+	if result.Head == "" || len(engine.acceptedRepositories) != 1 || engine.materialized != before {
+		t.Fatalf("head=%q repository accepts=%d materialized=%d", result.Head, len(engine.acceptedRepositories), engine.materialized)
+	}
+	accepted := engine.acceptedRepositories[0]
+	if accepted.SessionRef == "" || accepted.JobRef != created.Job.Branch || accepted.RemoteURL == "" || !accepted.AllowChanges {
+		t.Fatalf("repository acceptance = %+v", accepted)
+	}
+}
+
 func TestWorkflowMCPPublishesOnlyPhaseToolsAndPausesOnOneQuestion(t *testing.T) {
 	st, err := store.Open("")
 	if err != nil {

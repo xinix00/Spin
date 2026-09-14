@@ -20,20 +20,21 @@ import (
 )
 
 type testEngine struct {
-	cancelled      int
-	started        int
-	executed       int
-	sealed         int
-	materialized   int
-	probed         int
-	removed        int
-	removedRef     string
-	materializeErr error
-	gitAuth        *capsule.GitAuthentication
-	accepted       []capsule.WorkspaceAcceptance
-	comparisons    []capsule.WorkspaceComparison
-	repositories   []capsule.RepositoryComparison
-	injected       []capsule.WorkspaceAttachment
+	cancelled            int
+	started              int
+	executed             int
+	sealed               int
+	materialized         int
+	probed               int
+	removed              int
+	removedRef           string
+	materializeErr       error
+	gitAuth              *capsule.GitAuthentication
+	accepted             []capsule.WorkspaceAcceptance
+	comparisons          []capsule.WorkspaceComparison
+	repositories         []capsule.RepositoryComparison
+	acceptedRepositories []capsule.RepositoryAcceptance
+	injected             []capsule.WorkspaceAttachment
 }
 
 type blockingMaterializeEngine struct {
@@ -158,6 +159,11 @@ func (e *testEngine) CompareRepository(_ context.Context, comparison capsule.Rep
 	e.repositories = append(e.repositories, comparison)
 	e.comparisons = append(e.comparisons, comparison.Comparison)
 	return capsule.WorkspaceChanges{Branch: comparison.Comparison.HeadRef, Added: 1, Files: []capsule.WorkspaceFileChange{{Path: "result.go", Status: "M ", Added: 1, Patch: "@@ -1 +1,2 @@\n old\n+new\n"}}}, nil
+}
+
+func (e *testEngine) AcceptRepository(_ context.Context, acceptance capsule.RepositoryAcceptance) (capsule.WorkspaceAcceptanceResult, error) {
+	e.acceptedRepositories = append(e.acceptedRepositories, acceptance)
+	return capsule.WorkspaceAcceptanceResult{Head: "cafebabe000000000000000000000000000000ff", Committed: true}, nil
 }
 
 func (e *testEngine) InjectWorkspaceAttachments(_ context.Context, _ domain.CapsuleRuntime, attachments []capsule.WorkspaceAttachment) error {

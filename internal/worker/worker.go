@@ -545,6 +545,17 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 			return nil, false, errors.New("runner engine cannot inject Job attachments")
 		}
 		return nil, false, w.injectAttachments(ctx, injector, payload)
+	case methodAcceptRepository:
+		var payload repositoryAcceptPayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		acceptor, ok := w.engine.(capsule.RepositoryAcceptor)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot accept from a repository")
+		}
+		result, err := acceptor.AcceptRepository(ctx, payload.Acceptance)
+		return result, false, err
 	case methodAcceptWorkspace:
 		var payload acceptWorkspacePayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {
