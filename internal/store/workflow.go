@@ -1189,11 +1189,14 @@ func (s *Store) awaitWorkflowDecisionLocked(job domain.Job, template domain.Work
 	acceptTarget := humanWorkflowTarget(template, phase.ID, phase.Accept.Target, domain.WorkflowTargetNext)
 	rejectTarget := humanWorkflowTarget(template, phase.ID, phase.Reject.Target, domain.WorkflowTargetSelf)
 	if phase.Executor == domain.WorkflowExecutorAction && outcome == "reject" {
-		// A failed merge or pull request cannot be approved away: either the
-		// person retries it or the Job stays pending without a false DONE.
+		// A failed merge or pull request cannot be approved away: the person
+		// retries it, or sends it down the step's own reject route (an "AI
+		// merge" step that resolves the conflict). Never a false DONE.
 		questionKind = "action"
 		acceptTarget = phase.ID
-		rejectTarget = phase.ID
+		if rejectTarget == domain.WorkflowTargetDone || rejectTarget == "" {
+			rejectTarget = phase.ID
+		}
 	}
 	question := domain.WorkflowQuestion{
 		ID: newID("ask"), JobID: job.ID, PhaseRunID: run.ID, SessionID: run.SessionID,

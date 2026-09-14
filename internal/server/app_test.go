@@ -511,6 +511,13 @@ func TestMergeStepRejectsOnConflictAndTheAIMergeStepReturnsToIt(t *testing.T) {
 	if err != nil || !strings.Contains(prompt, "conflicteert met develop in: src/en.json src/nl.json") || !strings.Contains(prompt, "Merge origin/develop in de Job-branch") {
 		t.Fatalf("AI merge prompt = %q, %v", prompt, err)
 	}
+	// The prompt says how to make the merge, so the next Merge step meets a
+	// real merge commit instead of a hand-built tree.
+	for _, want := range []string{"MERGE OPLOSSEN", "git merge origin/develop", "git commit", "nooit met de hand na"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("AI merge prompt lacks %q:\n%s", want, prompt)
+		}
+	}
 	// The agent resolves and accepts: back to the merge step, which now
 	// merges cleanly and ends the Job.
 	if _, err := st.MarkWorkflowPhaseRunning(aiSession.ID); err != nil {

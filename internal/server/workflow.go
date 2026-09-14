@@ -888,6 +888,28 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 			fmt.Fprintf(&prompt, "- %s, poging %d, afwijzing door de gebruiker: %s\n", previous.PhaseName, previous.Attempt, own)
 		}
 	}
+	// A step that follows a merge Spin could not land gets the recipe: the
+	// next Merge step only works with a real merge commit, so "rebuild it
+	// by hand" is exactly what must not happen.
+	if phaseAllowsChanges(phase) {
+		for _, previous := range history {
+			if previous.ActionResult != nil || previous.Status != domain.PhaseRunRejected || !strings.Contains(previous.RejectReason, "conflicteert met") {
+				continue
+			}
+			base := strings.TrimSpace(job.BaseRef)
+			if base == "" {
+				base = "de basisbranch"
+			}
+			fmt.Fprintf(&prompt, "\nMERGE OPLOSSEN\nSpin kon de Job-branch niet in %s landen. Jouw taak is die merge hier maken, zodat de Merge-stap daarna slaagt:\n", base)
+			fmt.Fprintf(&prompt, "1. `git merge origin/%s` in deze workspace. De geschiedenis is diep genoeg; haal zelf niets op en gebruik geen --unshallow.\n", base)
+			prompt.WriteString("2. Los elk conflictbestand op. Wat deze Job maakte blijft van de Job; wat anderen intussen op de basisbranch veranderden blijft van hen; raakt een bestand beide, voeg dan beide kanten samen.\n")
+			prompt.WriteString("3. `git add` de opgeloste bestanden en rond af met `git commit` zonder tekst te veranderen. Dit is de enige stap waar je zelf commit; pushen doe je nooit.\n")
+			prompt.WriteString("4. Bouw de merge nooit met de hand na: geen bestanden overschrijven, geen diff toepassen, geen nieuwe branch. Zonder echte merge-commit mislukt de volgende Merge-stap opnieuw.\n")
+			prompt.WriteString("5. Sluit af met accept en schrijf in één zin welke bestanden conflicteerden en hoe je ze hebt opgelost.\n")
+			prompt.WriteString("Lukt de merge niet, reject dan met de reden; verzin geen omweg.\n")
+			break
+		}
+	}
 	if run.Restarts > 0 {
 		fmt.Fprintf(&prompt, "\nOPNIEUW GESTART\nDeze poging is %d keer door de gebruiker opnieuw gestart met een verse agent. De workspace is bewaard: wat er al gedaan was staat erin, kijk daar eerst naar en ga verder in plaats van opnieuw te beginnen.\n", run.Restarts)
 		for _, note := range run.RestartNotes {

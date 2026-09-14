@@ -541,7 +541,10 @@ else
   # branch with its history since that base (falling back to a bounded
   # depth when the remote cannot exclude by ref). Both are shallow; nothing
   # older than the Job is pulled in.
-  git fetch -q --depth=1 origin "+refs/heads/${SPIN_GIT_BOOTSTRAP}:refs/remotes/origin/${SPIN_GIT_BOOTSTRAP}" || true
+  # The base branch comes with history, not just its tip: a step that has
+  # to merge it needs a common ancestor with the Job branch, and a shallow
+  # tip has none.
+  git fetch -q --depth=200 origin "+refs/heads/${SPIN_GIT_BOOTSTRAP}:refs/remotes/origin/${SPIN_GIT_BOOTSTRAP}" || true
   git fetch -q --shallow-exclude="$SPIN_GIT_BOOTSTRAP" origin "+refs/heads/${SPIN_GIT_BASE}:refs/remotes/origin/${SPIN_GIT_BASE}" 2>/dev/null \
     || git fetch -q --depth=100 origin "+refs/heads/${SPIN_GIT_BASE}:refs/remotes/origin/${SPIN_GIT_BASE}"
   # Branches given as context (the Job this one continues) come along as
@@ -560,6 +563,16 @@ else
   else
     git checkout -q -B "$SPIN_GIT_HEAD" "refs/remotes/origin/${SPIN_GIT_BASE}"
   fi
+fi
+# A merge needs a commit both sides share. A shallow clone may not have one
+# yet: deepen until it does, and give up on depth rather than on the
+# workspace (a repository without a shared history stays as it is).
+if [ -n "$SPIN_GIT_BOOTSTRAP" ] && git rev-parse -q --verify "refs/remotes/origin/${SPIN_GIT_BOOTSTRAP}" >/dev/null; then
+  SPIN_DEEPEN=0
+  while [ "$SPIN_DEEPEN" -lt 4 ] && ! git merge-base "refs/remotes/origin/${SPIN_GIT_BOOTSTRAP}" HEAD >/dev/null 2>&1; do
+    git fetch -q --deepen=500 origin "$SPIN_GIT_BOOTSTRAP" "$SPIN_GIT_BASE" 2>/dev/null || git fetch -q --unshallow origin 2>/dev/null || break
+    SPIN_DEEPEN=$((SPIN_DEEPEN+1))
+  done
 fi
 git config spin.targetRef "$SPIN_GIT_TARGET"
 if ! git config --get spin.baseCommit >/dev/null 2>&1; then
