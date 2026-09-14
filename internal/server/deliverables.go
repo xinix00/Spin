@@ -235,7 +235,7 @@ func (s *Server) previewLinkHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) shareDeliverableHandler(w http.ResponseWriter, r *http.Request) {
 	deliverable, ok := s.store.DeliverableByShareToken(r.PathValue("token"))
 	if !ok {
-		http.NotFound(w, r)
+		http.Error(w, "deze link is verlopen", http.StatusGone)
 		return
 	}
 	if !domain.DeliverableIsBundle(deliverable.Kind) {
@@ -264,11 +264,14 @@ func (s *Server) shareHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	link := ""
+	link, until := "", ""
 	if deliverable.ShareToken != "" {
 		link = requestOrigin(r) + "/share/" + deliverable.ShareToken + "/"
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"share_token": deliverable.ShareToken, "url": link})
+	if deliverable.ShareExpiresAt != nil {
+		until = deliverable.ShareExpiresAt.Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"share_token": deliverable.ShareToken, "url": link, "expires_at": until})
 }
 
 // requestOrigin is the address the browser reached Spin on, proxies

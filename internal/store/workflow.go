@@ -642,8 +642,9 @@ func (s *Store) Deliverable(deliverableID string) (domain.Deliverable, error) {
 	return deliverable, nil
 }
 
-// ShareDeliverable gives a revision a share token, or takes it away; the
-// token is stable, so a link that was handed out keeps working.
+// ShareDeliverable opens a revision for an hour, or closes it now. Sharing
+// again keeps the same link and moves the end forward, so a link that was
+// handed out is renewed rather than replaced.
 func (s *Store) ShareDeliverable(deliverableID string, share bool) (domain.Deliverable, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -651,13 +652,14 @@ func (s *Store) ShareDeliverable(deliverableID string, share bool) (domain.Deliv
 	if !ok {
 		return domain.Deliverable{}, ErrNotFound
 	}
-	switch {
-	case !share:
-		deliverable.ShareToken = ""
-	case deliverable.ShareToken == "":
-		deliverable.ShareToken = strings.TrimPrefix(newID("shr"), "shr_")
-	default:
-		return deliverable, nil
+	if !share {
+		deliverable.ShareToken, deliverable.ShareExpiresAt = "", nil
+	} else {
+		if deliverable.ShareToken == "" {
+			deliverable.ShareToken = strings.TrimPrefix(newID("shr"), "shr_")
+		}
+		until := time.Now().UTC().Add(domain.ShareTokenTTL)
+		deliverable.ShareExpiresAt = &until
 	}
 	s.state.Deliverables[deliverable.ID] = deliverable
 	return deliverable, s.saveLocked()
@@ -681,8 +683,12 @@ func (s *Store) deliverableByToken(token string, preview bool) (domain.Deliverab
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now().UTC()
 	for _, deliverable := range s.state.Deliverables {
-		if deliverable.ShareToken == token || (preview && deliverable.PreviewToken == token) {
+		if deliverable.ShareToken == token && deliverable.ShareExpiresAt != nil && now.Before(*deliverable.ShareExpiresAt) {
+			return deliverable, true
+		}
+		if preview && deliverable.PreviewToken == token && deliverable.PreviewExpiresAt != nil && now.Before(*deliverable.PreviewExpiresAt) {
 			return deliverable, true
 		}
 	}
@@ -698,10 +704,15 @@ func (s *Store) EnsurePreviewToken(deliverableID string) (domain.Deliverable, er
 	if !ok {
 		return domain.Deliverable{}, ErrNotFound
 	}
-	if deliverable.PreviewToken != "" {
+	now := time.Now().UTC()
+	if deliverable.PreviewToken != "" && deliverable.PreviewExpiresAt != nil && now.Add(domain.PreviewTokenTTL/3).Before(*deliverable.PreviewExpiresAt) {
 		return deliverable, nil
 	}
-	deliverable.PreviewToken = strings.TrimPrefix(newID("pvw"), "pvw_")
+	if deliverable.PreviewToken == "" {
+		deliverable.PreviewToken = strings.TrimPrefix(newID("pvw"), "pvw_")
+	}
+	until := now.Add(domain.PreviewTokenTTL)
+	deliverable.PreviewExpiresAt = &until
 	s.state.Deliverables[deliverable.ID] = deliverable
 	return deliverable, s.saveLocked()
 }

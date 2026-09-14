@@ -265,15 +265,25 @@ type Deliverable struct {
 	Kind   string             `json:"kind,omitempty"`
 	Bundle *DeliverableBundle `json:"bundle,omitempty"`
 	// ShareToken makes this revision readable without signing in, at
-	// /share/<token>/; set once by a person and kept until they undo it.
-	ShareToken string `json:"share_token,omitempty"`
-	// PreviewToken is the unguessable path the viewer's iframe loads from.
-	// A sandboxed page has no site for cookies, so its stylesheet, scripts
-	// and images arrive without the session cookie; the token in the path
-	// is what lets them through. Minted when a signed-in person opens the
-	// revision, never shown as a share link.
-	PreviewToken string `json:"-"`
+	// /share/<token>/, until ShareExpiresAt. Pressing Delen again keeps the
+	// same link and moves the end forward.
+	ShareToken     string     `json:"share_token,omitempty"`
+	ShareExpiresAt *time.Time `json:"share_expires_at,omitempty"`
+	// PreviewToken is the unguessable path the viewer's iframe loads from,
+	// good for PreviewTokenTTL. A sandboxed page has no site for cookies,
+	// so its stylesheet, scripts and images arrive without the session
+	// cookie; the token in the path is what lets them through. It is never
+	// a share link: it lives minutes, not hours.
+	PreviewToken     string     `json:"-"`
+	PreviewExpiresAt *time.Time `json:"-"`
 }
+
+// How long a link to a revision stays open: a preview is for the person
+// looking at it right now, a share link for what they hand to someone.
+const (
+	PreviewTokenTTL = 15 * time.Minute
+	ShareTokenTTL   = time.Hour
+)
 
 // DeliverableComment is immutable review history on one exact deliverable
 // revision. A newer revision is a different Deliverable and therefore starts

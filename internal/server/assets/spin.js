@@ -366,16 +366,21 @@ function focusDeliverableComment(id){const range=deliverableView.ranges.get(id);
 // revision and the viewer redraws with it.
 const previewURLs=new Map();
 async function ensurePreviewURL(item){
-  if(!item||previewURLs.has(item.id))return;
-  try{const result=await api(`/api/deliverables/${encodeURIComponent(item.id)}/preview`,{method:'POST'});if(result?.url){previewURLs.set(item.id,result.url);if(deliverableView.id===item.id)renderDeliverableRevision(item.id);}}catch(_){}
+  if(!item)return;
+  const known=previewURLs.get(item.id);
+  if(known&&known.until>Date.now()+60000)return;
+  try{const result=await api(`/api/deliverables/${encodeURIComponent(item.id)}/preview`,{method:'POST'});
+    if(result?.url){previewURLs.set(item.id,{url:result.url,until:Date.now()+13*60000});if(deliverableView.id===item.id&&!known)renderDeliverableRevision(item.id);}
+  }catch(_){}
 }
 function renderDeliverableShare(item){
-  const share=document.getElementById('deliverable-share'),panel=document.getElementById('deliverable-share-link'),field=document.getElementById('deliverable-share-url');
-  const link=item.share_token?`${location.origin}/share/${item.share_token}/`:'';
-  share.hidden=Boolean(link);panel.hidden=!link;field.value=link;
-  share.onclick=async()=>{share.disabled=true;try{const result=await api(`/api/deliverables/${encodeURIComponent(item.id)}/share`,{method:'POST',body:JSON.stringify({share:true})});field.value=result.url||'';share.hidden=true;panel.hidden=false;try{await navigator.clipboard.writeText(result.url||'');showNotice('Deelbare link gekopieerd; iedereen met de link kan deze revisie bekijken.');}catch(_){showNotice('Deelbare link gemaakt; iedereen met de link kan deze revisie bekijken.');}await refresh(true);}catch(error){showError(error);}finally{share.disabled=false;}};
+  const share=document.getElementById('deliverable-share'),panel=document.getElementById('deliverable-share-link'),field=document.getElementById('deliverable-share-url'),until=document.getElementById('deliverable-share-until');
+  const live=item.share_token&&item.share_expires_at&&new Date(item.share_expires_at)>new Date(),link=live?`${location.origin}/share/${item.share_token}/`:'';
+  share.hidden=Boolean(link);panel.hidden=!link;field.value=link;share.innerHTML=`${icon('share')}${item.share_token&&!live?'Opnieuw delen':'Delen'}`;
+  until.textContent=live?`geldig tot ${new Date(item.share_expires_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`:'';
+  share.onclick=async()=>{share.disabled=true;try{const result=await api(`/api/deliverables/${encodeURIComponent(item.id)}/share`,{method:'POST',body:JSON.stringify({share:true})});field.value=result.url||'';share.hidden=true;panel.hidden=false;try{await navigator.clipboard.writeText(result.url||'');showNotice('Deelbare link gekopieerd; een uur lang kan iedereen met de link deze revisie bekijken.');}catch(_){showNotice('Deelbare link gemaakt; een uur lang kan iedereen met de link deze revisie bekijken.');}await refresh(true);}catch(error){showError(error);}finally{share.disabled=false;}};
   document.getElementById('deliverable-share-copy').onclick=async()=>{field.select();try{await navigator.clipboard.writeText(field.value);showNotice('Link gekopieerd.');}catch(_){document.execCommand('copy');}};
-  document.getElementById('deliverable-share-stop').onclick=async()=>{if(!confirm('Delen stoppen? De link werkt daarna niet meer.'))return;try{await api(`/api/deliverables/${encodeURIComponent(item.id)}/share`,{method:'POST',body:JSON.stringify({share:false})});panel.hidden=true;share.hidden=false;showNotice('Delen gestopt.');await refresh(true);}catch(error){showError(error);}};
+  document.getElementById('deliverable-share-stop').onclick=async()=>{if(!confirm('Delen nu stoppen? De link werkt daarna niet meer.'))return;try{await api(`/api/deliverables/${encodeURIComponent(item.id)}/share`,{method:'POST',body:JSON.stringify({share:false})});panel.hidden=true;share.hidden=false;showNotice('Delen gestopt.');await refresh(true);}catch(error){showError(error);}};
 }
 function renderDeliverableRevision(id){
   const item=byID(snapshot.deliverables,id);if(!item)return;deliverableView.id=item.id;cancelDeliverableComment();clearDeliverableHighlight();const revisions=deliverableRevisions(item),latest=revisions.at(-1),isLatest=latest?.id===item.id,comments=snapshot.deliverable_comments.filter(comment=>comment.deliverable_id===item.id);
@@ -387,7 +392,7 @@ function renderDeliverableRevision(id){
   if(item.kind&&item.kind!=='markdown'&&item.bundle)ensurePreviewURL(item);
   const content=document.getElementById('deliverable-content');content.classList.toggle('annotatable',isLatest&&!visual);content.classList.toggle('visual',Boolean(visual));
   let richContentReady;
-  if(visual){const previewURL=previewURLs.get(item.id)||`/preview/${encodeURIComponent(item.id)}/`,bundle=item.bundle,shape=bundle.folder?`map · ${bundle.files} bestand${bundle.files===1?'':'en'}${bundle.entry?' · index.html':''}`:(bundle.content_type||'bestand'),kind=item.kind;
+  if(visual){const previewURL=previewURLs.get(item.id)?.url||`/preview/${encodeURIComponent(item.id)}/`,bundle=item.bundle,shape=bundle.folder?`map · ${bundle.files} bestand${bundle.files===1?'':'en'}${bundle.entry?' · index.html':''}`:(bundle.content_type||'bestand'),kind=item.kind;
     const view=kind==='image'?`<div class="preview-image"><img src="${previewURL}" alt="${esc(item.name)} revisie ${item.revision}"></div>`:kind==='pdf'?`<iframe class="preview-frame" src="${previewURL}" title="${esc(item.name)} revisie ${item.revision}"></iframe>`:kind==='file'?`<div class="preview-file">${icon('draft')}<strong>${esc(bundle.entry||'bestand')}</strong><span class="hint">${esc(bundle.content_type||'')}</span><a class="small-button" href="${download.href}" download="${esc(fileName)}">${icon('download')}Download</a></div>`:`<iframe class="preview-frame" src="${previewURL}" sandbox="allow-scripts allow-forms allow-modals" referrerpolicy="no-referrer" title="${esc(item.name)} revisie ${item.revision}"></iframe>`;
     content.innerHTML=`<div class="preview-bar"><span class="hint">${esc(shape)} · ${esc(formatBytes(bundle.size))}</span><a class="small-button" href="${previewURL}" target="_blank" rel="noopener">${icon('open_in_new')}Open in tabblad</a></div>${view}`;richContentReady=Promise.resolve();content.onmouseup=null;lock.textContent=isLatest?'Laatste revisie · commentaar geldt voor de hele revisie':'Historische revisie · alleen lezen';}
   else{richContentReady=setMarkdown(content,item.content);content.onmouseup=isLatest?()=>setTimeout(captureDeliverableSelection):null;}
