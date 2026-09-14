@@ -955,8 +955,17 @@ func (s *Store) CompleteWorkflowPhase(sessionID, outcome, detail string) (domain
 			}
 		}
 	}
-	// An expose phase exists to be judged by a person: it always waits.
+	// An expose phase exists to be judged by a person: it always waits. An
+	// action that fails and routes back into itself would retry forever on
+	// its own, so the person decides each time.
 	needsUser := transition.AskUser || phase.Executor == domain.WorkflowExecutorExpose || resolveWorkflowTarget(template, phase.ID, transition.Target) == domain.WorkflowTargetAskUser
+	// An action that fails and routes back into itself would retry forever
+	// when the Template sets no maximum: after a few tries the person
+	// decides. A Template with its own maximum keeps that.
+	if outcome == "reject" && phase.Executor == domain.WorkflowExecutorAction && transition.Max == 0 &&
+		resolveWorkflowTarget(template, phase.ID, transition.Target) == phase.ID && rejectionCount >= actionSelfRetryLimit {
+		needsUser = true
+	}
 	if !needsUser {
 		if err := s.validateWorkflowInjectionLocked(job.ID, template, phase.ID, transition.Target); err != nil {
 			return domain.WorkflowAdvance{}, err
@@ -1170,6 +1179,10 @@ func humanWorkflowTarget(template domain.WorkflowTemplate, phaseID, rawTarget, f
 	return target
 }
 
+// actionSelfRetryLimit is how often a failing action step retries itself
+// before a person is asked, when the Template sets no maximum.
+const actionSelfRetryLimit = 3
+
 func (s *Store) awaitWorkflowDecisionLocked(job domain.Job, template domain.WorkflowTemplate, run domain.PhaseRun, phase domain.WorkflowPhase, outcome string, rejectionCount int) (domain.WorkflowAdvance, error) {
 	now := time.Now().UTC()
 	questionText := fmt.Sprintf("AI accepted %s.", phase.Name)
@@ -1189,9 +1202,9 @@ func (s *Store) awaitWorkflowDecisionLocked(job domain.Job, template domain.Work
 	acceptTarget := humanWorkflowTarget(template, phase.ID, phase.Accept.Target, domain.WorkflowTargetNext)
 	rejectTarget := humanWorkflowTarget(template, phase.ID, phase.Reject.Target, domain.WorkflowTargetSelf)
 	if phase.Executor == domain.WorkflowExecutorAction && outcome == "reject" {
-		// A failed merge or pull request cannot be approved away: the person
-		// retries it, or sends it down the step's own reject route (an "AI
-		// merge" step that resolves the conflict). Never a false DONE.
+		// A failed merge or pull request cannot be approved away: ACCEPT
+		// retries the action itself, REJECT follows the step's own reject
+		// route, which may point back at the step. Never a false DONE.
 		questionKind = "action"
 		acceptTarget = phase.ID
 		if rejectTarget == domain.WorkflowTargetDone || rejectTarget == "" {
