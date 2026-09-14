@@ -613,13 +613,13 @@ type Login struct {
 	Number int `json:"number"`
 	// Owner is the operator this login is for; empty means everyone who
 	// runs the layer. A shared layer holds both kinds.
-	Owner     string            `json:"owner,omitempty"`
-	Files     map[string][]byte `json:"files"`
+	Owner string            `json:"owner,omitempty"`
+	Files map[string][]byte `json:"files"`
 	// LastUsedAt is when the login last went to a capsule; the pool hands
 	// out the login unused longest, so accounts take turns.
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 // LoginFile is one file of a login, without its content.
@@ -630,15 +630,15 @@ type LoginFile struct {
 
 // LoginSummary is a login without its files, as the browser sees it.
 type LoginSummary struct {
-	ID        string    `json:"id"`
-	Key       string    `json:"key"`
-	Number    int       `json:"number"`
-	Files     int       `json:"files"`
-	Bytes     int64     `json:"bytes"`
+	ID         string     `json:"id"`
+	Key        string     `json:"key"`
+	Number     int        `json:"number"`
+	Files      int        `json:"files"`
+	Bytes      int64      `json:"bytes"`
 	Owner      string     `json:"owner,omitempty"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 	// CompositionID is the running capsule that holds the login, if any.
 	CompositionID string `json:"composition_id,omitempty"`
 }
