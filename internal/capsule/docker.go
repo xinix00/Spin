@@ -466,6 +466,7 @@ func (d *Docker) prepareGitWorkspace(ctx context.Context, volume string, workspa
 		"--env", "SPIN_GIT_BOOTSTRAP="+workspace.BootstrapRef,
 		"--env", "SPIN_GIT_HEAD="+workspace.HeadRef,
 		"--env", "SPIN_GIT_CONTEXT="+strings.Join(workspace.ContextRefs, " "),
+		"--env", "SPIN_GIT_MERGE="+workspace.MergeRef,
 		"--env", "SPIN_GIT_TARGET="+workspace.TargetRef,
 		"--entrypoint", "sh",
 		selected.Snapshot.Ref, "-lc", script,
@@ -579,6 +580,23 @@ if [ -n "$SPIN_GIT_BOOTSTRAP" ] && git rev-parse -q --verify "refs/remotes/origi
       "+refs/heads/${SPIN_GIT_BASE}:refs/remotes/origin/${SPIN_GIT_BASE}" 2>/dev/null || break
     SPIN_DEEPEN=$((SPIN_DEEPEN+1))
   done
+fi
+# A step that has to resolve a merge finds it already started: Spin merges
+# here, where the credentials are, and leaves the conflicts in the worktree.
+# The agent only resolves and commits.
+if [ -n "${SPIN_GIT_MERGE:-}" ] && [ -z "$(git rev-parse -q --verify MERGE_HEAD 2>/dev/null)" ]; then
+  git fetch -q --depth=200 origin "+refs/heads/${SPIN_GIT_MERGE}:refs/remotes/origin/${SPIN_GIT_MERGE}" 2>/dev/null || true
+  SPIN_DEEPEN=0
+  while [ "$SPIN_DEEPEN" -lt 4 ] && ! git merge-base "refs/remotes/origin/${SPIN_GIT_MERGE}" HEAD >/dev/null 2>&1; do
+    git fetch -q --deepen=200 origin \
+      "+refs/heads/${SPIN_GIT_MERGE}:refs/remotes/origin/${SPIN_GIT_MERGE}" \
+      "+refs/heads/${SPIN_GIT_HEAD}:refs/remotes/origin/${SPIN_GIT_HEAD}" 2>/dev/null || break
+    SPIN_DEEPEN=$((SPIN_DEEPEN+1))
+  done
+  if git merge-base "refs/remotes/origin/${SPIN_GIT_MERGE}" HEAD >/dev/null 2>&1; then
+    git -c user.name="${SPIN_GIT_AUTHOR_NAME:-Spin}" -c user.email="${SPIN_GIT_AUTHOR_EMAIL:-spin@local.invalid}" \
+      merge --no-commit --no-ff "refs/remotes/origin/${SPIN_GIT_MERGE}" >/dev/null 2>&1 || true
+  fi
 fi
 git config spin.targetRef "$SPIN_GIT_TARGET"
 if ! git config --get spin.baseCommit >/dev/null 2>&1; then

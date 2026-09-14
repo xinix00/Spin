@@ -972,6 +972,7 @@ func (s *Store) Use(req domain.UseRequest) (domain.Composition, error) {
 				Path: jobRepository.Path, Mode: jobRepository.Mode,
 				CredentialScope: credentialScope, Provider: provider,
 			}
+			workspace.MergeRef = strings.TrimSpace(req.MergeRef)
 			if jobRepository.Mode == domain.RepositoryModeReference {
 				// Read only: the base as it is, nothing of the Job on it.
 				workspace.BaseRef, workspace.BootstrapRef = base, base

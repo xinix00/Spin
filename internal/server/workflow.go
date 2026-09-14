@@ -552,7 +552,7 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 		// A chat on an earlier step starts its capsule again when asked.
 		s.retireWorkflowCompositions(session.JobID, session.ID)
 		materializeContext, cancel := s.launchContext(ctx, session.ID)
-		_, materializeErr := s.useCapsule(materializeContext, domain.UseRequest{Selector: "session:" + session.ID, Operator: operator})
+		_, materializeErr := s.useCapsule(materializeContext, domain.UseRequest{Selector: "session:" + session.ID, Operator: operator, MergeRef: s.mergeToResolve(session.ID)})
 		stalled := materializeContext.Err() != nil
 		cancel()
 		if materializeErr != nil {
@@ -621,6 +621,34 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 		return
 	}
 	s.retireWorkflowCompositions(session.JobID, session.ID)
+}
+
+// mergeToResolve is the branch a step must merge before it can do its
+// work: the base branch, when the Job's previous step was a merge that
+// stranded on a conflict. Spin starts that merge while it prepares the
+// workspace, where the Git credentials are; the capsule has none.
+func (s *Server) mergeToResolve(sessionID string) string {
+	job, _, _, phase, _, _, err := s.store.WorkflowForSession(sessionID)
+	if err != nil || !phaseAllowsChanges(phase) {
+		return ""
+	}
+	base := strings.TrimSpace(job.BaseRef)
+	if base == "" {
+		return ""
+	}
+	var latest domain.PhaseRun
+	for _, run := range s.store.Snapshot().PhaseRuns {
+		if run.JobID != job.ID || run.PhaseID == phase.ID || run.CompletedAt == nil {
+			continue
+		}
+		if latest.ID == "" || run.CompletedAt.After(*latest.CompletedAt) {
+			latest = run
+		}
+	}
+	if latest.Status == domain.PhaseRunRejected && strings.Contains(latest.RejectReason, "conflicteert") {
+		return base
+	}
+	return ""
 }
 
 func (s *Server) retireWorkflowCompositions(jobID, keepSessionID string) {
@@ -901,7 +929,7 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 				base = "de basisbranch"
 			}
 			fmt.Fprintf(&prompt, "\nMERGE OPLOSSEN\nSpin kon de Job-branch niet in %s landen. Jouw taak is die merge hier maken, zodat de Merge-stap daarna slaagt:\n", base)
-			fmt.Fprintf(&prompt, "1. `git merge origin/%s` in deze workspace. De geschiedenis is diep genoeg; haal zelf niets op en gebruik geen --unshallow.\n", base)
+			fmt.Fprintf(&prompt, "1. De merge staat al klaar: Spin heeft `git merge origin/%s` in deze workspace gestart, dus de conflictmarkers staan in de bestanden en MERGE_HEAD is gezet. Staat hij er niet, voer hem dan zelf uit; haal nooit zelf iets op, je hebt geen Git-credentials.\n", base)
 			prompt.WriteString("2. Los elk conflictbestand op. Wat deze Job maakte blijft van de Job; wat anderen intussen op de basisbranch veranderden blijft van hen; raakt een bestand beide, voeg dan beide kanten samen.\n")
 			prompt.WriteString("3. `git add` de opgeloste bestanden en rond af met `git commit` zonder tekst te veranderen. Dit is de enige stap waar je zelf commit; pushen doe je nooit.\n")
 			prompt.WriteString("4. Bouw de merge nooit met de hand na: geen bestanden overschrijven, geen diff toepassen, geen nieuwe branch. Zonder echte merge-commit mislukt de volgende Merge-stap opnieuw.\n")

@@ -849,7 +849,12 @@ type GitWorkspace struct {
 	Mode RepositoryMode `json:"mode,omitempty"`
 	// ContextRefs are branches fetched read-only next to the Job's own, such
 	// as the branch of the Job this one continues.
-	ContextRefs     []string        `json:"context_refs,omitempty"`
+	ContextRefs []string `json:"context_refs,omitempty"`
+	// MergeRef is a branch Spin merges into the Session branch while it
+	// prepares the workspace: a step that has to resolve a merge finds the
+	// merge already started, conflicts and all. Spin does it there because
+	// that is where the Git credentials are; the capsule has none.
+	MergeRef        string          `json:"merge_ref,omitempty"`
 	CredentialScope CredentialScope `json:"credential_scope"`
 	// AccountID is retained only for compositions persisted before scope resolution.
 	AccountID   string `json:"account_id,omitempty"`
@@ -1399,6 +1404,9 @@ type UseRequest struct {
 	Profile       string   `json:"profile,omitempty"`
 	SessionID     string   `json:"session_id,omitempty"`
 	Tool          string   `json:"tool,omitempty"` // accepted for old API clients
+	// MergeRef has Spin start a merge of this branch in the workspace it
+	// prepares; see GitWorkspace.MergeRef.
+	MergeRef string `json:"merge_ref,omitempty"`
 	// ForLogin starts the capsule to log in once more; see Composition.
 	// ForLoginPrivate makes the login for the operator alone.
 	ForLogin        bool `json:"for_login,omitempty"`
