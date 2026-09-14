@@ -264,6 +264,9 @@ type Deliverable struct {
 	// Bundle and no Content.
 	Kind   string             `json:"kind,omitempty"`
 	Bundle *DeliverableBundle `json:"bundle,omitempty"`
+	// ShareToken makes this revision readable without signing in, at
+	// /share/<token>/; set once by a person and kept until they undo it.
+	ShareToken string `json:"share_token,omitempty"`
 }
 
 // DeliverableComment is immutable review history on one exact deliverable

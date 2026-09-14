@@ -642,6 +642,43 @@ func (s *Store) Deliverable(deliverableID string) (domain.Deliverable, error) {
 	return deliverable, nil
 }
 
+// ShareDeliverable gives a revision a share token, or takes it away; the
+// token is stable, so a link that was handed out keeps working.
+func (s *Store) ShareDeliverable(deliverableID string, share bool) (domain.Deliverable, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	deliverable, ok := s.state.Deliverables[strings.TrimSpace(deliverableID)]
+	if !ok {
+		return domain.Deliverable{}, ErrNotFound
+	}
+	switch {
+	case !share:
+		deliverable.ShareToken = ""
+	case deliverable.ShareToken == "":
+		deliverable.ShareToken = strings.TrimPrefix(newID("shr"), "shr_")
+	default:
+		return deliverable, nil
+	}
+	s.state.Deliverables[deliverable.ID] = deliverable
+	return deliverable, s.saveLocked()
+}
+
+// DeliverableByShareToken is the revision a share link points at.
+func (s *Store) DeliverableByShareToken(token string) (domain.Deliverable, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return domain.Deliverable{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, deliverable := range s.state.Deliverables {
+		if deliverable.ShareToken == token {
+			return deliverable, true
+		}
+	}
+	return domain.Deliverable{}, false
+}
+
 // deliverableTargetLocked resolves the running phase of a Session and the
 // deliverable it declares under name.
 func (s *Store) deliverableTargetLocked(sessionID, name string) (domain.Job, domain.PhaseRun, domain.DeliverableDefinition, error) {

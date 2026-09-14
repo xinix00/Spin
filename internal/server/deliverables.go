@@ -202,7 +202,74 @@ func (s *Server) previewDeliverable(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	deliverable, err := s.store.Deliverable(r.PathValue("deliverableID"))
-	if err != nil || !domain.DeliverableIsBundle(deliverable.Kind) || deliverable.Bundle == nil || s.database == nil {
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.servePreview(w, r, deliverable)
+}
+
+// shareDeliverableHandler serves a shared revision to anyone with the link,
+// without signing in: the same files as the preview, and a plain page for a
+// document.
+func (s *Server) shareDeliverableHandler(w http.ResponseWriter, r *http.Request) {
+	deliverable, ok := s.store.DeliverableByShareToken(r.PathValue("token"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if !domain.DeliverableIsBundle(deliverable.Kind) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'")
+		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+		fmt.Fprintf(w, "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>%s</title><style>body{font:15px/1.7 system-ui,sans-serif;margin:0 auto;padding:32px 20px;max-width:44rem;color:#14201a;background:#fbfcfb}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 ui-monospace,monospace}h1{font-size:20px}small{color:#67736c}</style><h1>%s</h1><small>revisie %d</small><pre>%s</pre>",
+			html.EscapeString(deliverable.Name), html.EscapeString(deliverable.Name), deliverable.Revision, html.EscapeString(deliverable.Content))
+		return
+	}
+	s.servePreview(w, r, deliverable)
+}
+
+// shareHandler turns sharing on or off for a revision and answers with the
+// link.
+func (s *Server) shareHandler(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Share *bool `json:"share"`
+	}
+	if r.ContentLength != 0 && !decodeJSON(w, r, &request) {
+		return
+	}
+	share := request.Share == nil || *request.Share
+	deliverable, err := s.store.ShareDeliverable(r.PathValue("deliverableID"), share)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	link := ""
+	if deliverable.ShareToken != "" {
+		link = requestOrigin(r) + "/share/" + deliverable.ShareToken + "/"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"share_token": deliverable.ShareToken, "url": link})
+}
+
+// requestOrigin is the address the browser reached Spin on, proxies
+// included: what a share link must carry.
+func requestOrigin(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]); forwarded != "" {
+		scheme = forwarded
+	}
+	host := r.Host
+	if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Host"), ",")[0]); forwarded != "" {
+		host = forwarded
+	}
+	return scheme + "://" + host
+}
+
+func (s *Server) servePreview(w http.ResponseWriter, r *http.Request, deliverable domain.Deliverable) {
+	if !domain.DeliverableIsBundle(deliverable.Kind) || deliverable.Bundle == nil || s.database == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -221,7 +288,7 @@ func (s *Server) previewDeliverable(w http.ResponseWriter, r *http.Request) {
 	if name == "" || name == "." {
 		if deliverable.Bundle.Entry == "" {
 			// A folder without index.html: the files, each a link.
-			s.previewListing(w, deliverable, archive)
+			s.previewListing(w, r, deliverable, archive)
 			return
 		}
 		name = deliverable.Bundle.Entry
@@ -249,7 +316,7 @@ func (s *Server) previewDeliverable(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.FormatUint(file.UncompressedSize64, 10))
-	w.Header().Set("Content-Security-Policy", previewPolicy(contentType))
+	w.Header().Set("Content-Security-Policy", previewPolicy(contentType, requestOrigin(r)))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
@@ -349,16 +416,23 @@ func (s *Server) removeUnusedBundles(refs []string) {
 // nothing of its own and is shown by the browser's own viewer, which a
 // sandbox would refuse; everything else (pages, scripts, styles, SVG) gets
 // an opaque origin, no network and nowhere to post.
-func previewPolicy(contentType string) string {
+// previewPolicy locks a preview down. A sandboxed document has an opaque
+// origin, and `'self'` never matches an opaque origin, so the bundle's own
+// files are named by the address Spin was reached on; without that a page
+// loses its own CSS, images and scripts. Styling from a CDN (fonts, icons)
+// may load so the page looks as it was made; code may only come from the
+// bundle itself, and the page can reach nothing over the network.
+func previewPolicy(contentType, origin string) string {
 	lower := strings.ToLower(contentType)
 	if strings.HasPrefix(lower, "application/pdf") || (strings.HasPrefix(lower, "image/") && !strings.Contains(lower, "svg")) {
 		return "default-src 'none'; frame-ancestors 'self'"
 	}
-	return "sandbox allow-scripts allow-forms allow-modals; default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; form-action 'none'; frame-ancestors 'self'"
+	own := origin + " data: blob:"
+	return "sandbox allow-scripts allow-forms allow-modals; default-src " + own + " 'unsafe-inline' 'unsafe-eval'; script-src " + own + " 'unsafe-inline' 'unsafe-eval'; style-src " + own + " https: 'unsafe-inline'; font-src " + own + " https:; img-src " + own + " https:; connect-src 'none'; form-action 'none'; frame-ancestors 'self'"
 }
 
 // previewListing is the page for a folder without index.html: its files.
-func (s *Server) previewListing(w http.ResponseWriter, deliverable domain.Deliverable, archive *zip.Reader) {
+func (s *Server) previewListing(w http.ResponseWriter, r *http.Request, deliverable domain.Deliverable, archive *zip.Reader) {
 	var page strings.Builder
 	page.WriteString("<!doctype html><meta charset=\"utf-8\"><title>" + html.EscapeString(deliverable.Name) + "</title><style>body{font:14px/1.6 system-ui,sans-serif;margin:24px;color:#111}a{display:block;padding:4px 0;color:#1a56b3}small{color:#666}</style><h1>" + html.EscapeString(deliverable.Name) + " <small>revisie " + strconv.Itoa(deliverable.Revision) + "</small></h1>")
 	for _, file := range archive.File {
@@ -371,7 +445,7 @@ func (s *Server) previewListing(w http.ResponseWriter, deliverable domain.Delive
 	body := page.String()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	w.Header().Set("Content-Security-Policy", previewPolicy("text/html"))
+	w.Header().Set("Content-Security-Policy", previewPolicy("text/html", requestOrigin(r)))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "private, max-age=300")
 	w.WriteHeader(http.StatusOK)
