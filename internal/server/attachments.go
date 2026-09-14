@@ -197,12 +197,17 @@ func (s *Server) primedPrompt(active *activeACP, text string) (string, error) {
 	if active.sessionID == "" {
 		return text, nil
 	}
-	if _, _, _, _, _, _, err := s.store.WorkflowForSession(active.sessionID); err != nil {
+	_, _, _, phase, _, _, err := s.store.WorkflowForSession(active.sessionID)
+	if err != nil {
 		return text, nil // not a workflow Session: nothing to prime with
 	}
-	base, err := s.workflowPromptForACP(active.sessionID, active.promptCapabilities())
-	if err != nil {
-		return "", fmt.Errorf("rebuild workflow prompt for a resumed agent session: %w", err)
+	base, buildErr := s.workflowPromptForACP(active.sessionID, active.promptCapabilities())
+	if buildErr != nil {
+		return "", fmt.Errorf("rebuild workflow prompt for a resumed agent session: %w", buildErr)
+	}
+	if phase.ID == domain.BrainstormPhaseID {
+		// A brainstorm never starts on its own: this is its first message.
+		return "Hieronder staan de instructies en context van deze brainstorm; daarna het bericht van de gebruiker waarmee het gesprek begint.\n\n" + base + "\n\nBERICHT VAN DE GEBRUIKER\n" + text, nil
 	}
 	return "Deze agentsessie is opnieuw gestart. Hieronder staan eerst de volledige instructies, regels en context van de fase; daarna het bericht dat je nu oppakt. Werk niet verder zonder deze regels.\n\n" + base + "\n\n---\n\nHET BERICHT VAN NU\n" + text, nil
 }

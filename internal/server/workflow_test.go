@@ -636,7 +636,7 @@ func TestBrainstormOffersOnlyStartProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Brainstorm: true, Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Objective: "Concept: iets met de shop", Brainstorm: true, Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -647,7 +647,7 @@ func TestBrainstormOffersOnlyStartProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{`workflowfase "Brainstorm"`, "Goal: (nog te bepalen", "Dit is een brainstorm, geen uitvoering", "start_process(goal)"} {
+	for _, expected := range []string{`workflowfase "Brainstorm"`, "Concept goal: Concept: iets met de shop", "Dit is een brainstorm, geen uitvoering", "start_process(goal)"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("brainstorm prompt missing %q:\n%s", expected, prompt)
 		}

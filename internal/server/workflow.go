@@ -583,6 +583,13 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 		requeue("build workflow prompt", err)
 		return
 	}
+	// A brainstorm waits for the person: the phase prompt travels with
+	// their first message (primedPrompt), so the agent does not go off
+	// investigating before anything was asked.
+	if phaseErr == nil && phase.ID == domain.BrainstormPhaseID {
+		s.retireWorkflowCompositions(session.JobID, session.ID)
+		return
+	}
 	// The launch prompt is the phase prompt itself.
 	active.markPrimed()
 	if err := s.startACPPrompt(active, prompt); err != nil {
@@ -646,10 +653,11 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 		reference = "Referentie: " + job.Reference + "\n"
 	}
 	goal := job.Objective
+	goalLabel := "Goal"
 	if phase.ID == domain.BrainstormPhaseID {
-		goal = "(nog te bepalen; daar gaat deze brainstorm over)"
+		goalLabel = "Concept goal"
 	}
-	fmt.Fprintf(&prompt, "Je voert Spin workflowfase %q uit (poging %d).\n\nJOB\nNaam: %s\n%sGoal: %s\n\nINSTRUCTIES\n%s\n", phase.Name, run.Attempt, job.Title, reference, goal, phase.Instructions)
+	fmt.Fprintf(&prompt, "Je voert Spin workflowfase %q uit (poging %d).\n\nJOB\nNaam: %s\n%s%s: %s\n\nINSTRUCTIES\n%s\n", phase.Name, run.Attempt, job.Title, reference, goalLabel, goal, phase.Instructions)
 	snapshot := s.store.Snapshot()
 	if sessionIndex := slices.IndexFunc(snapshot.Sessions, func(candidate domain.Session) bool { return candidate.ID == sessionID }); sessionIndex >= 0 && job.Branch != "" {
 		var source *domain.Job
@@ -900,7 +908,7 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 		}
 	}
 	if phase.ID == domain.BrainstormPhaseID {
-		prompt.WriteString("\nWERKWIJZE\nDit is een chat: praat, vraag, stel voor. Je enige workflowtool is start_process(goal); roep die pas aan als de gebruiker het eens is met de goal, en beëindig daarna je beurt. De goal mag Markdown zijn (koppen, lijsten, acceptatiecriteria) en wordt zo op de Job getoond en aan elke stap meegegeven. Commit of push nooit; verander niets in de repository.\n")
+		prompt.WriteString("\nWERKWIJZE\nDit is een chat over de concept goal hierboven: praat, vraag door, stel aanscherpingen voor. Ga niets uitzoeken of onderzoeken tot de gebruiker daarom vraagt; wacht op wat hij wil bespreken en reageer daarop. Je enige workflowtool is start_process(goal); roep die pas aan als de gebruiker het eens is met de definitieve goal, en beëindig daarna je beurt. De goal mag Markdown zijn (koppen, lijsten, acceptatiecriteria) en wordt zo op de Job getoond en aan elke stap meegegeven. Commit of push nooit; verander niets in de repository.\n")
 		return prompt.String(), nil
 	}
 	prompt.WriteString("\nWERKWIJZE\nGebruik uitsluitend de aangeboden Spin workflowtools om workflowstate te wijzigen. ask stelt één formulier met één of meer vragen, elk met de antwoordopties die je verwacht; stel alleen wat je niet zelf kunt uitzoeken en bundel alles in één ask. ")

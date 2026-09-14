@@ -54,7 +54,7 @@ func (s *Store) loginHolderLocked(login domain.Login) (domain.Composition, bool)
 func (s *Store) loginSummariesLocked() []domain.LoginSummary {
 	out := make([]domain.LoginSummary, 0, len(s.state.Logins))
 	for _, login := range s.state.Logins {
-		summary := domain.LoginSummary{ID: login.ID, Key: login.Key, Number: login.Number, Owner: login.Owner, Files: len(login.Files), LastUsedAt: login.LastUsedAt, CreatedAt: login.CreatedAt, UpdatedAt: login.UpdatedAt}
+		summary := domain.LoginSummary{ID: login.ID, Key: login.Key, Number: login.Number, Name: login.Name, Owner: login.Owner, Files: len(login.Files), LastUsedAt: login.LastUsedAt, CreatedAt: login.CreatedAt, UpdatedAt: login.UpdatedAt}
 		for _, data := range login.Files {
 			summary.Bytes += int64(len(data))
 		}
@@ -316,6 +316,23 @@ func (s *Store) ExcludeFromLogins(key, path string) (int, error) {
 		return 0, nil
 	}
 	return removed, s.saveLocked()
+}
+
+// RenameLogin gives a login the name a person knows it by.
+func (s *Store) RenameLogin(id, name string) (domain.Login, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	login, ok := s.state.Logins[id]
+	if !ok {
+		return domain.Login{}, ErrNotFound
+	}
+	name = strings.TrimSpace(name)
+	if len(name) > 80 {
+		return domain.Login{}, fmt.Errorf("a login name may be at most 80 characters: %w", ErrConflict)
+	}
+	login.Name = name
+	s.state.Logins[id] = login
+	return login, s.saveLocked()
 }
 
 // DeleteLogin removes a login nobody holds.

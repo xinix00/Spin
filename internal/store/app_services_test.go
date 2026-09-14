@@ -498,16 +498,16 @@ func TestBrainstormSetsTheGoalAndStartsTheTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID}); err == nil {
-		t.Fatal("a Job without a goal and without a brainstorm was accepted")
+		t.Fatal("a Job without a goal was accepted")
 	}
-	if _, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Brainstorm: true, Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent"}); err == nil {
+	if _, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Objective: "Concept", Brainstorm: true, Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent"}); err == nil {
 		t.Fatal("a brainstorm without a Template was accepted")
 	}
-	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Brainstorm: true, Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
+	created, err := st.CreateJob(domain.CreateJobRequest{Title: "Shop", Objective: "Concept: iets met de shop", Brainstorm: true, Operator: "derek", GitRepositoryID: repository.Repository.ID, EnvironmentSelector: "tool:agent", TemplateID: template.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Job.Objective != "" || created.Session.Role != "Brainstorm" || created.Session.Executor != domain.WorkflowExecutorAgent {
+	if created.Job.Objective != "Concept: iets met de shop" || created.Session.Role != "Brainstorm" || created.Session.Executor != domain.WorkflowExecutorAgent {
 		t.Fatalf("brainstorm Job = %+v session = %+v", created.Job, created.Session)
 	}
 	_, _, run, phase, _, _, err := st.WorkflowForSession(created.Session.ID)

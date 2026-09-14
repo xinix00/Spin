@@ -611,6 +611,9 @@ type Login struct {
 	// Number is the login's place in the layer's list, for people: Login 1,
 	// Login 2. Removing one leaves the others their numbers.
 	Number int `json:"number"`
+	// Name is what a person calls this login (the account it belongs to);
+	// empty falls back to "Login <number>".
+	Name string `json:"name,omitempty"`
 	// Owner is the operator this login is for; empty means everyone who
 	// runs the layer. A shared layer holds both kinds.
 	Owner string            `json:"owner,omitempty"`
@@ -633,6 +636,7 @@ type LoginSummary struct {
 	ID         string     `json:"id"`
 	Key        string     `json:"key"`
 	Number     int        `json:"number"`
+	Name       string     `json:"name,omitempty"`
 	Files      int        `json:"files"`
 	Bytes      int64      `json:"bytes"`
 	Owner      string     `json:"owner,omitempty"`
@@ -1450,7 +1454,7 @@ type CreateJobRequest struct {
 	Title     string `json:"title"`
 	Reference string `json:"reference,omitempty"`
 	Objective string `json:"objective"`
-	// Brainstorm starts the Job with a chat that sets the goal instead of
+	// Brainstorm starts the Job with a chat about the concept goal instead of
 	// the Template's first step; Objective may then be empty.
 	Brainstorm         bool     `json:"brainstorm,omitempty"`
 	ForkedFromJobID    string   `json:"forked_from_job_id,omitempty"`

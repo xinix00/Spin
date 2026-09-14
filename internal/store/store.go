@@ -1865,7 +1865,7 @@ func (s *Store) CreateJob(req domain.CreateJobRequest) (domain.CreateJobResponse
 		selector = "tool:" + normalizeName(req.Tool)
 	}
 	_, selectorName, selectorErr := parseArtifactSelector(selector)
-	if strings.TrimSpace(req.Title) == "" || (strings.TrimSpace(req.Objective) == "" && !req.Brainstorm) || (strings.TrimSpace(req.GitRepositoryID) == "" && len(req.Repositories) == 0 && strings.TrimSpace(req.ForkedFromJobID) == "") || selectorErr != nil {
+	if strings.TrimSpace(req.Title) == "" || strings.TrimSpace(req.Objective) == "" || (strings.TrimSpace(req.GitRepositoryID) == "" && len(req.Repositories) == 0 && strings.TrimSpace(req.ForkedFromJobID) == "") || selectorErr != nil {
 		return domain.CreateJobResponse{}, fmt.Errorf("title, objective, git_repository_id and a valid environment_selector are required: %w", ErrConflict)
 	}
 	if req.Brainstorm && strings.TrimSpace(req.TemplateID) == "" {

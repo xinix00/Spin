@@ -386,7 +386,7 @@ func (s *Server) saveLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	summaries := make([]domain.LoginSummary, 0, len(logins))
 	for _, login := range logins {
-		summaries = append(summaries, domain.LoginSummary{ID: login.ID, Key: login.Key, Number: login.Number, Owner: login.Owner, Files: len(login.Files), CreatedAt: login.CreatedAt, UpdatedAt: login.UpdatedAt})
+		summaries = append(summaries, domain.LoginSummary{ID: login.ID, Key: login.Key, Number: login.Number, Name: login.Name, Owner: login.Owner, Files: len(login.Files), CreatedAt: login.CreatedAt, UpdatedAt: login.UpdatedAt})
 	}
 	writeJSON(w, http.StatusCreated, summaries)
 }
@@ -457,6 +457,31 @@ func (s *Server) excludeLoginPathHandler(w http.ResponseWriter, r *http.Request)
 	}
 	go s.rewatchLayer(updated)
 	writeJSON(w, http.StatusOK, map[string]any{"artifact": updated, "removed": removed})
+}
+
+// renameLoginHandler names a login after the account it belongs to.
+func (s *Server) renameLoginHandler(w http.ResponseWriter, r *http.Request) {
+	login, ok := s.store.Login(r.PathValue("loginID"))
+	if !ok {
+		writeError(w, store.ErrNotFound)
+		return
+	}
+	if !s.mayManageLogins(r, login.Key) {
+		writeError(w, fmt.Errorf("only the layer's owner or an admin names this login: %w", store.ErrConflict))
+		return
+	}
+	var request struct {
+		Name string `json:"name"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	renamed, err := s.store.RenameLogin(login.ID, request.Name)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, domain.LoginSummary{ID: renamed.ID, Key: renamed.Key, Number: renamed.Number, Name: renamed.Name, Owner: renamed.Owner, Files: len(renamed.Files), CreatedAt: renamed.CreatedAt, UpdatedAt: renamed.UpdatedAt})
 }
 
 // deleteLoginHandler removes a login; the layer's owner or an admin may.
