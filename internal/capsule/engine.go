@@ -350,6 +350,23 @@ type RepositoryAcceptor interface {
 	AcceptRepository(ctx context.Context, acceptance RepositoryAcceptance) (WorkspaceAcceptanceResult, error)
 }
 
+// RepositoryMerge lands a Job on its base branch from the remote alone: no
+// capsule, no agent layers, only git and the branches.
+type RepositoryMerge struct {
+	RemoteURL      string
+	CacheKey       string
+	SourceRef      string // the Job branch
+	TargetRef      string // the base branch the Job lands on
+	CommitSubject  string
+	CommitBody     string
+	Authentication *GitAuthentication
+}
+
+// RepositoryMerger merges a Job on the runner's own clone.
+type RepositoryMerger interface {
+	MergeRepository(ctx context.Context, merge RepositoryMerge) (WorkspaceMergeResult, error)
+}
+
 type RepositoryBrowser interface {
 	BrowseRepository(ctx context.Context, browse RepositoryBrowse) (RepositoryBrowseResult, error)
 }

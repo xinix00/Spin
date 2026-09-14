@@ -168,6 +168,13 @@ func (e *RemoteEngine) AcceptRepository(ctx context.Context, acceptance capsule.
 	return result, err
 }
 
+// MergeRepository lands a Job on its base branch on a runner's own clone.
+func (e *RemoteEngine) MergeRepository(ctx context.Context, merge capsule.RepositoryMerge) (capsule.WorkspaceMergeResult, error) {
+	var result capsule.WorkspaceMergeResult
+	_, err := e.broker.call(ctx, "", methodMergeRepository, repositoryMergePayload{Merge: merge}, &result)
+	return result, err
+}
+
 func (e *RemoteEngine) CompareRepository(ctx context.Context, comparison capsule.RepositoryComparison) (capsule.WorkspaceChanges, error) {
 	var changes capsule.WorkspaceChanges
 	target, err := e.broker.choose(ctx, "")
@@ -858,6 +865,7 @@ var (
 	_ capsule.RepositoryBrowser           = (*RemoteEngine)(nil)
 	_ capsule.RepositoryComparer          = (*RemoteEngine)(nil)
 	_ capsule.RepositoryAcceptor          = (*RemoteEngine)(nil)
+	_ capsule.RepositoryMerger            = (*RemoteEngine)(nil)
 	_ capsule.TrackedFiles                = (*RemoteEngine)(nil)
 	_ capsule.CapsuleInspector            = (*RemoteEngine)(nil)
 	_ capsule.EnabledEngine               = (*RemoteEngine)(nil)

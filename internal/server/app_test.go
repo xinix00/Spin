@@ -93,6 +93,15 @@ func (e *appTestEngine) AppServiceStatusOn(_ context.Context, _, sessionID strin
 	return appTestResults(e.started), nil
 }
 
+// MergeRepository is how a Merge step lands a Job: on the runner's own
+// clone, without a capsule.
+func (e *appTestEngine) MergeRepository(ctx context.Context, merge capsule.RepositoryMerge) (capsule.WorkspaceMergeResult, error) {
+	return e.MergeWorkspace(ctx, domain.CapsuleRuntime{}, capsule.WorkspaceMerge{
+		SourceRef: merge.SourceRef, TargetRef: merge.TargetRef,
+		CommitSubject: merge.CommitSubject, CommitBody: merge.CommitBody, Authentication: merge.Authentication,
+	})
+}
+
 func (e *appTestEngine) MergeWorkspace(_ context.Context, _ domain.CapsuleRuntime, merge capsule.WorkspaceMerge) (capsule.WorkspaceMergeResult, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

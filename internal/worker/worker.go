@@ -545,6 +545,17 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 			return nil, false, errors.New("runner engine cannot inject Job attachments")
 		}
 		return nil, false, w.injectAttachments(ctx, injector, payload)
+	case methodMergeRepository:
+		var payload repositoryMergePayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		merger, ok := w.engine.(capsule.RepositoryMerger)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot merge from a repository")
+		}
+		result, err := merger.MergeRepository(ctx, payload.Merge)
+		return result, false, err
 	case methodAcceptRepository:
 		var payload repositoryAcceptPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {

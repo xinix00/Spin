@@ -2107,7 +2107,12 @@ IFS= read -r SPIN_GIT_AUTHOR_EMAIL || true
 if [ -n "$SPIN_GIT_PASSWORD" ]; then
   export GIT_CONFIG_COUNT=1
 fi
-git fetch -q --depth=200 origin "+refs/heads/${SPIN_MERGE_TARGET}:refs/remotes/origin/${SPIN_MERGE_TARGET}"
+` + mergeBranchesScript + `
+unset SPIN_GIT_PASSWORD`
+
+// mergeBranchesScript merges the Job branch into the base branch and pushes
+// it; the same steps in a capsule and on a bare clone.
+const mergeBranchesScript = `git fetch -q --depth=200 origin "+refs/heads/${SPIN_MERGE_TARGET}:refs/remotes/origin/${SPIN_MERGE_TARGET}"
 git fetch -q --depth=200 origin "+refs/heads/${SPIN_MERGE_SOURCE}:refs/remotes/origin/${SPIN_MERGE_SOURCE}"
 SPIN_SOURCE="$(git rev-parse "refs/remotes/origin/${SPIN_MERGE_SOURCE}")"
 SPIN_TARGET="$(git rev-parse "refs/remotes/origin/${SPIN_MERGE_TARGET}")"
@@ -2129,7 +2134,87 @@ if [ "$SPIN_REMOTE_HEAD" != "$SPIN_HEAD" ]; then
   echo "Remote ${SPIN_MERGE_TARGET} does not match the merged HEAD after push" >&2
   exit 46
 fi
-printf 'SPIN_MERGE head=%s\n' "$SPIN_HEAD"
+printf 'SPIN_MERGE head=%s\n' "$SPIN_HEAD"`
+
+// MergeRepository lands a Job on its base branch on the runner's own
+// clone: a merge needs the branches and git, not the Job's agent layers or
+// a login, so a Merge step costs no capsule.
+func (d *Docker) MergeRepository(ctx context.Context, merge RepositoryMerge) (WorkspaceMergeResult, error) {
+	if strings.TrimSpace(merge.RemoteURL) == "" || !validRemoteURL(merge.RemoteURL) {
+		return WorkspaceMergeResult{}, errors.New("repository remote URL is required")
+	}
+	if !validGitRef(merge.SourceRef) || !validGitRef(merge.TargetRef) {
+		return WorkspaceMergeResult{}, fmt.Errorf("invalid Git refs %q → %q", merge.SourceRef, merge.TargetRef)
+	}
+	subject := strings.TrimSpace(merge.CommitSubject)
+	if subject == "" || len(subject) > 200 || len(merge.CommitBody) > 4000 {
+		return WorkspaceMergeResult{}, errors.New("merge commit subject must contain 1 to 200 characters and body at most 4000 characters")
+	}
+	authentication := merge.Authentication
+	if authentication == nil {
+		authentication = &GitAuthentication{}
+	}
+	authorName := strings.TrimSpace(authentication.AuthorName)
+	if authorName == "" {
+		authorName = "Spin"
+	}
+	authorEmail := strings.TrimSpace(authentication.AuthorEmail)
+	if authorEmail == "" {
+		authorEmail = "spin@local.invalid"
+	}
+	secretInput := []byte(strings.Join([]string{
+		singleLine(authentication.Username), singleLine(authentication.Password),
+		singleLine(authorName), singleLine(authorEmail),
+	}, "\n") + "\n")
+	key := strings.TrimSpace(merge.CacheKey)
+	if key == "" {
+		sum := sha256.Sum256([]byte(merge.RemoteURL))
+		key = hex.EncodeToString(sum[:6])
+	}
+	output, err := d.controlInput(ctx, secretInput,
+		"run", "--rm", "-i",
+		"--label", "spin.managed=true", "--label", "spin.kind=merge",
+		"--mount", "type=volume,src="+runtimeName("spin-merge", key)+",dst=/repo",
+		"-w", "/repo",
+		"-e", "GIT_TERMINAL_PROMPT=0",
+		"-e", "SPIN_GIT_REMOTE="+merge.RemoteURL,
+		"-e", "SPIN_MERGE_SOURCE="+merge.SourceRef,
+		"-e", "SPIN_MERGE_TARGET="+merge.TargetRef,
+		"-e", "SPIN_COMMIT_SUBJECT="+subject,
+		"-e", "SPIN_COMMIT_BODY="+strings.TrimSpace(merge.CommitBody),
+		"--entrypoint", "sh", browseImage, "-c", mergeRepositoryScript,
+	)
+	if err != nil {
+		return WorkspaceMergeResult{}, fmt.Errorf("merge %s into %s: %w", merge.SourceRef, merge.TargetRef, err)
+	}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) != 2 || fields[0] != "SPIN_MERGE" {
+			continue
+		}
+		if head := strings.TrimPrefix(fields[1], "head="); len(head) >= 7 {
+			return WorkspaceMergeResult{Head: head}, nil
+		}
+	}
+	return WorkspaceMergeResult{}, fmt.Errorf("merge did not report a result: %s", strings.TrimSpace(output))
+}
+
+const mergeRepositoryScript = `set -e
+command -v git >/dev/null
+IFS= read -r SPIN_GIT_USERNAME || true
+IFS= read -r SPIN_GIT_PASSWORD || true
+IFS= read -r SPIN_GIT_AUTHOR_NAME || true
+IFS= read -r SPIN_GIT_AUTHOR_EMAIL || true
+if [ -n "$SPIN_GIT_PASSWORD" ]; then
+  ` + gitCredentialEnvironmentScript + `
+fi
+if [ ! -d .git ]; then
+  git init -q
+  git remote add origin "$SPIN_GIT_REMOTE"
+else
+  git remote set-url origin "$SPIN_GIT_REMOTE"
+fi
+` + mergeBranchesScript + `
 unset SPIN_GIT_PASSWORD`
 
 func validGitRef(value string) bool {

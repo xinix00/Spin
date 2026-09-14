@@ -41,6 +41,9 @@ func (s *Server) launchWorkflowAction(ctx context.Context, sessionID string) {
 	defer cancel()
 	var result domain.WorkflowActionResult
 	switch phase.Action.Type {
+	case domain.WorkflowActionGitMerge:
+		s.launchWorkflowMerge(actionContext, sessionID, job)
+		return
 	case domain.WorkflowActionGitPullRequest:
 		result, err = s.createGitHubPullRequest(actionContext, job)
 	default:
@@ -61,34 +64,27 @@ func (s *Server) launchWorkflowAction(ctx context.Context, sessionID string) {
 // branch from the phase's workspace, with the operator's Git identity. A
 // merge that fails leaves the decision to a person, like a failed pull
 // request does.
-func (s *Server) launchWorkflowMerge(session domain.Session, operator string) {
-	job, _, _, _, _, _, err := s.store.WorkflowForSession(session.ID)
-	if err != nil {
-		s.logger.Warn("load merge phase", "session", session.ID, "error", err)
-		return
-	}
-	_, composition, err := s.sessionComposition(session.ID, operator)
-	if err != nil || composition.Runtime == nil {
-		s.finishWorkflowAction(session.ID, "reject", "de workspace voor het mergen is er niet: "+fmt.Sprint(err))
-		return
-	}
-	merger, ok := s.engine.(capsule.WorkspaceMerger)
+// launchWorkflowMerge lands the Job on its base branch. It runs on a
+// runner's own clone: a merge needs the branches and git, not the Job's
+// agent layers, its credential layer or a login.
+func (s *Server) launchWorkflowMerge(ctx context.Context, sessionID string, job domain.Job) {
+	merger, ok := s.engine.(capsule.RepositoryMerger)
 	if !ok {
-		s.finishWorkflowAction(session.ID, "reject", "de capsule engine kan geen branches mergen")
+		s.finishWorkflowAction(sessionID, "reject", "geen runner kan branches mergen")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	// Every repository the Job changes lands on its own base; one that
-	// cannot be merged stops the step with its name in the reason.
-	workspaces := composition.ChangedWorkspaces()
+	workspaces := s.jobWorkspaces(job)
+	if len(workspaces) == 0 {
+		s.finishWorkflowAction(sessionID, "reject", "de Job wijzigt geen repository om te mergen")
+		return
+	}
 	several := len(workspaces) > 1
 	action := domain.WorkflowActionResult{Type: domain.WorkflowActionGitMerge, Results: map[string]string{}, CreatedAt: time.Now().UTC()}
 	var details []string
 	for index, workspace := range workspaces {
-		authentication, err := s.gitAuthenticationForWorkspace(ctx, &workspace, composition.Operator)
+		authentication, err := s.gitAuthenticationForWorkspace(ctx, &workspace, job.Worker())
 		if err != nil {
-			s.finishWorkflowAction(session.ID, "reject", "Git-account voor het mergen van "+workspace.RepositoryName+": "+err.Error())
+			s.finishWorkflowAction(sessionID, "reject", "Git-account voor het mergen van "+workspace.RepositoryName+": "+err.Error())
 			return
 		}
 		target := strings.TrimSpace(workspace.BootstrapRef)
@@ -96,24 +92,23 @@ func (s *Server) launchWorkflowMerge(session domain.Session, operator string) {
 			target = strings.TrimSpace(job.BaseRef)
 		}
 		if target == "" {
-			s.finishWorkflowAction(session.ID, "reject", "de Job heeft geen basisbranch om in te mergen")
+			s.finishWorkflowAction(sessionID, "reject", "de Job heeft geen basisbranch om in te mergen")
 			return
 		}
 		subject, body := commitMessage(
 			fmt.Sprintf("Merge %s: %s", job.Branch, job.Title),
 			fmt.Sprintf("%s\n\nSpin-Job: %s\nSpin-Merged-By: spin", strings.TrimSpace(job.Objective), job.ID))
-		result, err := merger.MergeWorkspace(ctx, *composition.Runtime, capsule.WorkspaceMerge{
-			Path: workspace.Path, SourceRef: job.Branch, TargetRef: target,
-			CommitSubject:  subject,
-			CommitBody:     body,
-			Authentication: authentication,
+		result, err := merger.MergeRepository(ctx, capsule.RepositoryMerge{
+			RemoteURL: workspace.RemoteURL, CacheKey: workspace.RepositoryID,
+			SourceRef: job.Branch, TargetRef: target,
+			CommitSubject: subject, CommitBody: body, Authentication: authentication,
 		})
 		if err != nil {
 			reason := mergeFailureReason(err)
 			if several {
 				reason = workspace.RepositoryName + ": " + reason
 			}
-			s.finishWorkflowAction(session.ID, "reject", reason)
+			s.finishWorkflowAction(sessionID, "reject", reason)
 			return
 		}
 		action.Results[workspace.RepositoryID] = result.Head
@@ -127,13 +122,12 @@ func (s *Server) launchWorkflowMerge(session domain.Session, operator string) {
 			action.URL = commitURL(workspace.RemoteURL, workspace.Provider, result.Head)
 		}
 	}
-	detail := strings.Join(details, "; ")
-	action.Detail = detail
-	if _, err := s.store.SetWorkflowActionResult(session.ID, action); err != nil {
-		s.finishWorkflowAction(session.ID, "reject", "merge slaagde maar het resultaat kon niet worden opgeslagen: "+err.Error())
+	action.Detail = strings.Join(details, "; ")
+	if _, err := s.store.SetWorkflowActionResult(sessionID, action); err != nil {
+		s.finishWorkflowAction(sessionID, "reject", "merge slaagde maar het resultaat kon niet worden opgeslagen: "+err.Error())
 		return
 	}
-	s.finishWorkflowAction(session.ID, "accept", detail)
+	s.finishWorkflowAction(sessionID, "accept", action.Detail)
 }
 
 // commitMessage keeps a commit within what Git and the runner accept: one
@@ -145,8 +139,7 @@ func commitMessage(subject, body string) (string, string) {
 	if subject == "" {
 		subject = "Spin"
 	}
-	subject = clampText(subject, 200)
-	return subject, clampText(strings.TrimSpace(body), 4000)
+	return clampText(subject, 200), clampText(strings.TrimSpace(body), 4000)
 }
 
 // clampText cuts text to at most limit characters, on a line end when one

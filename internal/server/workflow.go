@@ -528,8 +528,9 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 		operator = session.Operator
 	}
 	_, _, _, phase, _, _, phaseErr := s.store.WorkflowForSession(session.ID)
-	mergeStep := phaseErr == nil && phase.Executor == domain.WorkflowExecutorAction && phase.Action != nil && phase.Action.Type == domain.WorkflowActionGitMerge
-	if phaseErr == nil && phase.Executor == domain.WorkflowExecutorAction && !mergeStep {
+	// Every action step runs without a capsule: a merge needs the branches
+	// and git on a runner, not the Job's agent layers or a login.
+	if phaseErr == nil && phase.Executor == domain.WorkflowExecutorAction {
 		s.retireWorkflowCompositions(session.JobID, session.ID)
 		s.launchWorkflowAction(ctx, session.ID)
 		return
@@ -575,13 +576,6 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 	if phaseErr == nil && phase.Executor == domain.WorkflowExecutorExpose {
 		s.launchWorkflowExpose(session, operator)
 		s.retireWorkflowCompositions(session.JobID, session.ID)
-		return
-	}
-	if mergeStep {
-		// The workspace is up with the Job's environment; merge from there and
-		// let the workspace go with the Job.
-		s.launchWorkflowMerge(session, operator)
-		s.retireWorkflowCompositions(session.JobID, "")
 		return
 	}
 	// From here the phase is "running"; if the agent cannot be started after
