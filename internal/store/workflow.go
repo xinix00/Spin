@@ -921,7 +921,21 @@ func (s *Store) AskWorkflowQuestions(sessionID string, items []domain.WorkflowQu
 	return created, s.saveLocked()
 }
 
+// CompleteWorkflowPhase settles a phase with the agent's or the action's
+// own outcome.
 func (s *Store) CompleteWorkflowPhase(sessionID, outcome, detail string) (domain.WorkflowAdvance, error) {
+	return s.completeWorkflowPhase(sessionID, outcome, detail, false)
+}
+
+// CompleteWorkflowPhaseAsking settles a phase and puts it in front of a
+// person whatever the routes say: a failure nothing downstream can fix (no
+// runner, a runner too old, a misconfiguration) must not travel a reject
+// route that would only send it back.
+func (s *Store) CompleteWorkflowPhaseAsking(sessionID, outcome, detail string) (domain.WorkflowAdvance, error) {
+	return s.completeWorkflowPhase(sessionID, outcome, detail, true)
+}
+
+func (s *Store) completeWorkflowPhase(sessionID, outcome, detail string, alwaysAsk bool) (domain.WorkflowAdvance, error) {
 	outcome = strings.ToLower(strings.TrimSpace(outcome))
 	detail = strings.TrimSpace(detail)
 	if outcome != "accept" && outcome != "reject" {
@@ -958,7 +972,7 @@ func (s *Store) CompleteWorkflowPhase(sessionID, outcome, detail string) (domain
 	// An expose phase exists to be judged by a person: it always waits. An
 	// action that fails and routes back into itself would retry forever on
 	// its own, so the person decides each time.
-	needsUser := transition.AskUser || phase.Executor == domain.WorkflowExecutorExpose || resolveWorkflowTarget(template, phase.ID, transition.Target) == domain.WorkflowTargetAskUser
+	needsUser := alwaysAsk || transition.AskUser || phase.Executor == domain.WorkflowExecutorExpose || resolveWorkflowTarget(template, phase.ID, transition.Target) == domain.WorkflowTargetAskUser
 	// An action that fails and routes back into itself would retry forever
 	// when the Template sets no maximum: after a few tries the person
 	// decides. A Template with its own maximum keeps that.

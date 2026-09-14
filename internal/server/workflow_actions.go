@@ -73,6 +73,7 @@ func (s *Server) launchWorkflowMerge(ctx context.Context, sessionID string, job 
 		s.finishWorkflowAction(sessionID, "reject", "geen runner kan branches mergen")
 		return
 	}
+	outdated := func(err error) bool { return strings.Contains(err.Error(), "unsupported runner method") }
 	workspaces := s.jobWorkspaces(job)
 	if len(workspaces) == 0 {
 		s.finishWorkflowAction(sessionID, "reject", "de Job wijzigt geen repository om te mergen")
@@ -105,6 +106,9 @@ func (s *Server) launchWorkflowMerge(ctx context.Context, sessionID string, job 
 		})
 		if err != nil {
 			reason := mergeFailureReason(err)
+			if outdated(err) {
+				reason = "deze runner kan nog niet mergen zonder capsule; werk de runner bij naar v1.29.5 of nieuwer"
+			}
 			if several {
 				reason = workspace.RepositoryName + ": " + reason
 			}
@@ -171,8 +175,15 @@ func commitURL(remoteURL, provider, sha string) string {
 	return ""
 }
 
+// finishWorkflowAction settles an action step. A failure that names a
+// conflict travels the step's reject route (an AI merge step resolves it);
+// a failure the workflow cannot fix by itself stops at the person.
 func (s *Server) finishWorkflowAction(sessionID, outcome, detail string) {
-	advance, err := s.store.CompleteWorkflowPhase(sessionID, outcome, detail)
+	complete := s.store.CompleteWorkflowPhase
+	if outcome == "reject" && !strings.Contains(detail, "conflicteert") {
+		complete = s.store.CompleteWorkflowPhaseAsking
+	}
+	advance, err := complete(sessionID, outcome, detail)
 	if err != nil {
 		s.logger.Warn("finish workflow action", "session", sessionID, "outcome", outcome, "error", err)
 		return
