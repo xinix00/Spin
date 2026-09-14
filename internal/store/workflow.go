@@ -973,11 +973,11 @@ func (s *Store) completeWorkflowPhase(sessionID, outcome, detail string, alwaysA
 	// action that fails and routes back into itself would retry forever on
 	// its own, so the person decides each time.
 	needsUser := alwaysAsk || transition.AskUser || phase.Executor == domain.WorkflowExecutorExpose || resolveWorkflowTarget(template, phase.ID, transition.Target) == domain.WorkflowTargetAskUser
-	// An action that fails and routes back into itself would retry forever
-	// when the Template sets no maximum: after a few tries the person
-	// decides. A Template with its own maximum keeps that.
-	if outcome == "reject" && phase.Executor == domain.WorkflowExecutorAction && transition.Max == 0 &&
-		resolveWorkflowTarget(template, phase.ID, transition.Target) == phase.ID && rejectionCount >= actionSelfRetryLimit {
+	// An action that keeps failing would go round forever when the Template
+	// sets no maximum, straight back into itself or by way of a step that
+	// sends it here again: after a few tries the person decides. A Template
+	// with its own maximum keeps that.
+	if outcome == "reject" && phase.Executor == domain.WorkflowExecutorAction && transition.Max == 0 && rejectionCount >= actionSelfRetryLimit {
 		needsUser = true
 	}
 	if !needsUser {
@@ -1193,7 +1193,7 @@ func humanWorkflowTarget(template domain.WorkflowTemplate, phaseID, rawTarget, f
 	return target
 }
 
-// actionSelfRetryLimit is how often a failing action step retries itself
+// actionSelfRetryLimit is how often a failing action step goes round
 // before a person is asked, when the Template sets no maximum.
 const actionSelfRetryLimit = 3
 
