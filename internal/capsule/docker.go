@@ -564,13 +564,19 @@ else
     git checkout -q -B "$SPIN_GIT_HEAD" "refs/remotes/origin/${SPIN_GIT_BASE}"
   fi
 fi
-# A merge needs a commit both sides share. A shallow clone may not have one
-# yet: deepen until it does, and give up on depth rather than on the
-# workspace (a repository without a shared history stays as it is).
-if [ -n "$SPIN_GIT_BOOTSTRAP" ] && git rev-parse -q --verify "refs/remotes/origin/${SPIN_GIT_BOOTSTRAP}" >/dev/null; then
+# Merging needs the commit both branches come from, not just their two tips:
+# a shallow fetch cuts exactly that commit away, and git then refuses with
+# "unrelated histories". The workspace stays shallow; both branches are
+# deepened here until they share that commit, because the agent has no
+# credentials and cannot fetch anything itself.
+if [ -n "$SPIN_GIT_BOOTSTRAP" ] && git rev-parse -q --verify "refs/remotes/origin/${SPIN_GIT_BOOTSTRAP}" >/dev/null 2>&1; then
   SPIN_DEEPEN=0
-  while [ "$SPIN_DEEPEN" -lt 4 ] && ! git merge-base "refs/remotes/origin/${SPIN_GIT_BOOTSTRAP}" HEAD >/dev/null 2>&1; do
-    git fetch -q --deepen=500 origin "$SPIN_GIT_BOOTSTRAP" "$SPIN_GIT_BASE" 2>/dev/null || git fetch -q --unshallow origin 2>/dev/null || break
+  while [ "$SPIN_DEEPEN" -lt 3 ] && ! git merge-base "refs/remotes/origin/${SPIN_GIT_BOOTSTRAP}" HEAD >/dev/null 2>&1; do
+    # Named refspecs: "git fetch --deepen origin <branch>" leaves the
+    # remote-tracking ref where it was, so the merge base never appears.
+    git fetch -q --deepen=200 origin \
+      "+refs/heads/${SPIN_GIT_BOOTSTRAP}:refs/remotes/origin/${SPIN_GIT_BOOTSTRAP}" \
+      "+refs/heads/${SPIN_GIT_BASE}:refs/remotes/origin/${SPIN_GIT_BASE}" 2>/dev/null || break
     SPIN_DEEPEN=$((SPIN_DEEPEN+1))
   done
 fi

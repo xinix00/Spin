@@ -906,7 +906,7 @@ func (s *Server) workflowPromptWithOptions(sessionID string, attachInjectedDeliv
 			prompt.WriteString("3. `git add` de opgeloste bestanden en rond af met `git commit` zonder tekst te veranderen. Dit is de enige stap waar je zelf commit; pushen doe je nooit.\n")
 			prompt.WriteString("4. Bouw de merge nooit met de hand na: geen bestanden overschrijven, geen diff toepassen, geen nieuwe branch. Zonder echte merge-commit mislukt de volgende Merge-stap opnieuw.\n")
 			prompt.WriteString("5. Sluit af met accept en schrijf in één zin welke bestanden conflicteerden en hoe je ze hebt opgelost.\n")
-			prompt.WriteString("Lukt de merge niet, reject dan met de reden; verzin geen omweg.\n")
+			prompt.WriteString("Weigert git met \"refusing to merge unrelated histories\" of vindt hij geen merge-base, reject dan met precies die melding: de workspace is dan verkeerd klaargezet en Spin moet dat oplossen, niet jij. Haal zelf niets op (je hebt geen Git-credentials) en verzin geen omweg.\n")
 			break
 		}
 	}
