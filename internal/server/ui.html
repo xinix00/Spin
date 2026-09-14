@@ -108,7 +108,7 @@
                   <div><label for="git-login">Login</label><input id="git-login" name="login" required placeholder="derek"></div>
                   <div><label for="git-author-name">Commitnaam</label><input id="git-author-name" name="name" placeholder="Derek"></div>
                   <div class="wide"><label for="git-author-email">Commit-email</label><input id="git-author-email" name="email" type="email" placeholder="derek@example.com"></div>
-                  <div class="wide"><label for="git-token">Access token</label><input id="git-token" name="access_token" type="password" required autocomplete="new-password"></div>
+                  <div class="wide"><label for="git-token">Access token</label><input id="git-token" name="access_token" type="password" required autocomplete="new-password"><small>Minimale rechten: GitHub fine-grained token op de gekozen repositories met <strong>Contents: Read and write</strong>, <strong>Pull requests: Read and write</strong> en Metadata (read); GitLab een project access token met <code>read_repository</code> en <code>write_repository</code>. Meer heeft Spin niet nodig: het leest en pusht branches en maakt pull requests.</small></div>
                   <div class="wide action"><button class="small-button" type="submit"><span class="material-symbols-outlined" aria-hidden="true">check</span>Token-account bewaren</button></div>
                 </form>
               </details>
