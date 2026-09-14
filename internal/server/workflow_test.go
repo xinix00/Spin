@@ -98,10 +98,12 @@ func TestWorkflowAcceptOwnsCommitAndPublishesSessionToJobBranch(t *testing.T) {
 	phaseRequest := httptest.NewRequest(http.MethodGet, "/api/jobs/"+created.Job.ID+"/changes?operator=derek&session_id="+created.Session.ID, nil)
 	phaseResponse := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(phaseResponse, phaseRequest)
-	if phaseResponse.Code != http.StatusOK || len(engine.comparisons) != 2 {
-		t.Fatalf("phase changes status=%d body=%s comparisons=%+v", phaseResponse.Code, phaseResponse.Body.String(), engine.comparisons)
+	// A Job's changes are compared on the runner's own clone, running
+	// capsule or not: the branches live on the remote.
+	if phaseResponse.Code != http.StatusOK || len(engine.repositories) == 0 {
+		t.Fatalf("phase changes status=%d body=%s repositories=%+v", phaseResponse.Code, phaseResponse.Body.String(), engine.repositories)
 	}
-	if match := engine.comparisons[1].CommitMessageMatch; match != "Spin-Session: "+created.Session.ID {
+	if match := engine.repositories[len(engine.repositories)-1].Comparison.CommitMessageMatch; match != "Spin-Session: "+created.Session.ID {
 		t.Fatalf("phase commit match = %q", match)
 	}
 	compositionID := ""
@@ -117,16 +119,16 @@ func TestWorkflowAcceptOwnsCommitAndPublishesSessionToJobBranch(t *testing.T) {
 	if _, err := srv.stopCapsule(context.Background(), compositionID, "derek"); err != nil {
 		t.Fatal(err)
 	}
-	materializedBefore := engine.materialized
+	materializedBefore, comparedBefore := engine.materialized, len(engine.repositories)
 	historicalRequest := httptest.NewRequest(http.MethodGet, "/api/jobs/"+created.Job.ID+"/changes?operator=derek&session_id="+created.Session.ID, nil)
 	historicalResponse := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(historicalResponse, historicalRequest)
-	// A stopped composition is compared on the runner's clone of the remote:
-	// nothing is restored, no image travels.
-	if historicalResponse.Code != http.StatusOK || engine.materialized != materializedBefore || len(engine.comparisons) != 3 || len(engine.repositories) != 1 {
-		t.Fatalf("historical changes status=%d body=%s materialized=%d comparisons=%d repositories=%d", historicalResponse.Code, historicalResponse.Body.String(), engine.materialized, len(engine.comparisons), len(engine.repositories))
+	// A Job without any capsule left is compared the same way: nothing is
+	// restored, no image travels.
+	if historicalResponse.Code != http.StatusOK || engine.materialized != materializedBefore || len(engine.repositories) != comparedBefore+1 {
+		t.Fatalf("historical changes status=%d body=%s materialized=%d repositories=%d", historicalResponse.Code, historicalResponse.Body.String(), engine.materialized, len(engine.repositories))
 	}
-	if compared := engine.repositories[0]; compared.RemoteURL == "" || compared.CacheKey != repository.Repository.ID || compared.Comparison.CommitMessageMatch != "Spin-Session: "+created.Session.ID || compared.Comparison.Authentication == nil || compared.Comparison.Authentication.Password != "github-secret" {
+	if compared := engine.repositories[len(engine.repositories)-1]; compared.RemoteURL == "" || compared.CacheKey != repository.Repository.ID || compared.Comparison.CommitMessageMatch != "Spin-Session: "+created.Session.ID || compared.Comparison.Authentication == nil || compared.Comparison.Authentication.Password != "github-secret" {
 		t.Fatalf("repository comparison = %+v", compared)
 	}
 	acceptance := engine.accepted[0]

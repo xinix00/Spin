@@ -489,6 +489,12 @@ func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, session
 			}
 		}
 	}
+	// Everything a Job did is on the remote: its branches outlive every
+	// capsule, so the comparison is made on the runner's own clone and needs
+	// no workspace of the Job at all. A running capsule of this Job is used
+	// only when the runner cannot compare on its own.
+	inspector, _ := s.engine.(capsule.WorkspaceRangeInspector)
+	comparer, _ := s.engine.(capsule.RepositoryComparer)
 	var composition *domain.Composition
 	for index := len(compositions) - 1; index >= 0; index-- {
 		candidate := &compositions[index]
@@ -497,25 +503,16 @@ func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, session
 			break
 		}
 	}
-	if composition == nil {
-		for index := len(compositions) - 1; index >= 0; index-- {
-			candidate := &compositions[index]
-			if candidate.Runtime != nil && candidate.Runtime.Status == "stopped" && candidate.Git != nil {
-				composition = candidate
-				break
-			}
-		}
-	}
-	if composition == nil {
-		return capsule.WorkspaceChanges{}, fmt.Errorf("Job has no materialized workspace history for comparison: %w", store.ErrConflict)
-	}
-	inspector, ok := s.engine.(capsule.WorkspaceRangeInspector)
-	if !ok {
-		return capsule.WorkspaceChanges{}, fmt.Errorf("capsule engine %s cannot compare Job workspaces: %w", s.engine.Info().Driver, store.ErrConflict)
+	if comparer == nil && (composition == nil || inspector == nil) {
+		return capsule.WorkspaceChanges{}, fmt.Errorf("no runner can compare the branches of this Job: %w", store.ErrConflict)
 	}
 	// The merge that landed the Job, per repository: after it the base
 	// holds the Job and a merge-base would show nothing, so the merge commit
 	// itself is compared.
+	repositories := job.ChangedRepositories()
+	if len(repositories) == 0 {
+		return capsule.WorkspaceChanges{}, fmt.Errorf("this Job changes no repository: %w", store.ErrConflict)
+	}
 	merges := map[string]string{}
 	for _, run := range snapshot.PhaseRuns {
 		if run.JobID != job.ID || run.ActionResult == nil || run.ActionResult.Type != domain.WorkflowActionGitMerge {
@@ -524,8 +521,8 @@ func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, session
 		for repositoryID, head := range run.ActionResult.Results {
 			merges[repositoryID] = head
 		}
-		if run.ActionResult.ExternalID != "" && composition.Git != nil {
-			merges[composition.Git.RepositoryID] = run.ActionResult.ExternalID
+		if run.ActionResult.ExternalID != "" {
+			merges[repositories[0].RepositoryID] = run.ActionResult.ExternalID
 		}
 	}
 	merged := sessionID == "" && len(merges) > 0
@@ -542,49 +539,44 @@ func (s *Server) inspectJobChanges(ctx context.Context, jobID, _ string, session
 		}
 		return changes
 	}
-	workspaces := composition.ChangedWorkspaces()
-	several := len(workspaces) > 1
-	runtime := composition.Runtime
-	var comparer capsule.RepositoryComparer
-	if runtime.Status == "stopped" {
-		// Everything the Job did is on the remote; a stopped composition is
-		// compared on the runner's own clone, without restoring its images.
-		if candidate, ok := s.engine.(capsule.RepositoryComparer); ok && strings.TrimSpace(composition.Git.RemoteURL) != "" {
-			comparer = candidate
-		} else {
-			// Under the proxy's request limit either way.
-			comparisonContext, cancel := context.WithTimeout(ctx, 85*time.Second)
-			defer cancel()
-			authentication, err := s.gitAuthenticationForWorkspace(ctx, composition.Git, composition.Operator)
-			if err != nil {
-				return capsule.WorkspaceChanges{}, err
-			}
-			var restored domain.CapsuleRuntime
-			if authentication.Password != "" {
-				materializer, supported := s.engine.(capsule.SecretMaterializer)
-				if !supported {
-					return capsule.WorkspaceChanges{}, fmt.Errorf("capsule engine cannot restore a private Job workspace: %w", store.ErrConflict)
-				}
-				restored, err = materializer.MaterializeWithGitAuthentication(comparisonContext, *composition, snapshot.Artifacts, authentication)
-			} else {
-				restored, err = s.engine.Materialize(comparisonContext, *composition, snapshot.Artifacts)
-			}
-			if err != nil {
-				return capsule.WorkspaceChanges{}, fmt.Errorf("restore Job workspace for comparison: %w", err)
-			}
-			runtime = &restored
-			defer func() {
-				cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cleanupCancel()
-				if stopErr := s.engine.Stop(cleanupContext, restored); stopErr != nil {
-					s.logger.Warn("stop transient Job comparison", "job", job.ID, "error", stopErr)
-				}
-			}()
+	// The repositories as the Job itself records them: a Job whose capsules
+	// are long gone still compares.
+	workspaces := make([]domain.GitWorkspace, 0, len(repositories))
+	for _, repository := range repositories {
+		workspace := domain.GitWorkspace{
+			RepositoryID: repository.RepositoryID, RepositoryName: repository.Name, RemoteURL: repository.RemoteURL,
+			Provider: repository.Provider, CredentialScope: repository.CredentialScope,
+			Path: repository.Path, BootstrapRef: repository.BaseRef, BaseRef: job.Branch, TargetRef: job.Branch,
 		}
+		if index := slices.IndexFunc(snapshot.GitRepositories, func(candidate domain.GitRepository) bool { return candidate.ID == repository.RepositoryID }); index >= 0 {
+			known := snapshot.GitRepositories[index]
+			if workspace.RemoteURL == "" {
+				workspace.RemoteURL = known.RemoteURL
+			}
+			if workspace.Provider == "" {
+				workspace.Provider = known.Provider
+			}
+			if workspace.CredentialScope == "" {
+				workspace.CredentialScope = known.CredentialScope
+			}
+			if workspace.BootstrapRef == "" {
+				workspace.BootstrapRef = known.DefaultRef
+			}
+		}
+		if workspace.RepositoryName == "" {
+			workspace.RepositoryName = repository.RepositoryID
+		}
+		workspaces = append(workspaces, workspace)
+	}
+	several := len(workspaces) > 1
+	operator := job.Worker()
+	var runtime *domain.CapsuleRuntime
+	if composition != nil {
+		runtime, operator = composition.Runtime, composition.Operator
 	}
 	total := capsule.WorkspaceChanges{Files: []capsule.WorkspaceFileChange{}}
 	for _, workspace := range workspaces {
-		authentication, err := s.gitAuthenticationForWorkspace(ctx, &workspace, composition.Operator)
+		authentication, err := s.gitAuthenticationForWorkspace(ctx, &workspace, operator)
 		if err != nil {
 			return capsule.WorkspaceChanges{}, err
 		}
