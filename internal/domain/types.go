@@ -615,6 +615,9 @@ type Login struct {
 	// runs the layer. A shared layer holds both kinds.
 	Owner     string            `json:"owner,omitempty"`
 	Files     map[string][]byte `json:"files"`
+	// LastUsedAt is when the login last went to a capsule; the pool hands
+	// out the login unused longest, so accounts take turns.
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
 }
@@ -632,8 +635,9 @@ type LoginSummary struct {
 	Number    int       `json:"number"`
 	Files     int       `json:"files"`
 	Bytes     int64     `json:"bytes"`
-	Owner     string    `json:"owner,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	Owner      string     `json:"owner,omitempty"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	// CompositionID is the running capsule that holds the login, if any.
 	CompositionID string `json:"composition_id,omitempty"`

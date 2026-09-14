@@ -54,7 +54,7 @@ func (s *Store) loginHolderLocked(login domain.Login) (domain.Composition, bool)
 func (s *Store) loginSummariesLocked() []domain.LoginSummary {
 	out := make([]domain.LoginSummary, 0, len(s.state.Logins))
 	for _, login := range s.state.Logins {
-		summary := domain.LoginSummary{ID: login.ID, Key: login.Key, Number: login.Number, Owner: login.Owner, Files: len(login.Files), CreatedAt: login.CreatedAt, UpdatedAt: login.UpdatedAt}
+		summary := domain.LoginSummary{ID: login.ID, Key: login.Key, Number: login.Number, Owner: login.Owner, Files: len(login.Files), LastUsedAt: login.LastUsedAt, CreatedAt: login.CreatedAt, UpdatedAt: login.UpdatedAt}
 		for _, data := range login.Files {
 			summary.Bytes += int64(len(data))
 		}
@@ -138,9 +138,13 @@ func (s *Store) HandOutLogin(compositionID, key string, exclusive bool) (domain.
 	if len(logins) == 0 {
 		return domain.Login{}, ErrNotFound
 	}
-	// The operator's own logins first, then the shared ones.
+	// The operator's own logins first, then the shared ones; within each
+	// the one unused longest, so a pool takes turns (round robin by use).
 	sort.SliceStable(logins, func(i, j int) bool {
-		return logins[i].Owner != "" && logins[j].Owner == ""
+		if (logins[i].Owner != "") != (logins[j].Owner != "") {
+			return logins[i].Owner != ""
+		}
+		return lastUsed(logins[i]).Before(lastUsed(logins[j]))
 	})
 	for _, login := range logins {
 		if !loginFor(login, composition.Operator) {
@@ -161,7 +165,17 @@ func (s *Store) holdLoginLocked(composition domain.Composition, login domain.Log
 	}
 	composition.Logins[login.Key] = login.ID
 	s.state.Compositions[composition.ID] = composition
+	now := time.Now().UTC()
+	login.LastUsedAt = &now
+	s.state.Logins[login.ID] = login
 	return s.saveLocked()
+}
+
+func lastUsed(login domain.Login) time.Time {
+	if login.LastUsedAt == nil {
+		return time.Time{}
+	}
+	return *login.LastUsedAt
 }
 
 // CreateLogin adds a login of the layer with these files and hands it to
