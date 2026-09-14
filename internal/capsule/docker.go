@@ -1768,8 +1768,11 @@ if [ ! -d .git ]; then
 else
   git remote set-url origin "$SPIN_GIT_REMOTE"
 fi
-git fetch -q --depth=50 origin "+refs/heads/${SPIN_SESSION_REF}:refs/remotes/origin/${SPIN_SESSION_REF}"
-SPIN_SESSION_HEAD="$(git rev-parse "refs/remotes/origin/${SPIN_SESSION_REF}")"
+SPIN_SESSION_HEAD=""
+if git ls-remote --exit-code origin "refs/heads/${SPIN_SESSION_REF}" >/dev/null 2>&1; then
+  git fetch -q --depth=50 origin "+refs/heads/${SPIN_SESSION_REF}:refs/remotes/origin/${SPIN_SESSION_REF}"
+  SPIN_SESSION_HEAD="$(git rev-parse "refs/remotes/origin/${SPIN_SESSION_REF}")"
+fi
 SPIN_JOB_HEAD=""
 if git ls-remote --exit-code origin "refs/heads/${SPIN_GIT_REF}" >/dev/null 2>&1; then
   git fetch -q --depth=50 origin "+refs/heads/${SPIN_GIT_REF}:refs/remotes/origin/${SPIN_GIT_REF}"
@@ -1782,13 +1785,15 @@ if [ -z "$SPIN_JOB_HEAD" ]; then
   echo 'Spin cannot find the Job branch to accept onto' >&2
   exit 41
 fi
-if ! git merge-base --is-ancestor "$SPIN_JOB_HEAD" "$SPIN_SESSION_HEAD"; then
+# A Session that never pushed a branch wrote nothing: the Job branch as it
+# stands is the result.
+if [ -n "$SPIN_SESSION_HEAD" ] && ! git merge-base --is-ancestor "$SPIN_JOB_HEAD" "$SPIN_SESSION_HEAD"; then
   echo 'The Job branch advanced after this Session started; automatic ACCEPT cannot overwrite it' >&2
   exit 43
 fi
 SPIN_COMMITTED=0
 SPIN_PUBLISH="$SPIN_JOB_HEAD"
-if [ "$SPIN_ALLOW_CHANGES" = 1 ] && [ "$SPIN_SESSION_HEAD" != "$SPIN_JOB_HEAD" ]; then
+if [ "$SPIN_ALLOW_CHANGES" = 1 ] && [ -n "$SPIN_SESSION_HEAD" ] && [ "$SPIN_SESSION_HEAD" != "$SPIN_JOB_HEAD" ]; then
   SPIN_TREE="$(git rev-parse "${SPIN_SESSION_HEAD}^{tree}")"
   if [ "$SPIN_TREE" != "$(git rev-parse "${SPIN_JOB_HEAD}^{tree}")" ]; then
     SPIN_PUBLISH="$(printf '%s\n\n%s\n' "$SPIN_COMMIT_SUBJECT" "$SPIN_COMMIT_BODY" | git -c user.name="$SPIN_GIT_AUTHOR_NAME" -c user.email="$SPIN_GIT_AUTHOR_EMAIL" commit-tree "$SPIN_TREE" -p "$SPIN_JOB_HEAD" -F -)"
@@ -1803,7 +1808,9 @@ if [ "$SPIN_REMOTE_HEAD" != "$SPIN_PUBLISH" ]; then
   echo 'Remote Job branch does not match the accepted Session HEAD after push' >&2
   exit 44
 fi
-git push -q origin ":refs/heads/${SPIN_SESSION_REF}" >/dev/null 2>&1 || true
+if [ -n "$SPIN_SESSION_HEAD" ]; then
+  git push -q origin ":refs/heads/${SPIN_SESSION_REF}" >/dev/null 2>&1 || true
+fi
 printf 'SPIN_ACCEPT committed=%s head=%s\n' "$SPIN_COMMITTED" "$SPIN_PUBLISH"
 unset SPIN_GIT_PASSWORD`
 

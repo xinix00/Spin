@@ -473,6 +473,12 @@ func (s *Server) acceptWorkflowWorkspace(ctx context.Context, sessionID, summary
 	workspaces := composition.ChangedWorkspaces()
 	operator := composition.Operator
 	if !running {
+		// A step that writes nothing has nothing to integrate: its Session
+		// branch was never pushed, and accepting it confirms the Job branch
+		// as it stands.
+		if !phaseAllowsChanges(phase) {
+			return capsule.WorkspaceAcceptanceResult{}, nil
+		}
 		workspaces = s.jobWorkspaces(job)
 		operator = job.Worker()
 	}
