@@ -304,3 +304,57 @@ func TestStaleWatcherReportDropsNothing(t *testing.T) {
 		t.Fatalf("a stale report changed the login to %v", keys(login.Files))
 	}
 }
+
+// Parking a login moves a running capsule to another login of the layer
+// and puts its files in place; without another login the capsule closes.
+func TestParkingALoginSwapsTheCapsuleOrClosesIt(t *testing.T) {
+	const path = "/root/.claude/.credentials.json"
+	srv, st, engine, key := newLoginTestServer(t, domain.ArtifactCredential, path)
+	ctx := context.Background()
+	first := useLayers(t, srv, "derek", "credential:claude")
+	held, _ := st.Login(first.Logins[key])
+
+	// A second login for the same layer, from a capsule started to log in.
+	fresh, err := srv.useCapsule(ctx, domain.UseRequest{Operator: "derek", Selector: "credential:claude", Profile: "default", ForLogin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.capsule(fresh.Runtime.ContainerID)[path] = []byte("token-B")
+	if _, err := srv.saveNewLogin(ctx, fresh.ID, "derek"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.stopCapsule(ctx, fresh.ID, "derek"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Park the login the running capsule holds: it takes the other one.
+	parked, err := st.SetLoginDisabled(held.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swapped, failure := srv.swapLoginOut(ctx, parked)
+	if swapped != 1 || failure != "" {
+		t.Fatalf("swapped=%d failure=%q", swapped, failure)
+	}
+	running, err := st.Composition(first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running.Logins[key] == held.ID || engine.token(first.Runtime.ContainerID, path) != "token-B" {
+		t.Fatalf("capsule holds login %s with %q", running.Logins[key], engine.token(first.Runtime.ContainerID, path))
+	}
+
+	// Park that one too: nothing is left, so the capsule closes.
+	second, _ := st.Login(running.Logins[key])
+	parkedSecond, err := st.SetLoginDisabled(second.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swapped, failure = srv.swapLoginOut(ctx, parkedSecond)
+	if swapped != 0 || failure == "" {
+		t.Fatalf("swapped=%d failure=%q; expected the capsule to close", swapped, failure)
+	}
+	if closed, err := st.Composition(first.ID); err != nil || closed.Runtime == nil || closed.Runtime.Status != "stopped" {
+		t.Fatalf("composition = %+v err=%v", closed.Runtime, err)
+	}
+}

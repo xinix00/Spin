@@ -54,7 +54,7 @@ func (s *Store) loginHolderLocked(login domain.Login) (domain.Composition, bool)
 func (s *Store) loginSummariesLocked() []domain.LoginSummary {
 	out := make([]domain.LoginSummary, 0, len(s.state.Logins))
 	for _, login := range s.state.Logins {
-		summary := domain.LoginSummary{ID: login.ID, Key: login.Key, Number: login.Number, Name: login.Name, Owner: login.Owner, Files: len(login.Files), LastUsedAt: login.LastUsedAt, CreatedAt: login.CreatedAt, UpdatedAt: login.UpdatedAt}
+		summary := domain.LoginSummary{ID: login.ID, Key: login.Key, Number: login.Number, Name: login.Name, Disabled: login.Disabled, Owner: login.Owner, Files: len(login.Files), LastUsedAt: login.LastUsedAt, CreatedAt: login.CreatedAt, UpdatedAt: login.UpdatedAt}
 		for _, data := range login.Files {
 			summary.Bytes += int64(len(data))
 		}
@@ -109,10 +109,10 @@ func (s *Store) LoginsFree(key string, exclusive bool, operator string) bool {
 	return false
 }
 
-// loginFor says whether a login may go to the operator: everyone's, or
-// the operator's own.
+// loginFor says whether a login may go to the operator: it must be on, and
+// either everyone's or the operator's own.
 func loginFor(login domain.Login, operator string) bool {
-	return login.Owner == "" || login.Owner == normalizeSubject(operator)
+	return !login.Disabled && (login.Owner == "" || login.Owner == normalizeSubject(operator))
 }
 
 // HandOutLogin gives the running capsule a login of the layer: for a
@@ -130,7 +130,7 @@ func (s *Store) HandOutLogin(compositionID, key string, exclusive bool) (domain.
 		return domain.Login{}, fmt.Errorf("a login goes to a capsule that runs or is being built: %w", ErrConflict)
 	}
 	if id, held := composition.Logins[key]; held {
-		if login, ok := s.state.Logins[id]; ok {
+		if login, ok := s.state.Logins[id]; ok && !login.Disabled {
 			return login, nil
 		}
 	}
@@ -316,6 +316,50 @@ func (s *Store) ExcludeFromLogins(key, path string) (int, error) {
 		return 0, nil
 	}
 	return removed, s.saveLocked()
+}
+
+// SetLoginDisabled parks a login or puts it back in the pool. A capsule
+// that holds a parked login keeps it until someone swaps it.
+func (s *Store) SetLoginDisabled(id string, disabled bool) (domain.Login, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	login, ok := s.state.Logins[id]
+	if !ok {
+		return domain.Login{}, ErrNotFound
+	}
+	login.Disabled = disabled
+	s.state.Logins[id] = login
+	return login, s.saveLocked()
+}
+
+// SwapLogin gives a running capsule another login of the layer: the one it
+// holds is let go and the free login unused longest takes its place. Used
+// when an account runs out, so the work goes on with another account.
+func (s *Store) SwapLogin(compositionID, key string) (domain.Login, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	composition, ok := s.state.Compositions[compositionID]
+	if !ok {
+		return domain.Login{}, ErrNotFound
+	}
+	held := composition.Logins[key]
+	logins := s.loginsForLocked(key)
+	sort.SliceStable(logins, func(i, j int) bool {
+		if (logins[i].Owner != "") != (logins[j].Owner != "") {
+			return logins[i].Owner != ""
+		}
+		return lastUsed(logins[i]).Before(lastUsed(logins[j]))
+	})
+	for _, login := range logins {
+		if login.ID == held || !loginFor(login, composition.Operator) {
+			continue
+		}
+		if _, taken := s.loginHolderLocked(login); taken {
+			continue
+		}
+		return login, s.holdLoginLocked(composition, login)
+	}
+	return domain.Login{}, ErrLoginsBusy
 }
 
 // RenameLogin gives a login the name a person knows it by.

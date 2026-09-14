@@ -459,6 +459,88 @@ func (s *Server) excludeLoginPathHandler(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"artifact": updated, "removed": removed})
 }
 
+// disableLoginHandler parks a login or puts it back in the pool. Parking
+// one that a capsule holds hands that capsule another login and puts its
+// files in place, so the work goes on with another account.
+func (s *Server) disableLoginHandler(w http.ResponseWriter, r *http.Request) {
+	login, ok := s.store.Login(r.PathValue("loginID"))
+	if !ok {
+		writeError(w, store.ErrNotFound)
+		return
+	}
+	if !s.mayManageLogins(r, login.Key) {
+		writeError(w, fmt.Errorf("only the layer's owner or an admin parks this login: %w", store.ErrConflict))
+		return
+	}
+	var request struct {
+		Disabled *bool `json:"disabled"`
+	}
+	if r.ContentLength != 0 && !decodeJSON(w, r, &request) {
+		return
+	}
+	disabled := request.Disabled == nil || *request.Disabled
+	updated, err := s.store.SetLoginDisabled(login.ID, disabled)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	swapped, failed := 0, ""
+	if disabled {
+		swapped, failed = s.swapLoginOut(r.Context(), updated)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"disabled": updated.Disabled, "swapped": swapped, "error": failed})
+}
+
+// swapLoginOut moves every running capsule that holds this login to another
+// one of the same layer and writes its files in place, so the work goes on
+// with another account. Without another login the capsule closes: an
+// account that is out cannot do the step, and the step waits for a free
+// login like any other. It reports how many moved and what happened to
+// the rest.
+func (s *Server) swapLoginOut(ctx context.Context, login domain.Login) (int, string) {
+	tracked, ok := s.engine.(capsule.TrackedFiles)
+	if !ok {
+		return 0, ""
+	}
+	swapped, failure := 0, ""
+	for _, composition := range s.store.RunningCompositions() {
+		if composition.Logins[login.Key] != login.ID {
+			continue
+		}
+		var target trackedTarget
+		for _, candidate := range s.trackedTargets(composition) {
+			if candidate.key == login.Key {
+				target = candidate
+			}
+		}
+		if target.key == "" {
+			continue
+		}
+		// What the capsule has of the parked login is kept first: the
+		// account is out of tokens, not out of state.
+		s.keepLogins(ctx, composition)
+		replacement, err := s.store.SwapLogin(composition.ID, login.Key)
+		if err != nil {
+			// No other login: the capsule cannot go on with an account that
+			// is out, so it closes and the step waits for a free login.
+			failure = fmt.Sprintf("geen andere vrije login voor %s; de capsule is gesloten en de stap wacht tot er een vrijkomt", target.label)
+			s.logger.Warn("no login to swap to; closing the capsule", "composition", composition.ID, "layer", login.Key, "error", err)
+			if _, stopErr := s.stopCapsule(ctx, composition.ID, composition.Operator); stopErr != nil {
+				s.logger.Warn("close the capsule of a parked login", "composition", composition.ID, "error", stopErr)
+			}
+			continue
+		}
+		if err := tracked.WriteTrackedFiles(ctx, *composition.Runtime, replacement.Files); err != nil {
+			failure = fmt.Sprintf("login %d kon niet in de capsule worden gezet: %v", replacement.Number, err)
+			s.logger.Warn("place swapped login", "composition", composition.ID, "layer", login.Key, "error", err)
+			continue
+		}
+		swapped++
+		s.logger.Info("login swapped", "composition", composition.ID, "layer", login.Key, "from", login.Number, "to", replacement.Number)
+	}
+	return swapped, failure
+}
+
 // renameLoginHandler names a login after the account it belongs to.
 func (s *Server) renameLoginHandler(w http.ResponseWriter, r *http.Request) {
 	login, ok := s.store.Login(r.PathValue("loginID"))

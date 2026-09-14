@@ -286,6 +286,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sessions/{sessionID}/file", s.sessionFileHandler)
 	s.mux.HandleFunc("DELETE /api/logins/{loginID}", s.deleteLoginHandler)
 	s.mux.HandleFunc("PUT /api/logins/{loginID}/name", s.renameLoginHandler)
+	s.mux.HandleFunc("PUT /api/logins/{loginID}/disabled", s.disableLoginHandler)
 	s.mux.HandleFunc("POST /api/deliverables/{deliverableID}/share", s.shareHandler)
 	s.mux.HandleFunc("POST /api/deliverables/{deliverableID}/preview", s.previewLinkHandler)
 	s.mux.HandleFunc("GET /share/{token}/{file...}", s.shareDeliverableHandler)

@@ -2,7 +2,16 @@ import { esc, icon, syntaxLanguage, highlightCode, sourceCode, markdown, renderM
 import { setTab, setConnection, setWorkView } from './navigation.js';
 
 const spinAssetBase = new URL('../', import.meta.url).href.replace(/\/$/, '');
-let snapshot = {artifacts:[],recordings:[],compositions:[],jobs:[],job_attachments:[],workflow_templates:[],phase_runs:[],deliverables:[],deliverable_comments:[],code_review_revisions:[],code_review_comments:[],workflow_questions:[],sessions:[],activations:[],turns:[],checkpoints:[],results:[],clients:[],mcp_servers:[],git_repositories:[],git_accounts:[],git_oauth_providers:[],users:[],recommendations:[]};
+// One collection list keeps initial state and streamed-state defaults in sync.
+const snapshotCollections = [
+  'artifacts', 'recordings', 'compositions', 'jobs',
+  'job_attachments', 'workflow_templates', 'phase_runs', 'deliverables',
+  'deliverable_comments', 'code_review_revisions', 'code_review_comments', 'workflow_questions',
+  'sessions', 'activations', 'turns', 'checkpoints',
+  'results', 'clients', 'mcp_servers', 'git_repositories',
+  'git_accounts', 'git_oauth_providers', 'users', 'recommendations',
+];
+let snapshot = Object.fromEntries(snapshotCollections.map(key => [key, []]));
 let authState = {configured:false,authenticated:false,user:null};
 let csrfToken = '';
 const spawnDrafts = new Map();
@@ -929,8 +938,12 @@ function renderLogins(){
   document.getElementById('logins-title').textContent=`Logins van ${artifactSelector(artifact)}`;document.getElementById('logins-private-field').hidden=artifact.scope!=='global';
   document.getElementById('logins-lead').textContent=tracks?'Geef elke login de naam van het account erachter. Een draaiende capsule krijgt de vrije login die het langst niet gebruikt is.':'';document.getElementById('logins-lead').hidden=!tracks||!logins.length;
   document.getElementById('logins-copy').textContent=(logins.length?`${logins.length} login${logins.length===1?'':'s'} · ${logins.filter(login=>login.composition_id).length} in gebruik`:'Nog geen login: de eerste capsule maakt er één van wat de laag zelf bevat.')+(artifact.scope==='global'?' · gedeelde laag, de pool is voor iedereen':'');
-  document.getElementById('logins-body').innerHTML=logins.length?logins.map(login=>`<div class="login-row"><div class="login-head"><span class="material-symbols-outlined login-icon" aria-hidden="true">key</span><input class="login-name" data-login-name="${esc(login.id)}" value="${esc(login.name||'')}" placeholder="Login ${login.number}" aria-label="Naam van deze login" ${mayRemove?'':'disabled'}><span class="login-tags">${login.owner?`<span class="tag" title="Alleen voor ${esc(login.owner)}">privé · ${esc(login.owner)}</span>`:artifact.scope==='global'?'<span class="tag">voor iedereen</span>':''}${login.composition_id?`<span class="tag held">in gebruik · ${esc(loginHolderLabel(login.composition_id))}</span>`:'<span class="tag free">vrij</span>'}</span><span class="login-actions"><button class="small-button" data-login-files="${esc(login.id)}" title="Welke bestanden deze login bevat; wat een agent verzamelt kun je hier uitsluiten">${icon('folder_open')}Bestanden</button>${mayRemove?`<button class="danger" data-delete-login="${esc(login.id)}" title="${login.composition_id?'Verwijder deze login en sluit de capsule die hem vasthoudt':'Verwijder deze login; de capsules die erna starten krijgen een andere'}">${icon('delete')}Verwijder</button>`:''}</span></div><small class="login-meta">${login.files} bestand${login.files===1?'':'en'} · ${esc(formatBytes(login.bytes||0))} · bijgewerkt ${esc(new Date(login.updated_at).toLocaleString())}${login.last_used_at?` · laatst uitgedeeld ${esc(new Date(login.last_used_at).toLocaleString())}`:' · nog niet uitgedeeld'}</small><div class="login-files" data-login-files-for="${esc(login.id)}" hidden></div></div>`).join(''):'<div class="empty">Nog geen logins.</div>';
+  document.getElementById('logins-body').innerHTML=logins.length?logins.map(login=>`<div class="login-row"><div class="login-head"><span class="material-symbols-outlined login-icon" aria-hidden="true">key</span><input class="login-name" data-login-name="${esc(login.id)}" value="${esc(login.name||'')}" placeholder="Login ${login.number}" aria-label="Naam van deze login" ${mayRemove?'':'disabled'}><span class="login-tags">${login.disabled?'<span class="tag disabled-tag" title="Uitgezet: deze login gaat naar geen enkele capsule">uit</span>':''}${login.owner?`<span class="tag" title="Alleen voor ${esc(login.owner)}">privé · ${esc(login.owner)}</span>`:artifact.scope==='global'?'<span class="tag">voor iedereen</span>':''}${login.composition_id?`<span class="tag held">in gebruik · ${esc(loginHolderLabel(login.composition_id))}</span>`:'<span class="tag free">vrij</span>'}</span><span class="login-actions"><button class="small-button" data-login-toggle="${esc(login.id)}" data-login-disabled="${login.disabled?'1':'0'}" title="${login.disabled?'Weer meedoen in de pool':'Uitzetten, bijvoorbeeld als dit account door zijn tokens heen is; een draaiende capsule stapt meteen over op een andere login'}">${icon(login.disabled?'play_arrow':'pause')}${login.disabled?'Aanzetten':'Uitzetten'}</button><button class="small-button" data-login-files="${esc(login.id)}" title="Welke bestanden deze login bevat; wat een agent verzamelt kun je hier uitsluiten">${icon('folder_open')}Bestanden</button>${mayRemove?`<button class="danger" data-delete-login="${esc(login.id)}" title="${login.composition_id?'Verwijder deze login en sluit de capsule die hem vasthoudt':'Verwijder deze login; de capsules die erna starten krijgen een andere'}">${icon('delete')}Verwijder</button>`:''}</span></div><small class="login-meta">${login.files} bestand${login.files===1?'':'en'} · ${esc(formatBytes(login.bytes||0))} · bijgewerkt ${esc(new Date(login.updated_at).toLocaleString())}${login.last_used_at?` · laatst uitgedeeld ${esc(new Date(login.last_used_at).toLocaleString())}`:' · nog niet uitgedeeld'}</small><div class="login-files" data-login-files-for="${esc(login.id)}" hidden></div></div>`).join(''):'<div class="empty">Nog geen logins.</div>';
   document.getElementById('logins-body').querySelectorAll('[data-login-files]').forEach(button=>button.onclick=()=>toggleLoginFiles(button.dataset.loginFiles));
+  document.getElementById('logins-body').querySelectorAll('[data-login-toggle]').forEach(button=>button.onclick=async()=>{const disabled=button.dataset.loginDisabled!=='1';button.disabled=true;try{const result=await api(`/api/logins/${encodeURIComponent(button.dataset.loginToggle)}/disabled`,{method:'PUT',body:JSON.stringify({disabled})});
+    if(disabled)showNotice(result.swapped?`Login uitgezet; ${result.swapped} draaiende capsule${result.swapped===1?'':'s'} werkt verder met een andere login.`:(result.error||'Login uitgezet; hij gaat naar geen enkele capsule meer.'));
+    else showNotice('Login staat weer in de pool.');
+    await refresh(true);renderLogins();}catch(error){showError(error);button.disabled=false;}});
   document.getElementById('logins-body').querySelectorAll('[data-login-name]').forEach(input=>{input.onchange=async()=>{try{await api(`/api/logins/${encodeURIComponent(input.dataset.loginName)}/name`,{method:'PUT',body:JSON.stringify({name:input.value.trim()})});await refresh(true);}catch(error){showError(error);}};input.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();input.blur();}};});
   loginsState.openFiles.forEach(id=>{if(logins.some(login=>login.id===id))renderLoginFiles(id);});
   document.getElementById('logins-body').querySelectorAll('[data-delete-login]').forEach(button=>button.onclick=()=>{const login=byID(snapshot.logins,button.dataset.deleteLogin);if(confirm(login?.composition_id?'Deze login verwijderen? De capsule die hem vasthoudt wordt gesloten.':'Deze login verwijderen?'))deleteLogin(button.dataset.deleteLogin);});
@@ -1016,7 +1029,7 @@ document.getElementById('contents-save').onclick=async()=>{const button=document
 document.getElementById('contents-filter').oninput=renderContentsList;
 function renderComposition(){
   const composition=snapshot.compositions.find(item=>item.operator===currentOperator()),root=region('composition');
-  if(!composition){root.innerHTML='<div class="empty">Nog geen draaiende Composition.</div>';return;}
+  if(!composition){root.innerHTML='<div class="empty">Nog geen draaiende omgeving.</div>';return;}
   const bindings=Object.entries(composition.slot_bindings||{}).map(([slot,id])=>{const artifact=byID(snapshot.artifacts,id);return `<div class="binding"><span>${esc(slot)}</span><span>${esc(artifact?artifactSelector(artifact):id)}</span></div>`;}).join('');
   const enabled=composition.enabled?.length?`<div class="binding"><span>ENABLED</span><span>${esc(enabledNames(composition.enabled))}</span></div>`:'';
   const stack=(composition.layers||[]).map(id=>{const artifact=byID(snapshot.artifacts,id);return artifact?artifactSelector(artifact):id;});
@@ -1038,7 +1051,7 @@ function renderComposition(){
 function acpLayerOf(artifact,seen=new Set()){if(!artifact||seen.has(artifact.id))return null;seen.add(artifact.id);if((artifact.enables||[]).some(item=>item.name==='acp'))return artifact;for(const parentID of artifact.parent_artifact_ids||[]){const found=acpLayerOf(byID(snapshot.artifacts,parentID),seen);if(found)return found;}return null;}
 function renderArtifacts(){
   const root=region('artifacts'),artifacts=snapshot.artifacts.filter(canUse);
-  if(!artifacts.length){root.innerHTML='<div class="empty">Nog geen environments. Open de recorder om <code>tool:git</code> als eerste laag te maken.</div>';return;}
+  if(!artifacts.length){root.innerHTML='<div class="empty">Nog geen lagen. Open de recorder om <code>tool:git</code> als eerste laag te maken.</div>';return;}
   root.innerHTML=artifacts.map(artifact=>{
     const identity=artifact.subject?`${artifact.scope}:${artifact.subject}`:artifact.scope;
     const use=canUse(artifact)?`<button class="small-button" data-action="use" data-selector="${esc(artifactSelector(artifact))}">${icon('arrow_forward')}Start</button>`:'';
@@ -1072,7 +1085,7 @@ function renderArtifacts(){
 
 function usableSelectors(){return [...new Set(snapshot.artifacts.filter(canUse).map(artifactSelector))];}
 function fillEnvironmentSelect(select,current='',selectors=usableSelectors()){
-  select.innerHTML=selectors.length?selectors.map(selector=>`<option value="${esc(selector)}">${esc(selector)}</option>`).join(''):'<option value="">record eerst een Snapshot</option>';
+  select.innerHTML=selectors.length?selectors.map(selector=>`<option value="${esc(selector)}">${esc(selector)}</option>`).join(''):'<option value="">neem eerst een laag op</option>';
   select.disabled=selectors.length===0;if(selectors.includes(current))select.value=current;
   return selectors.length;
 }
@@ -1550,7 +1563,7 @@ function connectStateStream(){
 }
 function stopStateStream(){stateStream.stopped=true;clearTimeout(stateStream.timer);if(stateStream.socket){const socket=stateStream.socket;stateStream.socket=null;socket.close();}}
 function applyState(next,force){
-    ['artifacts','recordings','compositions','jobs','job_attachments','workflow_templates','phase_runs','deliverables','deliverable_comments','workflow_questions','sessions','activations','turns','checkpoints','results','clients','mcp_servers','git_repositories','git_accounts','git_oauth_providers','users'].forEach(key=>{if(!Array.isArray(next[key]))next[key]=[];});
+    snapshotCollections.forEach(key=>{if(!Array.isArray(next[key]))next[key]=[];});
     if(!force&&next.version&&snapshot.version&&next.version<snapshot.version)return;
     snapshot=next;
     if(next.current_user){authState.user=next.current_user;document.getElementById('current-user').textContent=`${next.current_user.display_name||next.current_user.username} · ${next.current_user.role}`;}

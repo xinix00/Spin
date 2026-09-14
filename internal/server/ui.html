@@ -38,7 +38,7 @@
       </nav>
       <div class="sidebar-foot">
         <div class="online"><span class="dot"></span><span id="server-status">server verbinden…</span></div>
-        <div class="user-row"><div class="user-copy"><strong id="current-user">—</strong><small>server identity</small></div><button class="icon-button" id="logout" type="button" title="Uitloggen" aria-label="Uitloggen"><span class="material-symbols-outlined" aria-hidden="true">logout</span></button></div>
+        <div class="user-row"><div class="user-copy"><strong id="current-user">—</strong><small>Ingelogd</small></div><button class="icon-button" id="logout" type="button" title="Uitloggen" aria-label="Uitloggen"><span class="material-symbols-outlined" aria-hidden="true">logout</span></button></div>
       </div>
     </aside>
 
@@ -52,7 +52,7 @@
           <div class="jobs" id="jobs"></div>
         </section>
         <section class="panel work-page" id="work-templates">
-          <div class="panel-head"><div><h2>Workflow Templates</h2><small>Iedere flow is alleen een tabel van stappen, outputs en accept/reject-overgangen.</small></div><button class="primary" data-open-template><span class="material-symbols-outlined" aria-hidden="true">add</span>Template maken</button></div>
+          <div class="panel-head"><div><h2>Workflow Templates</h2><small>Bepaal de stappen, resultaten en beslismomenten voor je Jobs.</small></div><button class="primary" data-open-template><span class="material-symbols-outlined" aria-hidden="true">add</span>Template maken</button></div>
           <div class="templates" id="templates"></div>
         </section>
       </section>
@@ -68,26 +68,26 @@
       </section>
 
       <section class="tab-page" id="tab-environments">
-        <div class="page-header"><div><div class="eyebrow">Runtime</div><h1>Environments</h1><p class="subtitle">Immutable Docker-lagen; iedere selector kan global zijn of een variant van de actieve user.</p></div><div class="page-actions"><button class="small-button" id="record-git-tool"><span class="material-symbols-outlined" aria-hidden="true">terminal</span>Record tool:git</button><button class="primary" id="add-snapshot"><span class="material-symbols-outlined" aria-hidden="true">add</span>Nieuwe laag</button></div></div>
+        <div class="page-header"><div><div class="eyebrow">Runtime</div><h1>Environments</h1><p class="subtitle">Bouw herbruikbare omgevingen uit gedeelde en persoonlijke lagen.</p></div><div class="page-actions"><button class="small-button" id="record-git-tool"><span class="material-symbols-outlined" aria-hidden="true">terminal</span>Record tool:git</button><button class="primary" id="add-snapshot"><span class="material-symbols-outlined" aria-hidden="true">add</span>Nieuwe laag</button></div></div>
         <div class="overview-grid">
           <section class="panel wide-panel">
-            <div class="panel-head"><div><h2>Layer library</h2><small>Kind is alleen een naamruimte; scope bepaalt welke user-variant de resolver kiest.</small></div></div>
+            <div class="panel-head"><div><h2>Lagen</h2><small>Neem een laag op, maak een nieuwe versie of start ermee.</small></div></div>
             <div class="artifacts" id="artifacts"></div>
           </section>
           <section class="panel">
-            <div class="panel-head"><div><h2>Stack starten</h2><small>Kies de entry; WITH voegt bestaande lagen toe.</small></div></div>
+            <div class="panel-head"><div><h2>Omgeving starten</h2><small>Kies een basis en voeg eventueel extra lagen toe.</small></div></div>
             <form id="use-form" class="form-grid">
-              <div class="wide"><label for="use-selector">Entry environment</label><select id="use-selector" name="selector"><option value="">record eerst een environment</option></select></div>
+              <div class="wide"><label for="use-selector">Basislaag</label><select id="use-selector" name="selector"><option value="">neem eerst een laag op</option></select></div>
               <div class="wide"><label for="use-with">Extra lagen</label><select id="use-with" name="with_selectors" multiple><option disabled>optionele buildtools/config</option></select></div>
-              <div class="wide action"><button id="use-submit" class="primary" type="submit">Start composition</button></div>
+              <div class="wide action"><button id="use-submit" class="primary" type="submit">Start omgeving</button></div>
             </form>
           </section>
-          <section class="panel"><div class="panel-head"><div><h2>Actieve composition</h2><small>De laatst gematerialiseerde stack van jouw gebruiker.</small></div></div><div class="section"><div id="composition"></div></div></section>
+          <section class="panel"><div class="panel-head"><div><h2>Actieve omgeving</h2><small>De omgeving die je als laatste hebt gestart.</small></div></div><div class="section"><div id="composition"></div></div></section>
         </div>
       </section>
 
       <section class="tab-page" id="tab-connections">
-        <div class="page-header"><div><div class="eyebrow">Identity & handoff</div><h1>Connections</h1><p class="subtitle">Externe toegang is persoonlijk of expliciet global en staat los van herbruikbare toollagen.</p></div></div>
+        <div class="page-header"><div><div class="eyebrow">Identity & handoff</div><h1>Connections</h1><p class="subtitle">Beheer Git, MCP en de runners waarop je werk draait.</p></div></div>
         <nav class="segments" aria-label="Connection type">
           <button class="segment-button active" data-connection="git">Git</button>
           <button class="segment-button" data-connection="mcp">MCP</button>
@@ -97,7 +97,7 @@
         <section class="connection-page active" id="connection-git">
           <div class="git-stack">
             <section class="panel">
-              <div class="panel-head"><div><h2>Git accounts</h2><small>Een persoonlijke identity volgt de uitvoerende gebruiker; een gedeelde identity is expliciet global.</small></div><div class="panel-actions" id="git-oauth-providers"></div></div>
+              <div class="panel-head"><div><h2>Git accounts</h2><small>Gebruik je eigen account of deel een account met het team.</small></div><div class="panel-actions" id="git-oauth-providers"></div></div>
               <p class="connection-notice" id="git-oauth-hint" hidden></p>
               <div class="git-account-list" id="git-account-list"></div>
               <details class="advanced"><summary>Geavanceerd · handmatig token-account</summary>
@@ -112,7 +112,7 @@
                   <div class="wide action"><button class="small-button" type="submit"><span class="material-symbols-outlined" aria-hidden="true">check</span>Token-account bewaren</button></div>
                 </form>
               </details>
-              <div class="secret-note">Tokens blijven encrypted server-side en gaan alleen via stdin naar een kortlevende checkout-helper.</div>
+              <div class="secret-note">Tokens worden versleuteld bewaard en blijven buiten de agentomgeving.</div>
             </section>
             <section class="panel">
               <div class="panel-head"><div><h2>Repositories</h2><small>Iedere Job krijgt een remote, reviewbranch en geïsoleerde Session-branches.</small></div><button class="primary" id="open-git-dialog"><span class="material-symbols-outlined" aria-hidden="true">add</span>Repository toevoegen</button></div>
@@ -129,26 +129,26 @@
           <section class="panel">
             <div class="panel-head"><div><h2>Mijn MCP servers</h2><small>Persoonlijke stdio- en HTTP-connecties voor ACP Sessions.</small></div><button class="primary" id="open-mcp-dialog"><span class="material-symbols-outlined" aria-hidden="true">add</span>MCP toevoegen</button></div>
             <div class="mcp-list" id="mcp-list"></div>
-            <div class="secret-note">Credentialwaarden worden AES-GCM-versleuteld en nooit naar de browser teruggestuurd.</div>
+            <div class="secret-note">Inloggegevens worden versleuteld bewaard en na opslaan niet meer getoond.</div>
           </section>
         </section>
 
         <section class="connection-page" id="connection-runners">
           <section class="panel">
-            <div class="panel-head"><div><h2>Docker runners</h2><small>Nieuwe workloads gaan round-robin; een gestarte Session blijft aan dezelfde runner gekoppeld, ook tijdens reconnect.</small></div></div>
+            <div class="panel-head"><div><h2>Docker runners</h2><small>Nieuwe Sessions worden verdeeld over de beschikbare runners.</small></div></div>
             <div class="runner-downloads" id="runner-downloads"></div>
             <div class="storage-line" id="storage-line"></div>
             <div class="mcp-list" id="runner-list"></div>
-            <div class="secret-note">Offline betekent alleen dat de WebSocket ontbreekt. Spin verplaatst bestaand werk nooit stilzwijgend; gebruik Retry om bewust opnieuw te spawnen.</div>
+            <div class="secret-note">Een offline runner kan opnieuw verbinden. Gebruik Retry om een Session opnieuw te starten.</div>
           </section>
         </section>
 
       </section>
 
       <section class="tab-page" id="tab-access">
-        <div class="page-header"><div><div class="eyebrow">Server identity</div><h1>Access</h1><p class="subtitle">De ingelogde user bepaalt server-side alle persoonlijke snapshots, accounts en credentials.</p></div><button class="primary" id="open-user-dialog"><span class="material-symbols-outlined" aria-hidden="true">add</span>Gebruiker toevoegen</button></div>
-        <section class="panel"><div class="panel-head"><div><h2>Gebruikers</h2><small>Admins beheren toegang; passwords en sessions blijven volledig server-side.</small></div></div><div class="mcp-list" id="user-list"></div></section>
-        <section class="panel" id="backup-panel"><div class="panel-head"><div><h2>Backup & restore</h2><small>Eén spin.db met Jobs, credentials, bijlagen en alle opgenomen Docker-lagen.</small></div><div class="panel-actions"><button class="small-button" id="download-backup" type="button"><span class="material-symbols-outlined" aria-hidden="true">download</span>Backup</button><button class="danger" id="choose-restore" type="button"><span class="material-symbols-outlined" aria-hidden="true">restore</span>Restore</button></div></div><div class="section"><p class="hint">De backup is een zip met de database en de portable AES-key en geeft dus toegang tot Git- en MCP-credentials. Bewaar hem als een passwordbestand. Tijdens de download pauzeert Spin zijn schrijfacties; runners wachten netjes. Restore valideert eerst de state, bijlagen en iedere vereiste Docker-snapshot; browser-sessions en oude runtime-handles worden bewust niet hervat.</p><div class="restore-progress" id="restore-progress" hidden aria-live="polite"><div class="restore-progress-head"><strong id="restore-progress-label">Upload voorbereiden…</strong><span id="restore-progress-detail"></span></div><div class="restore-progress-track" id="restore-progress-track"><div class="restore-progress-fill" id="restore-progress-fill"></div></div></div></div></section>
+        <div class="page-header"><div><div class="eyebrow">Server identity</div><h1>Access</h1><p class="subtitle">Beheer gebruikers, toegang en backups.</p></div><button class="primary" id="open-user-dialog"><span class="material-symbols-outlined" aria-hidden="true">add</span>Gebruiker toevoegen</button></div>
+        <section class="panel"><div class="panel-head"><div><h2>Gebruikers</h2><small>Admins kunnen gebruikers toevoegen, archiveren en herstellen.</small></div></div><div class="mcp-list" id="user-list"></div></section>
+        <section class="panel" id="backup-panel"><div class="panel-head"><div><h2>Backup & restore</h2><small>Eén spin.db met Jobs, credentials, bijlagen en alle opgenomen Docker-lagen.</small></div><div class="panel-actions"><button class="small-button" id="download-backup" type="button"><span class="material-symbols-outlined" aria-hidden="true">download</span>Backup</button><button class="danger" id="choose-restore" type="button"><span class="material-symbols-outlined" aria-hidden="true">restore</span>Restore</button></div></div><div class="section"><p class="hint">De backup bevat ook Git- en MCP-inloggegevens. Bewaar hem als een wachtwoordbestand.</p><details class="advanced"><summary>Wat gebeurt er bij backup en restore?</summary><p class="hint">De zip bevat de database en de bijbehorende encryptiesleutel. Tijdens de download pauzeert Spin het opslaan van wijzigingen; runners wachten. Restore controleert eerst alle gegevens, bijlagen en Docker-lagen. Daarna log je opnieuw in; eerder draaiende omgevingen worden niet hervat.</p></details><div class="restore-progress" id="restore-progress" hidden aria-live="polite"><div class="restore-progress-head"><strong id="restore-progress-label">Upload voorbereiden…</strong><span id="restore-progress-detail"></span></div><div class="restore-progress-track" id="restore-progress-track"><div class="restore-progress-fill" id="restore-progress-fill"></div></div></div></div></section>
         <div class="section replica-generations" id="replica-generations" hidden></div>
         <input id="restore-backup-input" type="file" accept=".zip,application/zip,.db,.sqlite,.sqlite3,application/vnd.sqlite3,application/x-sqlite3" hidden>
       </section>

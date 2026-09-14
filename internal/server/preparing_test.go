@@ -21,6 +21,48 @@ import (
 // drift here would silently turn early reporting back off.
 var _ placementReporter = (*worker.RemoteEngine)(nil)
 
+func TestSupersededLaunchCannotClearRetry(t *testing.T) {
+	srv := &Server{
+		jobLaunching:   map[string]*backgroundJobLaunch{},
+		launchFailures: map[string]launchFailure{},
+	}
+	release := make(chan struct{})
+	started := make(chan context.Context, 1)
+	srv.beginTrackedLaunch("session", nil, func(ctx context.Context) {
+		started <- ctx
+		<-release
+	})
+	oldContext := <-started
+	retryContext, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	retry := &backgroundJobLaunch{cancel: cancel, done: make(chan struct{})}
+	srv.jobLaunchMu.Lock()
+	old := srv.jobLaunching["session"]
+	srv.jobLaunching["session"] = retry
+	srv.jobLaunchMu.Unlock()
+	close(release)
+	select {
+	case <-old.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("superseded launch did not finish")
+	}
+	if srv.jobLaunching["session"] != retry {
+		t.Fatal("superseded launch removed its replacement")
+	}
+	if oldContext.Err() == nil || retryContext.Err() != nil {
+		t.Fatal("launch cleanup must cancel only its own context")
+	}
+	srv.runTrackedLaunch("session", retry, func() {})
+	if len(srv.jobLaunching) != 0 || retryContext.Err() == nil {
+		t.Fatal("completed retry did not release its bookkeeping and context")
+	}
+	select {
+	case <-retry.done:
+	default:
+		t.Fatal("completed retry did not release waiters")
+	}
+}
+
 func TestStateReportsSessionPreparationUntilTheLaunchFinishes(t *testing.T) {
 	st, err := store.Open("")
 	if err != nil {

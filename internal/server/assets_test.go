@@ -42,10 +42,13 @@ func TestDashboardServesPinnedRichMarkdownAssets(t *testing.T) {
 		}
 	}
 
-	var applicationScript string
+	var applicationScript, renderingScript string
 	for _, path := range []string{
 		assetPrefix + "spin.css",
 		assetPrefix + "spin.js",
+		assetPrefix + "ui/app.js",
+		assetPrefix + "ui/render.js",
+		assetPrefix + "ui/navigation.js",
 		assetPrefix + "vendor/material-symbols-outlined.css",
 		assetPrefix + "vendor/material-symbols-outlined.woff2",
 		assetPrefix + "vendor/marked-18.0.11.js",
@@ -64,14 +67,21 @@ func TestDashboardServesPinnedRichMarkdownAssets(t *testing.T) {
 		if cache := response.Header().Get("Cache-Control"); !strings.Contains(cache, "immutable") {
 			t.Fatalf("GET %s cache-control = %q", path, cache)
 		}
-		if path == assetPrefix+"spin.js" {
+		if path == assetPrefix+"ui/app.js" {
 			applicationScript = response.Body.String()
+		}
+		if path == assetPrefix+"ui/render.js" {
+			renderingScript = response.Body.String()
 		}
 	}
 
 	for _, fallbackPath := range []string{
 		"/assets/vendor/marked-18.0.11.js",
 		"/assets/v0/vendor/marked-18.0.11.js",
+		"/assets/v0/spin.js",
+		"/assets/v0/ui/app.js",
+		"/assets/v0/ui/render.js",
+		"/assets/v0/ui/navigation.js",
 	} {
 		fallbackRequest := httptest.NewRequest(http.MethodGet, fallbackPath, nil)
 		fallbackResponse := httptest.NewRecorder()
@@ -95,8 +105,8 @@ func TestDashboardServesPinnedRichMarkdownAssets(t *testing.T) {
 			t.Fatalf("application script does not contain workflow refinement %q", expected)
 		}
 	}
-	if !strings.Contains(applicationScript, "mermaid-11.17.2.min.js") {
-		t.Fatal("application script does not reference the pinned Mermaid asset")
+	if !strings.Contains(renderingScript, "mermaid-11.17.2.min.js") {
+		t.Fatal("rendering script does not reference the pinned Mermaid asset")
 	}
 
 	apiRequest := httptest.NewRequest(http.MethodGet, "/api/auth/status", nil)

@@ -633,6 +633,9 @@ type Login struct {
 	// Name is what a person calls this login (the account it belongs to);
 	// empty falls back to "Login <number>".
 	Name string `json:"name,omitempty"`
+	// Disabled keeps a login out of the pool: an account that ran out of
+	// tokens, or one a person parks. Its files stay as they are.
+	Disabled bool `json:"disabled,omitempty"`
 	// Owner is the operator this login is for; empty means everyone who
 	// runs the layer. A shared layer holds both kinds.
 	Owner string            `json:"owner,omitempty"`
@@ -656,6 +659,7 @@ type LoginSummary struct {
 	Key        string     `json:"key"`
 	Number     int        `json:"number"`
 	Name       string     `json:"name,omitempty"`
+	Disabled   bool       `json:"disabled,omitempty"`
 	Files      int        `json:"files"`
 	Bytes      int64      `json:"bytes"`
 	Owner      string     `json:"owner,omitempty"`
