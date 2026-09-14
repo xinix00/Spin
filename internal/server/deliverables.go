@@ -242,6 +242,7 @@ func (s *Server) shareDeliverableHandler(w http.ResponseWriter, r *http.Request)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'")
 		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+		previewFrameHeaders(w)
 		fmt.Fprintf(w, "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>%s</title><style>body{font:15px/1.7 system-ui,sans-serif;margin:0 auto;padding:32px 20px;max-width:44rem;color:#14201a;background:#fbfcfb}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 ui-monospace,monospace}h1{font-size:20px}small{color:#67736c}</style><h1>%s</h1><small>revisie %d</small><pre>%s</pre>",
 			html.EscapeString(deliverable.Name), html.EscapeString(deliverable.Name), deliverable.Revision, html.EscapeString(deliverable.Content))
 		return
@@ -342,7 +343,7 @@ func (s *Server) servePreview(w http.ResponseWriter, r *http.Request, deliverabl
 	w.Header().Set("Content-Security-Policy", previewPolicy(contentType, requestOrigin(r)))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+	previewFrameHeaders(w)
 	w.Header().Set("Cache-Control", "private, max-age=300")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, content)
@@ -454,6 +455,17 @@ func previewPolicy(contentType, origin string) string {
 	return "sandbox allow-scripts allow-forms allow-modals; default-src " + own + " 'unsafe-inline' 'unsafe-eval'; script-src " + own + " 'unsafe-inline' 'unsafe-eval'; style-src " + own + " https: 'unsafe-inline'; font-src " + own + " https:; img-src " + own + " https:; connect-src 'none'; form-action 'none'; frame-ancestors 'self'"
 }
 
+// previewFrameHeaders let a preview load inside the viewer's sandbox. The
+// sandbox gives the page an empty origin, so its own files count as
+// cross-origin: a same-origin resource policy would block every stylesheet,
+// script and image, and X-Frame-Options would block the frame itself. The
+// unguessable path is what keeps the files private; the policy in the
+// response keeps the page away from Spin.
+func previewFrameHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
+	w.Header().Del("X-Frame-Options")
+}
+
 // previewListing is the page for a folder without index.html: its files.
 func (s *Server) previewListing(w http.ResponseWriter, r *http.Request, deliverable domain.Deliverable, archive *zip.Reader) {
 	var page strings.Builder
@@ -470,6 +482,7 @@ func (s *Server) previewListing(w http.ResponseWriter, r *http.Request, delivera
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.Header().Set("Content-Security-Policy", previewPolicy("text/html", requestOrigin(r)))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	previewFrameHeaders(w)
 	w.Header().Set("Cache-Control", "private, max-age=300")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, body)
