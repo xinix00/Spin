@@ -360,6 +360,15 @@ function captureDeliverableSelection(){
 function focusDeliverableComment(id){const range=deliverableView.ranges.get(id);if(!range)return;document.querySelectorAll('.comment-card.active,.deliverable-comment-mark.active').forEach(element=>element.classList.remove('active'));document.querySelector(`[data-focus-comment="${CSS.escape(id)}"]`)?.classList.add('active');const marks=[...document.querySelectorAll('.deliverable-comment-mark')].filter(mark=>String(mark.dataset.commentIds||'').split(' ').includes(id));marks.forEach(mark=>mark.classList.add('active'));marks[0]?.scrollIntoView({behavior:'smooth',block:'center'});if(document.activeElement instanceof HTMLElement)document.activeElement.blur();requestAnimationFrame(()=>{const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);});}
 // A shared revision is readable by anyone with the link, without signing
 // in; the token stays the same, so a link that was handed out keeps working.
+// The iframe loads from a token path, not from the revision id: a
+// sandboxed page sends no cookies, so a path that asks for a session would
+// answer its own stylesheet with a 401. The token is fetched once per
+// revision and the viewer redraws with it.
+const previewURLs=new Map();
+async function ensurePreviewURL(item){
+  if(!item||previewURLs.has(item.id))return;
+  try{const result=await api(`/api/deliverables/${encodeURIComponent(item.id)}/preview`,{method:'POST'});if(result?.url){previewURLs.set(item.id,result.url);if(deliverableView.id===item.id)renderDeliverableRevision(item.id);}}catch(_){}
+}
 function renderDeliverableShare(item){
   const share=document.getElementById('deliverable-share'),panel=document.getElementById('deliverable-share-link'),field=document.getElementById('deliverable-share-url');
   const link=item.share_token?`${location.origin}/share/${item.share_token}/`:'';
@@ -375,9 +384,10 @@ function renderDeliverableRevision(id){
   const lock=document.getElementById('deliverable-lock');lock.className=`document-lock ${isLatest?'current':''}`;lock.textContent=isLatest?'Laatste revisie · selecteer tekst om te annoteren':'Historische revisie · alleen lezen';
   const visual=item.kind&&item.kind!=='markdown'&&item.bundle,download=document.getElementById('deliverable-download'),fileName=`${deliverableFileName(item.name)}-r${item.revision}.${visual?'zip':'md'}`;download.href=`/api/deliverables/${encodeURIComponent(item.id)}/download`;download.download=fileName;document.getElementById('deliverable-download-name').textContent=fileName;
   renderDeliverableShare(item);
+  if(item.kind&&item.kind!=='markdown'&&item.bundle)ensurePreviewURL(item);
   const content=document.getElementById('deliverable-content');content.classList.toggle('annotatable',isLatest&&!visual);content.classList.toggle('visual',Boolean(visual));
   let richContentReady;
-  if(visual){const previewURL=`/preview/${encodeURIComponent(item.id)}/`,bundle=item.bundle,shape=bundle.folder?`map · ${bundle.files} bestand${bundle.files===1?'':'en'}${bundle.entry?' · index.html':''}`:(bundle.content_type||'bestand'),kind=item.kind;
+  if(visual){const previewURL=previewURLs.get(item.id)||`/preview/${encodeURIComponent(item.id)}/`,bundle=item.bundle,shape=bundle.folder?`map · ${bundle.files} bestand${bundle.files===1?'':'en'}${bundle.entry?' · index.html':''}`:(bundle.content_type||'bestand'),kind=item.kind;
     const view=kind==='image'?`<div class="preview-image"><img src="${previewURL}" alt="${esc(item.name)} revisie ${item.revision}"></div>`:kind==='pdf'?`<iframe class="preview-frame" src="${previewURL}" title="${esc(item.name)} revisie ${item.revision}"></iframe>`:kind==='file'?`<div class="preview-file">${icon('draft')}<strong>${esc(bundle.entry||'bestand')}</strong><span class="hint">${esc(bundle.content_type||'')}</span><a class="small-button" href="${download.href}" download="${esc(fileName)}">${icon('download')}Download</a></div>`:`<iframe class="preview-frame" src="${previewURL}" sandbox="allow-scripts allow-forms allow-modals" referrerpolicy="no-referrer" title="${esc(item.name)} revisie ${item.revision}"></iframe>`;
     content.innerHTML=`<div class="preview-bar"><span class="hint">${esc(shape)} · ${esc(formatBytes(bundle.size))}</span><a class="small-button" href="${previewURL}" target="_blank" rel="noopener">${icon('open_in_new')}Open in tabblad</a></div>${view}`;richContentReady=Promise.resolve();content.onmouseup=null;lock.textContent=isLatest?'Laatste revisie · commentaar geldt voor de hele revisie':'Historische revisie · alleen lezen';}
   else{richContentReady=setMarkdown(content,item.content);content.onmouseup=isLatest?()=>setTimeout(captureDeliverableSelection):null;}

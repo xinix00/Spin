@@ -194,19 +194,39 @@ func deliverableAsk(definition domain.DeliverableDefinition) string {
 // Every response is sandboxed: the page runs with an opaque origin, may
 // not reach the network or post anywhere, and cannot touch Spin's state,
 // whether framed in the viewer or opened on its own.
+// previewDeliverable serves the files of a revision. The path carries a
+// preview token: a sandboxed page has no site for cookies, so its own
+// stylesheet, scripts and images arrive without the session cookie and an
+// identity check would turn them into 401s. A revision id is accepted too,
+// for a signed-in person opening the page itself.
 func (s *Server) previewDeliverable(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("deliverableID")
+	if deliverable, ok := s.store.DeliverableByPreviewToken(key); ok {
+		s.servePreview(w, r, deliverable)
+		return
+	}
 	if !s.authDisabled {
 		if _, err := s.requestIdentity(r); err != nil {
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
 	}
-	deliverable, err := s.store.Deliverable(r.PathValue("deliverableID"))
+	deliverable, err := s.store.Deliverable(key)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	s.servePreview(w, r, deliverable)
+}
+
+// previewLinkHandler hands the viewer the path its iframe loads from.
+func (s *Server) previewLinkHandler(w http.ResponseWriter, r *http.Request) {
+	deliverable, err := s.store.EnsurePreviewToken(r.PathValue("deliverableID"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": "/preview/" + deliverable.PreviewToken + "/"})
 }
 
 // shareDeliverableHandler serves a shared revision to anyone with the link,

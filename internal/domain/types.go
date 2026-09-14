@@ -267,6 +267,12 @@ type Deliverable struct {
 	// ShareToken makes this revision readable without signing in, at
 	// /share/<token>/; set once by a person and kept until they undo it.
 	ShareToken string `json:"share_token,omitempty"`
+	// PreviewToken is the unguessable path the viewer's iframe loads from.
+	// A sandboxed page has no site for cookies, so its stylesheet, scripts
+	// and images arrive without the session cookie; the token in the path
+	// is what lets them through. Minted when a signed-in person opens the
+	// revision, never shown as a share link.
+	PreviewToken string `json:"-"`
 }
 
 // DeliverableComment is immutable review history on one exact deliverable

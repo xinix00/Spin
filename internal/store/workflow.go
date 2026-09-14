@@ -665,6 +665,16 @@ func (s *Store) ShareDeliverable(deliverableID string, share bool) (domain.Deliv
 
 // DeliverableByShareToken is the revision a share link points at.
 func (s *Store) DeliverableByShareToken(token string) (domain.Deliverable, bool) {
+	return s.deliverableByToken(token, false)
+}
+
+// DeliverableByPreviewToken is the revision a preview path points at; a
+// share token opens the same files.
+func (s *Store) DeliverableByPreviewToken(token string) (domain.Deliverable, bool) {
+	return s.deliverableByToken(token, true)
+}
+
+func (s *Store) deliverableByToken(token string, preview bool) (domain.Deliverable, bool) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return domain.Deliverable{}, false
@@ -672,11 +682,28 @@ func (s *Store) DeliverableByShareToken(token string) (domain.Deliverable, bool)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, deliverable := range s.state.Deliverables {
-		if deliverable.ShareToken == token {
+		if deliverable.ShareToken == token || (preview && deliverable.PreviewToken == token) {
 			return deliverable, true
 		}
 	}
 	return domain.Deliverable{}, false
+}
+
+// EnsurePreviewToken gives a revision the path its preview is served from,
+// making one the first time.
+func (s *Store) EnsurePreviewToken(deliverableID string) (domain.Deliverable, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	deliverable, ok := s.state.Deliverables[strings.TrimSpace(deliverableID)]
+	if !ok {
+		return domain.Deliverable{}, ErrNotFound
+	}
+	if deliverable.PreviewToken != "" {
+		return deliverable, nil
+	}
+	deliverable.PreviewToken = strings.TrimPrefix(newID("pvw"), "pvw_")
+	s.state.Deliverables[deliverable.ID] = deliverable
+	return deliverable, s.saveLocked()
 }
 
 // deliverableTargetLocked resolves the running phase of a Session and the
