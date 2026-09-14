@@ -222,7 +222,12 @@ type WorkspaceRangeInspector interface {
 }
 
 type WorkspaceAcceptance struct {
-	Path           string // the repository's folder under the workspace root; empty is the root
+	Path string // the repository's folder under the workspace root; empty is the root
+	// BaseBranch is the Job's base branch. When the Session merged it, the
+	// result commit keeps that merge as a second parent, so the Job branch
+	// records that the base is in and the next merge does not meet the same
+	// conflict again.
+	BaseBranch     string
 	AllowChanges   bool
 	CommitSubject  string
 	CommitBody     string

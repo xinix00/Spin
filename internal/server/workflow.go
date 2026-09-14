@@ -491,7 +491,7 @@ func (s *Server) acceptWorkflowWorkspace(ctx context.Context, sessionID, summary
 		var result capsule.WorkspaceAcceptanceResult
 		if running {
 			result, err = acceptor.AcceptWorkspace(acceptContext, *composition.Runtime, capsule.WorkspaceAcceptance{
-				Path: workspace.Path, AllowChanges: phaseAllowsChanges(phase), CommitSubject: commitSubject,
+				Path: workspace.Path, BaseBranch: workspace.BootstrapRef, AllowChanges: phaseAllowsChanges(phase), CommitSubject: commitSubject,
 				CommitBody: commitBody, RemoteRef: job.Branch, Authentication: authentication,
 			})
 		} else {

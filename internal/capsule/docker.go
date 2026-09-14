@@ -1623,6 +1623,7 @@ func (d *Docker) AcceptWorkspace(ctx context.Context, runtime domain.CapsuleRunt
 		"exec", "-i", "-w", directory,
 		"-e", "GIT_TERMINAL_PROMPT=0",
 		"-e", "SPIN_ALLOW_CHANGES="+allowChanges,
+		"-e", "SPIN_BASE_BRANCH="+acceptance.BaseBranch,
 		"-e", "SPIN_GIT_REF="+acceptance.RemoteRef,
 		"-e", "SPIN_COMMIT_SUBJECT="+acceptance.CommitSubject,
 		"-e", "SPIN_COMMIT_BODY="+acceptance.CommitBody,
@@ -1667,6 +1668,15 @@ if [ -z "$SPIN_BASE_COMMIT" ] || ! git cat-file -e "$SPIN_BASE_COMMIT^{commit}";
   exit 41
 fi
 SPIN_HEAD="$(git rev-parse HEAD)"
+# A Session that merged the base branch keeps that merge: the result commit
+# gets the base as a second parent, so the Job branch knows the base is in
+# and the next merge does not meet the same conflict again.
+SPIN_MERGED=""
+if [ -n "${SPIN_BASE_BRANCH:-}" ] && git rev-parse -q --verify "refs/remotes/origin/${SPIN_BASE_BRANCH}" >/dev/null 2>&1; then
+  if git merge-base --is-ancestor "refs/remotes/origin/${SPIN_BASE_BRANCH}" "$SPIN_HEAD" && ! git merge-base --is-ancestor "refs/remotes/origin/${SPIN_BASE_BRANCH}" "$SPIN_BASE_COMMIT"; then
+    SPIN_MERGED="$(git rev-parse "refs/remotes/origin/${SPIN_BASE_BRANCH}")"
+  fi
+fi
 SPIN_DIRTY="$(git status --porcelain=v1 --untracked-files=all)"
 SPIN_CHANGED=0
 if [ "$SPIN_HEAD" != "$SPIN_BASE_COMMIT" ] || [ -n "$SPIN_DIRTY" ]; then
@@ -1684,8 +1694,13 @@ elif [ "$SPIN_CHANGED" = 1 ]; then
   # control-plane commit so ACCEPT is the only integration boundary.
   git reset --soft "$SPIN_BASE_COMMIT"
   git add -A
-  if ! git diff --cached --quiet; then
-    git -c user.name="$SPIN_GIT_AUTHOR_NAME" -c user.email="$SPIN_GIT_AUTHOR_EMAIL" commit -m "$SPIN_COMMIT_SUBJECT" -m "$SPIN_COMMIT_BODY"
+  if ! git diff --cached --quiet || [ -n "$SPIN_MERGED" ]; then
+    if [ -n "$SPIN_MERGED" ]; then
+      SPIN_RESULT="$(printf '%s\n\n%s\n' "$SPIN_COMMIT_SUBJECT" "$SPIN_COMMIT_BODY" | git -c user.name="$SPIN_GIT_AUTHOR_NAME" -c user.email="$SPIN_GIT_AUTHOR_EMAIL" commit-tree "$(git write-tree)" -p "$SPIN_BASE_COMMIT" -p "$SPIN_MERGED" -F -)"
+      git reset -q --hard "$SPIN_RESULT"
+    else
+      git -c user.name="$SPIN_GIT_AUTHOR_NAME" -c user.email="$SPIN_GIT_AUTHOR_EMAIL" commit -m "$SPIN_COMMIT_SUBJECT" -m "$SPIN_COMMIT_BODY"
+    fi
     SPIN_COMMITTED=1
   else
     git reset --mixed "$SPIN_BASE_COMMIT"
@@ -1814,6 +1829,9 @@ SPIN_JOB_HEAD=""
 if git ls-remote --exit-code origin "refs/heads/${SPIN_GIT_REF}" >/dev/null 2>&1; then
   git fetch -q --depth=50 origin "+refs/heads/${SPIN_GIT_REF}:refs/remotes/origin/${SPIN_GIT_REF}"
   SPIN_JOB_HEAD="$(git rev-parse "refs/remotes/origin/${SPIN_GIT_REF}")"
+  if [ -n "$SPIN_BOOTSTRAP_REF" ]; then
+    git fetch -q --depth=50 origin "+refs/heads/${SPIN_BOOTSTRAP_REF}:refs/remotes/origin/${SPIN_BOOTSTRAP_REF}" 2>/dev/null || true
+  fi
 elif [ -n "$SPIN_BOOTSTRAP_REF" ]; then
   git fetch -q --depth=50 origin "+refs/heads/${SPIN_BOOTSTRAP_REF}:refs/remotes/origin/${SPIN_BOOTSTRAP_REF}"
   SPIN_JOB_HEAD="$(git rev-parse "refs/remotes/origin/${SPIN_BOOTSTRAP_REF}")"
@@ -1832,8 +1850,20 @@ SPIN_COMMITTED=0
 SPIN_PUBLISH="$SPIN_JOB_HEAD"
 if [ "$SPIN_ALLOW_CHANGES" = 1 ] && [ -n "$SPIN_SESSION_HEAD" ] && [ "$SPIN_SESSION_HEAD" != "$SPIN_JOB_HEAD" ]; then
   SPIN_TREE="$(git rev-parse "${SPIN_SESSION_HEAD}^{tree}")"
-  if [ "$SPIN_TREE" != "$(git rev-parse "${SPIN_JOB_HEAD}^{tree}")" ]; then
-    SPIN_PUBLISH="$(printf '%s\n\n%s\n' "$SPIN_COMMIT_SUBJECT" "$SPIN_COMMIT_BODY" | git -c user.name="$SPIN_GIT_AUTHOR_NAME" -c user.email="$SPIN_GIT_AUTHOR_EMAIL" commit-tree "$SPIN_TREE" -p "$SPIN_JOB_HEAD" -F -)"
+  # A Session that merged the base branch keeps that merge as a second
+  # parent, so the Job branch records that the base is in.
+  SPIN_MERGED=""
+  if [ -n "$SPIN_BOOTSTRAP_REF" ] && git rev-parse -q --verify "refs/remotes/origin/${SPIN_BOOTSTRAP_REF}" >/dev/null 2>&1; then
+    if git merge-base --is-ancestor "refs/remotes/origin/${SPIN_BOOTSTRAP_REF}" "$SPIN_SESSION_HEAD" && ! git merge-base --is-ancestor "refs/remotes/origin/${SPIN_BOOTSTRAP_REF}" "$SPIN_JOB_HEAD"; then
+      SPIN_MERGED="$(git rev-parse "refs/remotes/origin/${SPIN_BOOTSTRAP_REF}")"
+    fi
+  fi
+  if [ "$SPIN_TREE" != "$(git rev-parse "${SPIN_JOB_HEAD}^{tree}")" ] || [ -n "$SPIN_MERGED" ]; then
+    if [ -n "$SPIN_MERGED" ]; then
+      SPIN_PUBLISH="$(printf '%s\n\n%s\n' "$SPIN_COMMIT_SUBJECT" "$SPIN_COMMIT_BODY" | git -c user.name="$SPIN_GIT_AUTHOR_NAME" -c user.email="$SPIN_GIT_AUTHOR_EMAIL" commit-tree "$SPIN_TREE" -p "$SPIN_JOB_HEAD" -p "$SPIN_MERGED" -F -)"
+    else
+      SPIN_PUBLISH="$(printf '%s\n\n%s\n' "$SPIN_COMMIT_SUBJECT" "$SPIN_COMMIT_BODY" | git -c user.name="$SPIN_GIT_AUTHOR_NAME" -c user.email="$SPIN_GIT_AUTHOR_EMAIL" commit-tree "$SPIN_TREE" -p "$SPIN_JOB_HEAD" -F -)"
+    fi
     SPIN_COMMITTED=1
   fi
 fi
