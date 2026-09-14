@@ -99,10 +99,13 @@ func (s *Server) launchWorkflowMerge(session domain.Session, operator string) {
 			s.finishWorkflowAction(session.ID, "reject", "de Job heeft geen basisbranch om in te mergen")
 			return
 		}
+		subject, body := commitMessage(
+			fmt.Sprintf("Merge %s: %s", job.Branch, job.Title),
+			fmt.Sprintf("%s\n\nSpin-Job: %s\nSpin-Merged-By: spin", strings.TrimSpace(job.Objective), job.ID))
 		result, err := merger.MergeWorkspace(ctx, *composition.Runtime, capsule.WorkspaceMerge{
 			Path: workspace.Path, SourceRef: job.Branch, TargetRef: target,
-			CommitSubject:  fmt.Sprintf("Merge %s: %s", job.Branch, job.Title),
-			CommitBody:     fmt.Sprintf("%s\n\nSpin-Job: %s\nSpin-Merged-By: spin", strings.TrimSpace(job.Objective), job.ID),
+			CommitSubject:  subject,
+			CommitBody:     body,
 			Authentication: authentication,
 		})
 		if err != nil {
@@ -131,6 +134,32 @@ func (s *Server) launchWorkflowMerge(session domain.Session, operator string) {
 		return
 	}
 	s.finishWorkflowAction(session.ID, "accept", detail)
+}
+
+// commitMessage keeps a commit within what Git and the runner accept: one
+// line of at most 200 characters, and a body of at most 4000. A Job's goal
+// is Markdown and can run long; it is cut rather than refused, so a merge
+// never fails on the size of its own message.
+func commitMessage(subject, body string) (string, string) {
+	subject = strings.TrimSpace(strings.ReplaceAll(subject, "\n", " "))
+	if subject == "" {
+		subject = "Spin"
+	}
+	subject = clampText(subject, 200)
+	return subject, clampText(strings.TrimSpace(body), 4000)
+}
+
+// clampText cuts text to at most limit characters, on a line end when one
+// is near, and marks that something was left out.
+func clampText(text string, limit int) string {
+	if len([]rune(text)) <= limit {
+		return text
+	}
+	runes := []rune(text)[:limit-1]
+	if line := strings.LastIndexByte(string(runes), '\n'); line > limit/2 {
+		runes = []rune(string(runes)[:line])
+	}
+	return strings.TrimRight(string(runes), " \t\n") + "…"
 }
 
 // commitURL is where a person can look at a commit on the remote, for the

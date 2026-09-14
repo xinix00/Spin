@@ -461,7 +461,8 @@ func (s *Server) acceptWorkflowWorkspace(ctx context.Context, sessionID, summary
 	if acceptedBy == "" {
 		acceptedBy = "agent"
 	}
-	commitBody := fmt.Sprintf("%s\n\nSpin-Job: %s\nSpin-Session: %s\nSpin-Phase: %s\nSpin-Accepted-By: %s", summary, job.ID, sessionID, phase.ID, acceptedBy)
+	commitSubject, commitBody := commitMessage("workflow("+phase.ID+"): accepted",
+		fmt.Sprintf("%s\n\nSpin-Job: %s\nSpin-Session: %s\nSpin-Phase: %s\nSpin-Accepted-By: %s", summary, job.ID, sessionID, phase.ID, acceptedBy))
 	acceptContext, cancel := context.WithTimeout(ctx, 60*time.Second*time.Duration(max(1, len(composition.ChangedWorkspaces()))))
 	defer cancel()
 	// Every repository the Session changes lands on the Job branch of that
@@ -484,7 +485,7 @@ func (s *Server) acceptWorkflowWorkspace(ctx context.Context, sessionID, summary
 		var result capsule.WorkspaceAcceptanceResult
 		if running {
 			result, err = acceptor.AcceptWorkspace(acceptContext, *composition.Runtime, capsule.WorkspaceAcceptance{
-				Path: workspace.Path, AllowChanges: phaseAllowsChanges(phase), CommitSubject: "workflow(" + phase.ID + "): accepted",
+				Path: workspace.Path, AllowChanges: phaseAllowsChanges(phase), CommitSubject: commitSubject,
 				CommitBody: commitBody, RemoteRef: job.Branch, Authentication: authentication,
 			})
 		} else {
@@ -495,7 +496,7 @@ func (s *Server) acceptWorkflowWorkspace(ctx context.Context, sessionID, summary
 			result, err = remote.AcceptRepository(acceptContext, capsule.RepositoryAcceptance{
 				RemoteURL: workspace.RemoteURL, CacheKey: workspace.RepositoryID,
 				SessionRef: session.GitRef, JobRef: job.Branch, BootstrapRef: workspace.BootstrapRef,
-				AllowChanges: phaseAllowsChanges(phase), CommitSubject: "workflow(" + phase.ID + "): accepted",
+				AllowChanges: phaseAllowsChanges(phase), CommitSubject: commitSubject,
 				CommitBody: commitBody, Authentication: authentication,
 			})
 		}

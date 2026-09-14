@@ -117,3 +117,19 @@ func TestGitHubRepositoryRequiresCanonicalHTTPSRemote(t *testing.T) {
 func jsonResponse(status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
 }
+
+// A commit message is cut to what Git and the runner accept: a Job with a
+// long Markdown goal still merges.
+func TestCommitMessageIsCutToSize(t *testing.T) {
+	subject, body := commitMessage("Merge jobs/#1/main: "+strings.Repeat("lang ", 100), strings.Repeat("regel met tekst\n", 500))
+	if len([]rune(subject)) > 200 || len([]rune(body)) > 4000 {
+		t.Fatalf("subject=%d body=%d", len([]rune(subject)), len([]rune(body)))
+	}
+	if !strings.HasSuffix(subject, "…") || !strings.HasSuffix(body, "…") || strings.Contains(subject, "\n") {
+		t.Fatalf("subject=%q body tail=%q", subject, body[max(0, len(body)-40):])
+	}
+	short, shortBody := commitMessage("Merge", "kort")
+	if short != "Merge" || shortBody != "kort" {
+		t.Fatalf("short message = %q / %q", short, shortBody)
+	}
+}
