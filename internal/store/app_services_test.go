@@ -391,8 +391,12 @@ func TestJobEnvironmentChangesForTheNextStep(t *testing.T) {
 	if created.Session.EnvironmentSelector != "tool:codex" {
 		t.Fatalf("first step environment = %q", created.Session.EnvironmentSelector)
 	}
-	if _, err := st.UpdateJobEnvironment(created.Job.ID, "john", domain.UpdateJobEnvironmentRequest{EnvironmentSelector: "tool:claude"}); err == nil {
-		t.Fatal("someone else changed the environment")
+	// A colleague may change it too: the team shares its Jobs.
+	if _, err := st.UpdateJobEnvironment(created.Job.ID, "john", domain.UpdateJobEnvironmentRequest{EnvironmentSelector: "tool:codex"}); err != nil {
+		t.Fatalf("a colleague could not change the environment: %v", err)
+	}
+	if _, err := st.UpdateJobEnvironment(created.Job.ID, "", domain.UpdateJobEnvironmentRequest{EnvironmentSelector: "tool:codex"}); err == nil {
+		t.Fatal("a Job without an operator was changed")
 	}
 	if _, err := st.UpdateJobEnvironment(created.Job.ID, "derek", domain.UpdateJobEnvironmentRequest{EnvironmentSelector: "tool:nonsense"}); err == nil {
 		t.Fatal("an unknown layer was accepted")

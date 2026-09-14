@@ -1792,7 +1792,7 @@ func (s *Store) CreateJobAttachment(req domain.CreateJobAttachmentRequest) (doma
 		if !exists {
 			return domain.JobAttachment{}, ErrNotFound
 		}
-		if job.Owner != operator || job.Status == domain.JobDone || job.Status == domain.JobCancelled || len(job.AttachmentIDs) >= 8 {
+		if !job.AllowsOperator(normalizeSubject(operator)) || job.Status == domain.JobDone || job.Status == domain.JobCancelled || len(job.AttachmentIDs) >= 8 {
 			return domain.JobAttachment{}, fmt.Errorf("Job cannot accept this attachment: %w", ErrConflict)
 		}
 		var total int64
@@ -2144,7 +2144,7 @@ func (s *Store) PrepareJobDeletion(jobID, operator string) (domain.Job, []domain
 	if !ok {
 		return domain.Job{}, nil, ErrNotFound
 	}
-	if normalizeSubject(operator) == "" || job.Owner != normalizeSubject(operator) {
+	if !job.AllowsOperator(normalizeSubject(operator)) {
 		return domain.Job{}, nil, ErrConflict
 	}
 	sessionIDs := map[string]bool{}
@@ -2239,7 +2239,7 @@ func (s *Store) CloseJob(jobID, operator string) (domain.Job, error) {
 		return domain.Job{}, ErrNotFound
 	}
 	operator = normalizeSubject(operator)
-	if operator == "" || job.Owner != operator {
+	if !job.AllowsOperator(operator) {
 		return domain.Job{}, ErrConflict
 	}
 	if job.Status == domain.JobDone || job.Status == domain.JobCancelled {
@@ -2287,7 +2287,7 @@ func (s *Store) DeleteJob(jobID, operator string) (domain.Job, error) {
 	if !ok {
 		return domain.Job{}, ErrNotFound
 	}
-	if normalizeSubject(operator) == "" || job.Owner != normalizeSubject(operator) {
+	if !job.AllowsOperator(normalizeSubject(operator)) {
 		return domain.Job{}, ErrConflict
 	}
 	for _, candidate := range s.state.Jobs {

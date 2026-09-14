@@ -532,8 +532,10 @@ func TestRetryWorkflowSessionRequeuesSameAttemptAndClosesOpenQuestion(t *testing
 	if len(snapshot.WorkflowQuestions) != 1 || snapshot.WorkflowQuestions[0].ID != question.ID || snapshot.WorkflowQuestions[0].Status != "answered" || snapshot.WorkflowQuestions[0].Answer != "retry" {
 		t.Fatalf("question after retry = %+v", snapshot.WorkflowQuestions)
 	}
-	if _, _, err := st.RetryWorkflowSession(created.Session.ID, "john", "", nil); !errors.Is(err, ErrConflict) {
-		t.Fatalf("other user retry error = %v", err)
+	// A colleague may retry as well; only a request without a person is
+	// refused.
+	if _, _, err := st.RetryWorkflowSession(created.Session.ID, "", "", nil); !errors.Is(err, ErrConflict) {
+		t.Fatalf("retry without an operator = %v", err)
 	}
 }
 
@@ -568,8 +570,8 @@ func TestCloseJobPreservesWorkflowHistoryAndClosesActiveDecision(t *testing.T) {
 	if err != nil || advance.Question == nil {
 		t.Fatalf("approval gate = %+v, error = %v", advance, err)
 	}
-	if _, err := st.CloseJob(created.Job.ID, "john"); !errors.Is(err, ErrConflict) {
-		t.Fatalf("other user closed Job: %v", err)
+	if _, err := st.CloseJob(created.Job.ID, ""); !errors.Is(err, ErrConflict) {
+		t.Fatalf("closing without an operator = %v", err)
 	}
 	closed, err := st.CloseJob(created.Job.ID, "derek")
 	if err != nil {

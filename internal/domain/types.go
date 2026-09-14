@@ -1451,10 +1451,12 @@ func (j Job) Worker() string {
 	return j.Owner
 }
 
-// AllowsOperator reports whether an operator may work in the Job: its
-// owner, or the person it was assigned to.
+// AllowsOperator reports whether an operator may work in the Job. Everyone
+// signed in may: Spin is a team's own control plane, where colleagues pick
+// up each other's work, answer each other's questions and close what is
+// done. Who did what stays on the Job.
 func (j Job) AllowsOperator(operator string) bool {
-	return operator != "" && (j.Owner == operator || j.Assignee == operator)
+	return operator != ""
 }
 
 // BrainstormPhaseID names the run a Job starts with when the person wants

@@ -605,8 +605,8 @@ func TestJobAdoptsANewerTemplateRevision(t *testing.T) {
 	if _, _, _, err := st.AdoptWorkflowTemplate(created.Job.ID, "derek", "nonsense"); err == nil {
 		t.Fatal("an unknown step was accepted")
 	}
-	if _, _, _, err := st.AdoptWorkflowTemplate(created.Job.ID, "john", "ai-merge"); err == nil {
-		t.Fatal("someone else moved the Job")
+	if _, _, _, err := st.AdoptWorkflowTemplate(created.Job.ID, "", "ai-merge"); err == nil {
+		t.Fatal("moving the Job without an operator was accepted")
 	}
 	// Continuing at the AI merge step: the stuck question is gone, the
 	// finalizer run is closed without a verdict, and the new step is queued.
