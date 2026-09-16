@@ -436,7 +436,7 @@ func TestMergeStepRejectsOnConflictAndTheAIMergeStepReturnsToIt(t *testing.T) {
 	template, err := st.CreateWorkflowTemplate(domain.CreateWorkflowTemplateRequest{Operator: "derek", Name: "Test, merge, AI merge", Phases: []domain.WorkflowPhase{
 		{ID: "test", Name: "Testen", Executor: domain.WorkflowExecutorExpose, Accept: domain.WorkflowTransition{Target: "merge"}, Reject: domain.WorkflowTransition{Target: "SELF"}},
 		{ID: "merge", Name: "Merge", Executor: domain.WorkflowExecutorAction, Action: &domain.WorkflowAction{Type: domain.WorkflowActionGitMerge}, Accept: domain.WorkflowTransition{Target: "DONE"}, Reject: domain.WorkflowTransition{Target: "ai-merge"}},
-		{ID: "ai-merge", Name: "AI merge", Executor: domain.WorkflowExecutorAgent, Instructions: "Merge origin/develop in de Job-branch en los de conflicten op.", AllowChanges: true, Accept: domain.WorkflowTransition{Target: "merge"}, Reject: domain.WorkflowTransition{Target: "ASK_USER"}},
+		{ID: "ai-merge", Name: "AI merge", Executor: domain.WorkflowExecutorAgent, ResolveMerge: true, Instructions: "Merge origin/develop in de Job-branch en los de conflicten op.", AllowChanges: true, Accept: domain.WorkflowTransition{Target: "merge"}, Reject: domain.WorkflowTransition{Target: "ASK_USER"}},
 	}})
 	if err != nil {
 		t.Fatal(err)

@@ -168,6 +168,12 @@ type WorkflowPhase struct {
 	Inject              []string                `json:"inject"`
 	Deliverables        []DeliverableDefinition `json:"deliverables"`
 	AllowChanges        bool                    `json:"allow_changes"`
+	// ResolveMerge makes this an agent step that resolves a merge: Spin
+	// merges the base branch into the Session branch while it prepares the
+	// workspace (the capsule has no Git credentials and cannot), leaving
+	// the conflicts in the files, and tells the agent to resolve and commit
+	// them. Nothing happens automatically on any other step.
+	ResolveMerge bool `json:"resolve_merge,omitempty"`
 	// Model and ReasoningEffort are set on the agent's ACP session before the
 	// phase's first prompt (session/set_config_option); empty keeps the
 	// agent's default. The values an agent accepts are on its layer's

@@ -88,6 +88,10 @@ func normalizeWorkflowTemplateRequest(req domain.CreateWorkflowTemplateRequest) 
 			if phase.Instructions == "" {
 				return "", "", "", nil, fmt.Errorf("agent phase %s needs instructions: %w", phase.Name, ErrConflict)
 			}
+			// An AI merge step commits the merge it resolves, so it writes.
+			if phase.ResolveMerge {
+				phase.AllowChanges = true
+			}
 			phase.Action = nil
 			phase.EnvironmentSelector = strings.ToLower(strings.TrimSpace(phase.EnvironmentSelector))
 			if phase.EnvironmentSelector != "" {
@@ -101,6 +105,7 @@ func normalizeWorkflowTemplateRequest(req domain.CreateWorkflowTemplateRequest) 
 			}
 			phase.WithSelectors = withSelectors
 		case domain.WorkflowExecutorExpose:
+			phase.ResolveMerge = false
 			// The app is started on the phase's workspace and a person tests
 			// it; there is no agent to instruct.
 			phase.Action = nil
@@ -109,6 +114,7 @@ func normalizeWorkflowTemplateRequest(req domain.CreateWorkflowTemplateRequest) 
 			phase.Model, phase.ReasoningEffort = "", ""
 			phase.Deliverables = nil
 		case domain.WorkflowExecutorAction:
+			phase.ResolveMerge = false
 			// A step Spin performs itself: it merges the Job branch into
 			// the base branch with the operator's credentials, or opens a
 			// pull request on the remote. Its transitions are the person's
