@@ -351,37 +351,15 @@ Bij runners buiten het lokale Compose-netwerk moet `SPIN_INTERNAL_URL` op de ser
 
 ## Interface en stylesheet
 
-De interface gebruikt Tactile: donkere neutrale oppervlakken, knoppen in de
-accentkleur, een harde gradientovergang op 50% en een witte binnenrand van 1 px
-met een verloop naar transparant. Alleen slagschaduwen zijn zacht. Segmented
-controls hebben een ingedrukte selectie en veranderen niet bij hover.
-
-`internal/server/assets/spin.css` is de centrale applicatiestylesheet:
-
-- `vendor`: imports van de ongewijzigde iconen- en terminalbibliotheken.
-- `foundation`: kleuren, maten, glans, schaduwen en syntax-/terminalkleuren.
-- `application`: componentindeling, inhoud en responsive gedrag.
-- `tactile`: gedeelde materialen en interactietoestanden voor bediening.
-
-Wijzig themakleuren in de tokens bovenaan, niet in losse componentregels.
-Terminal en Mermaid lezen hun palet ook uit deze tokens. De vendorgebonden
-font- en xterm-stylesheets blijven bij hun bibliotheken en worden vanuit
-`spin.css` in de onderste CSS-laag geladen, zodat hun defaults de
-componentafwerking niet overschrijven. De zelfstandige
-referentiegalerij en ontwerpregels staan in het naastliggende Haasstyle-project;
-Spin heeft daar geen runtime-afhankelijkheid van.
-
-Elk bestand in de interface draagt een icoon van zijn soort, in elke lijst
-dezelfde: de inhoudsboom, de gewijzigde bestanden, de bijlagen en de
-deliverables. Markdown heeft een eigen tekstopmaakicoon. Markdown-velden (de
-goal van een Job, de instructie van een stap) worden bewerkt met de
-blok-editor uit `vendor/markdown-1.6.1.js`: elke regel is een eigen textarea,
-het voorvoegsel bepaalt de opmaak en het veld blijft gewone markdown. Onder
-760 px groeien knoppen, velden, rijen en chips naar een comfortabele
-aanraakmaat; invoervelden staan daar op 16 px, anders zoomt iOS bij focus in.
-
-Verhoog `frontendAssetVersion` in `internal/server/ui.go` bij frontendwijzigingen,
-omdat de versiegebonden assets immutable worden gecachet.
+De interface gebruikt Haasstyle/Tactile. De gedeelde componenten komen als
+kopie uit `../haasstyle` en staan in `internal/server/assets/vendor/`
+(`tactile-theme.css`, `tactile-elements.css`, `tactile-components.css` en de
+adapters voor select, dialoog, combobox en Markdown). `spin.css` importeert die
+in eigen cascadelagen en houdt zelf alleen de shell, de pagina-indeling en de
+geometrie van documenten, code review en terminal over. Componentklassen staan
+expliciet in `ui.html` en in de templates van `ui/app.js`; er is geen DOM-observer
+die achteraf knoppen herstyled. `docs/tactile-ui.md` beschrijft de klassen, de
+adapters en de mobiele maten.
 
 ## Verifiëren
 

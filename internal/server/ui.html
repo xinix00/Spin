@@ -7,136 +7,137 @@
   <link rel="icon" type="image/svg+xml" href="/assets/v__SPIN_UI_VERSION__/spin-mark.svg">
   <link href="/assets/v__SPIN_UI_VERSION__/vendor/material-symbols-outlined.css" rel="preload" as="style">
   <link href="/assets/v__SPIN_UI_VERSION__/vendor/xterm-5.5.0.css" rel="preload" as="style">
-  <link href="/assets/v__SPIN_UI_VERSION__/vendor/markdown-1.6.1.css" rel="stylesheet">
+  <link href="/assets/v__SPIN_UI_VERSION__/vendor/markdown-1.6.1.css" rel="preload" as="style">
   <link href="/assets/v__SPIN_UI_VERSION__/spin.css" rel="stylesheet">
 </head>
 <body>
+<a class="skip-link t-action" href="#workspace">Naar de werkruimte</a>
   <section class="auth-gate" id="auth-gate">
-    <div class="auth-card">
-      <div class="brand"><h1><img class="spin-mark" src="/assets/v__SPIN_UI_VERSION__/spin-mark.svg" width="32" height="32" alt="">Spin <span class="brand-version"></span></h1><p class="subtitle auth-status"><span class="auth-busy" id="auth-busy"><span class="material-symbols-outlined" aria-hidden="true">progress_activity</span></span><span id="auth-copy">Verbinden met de server…</span></p></div>
+    <div class="auth-card t-panel">
+      <div class="brand"><h1><img class="spin-mark" src="/assets/v__SPIN_UI_VERSION__/spin-mark.svg" width="32" height="32" alt="">Spin <span class="brand-version"></span></h1><p class="subtitle auth-status"><span class="auth-busy" id="auth-busy"><span class="material-symbols-outlined t-icon" aria-hidden="true">progress_activity</span></span><span id="auth-copy">Verbinden met de server…</span></p></div>
       <form id="setup-form" class="form-grid" hidden>
-        <div><label for="setup-username">Gebruikersnaam owner</label><input id="setup-username" name="username" value="derek" required autocomplete="username"></div>
-        <div><label for="setup-name">Naam</label><input id="setup-name" name="display_name" value="Derek" required autocomplete="name"></div>
-        <div><label for="setup-password">Wachtwoord (minimaal 12 tekens)</label><input id="setup-password" name="password" type="password" minlength="12" maxlength="256" required autocomplete="new-password"></div>
-        <button class="primary" type="submit">Owner maken</button>
+        <div><label for="setup-username">Gebruikersnaam owner</label><input class="t-field" id="setup-username" name="username" value="derek" required autocomplete="username"></div>
+        <div><label for="setup-name">Naam</label><input class="t-field" id="setup-name" name="display_name" value="Derek" required autocomplete="name"></div>
+        <div><label for="setup-password">Wachtwoord (minimaal 12 tekens)</label><input class="t-field" id="setup-password" name="password" type="password" minlength="12" maxlength="256" required autocomplete="new-password"></div>
+        <button class="primary t-action" type="submit">Owner maken</button>
       </form>
       <form id="login-form" class="form-grid" hidden>
-        <div><label for="login-username">Gebruikersnaam</label><input id="login-username" name="username" required autocomplete="username"></div>
-        <div><label for="login-password">Wachtwoord</label><input id="login-password" name="password" type="password" required autocomplete="current-password"></div>
-        <button class="primary" type="submit">Inloggen</button>
+        <div><label for="login-username">Gebruikersnaam</label><input class="t-field" id="login-username" name="username" required autocomplete="username"></div>
+        <div><label for="login-password">Wachtwoord</label><input class="t-field" id="login-password" name="password" type="password" required autocomplete="current-password"></div>
+        <button class="primary t-action" type="submit">Inloggen</button>
       </form>
     </div>
   </section>
   <div class="app-layout" id="app-shell" hidden>
     <aside class="sidebar">
-      <div class="brand-mark"><div class="brand-copy"><div class="brand-name"><img class="spin-mark" src="/assets/v__SPIN_UI_VERSION__/spin-mark.svg" width="24" height="24" alt="">Spin <span class="brand-version"></span></div></div><button class="icon-button nav-toggle" id="nav-toggle" type="button" title="Menu inklappen" aria-label="Menu inklappen"><span class="material-symbols-outlined" aria-hidden="true">left_panel_close</span></button></div>
-      <nav class="tabs" aria-label="Hoofdnavigatie">
-        <button class="tab-button active" data-tab="jobs"><span class="material-symbols-outlined nav-icon" aria-hidden="true">work</span><span class="nav-label">Jobs</span><span class="nav-count" id="nav-count-jobs">(0/0)</span></button>
-        <button class="tab-button" data-tab="explore"><span class="material-symbols-outlined nav-icon" aria-hidden="true">folder_open</span><span class="nav-label">Explore</span><span class="nav-count" id="nav-count-explore"></span></button>
-        <button class="tab-button" data-tab="environments"><span class="material-symbols-outlined nav-icon" aria-hidden="true">layers</span><span class="nav-label">Environments</span><span class="nav-count" id="nav-count-environments">(0)</span></button>
-        <button class="tab-button" data-tab="connections"><span class="material-symbols-outlined nav-icon" aria-hidden="true">link</span><span class="nav-label">Connections</span><span class="nav-count" id="nav-count-connections">(0)</span></button>
-        <button class="tab-button" data-tab="access"><span class="material-symbols-outlined nav-icon" aria-hidden="true">admin_panel_settings</span><span class="nav-label">Access</span><span class="nav-count" id="nav-count-access">(0)</span></button>
-      </nav>
+      <div class="brand-mark"><div class="brand-copy"><div class="brand-name"><img class="spin-mark" src="/assets/v__SPIN_UI_VERSION__/spin-mark.svg" width="24" height="24" alt="">Spin <span class="brand-version"></span></div></div><button class="icon-button nav-toggle t-action t-icon-button t-action--neutral" id="nav-toggle" type="button" title="Menu inklappen" aria-label="Menu inklappen"><span class="material-symbols-outlined t-icon" aria-hidden="true">left_panel_close</span></button></div>
+      <div class="sidebar-navigation"><p class="sidebar-heading">Werkruimte</p><nav class="tabs t-nav" aria-label="Hoofdnavigatie">
+        <button class="tab-button active t-choice" aria-current="page" data-tab="jobs"><span class="material-symbols-outlined nav-icon t-icon" aria-hidden="true">work</span><span class="nav-label t-nav-label">Jobs</span><span class="nav-count t-counter" id="nav-count-jobs">(0/0)</span></button>
+        <button class="tab-button t-choice" data-tab="explore"><span class="material-symbols-outlined nav-icon t-icon" aria-hidden="true">folder_open</span><span class="nav-label t-nav-label">Explore</span><span class="nav-count t-counter" id="nav-count-explore"></span></button>
+        <button class="tab-button t-choice" data-tab="environments"><span class="material-symbols-outlined nav-icon t-icon" aria-hidden="true">layers</span><span class="nav-label t-nav-label">Environments</span><span class="nav-count t-counter" id="nav-count-environments">(0)</span></button>
+        <button class="tab-button t-choice" data-tab="connections"><span class="material-symbols-outlined nav-icon t-icon" aria-hidden="true">link</span><span class="nav-label t-nav-label">Connections</span><span class="nav-count t-counter" id="nav-count-connections">(0)</span></button>
+        <button class="tab-button t-choice" data-tab="access"><span class="material-symbols-outlined nav-icon t-icon" aria-hidden="true">admin_panel_settings</span><span class="nav-label t-nav-label">Access</span><span class="nav-count t-counter" id="nav-count-access">(0)</span></button>
+      </nav></div>
       <div class="sidebar-foot">
         <div class="online"><span class="dot"></span><span id="server-status">server verbinden…</span></div>
-        <div class="user-row"><div class="user-copy"><strong id="current-user">—</strong><small>Ingelogd</small></div><button class="icon-button" id="logout" type="button" title="Uitloggen" aria-label="Uitloggen"><span class="material-symbols-outlined" aria-hidden="true">logout</span></button></div>
+        <div class="user-row"><div class="user-copy"><strong id="current-user">—</strong><small>Ingelogd</small></div><button class="icon-button t-action t-icon-button t-action--neutral" id="logout" type="button" title="Uitloggen" aria-label="Uitloggen"><span class="material-symbols-outlined t-icon" aria-hidden="true">logout</span></button></div>
       </div>
     </aside>
 
-    <main class="workspace">
+    <main class="workspace" id="workspace" tabindex="-1">
       <section class="tab-page active" id="tab-jobs">
         <div class="page-header"><div><div class="eyebrow">Work</div><h1>Jobs</h1><p class="subtitle">Kies een flow, geef hem een doel en laat Sessions het werk zelfstandig verzetten.</p></div></div>
-        <nav class="segments" aria-label="Work type"><button class="segment-button active" data-work-view="jobs">Jobs</button><button class="segment-button" data-work-view="templates">Templates</button></nav>
-        <section class="panel work-page active" id="work-jobs">
-          <div class="panel-head"><div><h2 id="jobs-list-title">Actief werk</h2><small id="jobs-list-copy">Open een Job voor Sessions, branches en resultaten.</small></div><div class="panel-actions"><nav class="job-state-tabs" aria-label="Job status"><button class="job-state-button active" type="button" data-job-state="mine" title="Mijn Jobs"><span class="material-symbols-outlined" aria-hidden="true">person</span><span class="job-state-label">Mijn</span><span class="job-state-count" id="job-count-mine">0</span></button><button class="job-state-button" type="button" data-job-state="all" title="Alle Jobs"><span class="material-symbols-outlined" aria-hidden="true">work</span><span class="job-state-label">Alle</span><span class="job-state-count" id="job-count-all">0</span></button><button class="job-state-button" type="button" data-job-state="closed" title="Gesloten Jobs"><span class="material-symbols-outlined" aria-hidden="true">archive</span><span class="job-state-label">Gesloten</span><span class="job-state-count" id="job-count-closed">0</span></button></nav><button class="primary" id="open-job-dialog"><span class="material-symbols-outlined" aria-hidden="true">add</span>Nieuwe Job</button></div></div>
-          <div class="job-search" id="job-search-row" hidden><span class="material-symbols-outlined" aria-hidden="true">search</span><input id="job-search" type="search" placeholder="Zoek op naam of referentie" autocomplete="off"></div>
+        <nav class="segments t-segmented" aria-label="Work type"><button class="segment-button active" data-work-view="jobs">Jobs</button><button class="segment-button" data-work-view="templates">Templates</button></nav>
+        <section class="panel work-page active t-panel" id="work-jobs">
+          <div class="panel-head t-panel-head"><div><h2 id="jobs-list-title">Actief werk</h2><small id="jobs-list-copy">Open een Job voor Sessions, branches en resultaten.</small></div><div class="panel-actions t-actions t-actions--end"><nav class="job-state-tabs t-segmented" aria-label="Job status"><button class="job-state-button active" type="button" data-job-state="mine" title="Mijn Jobs"><span class="material-symbols-outlined t-icon" aria-hidden="true">person</span><span class="job-state-label">Mijn</span><span class="job-state-count t-counter" id="job-count-mine">0</span></button><button class="job-state-button" type="button" data-job-state="all" title="Alle Jobs"><span class="material-symbols-outlined t-icon" aria-hidden="true">work</span><span class="job-state-label">Alle</span><span class="job-state-count t-counter" id="job-count-all">0</span></button><button class="job-state-button" type="button" data-job-state="closed" title="Gesloten Jobs"><span class="material-symbols-outlined t-icon" aria-hidden="true">archive</span><span class="job-state-label">Gesloten</span><span class="job-state-count t-counter" id="job-count-closed">0</span></button></nav><button class="primary t-action" id="open-job-dialog"><span class="material-symbols-outlined t-icon" aria-hidden="true">add</span>Nieuwe Job</button></div></div>
+          <div class="job-search" id="job-search-row" hidden><span class="material-symbols-outlined t-icon" aria-hidden="true">search</span><input class="t-field" id="job-search" type="search" placeholder="Zoek op naam of referentie" autocomplete="off"></div>
           <div class="jobs" id="jobs"></div>
         </section>
-        <section class="panel work-page" id="work-templates">
-          <div class="panel-head"><div><h2>Workflow Templates</h2><small>Bepaal de stappen, resultaten en beslismomenten voor je Jobs.</small></div><button class="primary" data-open-template><span class="material-symbols-outlined" aria-hidden="true">add</span>Template maken</button></div>
+        <section class="panel work-page t-panel" id="work-templates">
+          <div class="panel-head t-panel-head"><div><h2>Workflow Templates</h2><small>Bepaal de stappen, resultaten en beslismomenten voor je Jobs.</small></div><button class="primary t-action" data-open-template><span class="material-symbols-outlined t-icon" aria-hidden="true">add</span>Template maken</button></div>
           <div class="templates" id="templates"></div>
         </section>
       </section>
 
       <section class="tab-page" id="tab-explore">
-        <div class="explore-bar"><span class="material-symbols-outlined" aria-hidden="true">folder_open</span><select id="explore-repository" title="Repository"></select><select id="explore-ref" title="Branch"></select><span class="hint" title="Niets wordt opgeslagen; een runner leest het op het moment zelf uit Git">uit Git</span></div>
-        <section class="panel explore-panel">
+        <div class="explore-bar"><span class="material-symbols-outlined t-icon" aria-hidden="true">folder_open</span><select class="t-menu-trigger" id="explore-repository" title="Repository"></select><select class="t-menu-trigger" id="explore-ref" title="Branch"></select><span class="hint" title="Niets wordt opgeslagen; een runner leest het op het moment zelf uit Git">uit Git</span></div>
+        <section class="panel explore-panel t-panel">
           <div class="code-body">
-            <aside class="code-tree" id="explore-tree"><div class="empty">Kies een repository.</div></aside>
-            <section class="job-changes-view"><div class="diff-drawer-head"><div class="diff-file-copy"><strong id="explore-file-name">Selecteer een bestand</strong><small id="explore-file-meta">Gelezen uit Git.</small></div></div><div class="diff-scroll" id="explore-file"><div class="diff-empty">Kies links een bestand.</div></div></section>
+            <aside class="code-tree" id="explore-tree"><div class="empty t-empty">Kies een repository.</div></aside>
+            <section class="job-changes-view"><div class="diff-drawer-head"><div class="diff-file-copy"><strong id="explore-file-name">Selecteer een bestand</strong><small id="explore-file-meta">Gelezen uit Git.</small></div></div><div class="diff-scroll" id="explore-file"><div class="diff-empty t-empty">Kies links een bestand.</div></div></section>
           </div>
         </section>
       </section>
 
       <section class="tab-page" id="tab-environments">
-        <div class="page-header"><div><div class="eyebrow">Runtime</div><h1>Environments</h1><p class="subtitle">Bouw herbruikbare omgevingen uit gedeelde en persoonlijke lagen.</p></div><div class="page-actions"><button class="small-button" id="record-git-tool"><span class="material-symbols-outlined" aria-hidden="true">terminal</span>Record tool:git</button><button class="primary" id="add-snapshot"><span class="material-symbols-outlined" aria-hidden="true">add</span>Nieuwe laag</button></div></div>
+        <div class="page-header"><div><div class="eyebrow">Runtime</div><h1>Environments</h1><p class="subtitle">Bouw herbruikbare omgevingen uit gedeelde en persoonlijke lagen.</p></div><div class="page-actions t-actions"><button class="small-button t-action" id="record-git-tool"><span class="material-symbols-outlined t-icon" aria-hidden="true">terminal</span>Record tool:git</button><button class="primary t-action" id="add-snapshot"><span class="material-symbols-outlined t-icon" aria-hidden="true">add</span>Nieuwe laag</button></div></div>
         <div class="overview-grid">
-          <section class="panel wide-panel">
-            <div class="panel-head"><div><h2>Lagen</h2><small>Neem een laag op, maak een nieuwe versie of start ermee.</small></div></div>
+          <section class="panel wide-panel t-panel">
+            <div class="panel-head t-panel-head"><div><h2>Lagen</h2><small>Neem een laag op, maak een nieuwe versie of start ermee.</small></div></div>
             <div class="artifacts" id="artifacts"></div>
           </section>
-          <section class="panel">
-            <div class="panel-head"><div><h2>Omgeving starten</h2><small>Kies een basis en voeg eventueel extra lagen toe.</small></div></div>
+          <section class="panel t-panel">
+            <div class="panel-head t-panel-head"><div><h2>Omgeving starten</h2><small>Kies een basis en voeg eventueel extra lagen toe.</small></div></div>
             <form id="use-form" class="form-grid">
               <div class="wide"><label for="use-selector">Basislaag</label><select id="use-selector" name="selector"><option value="">neem eerst een laag op</option></select></div>
               <div class="wide"><label for="use-with">Extra lagen</label><select id="use-with" name="with_selectors" multiple><option disabled>optionele buildtools/config</option></select></div>
-              <div class="wide action"><button id="use-submit" class="primary" type="submit">Start omgeving</button></div>
+              <div class="wide action"><button id="use-submit" class="primary t-action" type="submit">Start omgeving</button></div>
             </form>
           </section>
-          <section class="panel"><div class="panel-head"><div><h2>Actieve omgeving</h2><small>De omgeving die je als laatste hebt gestart.</small></div></div><div class="section"><div id="composition"></div></div></section>
+          <section class="panel t-panel"><div class="panel-head t-panel-head"><div><h2>Actieve omgeving</h2><small>De omgeving die je als laatste hebt gestart.</small></div></div><div class="section"><div id="composition"></div></div></section>
         </div>
       </section>
 
       <section class="tab-page" id="tab-connections">
         <div class="page-header"><div><div class="eyebrow">Identity & handoff</div><h1>Connections</h1><p class="subtitle">Beheer Git, MCP en de runners waarop je werk draait.</p></div></div>
-        <nav class="segments" aria-label="Connection type">
+        <nav class="segments t-segmented" aria-label="Connection type">
           <button class="segment-button active" data-connection="git">Git</button>
           <button class="segment-button" data-connection="mcp">MCP</button>
-          <button class="segment-button" data-connection="runners">Runners <span class="segment-count" id="runner-segment-count">0/0</span></button>
+          <button class="segment-button" data-connection="runners">Runners <span class="segment-count t-counter" id="runner-segment-count">0/0</span></button>
         </nav>
 
         <section class="connection-page active" id="connection-git">
           <div class="git-stack">
-            <section class="panel">
-              <div class="panel-head"><div><h2>Git accounts</h2><small>Gebruik je eigen account of deel een account met het team.</small></div><div class="panel-actions" id="git-oauth-providers"></div></div>
+            <section class="panel t-panel">
+              <div class="panel-head t-panel-head"><div><h2>Git accounts</h2><small>Gebruik je eigen account of deel een account met het team.</small></div><div class="panel-actions t-actions t-actions--end" id="git-oauth-providers"></div></div>
               <p class="connection-notice" id="git-oauth-hint" hidden></p>
               <div class="git-account-list" id="git-account-list"></div>
-              <details class="advanced"><summary>Geavanceerd · handmatig token-account</summary>
+              <details class="advanced t-disclosure"><summary>Geavanceerd · handmatig token-account</summary>
                 <form id="git-account-form" class="form-grid">
                   <div><label for="git-provider">Provider</label><select id="git-provider" name="provider"><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="generic">Generic HTTPS</option></select></div>
-                  <div><label for="git-host">Host</label><input id="git-host" name="host" value="github.com" required></div>
+                  <div><label for="git-host">Host</label><input class="t-field" id="git-host" name="host" value="github.com" required></div>
                   <div id="git-credential-scope-field"><label for="git-credential-scope">Gebruik</label><select id="git-credential-scope" name="credential_scope"><option value="user">Mijn identity</option><option value="global">Gedeelde identity</option></select></div>
-                  <div><label for="git-login">Login</label><input id="git-login" name="login" required placeholder="derek"></div>
-                  <div><label for="git-author-name">Commitnaam</label><input id="git-author-name" name="name" placeholder="Derek"></div>
-                  <div class="wide"><label for="git-author-email">Commit-email</label><input id="git-author-email" name="email" type="email" placeholder="derek@example.com"></div>
-                  <div class="wide"><label for="git-token">Access token</label><input id="git-token" name="access_token" type="password" required autocomplete="new-password"><small>Minimale rechten: GitHub fine-grained token op de gekozen repositories met <strong>Contents: Read and write</strong>, <strong>Pull requests: Read and write</strong> en Metadata (read); GitLab een project access token met <code>read_repository</code> en <code>write_repository</code>. Meer heeft Spin niet nodig: het leest en pusht branches en maakt pull requests.</small></div>
-                  <div class="wide action"><button class="small-button" type="submit"><span class="material-symbols-outlined" aria-hidden="true">check</span>Token-account bewaren</button></div>
+                  <div><label for="git-login">Login</label><input class="t-field" id="git-login" name="login" required placeholder="derek"></div>
+                  <div><label for="git-author-name">Commitnaam</label><input class="t-field" id="git-author-name" name="name" placeholder="Derek"></div>
+                  <div class="wide"><label for="git-author-email">Commit-email</label><input class="t-field" id="git-author-email" name="email" type="email" placeholder="derek@example.com"></div>
+                  <div class="wide"><label for="git-token">Access token</label><input class="t-field" id="git-token" name="access_token" type="password" required autocomplete="new-password"><small>Minimale rechten: GitHub fine-grained token op de gekozen repositories met <strong>Contents: Read and write</strong>, <strong>Pull requests: Read and write</strong> en Metadata (read); GitLab een project access token met <code>read_repository</code> en <code>write_repository</code>. Meer heeft Spin niet nodig: het leest en pusht branches en maakt pull requests.</small></div>
+                  <div class="wide action"><button class="small-button t-action" type="submit"><span class="material-symbols-outlined t-icon" aria-hidden="true">check</span>Token-account bewaren</button></div>
                 </form>
               </details>
               <div class="secret-note">Tokens worden versleuteld bewaard en blijven buiten de agentomgeving.</div>
             </section>
-            <section class="panel">
-              <div class="panel-head"><div><h2>Repositories</h2><small>Iedere Job krijgt een remote, reviewbranch en geïsoleerde Session-branches.</small></div><button class="primary" id="open-git-dialog"><span class="material-symbols-outlined" aria-hidden="true">add</span>Repository toevoegen</button></div>
-              <div class="git-list" id="git-list"></div>
+            <section class="panel t-panel" aria-labelledby="repositories-heading">
+              <div class="panel-head t-panel-head"><div class="t-panel-heading"><h2 id="repositories-heading">Repositories</h2><small>Iedere Job krijgt een remote, reviewbranch en geïsoleerde Session-branches.</small></div><button class="primary t-action" id="open-git-dialog"><span class="material-symbols-outlined t-icon" aria-hidden="true">add</span>Repository toevoegen</button></div>
+              <div class="git-list t-panel-body" id="git-list"></div>
             </section>
-            <section class="panel">
-              <div class="panel-head"><div><h2>OAuth applications</h2><small>Eenmalige serverconfiguratie door een admin; gebruikers koppelen daarna hun eigen account.</small></div></div>
-              <details class="advanced" id="oauth-configuration-details"><summary>Providerinstellingen en callback-URL's</summary><div id="git-oauth-configurations"></div></details>
+            <section class="panel t-panel">
+              <div class="panel-head t-panel-head"><div><h2>OAuth applications</h2><small>Eenmalige serverconfiguratie door een admin; gebruikers koppelen daarna hun eigen account.</small></div></div>
+              <details class="advanced t-disclosure" id="oauth-configuration-details"><summary>Providerinstellingen en callback-URL's</summary><div id="git-oauth-configurations"></div></details>
             </section>
           </div>
         </section>
 
         <section class="connection-page" id="connection-mcp">
-          <section class="panel">
-            <div class="panel-head"><div><h2>Mijn MCP servers</h2><small>Persoonlijke stdio- en HTTP-connecties voor ACP Sessions.</small></div><button class="primary" id="open-mcp-dialog"><span class="material-symbols-outlined" aria-hidden="true">add</span>MCP toevoegen</button></div>
+          <section class="panel t-panel">
+            <div class="panel-head t-panel-head"><div><h2>Mijn MCP servers</h2><small>Persoonlijke stdio- en HTTP-connecties voor ACP Sessions.</small></div><button class="primary t-action" id="open-mcp-dialog"><span class="material-symbols-outlined t-icon" aria-hidden="true">add</span>MCP toevoegen</button></div>
             <div class="mcp-list" id="mcp-list"></div>
             <div class="secret-note">Inloggegevens worden versleuteld bewaard en na opslaan niet meer getoond.</div>
           </section>
         </section>
 
         <section class="connection-page" id="connection-runners">
-          <section class="panel">
-            <div class="panel-head"><div><h2>Docker runners</h2><small>Nieuwe Sessions worden verdeeld over de beschikbare runners.</small></div></div>
+          <section class="panel t-panel">
+            <div class="panel-head t-panel-head"><div><h2>Docker runners</h2><small>Nieuwe Sessions worden verdeeld over de beschikbare runners.</small></div></div>
             <div class="runner-downloads" id="runner-downloads"></div>
             <div class="storage-line" id="storage-line"></div>
             <div class="mcp-list" id="runner-list"></div>
@@ -147,156 +148,156 @@
       </section>
 
       <section class="tab-page" id="tab-access">
-        <div class="page-header"><div><div class="eyebrow">Server identity</div><h1>Access</h1><p class="subtitle">Beheer gebruikers, toegang en backups.</p></div><button class="primary" id="open-user-dialog"><span class="material-symbols-outlined" aria-hidden="true">add</span>Gebruiker toevoegen</button></div>
-        <section class="panel"><div class="panel-head"><div><h2>Gebruikers</h2><small>Admins kunnen gebruikers toevoegen, archiveren en herstellen.</small></div></div><div class="mcp-list" id="user-list"></div></section>
-        <section class="panel" id="backup-panel"><div class="panel-head"><div><h2>Backup & restore</h2><small>Eén spin.db met Jobs, credentials, bijlagen en alle opgenomen Docker-lagen.</small></div><div class="panel-actions"><button class="small-button" id="download-backup" type="button"><span class="material-symbols-outlined" aria-hidden="true">download</span>Backup</button><button class="danger" id="choose-restore" type="button"><span class="material-symbols-outlined" aria-hidden="true">restore</span>Restore</button></div></div><div class="section"><p class="hint">De backup bevat ook Git- en MCP-inloggegevens. Bewaar hem als een wachtwoordbestand.</p><details class="advanced"><summary>Wat gebeurt er bij backup en restore?</summary><p class="hint">De zip bevat de database en de bijbehorende encryptiesleutel. Tijdens de download pauzeert Spin het opslaan van wijzigingen; runners wachten. Restore controleert eerst alle gegevens, bijlagen en Docker-lagen. Daarna log je opnieuw in; eerder draaiende omgevingen worden niet hervat.</p></details><div class="restore-progress" id="restore-progress" hidden aria-live="polite"><div class="restore-progress-head"><strong id="restore-progress-label">Upload voorbereiden…</strong><span id="restore-progress-detail"></span></div><div class="restore-progress-track" id="restore-progress-track"><div class="restore-progress-fill" id="restore-progress-fill"></div></div></div></div></section>
+        <div class="page-header"><div><div class="eyebrow">Server identity</div><h1>Access</h1><p class="subtitle">Beheer gebruikers, toegang en backups.</p></div><button class="primary t-action" id="open-user-dialog"><span class="material-symbols-outlined t-icon" aria-hidden="true">add</span>Gebruiker toevoegen</button></div>
+        <section class="panel t-panel"><div class="panel-head t-panel-head"><div><h2>Gebruikers</h2><small>Admins kunnen gebruikers toevoegen, archiveren en herstellen.</small></div></div><div class="mcp-list" id="user-list"></div></section>
+        <section class="panel t-panel" id="backup-panel"><div class="panel-head t-panel-head"><div><h2>Backup & restore</h2><small>Eén spin.db met Jobs, credentials, bijlagen en alle opgenomen Docker-lagen.</small></div><div class="panel-actions t-actions t-actions--end"><button class="small-button t-action" id="download-backup" type="button"><span class="material-symbols-outlined t-icon" aria-hidden="true">download</span>Backup</button><button class="danger t-action t-action--danger" id="choose-restore" type="button"><span class="material-symbols-outlined t-icon" aria-hidden="true">restore</span>Restore</button></div></div><div class="section"><p class="hint">De backup bevat ook Git- en MCP-inloggegevens. Bewaar hem als een wachtwoordbestand.</p><details class="advanced t-disclosure"><summary>Wat gebeurt er bij backup en restore?</summary><p class="hint">De zip bevat de database en de bijbehorende encryptiesleutel. Tijdens de download pauzeert Spin het opslaan van wijzigingen; runners wachten. Restore controleert eerst alle gegevens, bijlagen en Docker-lagen. Daarna log je opnieuw in; eerder draaiende omgevingen worden niet hervat.</p></details><div class="restore-progress" id="restore-progress" hidden aria-live="polite"><div class="restore-progress-head"><strong id="restore-progress-label">Upload voorbereiden…</strong><span id="restore-progress-detail"></span></div><div class="restore-progress-track t-progress" id="restore-progress-track"><div class="restore-progress-fill" id="restore-progress-fill"></div></div></div></div></section>
         <div class="section replica-generations" id="replica-generations" hidden></div>
-        <input id="restore-backup-input" type="file" accept=".zip,application/zip,.db,.sqlite,.sqlite3,application/vnd.sqlite3,application/x-sqlite3" hidden>
+        <input class="t-field" id="restore-backup-input" type="file" accept=".zip,application/zip,.db,.sqlite,.sqlite3,application/vnd.sqlite3,application/x-sqlite3" hidden>
       </section>
 
-      <dialog id="job-dialog">
-        <div class="dialog-head"><div><h2 id="job-dialog-title">Nieuwe Job</h2><p id="job-dialog-description">Kies de flow en geef deze uitvoering één duidelijke goal.</p></div><button class="icon-button" type="button" data-close-dialog="job-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+      <dialog aria-labelledby="job-dialog-title" class="t-dialog" id="job-dialog">
+        <div class="dialog-head t-dialog-head"><div><h2 id="job-dialog-title">Nieuwe Job</h2><p id="job-dialog-description">Kies de flow en geef deze uitvoering één duidelijke goal.</p></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="job-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
         <div class="form-step-note"><div class="step-indicator"><span class="step-dot active" data-job-dot="1"></span><span class="step-dot" data-job-dot="2"></span></div></div>
         <form id="job-form">
           <div class="form-step-note" id="job-fork-context" hidden></div>
           <div class="form-grid" data-job-step="1">
-            <div><label for="title">Naam</label><input id="title" name="title" required placeholder="Implementeer darkmode"></div>
-            <div><label for="job-reference">Referentie</label><input id="job-reference" name="reference" placeholder="#1234 · ticketnummer, optioneel" pattern="[A-Za-z0-9#._-]{1,64}" title="Letters, cijfers, #, punt, streepje en underscore; wordt de branch-namespace jobs/&lt;referentie&gt;/…" autocomplete="off"></div>
+            <div><label for="title">Naam</label><input class="t-field" id="title" name="title" required placeholder="Implementeer darkmode"></div>
+            <div><label for="job-reference">Referentie</label><input class="t-field" id="job-reference" name="reference" placeholder="#1234 · ticketnummer, optioneel" pattern="[A-Za-z0-9#._-]{1,64}" title="Letters, cijfers, #, punt, streepje en underscore; wordt de branch-namespace jobs/&lt;referentie&gt;/…" autocomplete="off"></div>
             <div><label for="job-template">Template</label><select id="job-template" name="template_id" required><option value="">maak eerst een Template</option></select></div>
-            <div class="wide"><label>Repositories</label><div class="job-repositories" id="job-repositories"></div><button class="small-button" type="button" id="job-repository-add"><span class="material-symbols-outlined" aria-hidden="true">add</span>Repository</button></div>
-            <div class="wide"><label for="objective">Goal</label><textarea id="objective" name="objective" data-markdown required placeholder="Werkende single switch voor darkmode"></textarea><small id="objective-hint">Markdown mag. Bij Eerst brainstormen is dit de concept goal waar het gesprek over gaat.</small></div>
-            <div class="wide"><label for="job-attachments">Bijlagen</label><div class="dropzone" id="job-dropzone" tabindex="0" role="button" aria-label="Bijlagen kiezen of hierheen slepen"><span class="material-symbols-outlined" aria-hidden="true">upload_file</span><span>Sleep PDF's of afbeeldingen hierheen, of <u>kies bestanden</u></span><input id="job-attachments" name="attachments" type="file" multiple accept="application/pdf,image/png,image/jpeg,image/webp,image/gif" hidden></div><small>PDF of afbeelding · maximaal 8 bestanden, 15 MiB per bestand en 40 MiB totaal. Deze komen read-only buiten Git in iedere Session. Op een Job-kaart kun je ook bestanden laten vallen.</small><div class="attachment-selection" id="job-attachment-selection"></div></div>
-            <input id="job-owner" name="owner" type="hidden" value="derek">
-            <input id="job-forked-from" name="forked_from_job_id" type="hidden">
+            <div class="wide"><label>Repositories</label><div class="job-repositories" id="job-repositories"></div><button class="small-button t-action" type="button" id="job-repository-add"><span class="material-symbols-outlined t-icon" aria-hidden="true">add</span>Repository</button></div>
+            <div class="wide"><label for="objective">Goal</label><textarea class="t-field" id="objective" name="objective" aria-describedby="objective-hint" data-markdown required placeholder="Werkende single switch voor darkmode"></textarea><small id="objective-hint">Markdown mag. Bij Eerst brainstormen is dit de concept goal waar het gesprek over gaat.</small></div>
+            <div class="wide"><label for="job-attachments">Bijlagen</label><div class="dropzone t-dropzone" id="job-dropzone" aria-label="Bijlagen kiezen of hierheen slepen"><span class="material-symbols-outlined t-icon" aria-hidden="true">upload_file</span><span>Sleep PDF’s of afbeeldingen hierheen</span><input class="t-field" id="job-attachments" name="attachments" type="file" multiple accept="application/pdf,image/png,image/jpeg,image/webp,image/gif" hidden><button class="t-action" id="choose-job-attachments" type="button"><span class="material-symbols-outlined t-icon" aria-hidden="true">attach_file</span>Kies bestanden</button></div><small>PDF of afbeelding · maximaal 8 bestanden, 15 MiB per bestand en 40 MiB totaal. Deze komen read-only buiten Git in iedere Session. Op een Job-kaart kun je ook bestanden laten vallen.</small><div class="attachment-selection" id="job-attachment-selection"></div></div>
+            <input class="t-field" id="job-owner" name="owner" type="hidden" value="derek">
+            <input class="t-field" id="job-forked-from" name="forked_from_job_id" type="hidden">
           </div>
           <div class="form-grid" data-job-step="2" hidden>
             <div class="wide"><label for="environment-selector">Agent/environment</label><select id="environment-selector" name="environment_selector"><option value="">record eerst een ACP environment</option></select><small>De Job kiest de agent. Git komt uit de Template; buildtools en projectlagen komen uit de Repository.</small></div>
             <div class="wide recipe-check" id="job-recipe-check" aria-live="polite"></div>
             <div class="wide"><label for="job-mcp">MCP-connecties</label><select id="job-mcp" name="mcp_server_ids" multiple><option disabled>geen MCP geconfigureerd</option></select></div>
           </div>
-          <div class="dialog-foot"><button class="small-button" id="job-back" type="button" hidden>Terug</button><div class="panel-actions"><button class="small-button" type="button" data-close-dialog="job-dialog">Annuleren</button><button class="primary" id="job-next" type="button">Volgende</button><button id="job-brainstorm" class="small-button" type="button" hidden title="Begin met een chat in de omgeving van de Job; de goal komt uit het gesprek, daarna loopt de Template zoals altijd">Eerst brainstormen</button><button id="job-submit" class="primary" type="submit" hidden>Job inschieten</button></div></div>
+          <div class="dialog-foot t-dialog-foot"><button class="small-button t-action" id="job-back" type="button" hidden>Terug</button><div class="panel-actions t-actions t-actions--end"><button class="small-button t-action t-action--neutral" type="button" data-close-dialog="job-dialog">Annuleren</button><button class="primary t-action" id="job-next" type="button">Volgende</button><button id="job-brainstorm" class="small-button t-action" type="button" hidden title="Begin met een chat in de omgeving van de Job; de goal komt uit het gesprek, daarna loopt de Template zoals altijd">Eerst brainstormen</button><button id="job-submit" class="primary t-action" type="submit" hidden>Job inschieten</button></div></div>
         </form>
       </dialog>
-      <input id="add-job-attachment-input" type="file" multiple accept="application/pdf,image/png,image/jpeg,image/webp,image/gif" hidden>
+      <input class="t-field" id="add-job-attachment-input" type="file" multiple accept="application/pdf,image/png,image/jpeg,image/webp,image/gif" hidden>
 
-      <dialog id="template-dialog">
-        <div class="dialog-head"><div><h2 id="template-dialog-title">Nieuw Workflow Template</h2><p>Voeg agentstappen toe; Spin sluit iedere flow automatisch af met een pull request.</p></div><button class="icon-button" type="button" data-close-dialog="template-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+      <dialog aria-labelledby="template-dialog-title" class="t-dialog" id="template-dialog">
+        <div class="dialog-head t-dialog-head"><div><h2 id="template-dialog-title">Nieuw Workflow Template</h2><p>Voeg agentstappen toe; Spin sluit iedere flow automatisch af met een pull request.</p></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="template-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
         <form id="template-form">
           <div class="template-dialog-body">
             <div class="form-grid">
-              <div><label for="template-name">Naam</label><input id="template-name" name="name" required placeholder="Ontwikkeling"></div>
-              <div><label for="template-description">Omschrijving</label><input id="template-description" name="description" placeholder="Van ontwerp naar implementatie en review"></div>
+              <div><label for="template-name">Naam</label><input class="t-field" id="template-name" name="name" required placeholder="Ontwikkeling"></div>
+              <div><label for="template-description">Omschrijving</label><input class="t-field" id="template-description" name="description" placeholder="Van ontwerp naar implementatie en review"></div>
               <div class="wide"><label for="template-git">Git environment</label><select id="template-git" name="git_selector" required><option value="">record eerst een laag die Git ENABLET</option></select><small>De flow kiest alleen de Git-implementatie; agents en repository-tooling blijven daarvan gescheiden.</small></div>
             </div>
             <div id="template-steps"></div>
-            <div class="panel-actions template-add-actions"><button class="small-button" id="add-template-step" type="button"><span class="material-symbols-outlined" aria-hidden="true">add</span>Stap</button></div>
+            <div class="panel-actions template-add-actions t-actions t-actions--end"><button class="small-button t-action" id="add-template-step" type="button"><span class="material-symbols-outlined t-icon" aria-hidden="true">add</span>Stap</button></div>
           </div>
-          <div class="dialog-foot"><span class="hint">ask, accept en reject zijn altijd beschikbaar · PR is een vaste systeemstap.</span><div class="panel-actions"><button class="small-button" type="button" data-close-dialog="template-dialog">Annuleren</button><button class="primary" id="template-submit" type="submit">Template bewaren</button></div></div>
+          <div class="dialog-foot t-dialog-foot"><span class="hint">ask, accept en reject zijn altijd beschikbaar · PR is een vaste systeemstap.</span><div class="panel-actions t-actions t-actions--end"><button class="small-button t-action t-action--neutral" type="button" data-close-dialog="template-dialog">Annuleren</button><button class="primary t-action" id="template-submit" type="submit">Template bewaren</button></div></div>
         </form>
       </dialog>
 
-      <dialog id="git-dialog">
-        <div class="dialog-head"><div><h2 id="git-dialog-title">Repository toevoegen</h2><p id="git-dialog-description">De remote bepaalt de provider; credentials worden pas bij een actie voor de juiste gebruiker opgelost.</p></div><button class="icon-button" type="button" data-close-dialog="git-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+      <dialog aria-labelledby="git-dialog-title" class="t-dialog" id="git-dialog">
+        <div class="dialog-head t-dialog-head"><div><h2 id="git-dialog-title">Repository toevoegen</h2><p id="git-dialog-description">De remote bepaalt de provider; credentials worden pas bij een actie voor de juiste gebruiker opgelost.</p></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="git-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
         <form id="git-form" class="form-grid">
-          <div><label for="git-name">Naam</label><input id="git-name" name="name" required placeholder="mijn-repo"></div>
-          <div><label for="git-default-ref">Default branch</label><input id="git-default-ref" name="default_ref" value="main" required></div>
-          <div class="wide"><label for="git-remote">HTTPS remote zonder secrets</label><input id="git-remote" name="remote_url" required placeholder="https://github.com/team/project.git"></div>
+          <div><label for="git-name">Naam</label><input class="t-field" id="git-name" name="name" required placeholder="mijn-repo"></div>
+          <div><label for="git-default-ref">Default branch</label><input class="t-field" id="git-default-ref" name="default_ref" value="main" required></div>
+          <div class="wide"><label for="git-remote">HTTPS remote zonder secrets</label><input class="t-field" id="git-remote" name="remote_url" required placeholder="https://github.com/team/project.git"></div>
           <div class="wide"><label for="git-repository-credential-scope">Git identity</label><select id="git-repository-credential-scope" name="credential_scope"><option value="user">Persoonlijk · account van de uitvoerende gebruiker</option><option value="global">Global · gedeeld service-account</option></select></div>
           <div class="wide"><label for="git-layers">Projectlagen</label><select id="git-layers" name="layer_selectors" multiple size="5"><option disabled>record eerst buildtools of configlagen</option></select><small>Bijvoorbeeld tool:node en tool:dotnet. Iedere nieuwe Job neemt deze selectie immutable over.</small></div>
-          <div class="wide"><label>Test-app · services</label><div class="service-editor" id="git-services"></div><button class="small-button" type="button" id="git-add-service"><span class="material-symbols-outlined" aria-hidden="true">add</span>Service</button><small>Eén container per service, samen in één netwerk per Session (ze bereiken elkaar op servicenaam). Een service met <em>run</em> draait in de image van de Session op haar workspace, na de voorbereidende commando's; een service met <em>image</em> is een kant-en-klare dependency zoals een database. <em>Env</em> is de naam van een bestand op de runner-host: <code>var/env/&lt;naam&gt;.env</code>, bijvoorbeeld gevuld uit 1Password; de inhoud verlaat de host nooit. <code>host.docker.internal</code> wijst in de containers naar de runner-host.</small></div>
-          <div class="wide"><label for="git-service-hosts">Hosts voor de test-app</label><textarea id="git-service-hosts" name="service_hosts" rows="2" placeholder="sqlserver.easyflor.local 192.168.1.40"></textarea><small>Eén <code>naam ip</code> per regel; gaat als <code>--add-host</code> mee naar iedere service, bijvoorbeeld voor een database die op naam wordt aangesproken. Was het <code>localhost</code> of <code>127.0.0.1</code> op je eigen machine? In een container is dat de container zelf: gebruik dan <code>host.docker.internal</code>, het Docker-adres dat naar de host gaat. Dat hoeft hier niet als regel; zet het gewoon in je envbestand of config.</small></div>
-          <div class="wide panel-actions"><button class="small-button" type="button" data-close-dialog="git-dialog">Annuleren</button><button class="primary" id="git-submit" type="submit">Repository bewaren</button></div>
+          <div class="wide"><label>Test-app · services</label><div class="service-editor" id="git-services"></div><button class="small-button t-action" type="button" id="git-add-service"><span class="material-symbols-outlined t-icon" aria-hidden="true">add</span>Service</button><small>Eén container per service, samen in één netwerk per Session (ze bereiken elkaar op servicenaam). Een service met <em>run</em> draait in de image van de Session op haar workspace, na de voorbereidende commando's; een service met <em>image</em> is een kant-en-klare dependency zoals een database. <em>Env</em> is de naam van een bestand op de runner-host: <code>var/env/&lt;naam&gt;.env</code>, bijvoorbeeld gevuld uit 1Password; de inhoud verlaat de host nooit. <code>host.docker.internal</code> wijst in de containers naar de runner-host.</small></div>
+          <div class="wide"><label for="git-service-hosts">Hosts voor de test-app</label><textarea class="t-field" id="git-service-hosts" name="service_hosts" rows="2" placeholder="sqlserver.easyflor.local 192.168.1.40"></textarea><small>Eén <code>naam ip</code> per regel; gaat als <code>--add-host</code> mee naar iedere service, bijvoorbeeld voor een database die op naam wordt aangesproken. Was het <code>localhost</code> of <code>127.0.0.1</code> op je eigen machine? In een container is dat de container zelf: gebruik dan <code>host.docker.internal</code>, het Docker-adres dat naar de host gaat. Dat hoeft hier niet als regel; zet het gewoon in je envbestand of config.</small></div>
+          <div class="wide panel-actions t-actions t-actions--end"><button class="small-button t-action t-action--neutral" type="button" data-close-dialog="git-dialog">Annuleren</button><button class="primary t-action" id="git-submit" type="submit">Repository bewaren</button></div>
         </form>
       </dialog>
 
-      <dialog id="app-logs-dialog">
-        <div class="dialog-head"><div><h2 id="app-logs-title">Logs</h2><p id="app-logs-context">laatste regels · ververst elke 3 s zolang dit open is</p></div><button class="icon-button" type="button" data-close-dialog="app-logs-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
-        <pre class="app-logs" id="app-logs-output"></pre>
+      <dialog aria-labelledby="app-logs-title" class="t-dialog" id="app-logs-dialog">
+        <div class="dialog-head t-dialog-head"><div><h2 id="app-logs-title">Logs</h2><p id="app-logs-context">laatste regels · ververst elke 3 s zolang dit open is</p></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="app-logs-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
+        <pre class="app-logs t-well t-code" id="app-logs-output"></pre>
       </dialog>
 
-      <dialog id="mcp-dialog">
-        <div class="dialog-head"><div><h2>MCP toevoegen</h2><p>De definitie wordt later als user-bound handoff aan ACP meegegeven.</p></div><button class="icon-button" type="button" data-close-dialog="mcp-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+      <dialog aria-labelledby="mcp-dialog-heading" class="t-dialog" id="mcp-dialog">
+        <div class="dialog-head t-dialog-head"><div><h2 id="mcp-dialog-heading">MCP toevoegen</h2><p>De definitie wordt later als user-bound handoff aan ACP meegegeven.</p></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="mcp-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
         <form id="mcp-form" class="form-grid">
-          <div><label for="mcp-name">Naam</label><input id="mcp-name" name="name" required placeholder="github"></div>
+          <div><label for="mcp-name">Naam</label><input class="t-field" id="mcp-name" name="name" required placeholder="github"></div>
           <div><label for="mcp-transport">Transport</label><select id="mcp-transport" name="transport"><option value="stdio">stdio</option><option value="http">HTTP</option></select></div>
-          <div class="wide" id="mcp-command-field"><label for="mcp-command">Absoluut executable path</label><input id="mcp-command" name="command" placeholder="/usr/local/bin/mcp-server"></div>
-          <div class="wide" id="mcp-url-field" hidden><label for="mcp-url">HTTP URL</label><input id="mcp-url" name="url" placeholder="https://example.com/mcp"></div>
-          <div class="wide"><label for="mcp-args">Arguments</label><input id="mcp-args" name="args" placeholder="--stdio --project mijn-repo"></div>
-          <div><label for="mcp-secret-name">Credentialnaam</label><input id="mcp-secret-name" name="secret_name" placeholder="API_KEY / Authorization"></div>
-          <div><label for="mcp-secret-value">Credentialwaarde</label><input id="mcp-secret-value" name="secret_value" type="password" autocomplete="new-password"></div>
-          <div class="wide panel-actions"><button class="small-button" type="button" data-close-dialog="mcp-dialog">Annuleren</button><button class="primary" type="submit">MCP bewaren</button></div>
+          <div class="wide" id="mcp-command-field"><label for="mcp-command">Absoluut executable path</label><input class="t-field" id="mcp-command" name="command" placeholder="/usr/local/bin/mcp-server"></div>
+          <div class="wide" id="mcp-url-field" hidden><label for="mcp-url">HTTP URL</label><input class="t-field" id="mcp-url" name="url" placeholder="https://example.com/mcp"></div>
+          <div class="wide"><label for="mcp-args">Arguments</label><input class="t-field" id="mcp-args" name="args" placeholder="--stdio --project mijn-repo"></div>
+          <div><label for="mcp-secret-name">Credentialnaam</label><input class="t-field" id="mcp-secret-name" name="secret_name" placeholder="API_KEY / Authorization"></div>
+          <div><label for="mcp-secret-value">Credentialwaarde</label><input class="t-field" id="mcp-secret-value" name="secret_value" type="password" autocomplete="new-password"></div>
+          <div class="wide panel-actions t-actions t-actions--end"><button class="small-button t-action t-action--neutral" type="button" data-close-dialog="mcp-dialog">Annuleren</button><button class="primary t-action" type="submit">MCP bewaren</button></div>
         </form>
       </dialog>
 
-      <dialog id="contents-dialog" class="fullscreen-dialog">
-        <div class="dialog-head"><div class="chat-head-main"><h2><span class="material-symbols-outlined" aria-hidden="true">inventory_2</span><span id="contents-title">Inhoud</span></h2><p id="contents-summary"></p><p id="contents-tracked" class="contents-tracked" hidden></p></div><div class="panel-actions"><input id="contents-filter" type="search" placeholder="Filter op pad" autocomplete="off"><button class="primary" type="button" id="contents-save" hidden title="Bewaar welke bestanden en mappen Spin tussen Sessions bijhoudt; in een map vink je uit wat niet mee hoeft (caches), lock-bestanden gaan nooit mee"><span class="material-symbols-outlined" aria-hidden="true">save</span>Bijhouden opslaan</button><button class="icon-button" type="button" data-close-dialog="contents-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div></div>
+      <dialog aria-labelledby="contents-dialog-heading" id="contents-dialog" class="fullscreen-dialog t-dialog t-dialog--fullscreen">
+        <div class="dialog-head t-dialog-head"><div class="chat-head-main"><h2 id="contents-dialog-heading"><span class="material-symbols-outlined t-icon" aria-hidden="true">inventory_2</span><span id="contents-title">Inhoud</span></h2><p id="contents-summary"></p><p id="contents-tracked" class="contents-tracked" hidden></p></div><div class="panel-actions t-actions t-actions--end"><input class="t-field" id="contents-filter" type="search" placeholder="Filter op pad" autocomplete="off"><button class="primary t-action" type="button" id="contents-save" hidden title="Bewaar welke bestanden en mappen Spin tussen Sessions bijhoudt; in een map vink je uit wat niet mee hoeft (caches), lock-bestanden gaan nooit mee"><span class="material-symbols-outlined t-icon" aria-hidden="true">save</span>Bijhouden opslaan</button><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="contents-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div></div>
         <div class="contents-body" id="contents-body"></div>
       </dialog>
-      <dialog id="layer-dialog">
-        <div class="dialog-head"><div><h2>Nieuwe laag</h2><p>Een laag is één opname: kies wat hij is en waarop hij bouwt, werk daarna in de shell van de capsule en sluit af met End &amp; save.</p></div><button class="icon-button" type="button" data-close-dialog="layer-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+      <dialog aria-labelledby="layer-dialog-heading" class="t-dialog" id="layer-dialog">
+        <div class="dialog-head t-dialog-head"><div><h2 id="layer-dialog-heading">Nieuwe laag</h2><p>Een laag is één opname: kies wat hij is en waarop hij bouwt, werk daarna in de shell van de capsule en sluit af met End &amp; save.</p></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="layer-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
         <form id="record-form" class="form-grid" autocomplete="off">
           <div class="wide"><label>Presets</label><div class="record-presets" id="record-presets"></div></div>
           <div><label for="record-kind">Soort</label><select id="record-kind" name="kind"><option value="tool">tool · gereedschap, voor iedereen bruikbaar</option><option value="credential">credential · een login, van één gebruiker</option><option value="config">config · instellingen</option></select></div>
-          <div><label for="record-name">Naam</label><input id="record-name" name="name" required placeholder="codex" pattern="[a-z0-9][a-z0-9._-]*" title="kleine letters, cijfers, punt, streepje, underscore"></div>
+          <div><label for="record-name">Naam</label><input class="t-field" id="record-name" name="name" required placeholder="codex" pattern="[a-z0-9][a-z0-9._-]*" title="kleine letters, cijfers, punt, streepje, underscore"></div>
           <div><label for="record-scope">Scope</label><select id="record-scope" name="scope"><option value="global">global · voor iedereen</option><option value="user">user · alleen ik</option></select></div>
           <div><label for="record-from">Bouwt op</label><select id="record-from" name="from"><option value="">Alpine-basis</option></select></div>
-          <div class="wide record-enables"><label>ENABLES</label><label class="record-check"><input type="checkbox" name="enable_git"> git · deze laag levert Git voor Job-workspaces</label><label class="record-check"><input type="checkbox" name="enable_acp"> acp · deze laag bevat een agent</label></div>
-          <div class="wide" id="record-command-field" hidden><label for="record-command">ACP-commando</label><input id="record-command" name="command" placeholder="codex-acp"><small>Het programma dat de agent over ACP start, bijvoorbeeld codex-acp of claude-agent-acp.</small></div>
-          <div class="wide panel-actions"><button class="small-button" type="button" data-close-dialog="layer-dialog">Annuleren</button><button class="primary" type="submit"><span class="material-symbols-outlined" aria-hidden="true">fiber_manual_record</span>Opname starten</button></div>
+          <div class="wide record-enables"><label>ENABLES</label><label class="record-check t-check-row"><input class="t-field" type="checkbox" name="enable_git"> git · deze laag levert Git voor Job-workspaces</label><label class="record-check t-check-row"><input class="t-field" type="checkbox" name="enable_acp"> acp · deze laag bevat een agent</label></div>
+          <div class="wide" id="record-command-field" hidden><label for="record-command">ACP-commando</label><input class="t-field" id="record-command" name="command" placeholder="codex-acp"><small>Het programma dat de agent over ACP start, bijvoorbeeld codex-acp of claude-agent-acp.</small></div>
+          <div class="wide panel-actions t-actions t-actions--end"><button class="small-button t-action t-action--neutral" type="button" data-close-dialog="layer-dialog">Annuleren</button><button class="primary t-action" type="submit"><span class="material-symbols-outlined t-icon" aria-hidden="true">fiber_manual_record</span>Opname starten</button></div>
         </form>
       </dialog>
 
-      <dialog id="password-dialog">
-        <div class="dialog-head"><div><h2>Wachtwoord opnieuw instellen</h2><p id="password-dialog-copy">Geef een tijdelijk wachtwoord; alle sessies van deze gebruiker worden beëindigd.</p></div><button class="icon-button" type="button" data-close-dialog="password-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+      <dialog aria-labelledby="password-dialog-heading" class="t-dialog" id="password-dialog">
+        <div class="dialog-head t-dialog-head"><div><h2 id="password-dialog-heading">Wachtwoord opnieuw instellen</h2><p id="password-dialog-copy">Geef een tijdelijk wachtwoord; alle sessies van deze gebruiker worden beëindigd.</p></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="password-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
         <form id="password-form" class="form-grid">
-          <div class="wide"><label for="password-new">Tijdelijk wachtwoord</label><input id="password-new" name="password" type="password" minlength="12" maxlength="256" required autocomplete="new-password"><small>Minimaal 12 tekens. Geef het door en laat de gebruiker het zelf vervangen.</small></div>
-          <div class="wide panel-actions"><button class="small-button" type="button" data-close-dialog="password-dialog">Annuleren</button><button class="primary" type="submit">Wachtwoord instellen</button></div>
+          <div class="wide"><label for="password-new">Tijdelijk wachtwoord</label><input class="t-field" id="password-new" name="password" type="password" minlength="12" maxlength="256" required autocomplete="new-password"><small>Minimaal 12 tekens. Geef het door en laat de gebruiker het zelf vervangen.</small></div>
+          <div class="wide panel-actions t-actions t-actions--end"><button class="small-button t-action t-action--neutral" type="button" data-close-dialog="password-dialog">Annuleren</button><button class="primary t-action" type="submit">Wachtwoord instellen</button></div>
         </form>
       </dialog>
 
-      <dialog id="user-dialog">
-        <div class="dialog-head"><div><h2>Gebruiker toevoegen</h2><p>De nieuwe identiteit krijgt eigen credentials, accounts en snapshots.</p></div><button class="icon-button" type="button" data-close-dialog="user-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+      <dialog aria-labelledby="user-dialog-heading" class="t-dialog" id="user-dialog">
+        <div class="dialog-head t-dialog-head"><div><h2 id="user-dialog-heading">Gebruiker toevoegen</h2><p>De nieuwe identiteit krijgt eigen credentials, accounts en snapshots.</p></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="user-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
         <form id="user-form" class="form-grid">
-          <div><label for="user-username">Gebruikersnaam</label><input id="user-username" name="username" required autocomplete="off" placeholder="john"></div>
-          <div><label for="user-name">Naam</label><input id="user-name" name="display_name" required placeholder="John"></div>
+          <div><label for="user-username">Gebruikersnaam</label><input class="t-field" id="user-username" name="username" required autocomplete="off" placeholder="john"></div>
+          <div><label for="user-name">Naam</label><input class="t-field" id="user-name" name="display_name" required placeholder="John"></div>
           <div><label for="user-role">Rol</label><select id="user-role" name="role"><option value="member">member</option><option value="admin">admin</option></select></div>
-          <div><label for="user-password">Tijdelijk wachtwoord</label><input id="user-password" name="password" type="password" minlength="12" maxlength="256" required autocomplete="new-password"></div>
-          <div class="wide panel-actions"><button class="small-button" type="button" data-close-dialog="user-dialog">Annuleren</button><button class="primary" type="submit">Gebruiker maken</button></div>
+          <div><label for="user-password">Tijdelijk wachtwoord</label><input class="t-field" id="user-password" name="password" type="password" minlength="12" maxlength="256" required autocomplete="new-password"></div>
+          <div class="wide panel-actions t-actions t-actions--end"><button class="small-button t-action t-action--neutral" type="button" data-close-dialog="user-dialog">Annuleren</button><button class="primary t-action" type="submit">Gebruiker maken</button></div>
         </form>
       </dialog>
 
-      <dialog class="fullscreen-dialog" id="capsule-dialog">
+      <dialog aria-labelledby="capsule-dialog-heading" class="fullscreen-dialog t-dialog t-dialog--fullscreen" id="capsule-dialog">
         <div class="console-layout">
-          <div class="dialog-head"><div><h2>Capsule recorder</h2><p>Start een opname, werk in de shell van de capsule, en sluit af met End &amp; save. Zonder opname is dit de shell van de laag die je hebt gestart.</p></div><div class="panel-actions"><div id="terminal-status" class="terminal-status"><span class="rec-dot"></span><span>idle</span></div><button class="icon-button" type="button" data-close-dialog="capsule-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div></div>
+          <div class="dialog-head t-dialog-head"><div><h2 id="capsule-dialog-heading">Capsule recorder</h2><p>Start een opname, werk in de shell van de capsule, en sluit af met End &amp; save. Zonder opname is dit de shell van de laag die je hebt gestart.</p></div><div class="panel-actions t-actions t-actions--end"><div id="terminal-status" class="terminal-status"><span class="rec-dot"></span><span>idle</span></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="capsule-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div></div>
           <div class="console-context">
             <div class="recorder-context" id="recording-section"></div>
           </div>
           <section class="terminal-panel">
-            <div class="pty-stage" id="pty-stage"><div class="pty-empty" id="pty-empty">Geen draaiende capsule.</div></div>
-            <div class="terminal-bar"><div class="terminal-channels" id="terminal-channels"></div><button class="danger" id="terminal-interrupt" type="button" hidden>Ctrl-C</button></div>
+            <div class="pty-stage" id="pty-stage"><div class="pty-empty t-empty" id="pty-empty">Geen draaiende capsule.</div></div>
+            <div class="terminal-bar t-toolbar"><div class="terminal-channels" id="terminal-channels"></div><button class="danger t-action t-action--danger" id="terminal-interrupt" type="button" hidden>Ctrl-C</button></div>
           </section>
         </div>
       </dialog>
 
-      <dialog class="fullscreen-dialog" id="chat-dialog">
+      <dialog aria-labelledby="chat-dialog-heading" class="fullscreen-dialog t-dialog t-dialog--fullscreen" id="chat-dialog">
         <div class="chat-layout">
-          <div class="dialog-head chat-head"><div class="chat-head-main"><h2><span id="chat-title">Session</span><span class="tag branch" id="chat-role">worker</span></h2><p id="chat-context">ACP verbinden…</p></div><div class="panel-actions"><span class="tag" id="chat-usage" hidden></span><div class="chat-live" id="chat-status"><span class="dot"></span><span>verbinden…</span></div><button class="small-button" type="button" id="chat-auto-accept" title="Toestemmingsvragen van de agent automatisch toestaan"><span class="material-symbols-outlined" aria-hidden="true">bolt</span><span id="chat-auto-accept-label">Auto</span></button><button class="small-button" type="button" id="chat-retry" hidden title="Deze Session opnieuw starten"><span class="material-symbols-outlined" aria-hidden="true">replay</span>Retry</button><button class="small-button" type="button" id="chat-close-capsule" hidden title="Sluit de capsule van deze stap; de login die hij vasthoudt komt vrij. De chat kan hem later weer terughalen."><span class="material-symbols-outlined" aria-hidden="true">power_settings_new</span>Capsule sluiten</button><button class="icon-button" type="button" data-close-dialog="chat-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div></div>
+          <div class="dialog-head chat-head t-dialog-head"><div class="chat-head-main"><h2 id="chat-dialog-heading"><span id="chat-title">Session</span><span class="tag branch t-supplement t-label t-tag" id="chat-role">worker</span></h2><p id="chat-context">ACP verbinden…</p></div><div class="panel-actions t-actions t-actions--end"><span class="tag t-supplement t-label t-tag" id="chat-usage" hidden></span><div class="chat-live" id="chat-status"><span class="dot"></span><span>verbinden…</span></div><button class="small-button t-action" type="button" id="chat-auto-accept" title="Toestemmingsvragen van de agent automatisch toestaan"><span class="material-symbols-outlined t-icon" aria-hidden="true">bolt</span><span id="chat-auto-accept-label">Auto</span></button><button class="small-button t-action" type="button" id="chat-retry" hidden title="Deze Session opnieuw starten"><span class="material-symbols-outlined t-icon" aria-hidden="true">replay</span>Retry</button><button class="small-button t-action" type="button" id="chat-close-capsule" hidden title="Sluit de capsule van deze stap; de login die hij vasthoudt komt vrij. De chat kan hem later weer terughalen."><span class="material-symbols-outlined t-icon" aria-hidden="true">power_settings_new</span>Capsule sluiten</button><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="chat-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div></div>
           <div class="chat-body">
-            <section class="chat-feed" id="chat-feed" aria-live="polite"><div class="chat-feed-inner" id="chat-feed-inner"><div class="chat-welcome"><strong>ACP Session</strong>De agent wordt in de geïsoleerde Git-workspace gestart.</div></div></section>
-            <aside class="changes-pane"><div class="attachments-pane"><h3>Bijlagen</h3><div class="deliverable-chips" id="chat-deliverables"><span class="hint">Nog geen deliverables.</span></div></div><div class="changes-head"><div class="changes-title"><h3>Changes</h3><span class="diff-totals"><span class="diff-add" id="changes-added">+0</span> <span class="diff-del" id="changes-deleted">−0</span></span></div><span class="changes-branch" id="changes-branch">workspace laden…</span></div><div class="changes-list" id="changes-list"><div class="empty">Nog geen wijzigingen.</div></div></aside>
+            <section class="chat-feed" id="chat-feed" aria-live="polite"><div class="chat-feed-inner" id="chat-feed-inner"><div class="chat-welcome t-empty"><strong>ACP Session</strong>De agent wordt in de geïsoleerde Git-workspace gestart.</div></div></section>
+            <aside class="changes-pane"><div class="attachments-pane"><h3>Bijlagen</h3><div class="deliverable-chips" id="chat-deliverables"><span class="hint">Nog geen deliverables.</span></div></div><div class="changes-head"><div class="changes-title"><h3>Changes</h3><span class="diff-totals"><span class="diff-add" id="changes-added">+0</span> <span class="diff-del" id="changes-deleted">−0</span></span></div><span class="changes-branch" id="changes-branch">workspace laden…</span></div><div class="changes-list" id="changes-list"><div class="empty t-empty">Nog geen wijzigingen.</div></div></aside>
           </div>
-          <section class="diff-drawer" id="diff-drawer" hidden><div class="diff-drawer-head"><div class="diff-file-copy"><strong id="diff-file-name">File</strong><small id="diff-file-meta">Side by side op brede schermen · inline op smalle schermen</small></div><div class="panel-actions"><button class="small-button" type="button" id="diff-full-toggle" title="Het hele bestand, met de gewijzigde regels gemarkeerd"><span class="material-symbols-outlined" aria-hidden="true">article</span>Volledig</button><button class="icon-button" id="close-diff" type="button" aria-label="Diff sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div></div><div class="diff-scroll" id="diff-view"></div></section>
-          <div class="chat-viewer" id="chat-viewer" hidden><span class="material-symbols-outlined" aria-hidden="true">visibility</span><span id="chat-viewer-text">Je kijkt mee</span></div>
-          <div class="chat-composer" id="chat-composer"><form class="chat-form" id="chat-form"><textarea id="chat-input" rows="1" required placeholder="Vraag de agent iets…"></textarea><button class="danger" id="chat-cancel" type="button" hidden>Stop</button><button class="primary" id="chat-send" type="submit" disabled>Send</button><div class="chat-hint">Enter om te sturen · Shift+Enter voor een nieuwe regel · output blijft live als je dit scherm sluit</div></form></div>
+          <section class="diff-drawer t-card" id="diff-drawer" hidden><div class="diff-drawer-head"><div class="diff-file-copy"><strong id="diff-file-name">File</strong><small id="diff-file-meta">Side by side op brede schermen · inline op smalle schermen</small></div><div class="panel-actions t-actions t-actions--end"><button class="small-button t-action" type="button" id="diff-full-toggle" title="Het hele bestand, met de gewijzigde regels gemarkeerd"><span class="material-symbols-outlined t-icon" aria-hidden="true">article</span>Volledig</button><button class="icon-button t-action t-icon-button" id="close-diff" type="button" aria-label="Diff sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div></div><div class="diff-scroll" id="diff-view"></div></section>
+          <div class="chat-viewer" id="chat-viewer" hidden><span class="material-symbols-outlined t-icon" aria-hidden="true">visibility</span><span id="chat-viewer-text">Je kijkt mee</span></div>
+          <div class="chat-composer" id="chat-composer"><form class="chat-form" id="chat-form"><textarea class="t-field" id="chat-input" rows="1" required placeholder="Vraag de agent iets…"></textarea><button class="danger t-action t-action--danger" id="chat-cancel" type="button" hidden>Stop</button><button class="primary t-action" id="chat-send" type="submit" disabled>Send</button><div class="chat-hint">Enter om te sturen · Shift+Enter voor een nieuwe regel · output blijft live als je dit scherm sluit</div></form></div>
         </div>
       </dialog>
 
-      <dialog class="fullscreen-dialog" id="job-changes-dialog">
+      <dialog aria-labelledby="job-changes-dialog-heading" class="fullscreen-dialog t-dialog t-dialog--fullscreen" id="job-changes-dialog">
         <div class="job-changes-layout">
-          <div class="dialog-head chat-head"><div class="chat-head-main"><h2><span class="material-symbols-outlined" aria-hidden="true">difference</span><span id="job-changes-title">Job changes</span></h2><p id="job-changes-context">Git-vergelijking laden…</p></div><div class="panel-actions"><span class="diff-totals"><span class="diff-add" id="job-changes-added">+0</span> <span class="diff-del" id="job-changes-deleted">−0</span></span><button class="icon-button" type="button" data-close-dialog="job-changes-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div></div>
+          <div class="dialog-head chat-head t-dialog-head"><div class="chat-head-main"><h2 id="job-changes-dialog-heading"><span class="material-symbols-outlined t-icon" aria-hidden="true">difference</span><span id="job-changes-title">Job changes</span></h2><p id="job-changes-context">Git-vergelijking laden…</p></div><div class="panel-actions t-actions t-actions--end"><span class="diff-totals"><span class="diff-add" id="job-changes-added">+0</span> <span class="diff-del" id="job-changes-deleted">−0</span></span><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="job-changes-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div></div>
           <div class="job-changes-body">
-            <aside class="job-changes-files"><div class="changes-head"><div class="changes-title"><h3>Bestanden</h3><span class="tag" id="job-changes-file-count">0</span></div><span class="changes-branch" id="job-changes-branch">branch laden…</span></div><div class="changes-list" id="job-changes-list"><div class="empty">Changes laden…</div></div></aside>
-            <section class="job-changes-view"><div class="diff-drawer-head"><div class="diff-file-copy"><strong id="job-change-file-name">Selecteer een bestand</strong><small id="job-change-file-meta">Side by side op brede schermen · inline op smalle schermen</small></div><div class="panel-actions"><button class="small-button" type="button" id="job-change-full-toggle" title="Het hele bestand, met de gewijzigde regels gemarkeerd"><span class="material-symbols-outlined" aria-hidden="true">article</span>Volledig</button></div></div><div class="diff-scroll" id="job-change-diff"><div class="diff-empty">Selecteer links een bestand om de diff te bekijken.</div></div></section>
+            <aside class="job-changes-files"><div class="changes-head"><div class="changes-title"><h3>Bestanden</h3><span class="tag t-supplement t-label t-tag" id="job-changes-file-count">0</span></div><span class="changes-branch" id="job-changes-branch">branch laden…</span></div><div class="changes-list" id="job-changes-list"><div class="empty t-empty">Changes laden…</div></div></aside>
+            <section class="job-changes-view"><div class="diff-drawer-head"><div class="diff-file-copy"><strong id="job-change-file-name">Selecteer een bestand</strong><small id="job-change-file-meta">Side by side op brede schermen · inline op smalle schermen</small></div><div class="panel-actions t-actions t-actions--end"><button class="small-button t-action" type="button" id="job-change-full-toggle" title="Het hele bestand, met de gewijzigde regels gemarkeerd"><span class="material-symbols-outlined t-icon" aria-hidden="true">article</span>Volledig</button></div></div><div class="diff-scroll" id="job-change-diff"><div class="diff-empty t-empty">Selecteer links een bestand om de diff te bekijken.</div></div></section>
             <aside class="code-review-pane">
               <div class="comment-pane-head"><strong>Codecomments</strong><small id="code-review-help">Selecteer code in de laatste revisie.</small><div class="code-review-revisions" id="code-review-revisions"></div></div>
               <div class="comment-list" id="code-review-comments"><div class="comment-history-note">Open een diff en selecteer code.</div></div>
@@ -304,8 +305,8 @@
                 <div class="comment-compose-location" id="code-review-comment-location"></div>
                 <div class="comment-compose-quote" id="code-review-comment-quote"></div>
                 <label for="code-review-comment-body">Wat moet hiermee?</label>
-                <textarea id="code-review-comment-body" name="body" required maxlength="8192" placeholder="Schrijf een concrete opmerking…"></textarea>
-                <div class="panel-actions"><button class="small-button" type="button" id="cancel-code-review-comment">Annuleren</button><button class="primary" type="submit">Comment plaatsen</button></div>
+                <textarea class="t-field" id="code-review-comment-body" name="body" required maxlength="8192" placeholder="Schrijf een concrete opmerking…"></textarea>
+                <div class="panel-actions t-actions t-actions--end"><button class="small-button t-action" type="button" id="cancel-code-review-comment">Annuleren</button><button class="primary t-action" type="submit">Comment plaatsen</button></div>
               </form>
               <div class="code-review-decision" id="code-review-decision"></div>
             </aside>
@@ -313,65 +314,69 @@
         </div>
       </dialog>
 
-      <dialog class="document-dialog" id="deliverable-dialog">
-        <div class="dialog-head"><div><h2 id="deliverable-title">Deliverable</h2><p id="deliverable-meta">Session-bijlage</p></div><button class="icon-button" type="button" data-close-dialog="deliverable-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+      <dialog aria-labelledby="deliverable-title" class="document-dialog t-dialog" id="deliverable-dialog">
+        <div class="dialog-head t-dialog-head"><div><h2 id="deliverable-title">Deliverable</h2><p id="deliverable-meta">Session-bijlage</p></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="deliverable-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
         <div class="document-shell">
-          <div class="document-revision-bar"><div class="document-revisions" id="deliverable-revisions"></div><div class="document-revision-tools"><span class="document-lock" id="deliverable-lock"></span><span class="share-link" id="deliverable-share-link" hidden><small id="deliverable-share-until"></small><input id="deliverable-share-url" readonly aria-label="Deelbare link"><button class="small-button" type="button" id="deliverable-share-copy" title="Kopieer de link"><span class="material-symbols-outlined" aria-hidden="true">content_copy</span></button><button class="icon-button" type="button" id="deliverable-share-stop" title="Delen stoppen; de link werkt daarna niet meer"><span class="material-symbols-outlined" aria-hidden="true">link_off</span></button></span><button class="small-button" type="button" id="deliverable-share" title="Maak een link die iedereen een uur lang kan openen, zonder inloggen; opnieuw delen verlengt hem"><span class="material-symbols-outlined" aria-hidden="true">share</span>Delen</button><a class="small-button" id="deliverable-download" href="#" download title="Download deze revisie als Markdown"><span class="material-symbols-outlined" aria-hidden="true">download</span><span id="deliverable-download-name">download</span></a></div></div>
+          <div class="document-revision-bar"><div class="document-revisions" id="deliverable-revisions"></div><div class="document-revision-tools"><span class="document-lock" id="deliverable-lock"></span><span class="share-link" id="deliverable-share-link" hidden><small id="deliverable-share-until"></small><input class="t-field" id="deliverable-share-url" readonly aria-label="Deelbare link"><button class="small-button t-action t-icon-button" type="button" id="deliverable-share-copy" title="Kopieer de link"><span class="material-symbols-outlined t-icon" aria-hidden="true">content_copy</span></button><button class="icon-button t-action t-icon-button" type="button" id="deliverable-share-stop" title="Delen stoppen; de link werkt daarna niet meer"><span class="material-symbols-outlined t-icon" aria-hidden="true">link_off</span></button></span><button class="small-button t-action" type="button" id="deliverable-share" title="Maak een link die iedereen een uur lang kan openen, zonder inloggen; opnieuw delen verlengt hem"><span class="material-symbols-outlined t-icon" aria-hidden="true">share</span>Delen</button><a class="small-button t-action" id="deliverable-download" href="#" download title="Download deze revisie als Markdown"><span class="material-symbols-outlined t-icon" aria-hidden="true">download</span><span id="deliverable-download-name">download</span></a></div></div>
           <div class="document-layout">
-            <article class="document-body md" id="deliverable-content"></article>
+            <article class="document-body md t-prose" id="deliverable-content"></article>
             <aside class="comment-pane">
-              <div class="comment-pane-head"><strong>Comments</strong><small id="deliverable-comment-help">Selecteer tekst in de laatste revisie.</small><button class="small-button" type="button" id="deliverable-comment-whole" hidden><span class="material-symbols-outlined" aria-hidden="true">add_comment</span>Comment</button></div>
+              <div class="comment-pane-head"><strong>Comments</strong><small id="deliverable-comment-help">Selecteer tekst in de laatste revisie.</small><button class="small-button t-action" type="button" id="deliverable-comment-whole" hidden><span class="material-symbols-outlined t-icon" aria-hidden="true">add_comment</span>Comment</button></div>
               <div class="comment-list" id="deliverable-comments"></div>
               <form class="comment-compose" id="deliverable-comment-form" hidden>
                 <div class="comment-compose-quote" id="deliverable-comment-quote"></div>
                 <label for="deliverable-comment-body">Wat is hiermee?</label>
-                <textarea id="deliverable-comment-body" name="body" required maxlength="8192" placeholder="Schrijf een concrete opmerking…"></textarea>
-                <div class="panel-actions"><button class="small-button" type="button" id="cancel-deliverable-comment">Annuleren</button><button class="primary" type="submit">Comment plaatsen</button></div>
+                <textarea class="t-field" id="deliverable-comment-body" name="body" required maxlength="8192" placeholder="Schrijf een concrete opmerking…"></textarea>
+                <div class="panel-actions t-actions t-actions--end"><button class="small-button t-action" type="button" id="cancel-deliverable-comment">Annuleren</button><button class="primary t-action" type="submit">Comment plaatsen</button></div>
               </form>
             </aside>
           </div>
         </div>
       </dialog>
 
-      <dialog id="logins-dialog">
-        <div class="dialog-head"><div><h2><span class="material-symbols-outlined" aria-hidden="true">key</span> <span id="logins-title">Logins</span></h2><p id="logins-copy"></p></div><button class="icon-button" type="button" data-close-dialog="logins-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
-        <p class="connection-notice" id="logins-untracked" hidden>Deze laag houdt nog niets bij. Kies eerst in <button class="small-button" type="button" id="logins-open-contents">Inhoud</button> welke bestanden of mappen tussen Sessions bewaard blijven (bijvoorbeeld de map <code>/root/.claude/</code>); daarna kun je logins toevoegen.</p>
+      <dialog aria-labelledby="logins-dialog-heading" class="t-dialog" id="logins-dialog">
+        <div class="dialog-head t-dialog-head"><div><h2 id="logins-dialog-heading"><span class="material-symbols-outlined t-icon" aria-hidden="true">key</span> <span id="logins-title">Logins</span></h2><p id="logins-copy"></p></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="logins-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
+        <p class="connection-notice" id="logins-untracked" hidden>Deze laag houdt nog niets bij. Kies eerst in <button class="small-button t-action" type="button" id="logins-open-contents">Inhoud</button> welke bestanden of mappen tussen Sessions bewaard blijven (bijvoorbeeld de map <code>/root/.claude/</code>); daarna kun je logins toevoegen.</p>
         <p class="logins-lead" id="logins-lead"></p>
         <div class="logins-body" id="logins-body"></div>
-        <div class="dialog-foot logins-foot"><span class="hint">Elke draaiende capsule krijgt één login voor zich alleen, om de beurt; wil je er meer tegelijk, log dan nog eens in.</span><div class="panel-actions"><label class="record-check" id="logins-private-field" hidden title="Een privé-login gaat alleen naar jouw eigen capsules; zonder vinkje is de login voor iedereen die deze laag gebruikt"><input type="checkbox" id="logins-private">alleen voor mij</label><button class="small-button" type="button" data-close-dialog="logins-dialog">Sluiten</button><button class="primary" type="button" id="logins-new" title="Start een capsule op deze laag zonder login; log in via de shell en druk daarna op Bewaar login"><span class="material-symbols-outlined" aria-hidden="true">add</span>Nieuwe login</button></div></div>
+        <div class="dialog-foot logins-foot t-dialog-foot"><span class="hint">Elke draaiende capsule krijgt één login voor zich alleen, om de beurt; wil je er meer tegelijk, log dan nog eens in.</span><div class="panel-actions t-actions t-actions--end"><label class="record-check t-check-row" id="logins-private-field" hidden title="Een privé-login gaat alleen naar jouw eigen capsules; zonder vinkje is de login voor iedereen die deze laag gebruikt"><input class="t-field" type="checkbox" id="logins-private">alleen voor mij</label><button class="small-button t-action t-action--neutral" type="button" data-close-dialog="logins-dialog">Sluiten</button><button class="primary t-action" type="button" id="logins-new" title="Start een capsule op deze laag zonder login; log in via de shell en druk daarna op Bewaar login"><span class="material-symbols-outlined t-icon" aria-hidden="true">add</span>Nieuwe login</button></div></div>
       </dialog>
-      <dialog id="job-environment-dialog">
-        <div class="dialog-head"><div><h2>Omgeving van de Job</h2><p id="job-environment-copy"></p></div><button class="icon-button" type="button" data-close-dialog="job-environment-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+      <dialog aria-labelledby="job-environment-dialog-heading" class="t-dialog" id="job-environment-dialog">
+        <div class="dialog-head t-dialog-head"><div><h2 id="job-environment-dialog-heading">Omgeving van de Job</h2><p id="job-environment-copy"></p></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="job-environment-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
         <form id="job-environment-form">
           <div class="form-grid"><div class="wide"><label for="job-environment-selector">Agent/environment</label><select id="job-environment-selector" name="environment_selector"></select><small>Geldt voor stappen die hierna starten; een stap die al draait houdt wat hij kreeg. Jouw eigen credential-laag op deze agent komt er automatisch bij, anders de gedeelde (global).</small></div><div class="wide"><label for="job-environment-mcp">MCP-connecties</label><select id="job-environment-mcp" name="mcp_server_ids" multiple></select></div></div>
-          <div class="dialog-foot"><span class="hint">Branch, Template en geschiedenis blijven.</span><div class="panel-actions"><button class="small-button" type="button" data-close-dialog="job-environment-dialog">Annuleren</button><button class="primary" type="submit">Bewaren</button></div></div>
+          <div class="dialog-foot t-dialog-foot"><span class="hint">Branch, Template en geschiedenis blijven.</span><div class="panel-actions t-actions t-actions--end"><button class="small-button t-action t-action--neutral" type="button" data-close-dialog="job-environment-dialog">Annuleren</button><button class="primary t-action" type="submit">Bewaren</button></div></div>
         </form>
       </dialog>
-      <dialog id="adopt-template-dialog">
-        <div class="dialog-head"><div><h2>Nieuwe Template-revisie</h2><p id="adopt-template-copy"></p></div><button class="icon-button" type="button" data-close-dialog="adopt-template-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+      <dialog aria-labelledby="adopt-template-dialog-heading" class="t-dialog" id="adopt-template-dialog">
+        <div class="dialog-head t-dialog-head"><div><h2 id="adopt-template-dialog-heading">Nieuwe Template-revisie</h2><p id="adopt-template-copy"></p></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="adopt-template-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
         <form id="adopt-template-form">
           <div class="form-grid"><div class="wide"><label for="adopt-template-phase">Waar gaat de Job verder?</label><select id="adopt-template-phase" name="phase_id"></select><small>De huidige stap wordt afgesloten zonder oordeel en de gekozen stap start als nieuwe poging; een open vraag vervalt.</small></div></div>
-          <div class="dialog-foot"><span class="hint">De Job houdt zijn branch, deliverables en geschiedenis.</span><div class="panel-actions"><button class="small-button" type="button" data-close-dialog="adopt-template-dialog">Annuleren</button><button class="primary" type="submit">Overnemen</button></div></div>
+          <div class="dialog-foot t-dialog-foot"><span class="hint">De Job houdt zijn branch, deliverables en geschiedenis.</span><div class="panel-actions t-actions t-actions--end"><button class="small-button t-action t-action--neutral" type="button" data-close-dialog="adopt-template-dialog">Annuleren</button><button class="primary t-action" type="submit">Overnemen</button></div></div>
         </form>
       </dialog>
-      <dialog id="retry-dialog">
-        <div class="dialog-head"><div><h2 id="retry-title">Opnieuw met een verse agent</h2><p>De workspace blijft zoals hij is (gesynct naar de Session-branch); alleen het gesprek met de agent begint opnieuw.</p><p id="retry-transcript-hint" class="contents-tracked" hidden></p></div><button class="icon-button" type="button" data-close-dialog="retry-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+      <dialog aria-labelledby="retry-title" class="t-dialog" id="retry-dialog">
+        <div class="dialog-head t-dialog-head"><div><h2 id="retry-title">Opnieuw met een verse agent</h2><p>De workspace blijft zoals hij is (gesynct naar de Session-branch); alleen het gesprek met de agent begint opnieuw.</p><p id="retry-transcript-hint" class="contents-tracked" hidden></p></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="retry-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
         <form id="retry-form">
-          <div class="form-grid"><div class="wide"><label for="retry-note">Aanwijzing voor de nieuwe poging <span class="hint">optioneel; bij een fork vanaf een bericht is dit dat bericht, pas het aan</span></label><textarea id="retry-note" name="note" placeholder="Wat moet er anders? Bijvoorbeeld: formuleer de vraag aan de API anders, of sla stap X over."></textarea><small>Komt in de prompt van de nieuwe poging, samen met het feit dat de vorige poging strandde.</small></div></div>
-          <div class="dialog-foot"><span class="hint">Het werk in de workspace gaat niet verloren.</span><div class="panel-actions"><button class="small-button" type="button" data-close-dialog="retry-dialog">Annuleren</button><button class="primary" type="submit"><span class="material-symbols-outlined" aria-hidden="true">replay</span>Opnieuw starten</button></div></div>
+          <div class="form-grid"><div class="wide"><label for="retry-note">Aanwijzing voor de nieuwe poging <span class="hint">optioneel; bij een fork vanaf een bericht is dit dat bericht, pas het aan</span></label><textarea class="t-field" id="retry-note" name="note" placeholder="Wat moet er anders? Bijvoorbeeld: formuleer de vraag aan de API anders, of sla stap X over."></textarea><small>Komt in de prompt van de nieuwe poging, samen met het feit dat de vorige poging strandde.</small></div></div>
+          <div class="dialog-foot t-dialog-foot"><span class="hint">Het werk in de workspace gaat niet verloren.</span><div class="panel-actions t-actions t-actions--end"><button class="small-button t-action t-action--neutral" type="button" data-close-dialog="retry-dialog">Annuleren</button><button class="primary t-action" type="submit"><span class="material-symbols-outlined t-icon" aria-hidden="true">replay</span>Opnieuw starten</button></div></div>
         </form>
       </dialog>
-      <dialog id="reject-dialog">
-        <div class="dialog-head"><div><h2>Reject</h2><p>De reden wordt vastgelegd en aan de volgende poging meegegeven.</p></div><button class="icon-button" type="button" data-close-dialog="reject-dialog" aria-label="Sluiten"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+      <dialog aria-labelledby="reject-dialog-heading" class="t-dialog" id="reject-dialog">
+        <div class="dialog-head t-dialog-head"><div><h2 id="reject-dialog-heading">Reject</h2><p>De reden wordt vastgelegd en aan de volgende poging meegegeven.</p></div><button class="icon-button t-action t-icon-button t-action--neutral" type="button" data-close-dialog="reject-dialog" aria-label="Sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
         <form id="reject-form">
-          <div class="form-grid"><div class="wide"><label for="reject-reason">Reden</label><textarea id="reject-reason" name="reason" required placeholder="Wat heeft meer aandacht nodig?"></textarea></div></div>
-          <div class="dialog-foot"><span class="hint">Reject volgt de geconfigureerde route terug.</span><div class="panel-actions"><button class="small-button" type="button" data-close-dialog="reject-dialog">Annuleren</button><button class="danger" type="submit">REJECT</button></div></div>
+          <div class="form-grid"><div class="wide"><label for="reject-reason">Reden</label><textarea class="t-field" id="reject-reason" name="reason" required placeholder="Wat heeft meer aandacht nodig?"></textarea></div></div>
+          <div class="dialog-foot t-dialog-foot"><span class="hint">Reject volgt de geconfigureerde route terug.</span><div class="panel-actions t-actions t-actions--end"><button class="small-button t-action t-action--neutral" type="button" data-close-dialog="reject-dialog">Annuleren</button><button class="danger t-action t-action--danger" type="submit">REJECT</button></div></div>
         </form>
       </dialog>
     </main>
   </div>
 
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/markdown-1.6.1.js"></script>
+  <script src="/assets/v__SPIN_UI_VERSION__/vendor/tactile-markdown.js"></script>
+  <script src="/assets/v__SPIN_UI_VERSION__/vendor/tactile-select.js"></script>
+  <script src="/assets/v__SPIN_UI_VERSION__/vendor/tactile-dialog.js"></script>
+  <script src="/assets/v__SPIN_UI_VERSION__/vendor/tactile-combobox.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/marked-18.0.11.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/dompurify-3.4.14.min.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/xterm-5.5.0.js"></script>

@@ -1,0 +1,17 @@
+/* Tactile — shared dark palette. Product CSS only maps its domain colours. */
+:root {
+  color-scheme: dark;
+  --workspace: #1e1e1e; --panel: #242424; --card: #2a2a2a;
+  --input: #222; --toolbar: #353533; --edge: #484844;
+  --text: #f0f0f0; --muted: #b4b4ae;
+  --accent: #811b76; --accent-light: #edb8e6; --accent-ink: #fff;
+  --neutral: #4a4a4a; --green: #a0dfb2; --red: #ffaaa5; --yellow: #efcf89;
+  --danger-face: #a32424; --success-face: #25653a;
+  --gloss: linear-gradient(to bottom,#ffffff61 0%,#ffffff24 50%,#0000004d 50%,#00000038 100%);
+  --hover-gloss: linear-gradient(to bottom,#ffffff8f 0%,#ffffff47 50%,#0000000f 50%,#ffffff0a 100%);
+  --pressed-gloss: linear-gradient(to bottom,#00000038 0%,#0000004d 50%,#ffffff24 50%,#ffffff61 100%);
+  --rim: #ffffff73; --button-edge: #0009; --contour: #000c;
+  --shadow: 0 2px 3px #0009; --popup-shadow: 0 8px 24px #0007,0 2px 4px #0005;
+  --mono: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}

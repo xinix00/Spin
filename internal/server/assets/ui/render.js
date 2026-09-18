@@ -7,7 +7,7 @@ function themeColor(name) {
 const spinAssetBase = new URL('../', import.meta.url).href.replace(/\/$/, '');
 
 const esc = value => String(value ?? '').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-const icon = name => `<span class="material-symbols-outlined" aria-hidden="true">${esc(name)}</span>`;
+const icon = name => `<span class="material-symbols-outlined t-icon" aria-hidden="true">${esc(name)}</span>`;
 
 function syntaxLanguage(hint=''){
   const aliases={js:'javascript',mjs:'javascript',cjs:'javascript',jsx:'javascript',javascript:'javascript',ts:'typescript',tsx:'typescript',typescript:'typescript',go:'go',cs:'csharp','c#':'csharp',csharp:'csharp',java:'java',c:'c',h:'c',cc:'cpp',cpp:'cpp',cxx:'cpp',hpp:'cpp',rs:'rust',rust:'rust',swift:'swift',kt:'kotlin',kts:'kotlin',kotlin:'kotlin',php:'php',py:'python',python:'python',rb:'ruby',ruby:'ruby',sh:'shell',bash:'shell',zsh:'shell',shell:'shell',json:'json',jsonc:'json',yaml:'yaml',yml:'yaml',toml:'toml',html:'markup',htm:'markup',xml:'markup',svg:'markup',vue:'markup',svelte:'markup',razor:'markup',cshtml:'markup',markup:'markup',css:'css',scss:'css',sass:'css',less:'css',sql:'sql',md:'markdown',markdown:'markdown',mmd:'mermaid',mermaid:'mermaid',dockerfile:'docker',docker:'docker'};
@@ -33,8 +33,8 @@ function sourceCode(value,hint='',className='syntax-code'){
   const language=syntaxLanguage(hint);return `<pre class="${esc(className)}"><code data-language="${esc(language||'plain')}">${highlightCode(value,language)}</code></pre>`;
 }
 const markdownRenderer=new marked.Renderer(),defaultTableRenderer=markdownRenderer.table,defaultLinkRenderer=markdownRenderer.link;
-markdownRenderer.code=function({text,lang}){const language=syntaxLanguage(String(lang||'').split(/\s+/)[0]);if(language==='mermaid')return `<div class="mermaid-shell"><div class="mermaid mermaid-loading" data-mermaid-pending="true">${esc(text)}</div></div>`;return sourceCode(text,language||lang||'');};
-markdownRenderer.table=function(token){return `<div class="md-table-scroll">${defaultTableRenderer.call(this,token)}</div>`;};
+markdownRenderer.code=function({text,lang}){const language=syntaxLanguage(String(lang||'').split(/\s+/)[0]);if(language==='mermaid')return `<div class="mermaid-shell t-well"><div class="mermaid mermaid-loading" data-mermaid-pending="true">${esc(text)}</div></div>`;return sourceCode(text,language||lang||'');};
+markdownRenderer.table=function(token){return `<div class="md-table-scroll t-table-scroll">${defaultTableRenderer.call(this,token).replace('<table>','<table class="t-table">')}</div>`;};
 markdownRenderer.link=function(token){return defaultLinkRenderer.call(this,token).replace(/^<a /,'<a target="_blank" rel="noopener noreferrer" ');};
 function markdown(value){
   const source=String(value||'').replace(/^[\u200B\u200C\u200D\u200E\u200F\uFEFF]/,'');try{return DOMPurify.sanitize(marked.parse(source,{gfm:true,breaks:true,renderer:markdownRenderer}),{USE_PROFILES:{html:true},ADD_ATTR:['target','rel'],FORBID_TAGS:['style','form','button','textarea','select','option'],FORBID_ATTR:['style'],SANITIZE_NAMED_PROPS:true});}catch(error){return `<pre class="syntax-code markdown-error"><code>${esc(source)}</code></pre>`;}

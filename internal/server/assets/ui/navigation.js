@@ -5,6 +5,7 @@ function selectView(name, { prefix, buttons, attribute, pages, fallback, storage
     const selected = button.getAttribute(attribute) === name;
     button.classList.toggle('active', selected);
     button.setAttribute('aria-pressed', String(selected));
+    if (button.classList.contains('tab-button')) button.setAttribute('aria-current', selected ? 'page' : 'false');
   });
   document.querySelectorAll(pages).forEach(page => {
     page.classList.toggle('active', page.id === `${prefix}-${name}`);

@@ -20,3 +20,27 @@ all browser assets are deliberately cached forever under that versioned path.
 The full Material Symbols font is vendored from Google's
 `material-design-icons/variablefont/MaterialSymbolsOutlined[FILL,GRAD,opsz,wght].woff2`.
 SHA-256: `329f6eb34ac05b0c0b1bb172e36d004bbc57cb5112abeeccc70755afdc4f2d8d`.
+
+## Shared Tactile components
+
+`tactile-elements.css`, `tactile-select.js` and `tactile-markdown.js` are local copies from Haasstyle.
+Keep their contents identical to that design library. The stylesheet supplies
+generic supplementary materials, elevation, hover and editor theming. The
+adapter preserves textarea form values, reset, validation and dynamic cleanup.
+They are separate from the unchanged upstream Markdown 1.6.1 files.
+
+The select adapter enhances single and multiple selects with a shared flat
+listbox, keyboard controls and optional search. The original select owns form
+values, validation, reset and events, including dynamically rendered fields.
+Menu options use `t-choice`; gloss belongs to the trigger, not the menu rows.
+
+Material Symbols Outlined is the shared Tactile icon family. The Markdown
+adapter replaces toolbar SVGs without changing upstream editor code. Icon-only
+actions share `--t-icon-button-size` (36 px, 44 px on touch/small screens) and
+`--t-icon-size` (20 px), including file, label and notification close buttons.
+
+Haasstyle application components are vendored from `/Users/derek/Git/haasstyle`:
+`tactile-theme.css`, `tactile-elements.css`, `tactile-components.css`,
+`tactile-select.js`, `tactile-markdown.js`, `tactile-dialog.js`, `tactile-combobox.js`.
+The component source and its live examples live in Haasstyle. Make material
+changes there first and sync the exact files here; spin.css only owns layout.
