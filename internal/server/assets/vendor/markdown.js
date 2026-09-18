@@ -1,4 +1,4 @@
-/*! @xinix00/markdown v1.6.1 | MIT | https://github.com/xinix00/markdown */
+/*! @xinix00/markdown v1.7.0 | MIT | https://github.com/xinix00/markdown */
 (function (global) {
     'use strict';
 
@@ -23,6 +23,33 @@
         if (IMAGE_RE.test(text.trim())) return { prefix: '', content: text, type: 'image', dec: null };
         return { prefix: '', content: text, type: 'p', dec: null };
     }
+
+    const isListPrefix = (prefix) => prefix === '- ' || prefix === '* ' || /^\d+\. $/.test(prefix);
+    const isQuotePrefix = (prefix) => prefix === '> ' || prefix === '>';
+
+    // Raw markdown ↔ blocks. A list item may span several lines: in markdown the
+    // extra lines are indented under the marker ("- a\n  b"); in the editor they are
+    // one block with a line break. Everything else is one line = one block.
+    function textToBlocks(text) {
+        const blocks = [];
+        let indent = 0; // indent that continues the previous list block, 0 = none
+        for (const line of text.split('\n')) {
+            if (indent && line.length > indent && line.slice(0, indent).trim() === '' && line.trim() !== '') {
+                blocks[blocks.length - 1] += '\n' + line.slice(indent);
+                continue;
+            }
+            blocks.push(line);
+            const { prefix } = parse(line);
+            indent = isListPrefix(prefix) ? prefix.length : 0;
+        }
+        return blocks.length ? blocks : [''];
+    }
+
+    function blockToText(block) {
+        const { prefix } = parse(block);
+        return isListPrefix(prefix) ? block.replace(/\n/g, '\n' + ' '.repeat(prefix.length)) : block;
+    }
+    const blocksToText = (blocks) => blocks.map(blockToText).join('\n');
 
     // A block that is exactly one image: ![alt](src "optional title")
     const IMAGE_RE = /^!\[([^\]]*)\]\(\s*(\S+?)(?:\s+"[^"]*")?\s*\)$/;
@@ -183,8 +210,7 @@
                 this.container.className = 'md-blocks';
                 root.insertBefore(this.container, this.source);
 
-                this.blocks = (this.source.value || '').split('\n');
-                if (!this.blocks.length) this.blocks = [''];
+                this.blocks = textToBlocks(this.source.value || '');
                 this.$nextTick(() => this.render(false));
 
                 // Mouse drag across blocks selects a range. Browsers capture the mouse for the
@@ -365,7 +391,9 @@
                     else if (mod && !e.altKey && k === 'i') { e.preventDefault(); this.wrap('*'); }
                     else if (mod && e.shiftKey && (k === 's' || k === 'x')) { e.preventDefault(); this.wrap('~~'); }
                     else if (e.key === 'Enter') {
-                        if (e.shiftKey && !isHeading) return; // Shift+Enter = soft newline (not in headings)
+                        // Shift+Enter = line break inside a list item (indented continuation line in markdown).
+                        // Everywhere else it would produce the same markdown as Enter, so it just is Enter.
+                        if (e.shiftKey && isListPrefix(prefix)) return;
                         e.preventDefault(); this.split(i, ta);
                     }
                     else if (e.shiftKey && e.key === 'ArrowUp' && onFirstLine && i > 0) { e.preventDefault(); this.select(i, i - 1); }
@@ -383,9 +411,9 @@
                     if (!paste.includes('\n')) return;
                     e.preventDefault();
                     const before = ta.value.slice(0, ta.selectionStart), after = ta.value.slice(ta.selectionEnd);
-                    const lines = paste.split('\n');
-                    this.blocks[i] = prefix + before + lines[0];
-                    const rest = lines.slice(1);
+                    const nl = paste.indexOf('\n');
+                    this.blocks[i] = prefix + before + paste.slice(0, nl);
+                    const rest = textToBlocks(paste.slice(nl + 1));
                     if (after) rest[rest.length - 1] += after;
                     this.blocks.splice(i + 1, 0, ...rest);
                     this.active = i + rest.length;
@@ -423,14 +451,13 @@
             split(i, ta) {
                 const before = ta.value.slice(0, ta.selectionStart), after = ta.value.slice(ta.selectionStart);
                 const { prefix } = parse(this.blocks[i]);
-                const isBullet = prefix === '- ' || prefix === '* ';
-                const isList = isBullet || /^\d+\. /.test(prefix);
+                const continues = isListPrefix(prefix) || isQuotePrefix(prefix); // lists and quotes carry their marker to the next line
 
                 this.blocks[i] = prefix + before;
 
-                if (isList && !before.trim()) { this.blocks[i] = ''; this.blocks.splice(i + 1, 0, after); }
+                if (continues && !before.trim()) { this.blocks[i] = ''; this.blocks.splice(i + 1, 0, after); } // Enter on an empty item ends it
                 else if (/^\d+\. /.test(prefix)) this.blocks.splice(i + 1, 0, (parseInt(prefix, 10) + 1) + '. ' + after);
-                else if (isBullet) this.blocks.splice(i + 1, 0, prefix + after);
+                else if (continues) this.blocks.splice(i + 1, 0, prefix + after);
                 else this.blocks.splice(i + 1, 0, after);
 
                 this.active = i + 1; this.render(); this.sync();
@@ -470,6 +497,12 @@
                     this.prettyTable(this.active);
                 } else this.blocks[this.active] = parse(this.blocks[this.active]).prefix + ta.value;
                 ta.focus(); fit(ta); this.sync();
+            },
+
+            setPrefix(p) {
+                this.blocks[this.active] = p + parse(this.blocks[this.active]).content;
+                this.render(false); this.sync();
+                this.focus(this.active, 'end');
             },
 
             // --- Tables ------------------------------------------------------
@@ -627,6 +660,22 @@
                 this.focus(i, { cell: c - 1, at: 'end' });
             },
 
+            // After a block edit (selection deleted / replaced) every table must still be
+            // header + separator + at least one data row. A leading separator without a
+            // header is dropped, a missing separator is inserted, a missing data row is added.
+            repairTables() {
+                for (let i = 0; i < this.blocks.length; i++) {
+                    if (parse(this.blocks[i]).type !== 'table') continue;
+                    while (i < this.blocks.length && parse(this.blocks[i]).type === 'table' && isSepRow(this.blocks[i])) this.blocks.splice(i, 1);
+                    if (i >= this.blocks.length || parse(this.blocks[i]).type !== 'table') continue;
+                    const cols = Math.max(1, parseCells(this.blocks[i]).length);
+                    if (!isSepRow(this.blocks[i + 1] || '')) this.blocks.splice(i + 1, 0, '| ' + Array(cols).fill('---').join(' | ') + ' |');
+                    if (parse(this.blocks[i + 2] || '').type !== 'table') this.blocks.splice(i + 2, 0, '| ' + Array(cols).fill('   ').join(' | ') + ' |');
+                    this.prettyTable(i);
+                    i = this.tableRange(i)[1];
+                }
+            },
+
             // Backspace in an empty row removes it — never the header or the first data row
             removeTableRow(i) {
                 if (i <= this.firstDataRow(i)) return;
@@ -692,7 +741,7 @@
 
             selectedText() {
                 const range = this.selRange();
-                return range ? this.blocks.slice(range[0], range[1] + 1).join('\n') : '';
+                return range ? blocksToText(this.blocks.slice(range[0], range[1] + 1)) : '';
             },
 
             clearSelection() {
@@ -726,9 +775,10 @@
             replaceSelection(text) {
                 const range = this.selRange();
                 if (!range) return;
-                const lines = text.split('\n');
+                const lines = textToBlocks(text);
                 this.blocks.splice(range[0], range[1] - range[0] + 1, ...lines);
                 this.active = range[0] + lines.length - 1;
+                this.repairTables();
                 this.clearSelection(); this.render(false); this.sync();
                 this.focus(this.active, 'end');
             },
@@ -740,10 +790,10 @@
             rows() { return [...this.container.querySelectorAll('.md-block')]; },
             ta(i) { const r = this.rows()[i]; return r ? (r.querySelector('.md-input:focus') || r.querySelector('.md-input')) : undefined; },
             sync() {
-                this.source.value = this.blocks.join('\n');
+                this.source.value = blocksToText(this.blocks);
                 this.source.dispatchEvent(new Event('input', { bubbles: true }));
             },
-            value() { return this.blocks.join('\n'); },
+            value() { return blocksToText(this.blocks); },
         };
     }
 
@@ -762,5 +812,5 @@
     });
 
     global.markdownEditor = component;
-    global.MarkdownEditor = { component, mount, parse, parseImage, formatTable, labels: LABELS, version: '1.6.1' };
+    global.MarkdownEditor = { component, mount, parse, parseImage, formatTable, textToBlocks, blocksToText, labels: LABELS, version: '1.7.0' };
 })(window);
