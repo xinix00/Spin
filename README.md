@@ -371,6 +371,15 @@ componentafwerking niet overschrijven. De zelfstandige
 referentiegalerij en ontwerpregels staan in het naastliggende Haasstyle-project;
 Spin heeft daar geen runtime-afhankelijkheid van.
 
+Elk bestand in de interface draagt een icoon van zijn soort, in elke lijst
+dezelfde: de inhoudsboom, de gewijzigde bestanden, de bijlagen en de
+deliverables. Markdown heeft een eigen tekstopmaakicoon. Markdown-velden (de
+goal van een Job, de instructie van een stap) worden bewerkt met de
+blok-editor uit `vendor/markdown-1.6.1.js`: elke regel is een eigen textarea,
+het voorvoegsel bepaalt de opmaak en het veld blijft gewone markdown. Onder
+760 px groeien knoppen, velden, rijen en chips naar een comfortabele
+aanraakmaat; invoervelden staan daar op 16 px, anders zoomt iOS bij focus in.
+
 Verhoog `frontendAssetVersion` in `internal/server/ui.go` bij frontendwijzigingen,
 omdat de versiegebonden assets immutable worden gecachet.
 

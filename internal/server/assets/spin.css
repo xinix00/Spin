@@ -6275,3 +6275,242 @@
   .inline-option { padding: 6px 0; margin: 0; }
   .section-inset { padding: 10px 0; }
 }
+
+/* Tactile for the rest of the interface: flat surfaces, rows, chips, tables,
+   menus and progress. Glossy stays with the controls; everything here is
+   material, hover and rhythm. */
+@layer tactile {
+  :root {
+    /* A flat element does not gloss when you point at it: it takes a light
+       theme tint and one sharp highlight line. */
+    --flat-hover-surface: color-mix(in srgb, var(--accent-soft) 70%, transparent);
+    --flat-hover-rim: inset 0 1px 0 #ffffff1f;
+    --sunken: inset 0 1px 0 #00000059, inset 0 0 0 1px #ffffff08;
+    --card-rim: inset 0 1px 0 #ffffff12;
+  }
+
+  /* Menus and flat rows: the left navigation, tabs, tree rows, list rows. */
+  .tab-button {
+    position: relative;
+    transition: background-color 90ms, color 90ms;
+  }
+  .tab-button:hover:not(.active) {
+    background: var(--flat-hover-surface);
+    box-shadow: var(--flat-hover-rim);
+    color: var(--text);
+  }
+  .tab-button:hover:not(.active) .nav-icon {
+    border-color: var(--accent-border);
+    color: var(--accent-ink);
+  }
+  .tab-button.active { box-shadow: inset 2px 0 0 var(--accent-ink), var(--card-rim); }
+  .nav-icon { transition: border-color 90ms, color 90ms, background-color 90ms; }
+
+  :is(.tree-row, .login-row, .rule-row, .comment-card, .session, .record-card, .job-repository-row, .login-file) {
+    transition: background-color 90ms, border-color 90ms, box-shadow 90ms;
+  }
+  .contents-tree .tree-row:hover,
+  .code-tree .tree-row:hover,
+  .login-file:hover {
+    background: var(--flat-hover-surface);
+    box-shadow: var(--flat-hover-rim);
+  }
+  .comment-card:hover, .revision-button:hover, .channel:hover {
+    background: var(--flat-hover-surface);
+    border-color: var(--accent-border);
+    box-shadow: var(--flat-hover-rim);
+  }
+  .comment-card.active { border-color: var(--accent-border); background: var(--selection); }
+
+  /* Tables: a toolbar header, flat rows, tabular numbers. */
+  :is(.contents-table, .restore-points table, .md table) {
+    font-variant-numeric: tabular-nums;
+  }
+  .contents-table th {
+    background: var(--toolbar);
+    box-shadow: inset 0 1px 0 #ffffff12, inset 0 -1px 0 var(--line);
+    border-bottom: 0;
+  }
+  .contents-table tbody tr { transition: background-color 90ms; }
+  .contents-table tbody tr:hover {
+    background: var(--flat-hover-surface);
+  }
+
+  /* Chips, tags and routes: flat pills with one highlight line. */
+  :is(.tag, .decision-route, .deliverable-chip, .attachment-chip, .recipe-part) {
+    box-shadow: var(--card-rim);
+    font-variant-numeric: tabular-nums;
+  }
+  :is(.deliverable-chip, .attachment-chip):hover {
+    border-color: var(--accent-border);
+    background: var(--flat-hover-surface);
+  }
+  .tag.capability, .tag.branch { letter-spacing: .02em; }
+
+  /* Sunken surfaces: input-like areas that hold content rather than controls. */
+  :is(.terminal, .pty-stage, .code-listing, .diff-scroll, .contents-body, .logins-body, .restore-points) {
+    box-shadow: var(--sunken);
+  }
+  .seal-track, .storage-bar {
+    background: var(--input);
+    box-shadow: var(--sunken);
+  }
+  .seal-fill, .storage-fill {
+    background-color: var(--accent);
+    background-image: var(--control-gloss);
+    box-shadow: inset 0 0 0 1px #ffffff26;
+  }
+
+  /* Cards and panels carry one rim so they read as material, not as outline. */
+  :is(.app-panel, .comment-card, .chat-bubble, .tool-card, .question-card, .workflow-result, .login-row, .rule-row, .repo-card, .git-account-card, .login-folder) {
+    box-shadow: var(--card-rim);
+  }
+  .message { box-shadow: var(--popup-shadow), var(--card-rim); }
+
+  /* Empty states and hints sit quietly under the material. */
+  .empty { color: var(--muted); }
+  .diff-empty, .chat-welcome { color: var(--muted); }
+
+  /* Scrollbars follow the surfaces they scroll. */
+  * { scrollbar-color: var(--line-strong) transparent; scrollbar-width: thin; }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 99px;
+    background-clip: padding-box;
+    background-color: var(--line-strong);
+  }
+  ::-webkit-scrollbar-thumb:hover { background-color: var(--muted); }
+}
+
+/* Dropdowns: a form select is a sunken field, a select in a toolbar or a
+   dialog head is a menu trigger and carries the button recipe. The list a
+   browser draws stays dark either way. */
+@layer tactile {
+  select:not([multiple]) {
+    background-image:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23e0e0e0' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E");
+    cursor: pointer;
+    transition: border-color 90ms, box-shadow 90ms, background-color 90ms;
+  }
+  select:not([multiple]):hover:not(:disabled) {
+    border-color: var(--accent-border);
+    background-color: color-mix(in srgb, var(--input) 82%, var(--accent-soft));
+  }
+  select:not([multiple]):focus { box-shadow: var(--sunken); }
+  select option, select optgroup {
+    background: var(--raised);
+    color: var(--text);
+  }
+  select option:checked { background: var(--selection); color: var(--accent-ink); }
+  select[multiple] option:hover { background: var(--flat-hover-surface); }
+  select optgroup { color: var(--muted); font-style: normal; font-weight: 650; }
+
+  /* A select that sits among the buttons of a toolbar is one of them. */
+  :is(.panel-actions, .dialog-head, .document-revision-tools, .job-head-actions, .record-presets, .terminal-bar) > select:not([multiple]) {
+    position: relative;
+    height: 36px;
+    padding: 0 30px 0 11px;
+    border: 1px solid var(--control-edge);
+    border-radius: var(--control-radius);
+    background-color: var(--control-neutral);
+    background-image:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E"),
+      var(--control-gloss);
+    background-repeat: no-repeat, repeat;
+    background-position: right 9px center, 0 0;
+    color: #fff;
+    box-shadow: var(--control-shadow);
+    text-shadow: -1px 0 0 var(--control-contour), 1px 0 0 var(--control-contour), 0 -1px 0 var(--control-contour), 0 1px 0 var(--control-contour);
+    font-weight: 550;
+  }
+  :is(.panel-actions, .dialog-head, .document-revision-tools, .job-head-actions, .record-presets, .terminal-bar) > select:not([multiple]):hover:not(:disabled) {
+    background-image:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E"),
+      var(--control-hover);
+  }
+}
+
+/* The block markdown editor (vendor/markdown-1.6.1) wears the same material as
+   the fields around it: a sunken surface, a toolbar of flat controls and the
+   theme colour for its accents. */
+@layer tactile {
+  .md-editor {
+    --md-accent: var(--accent-ink);
+    --md-fg: var(--text);
+    --md-muted: var(--muted);
+    --md-faint: var(--line-strong);
+    --md-border: var(--line);
+    --md-divider: #ffffff14;
+    --md-soft: var(--toolbar);
+    --md-hover: var(--flat-hover-surface);
+    --md-radius: var(--control-radius);
+    --md-font-size: 13px;
+    background: var(--input);
+    box-shadow: var(--sunken);
+  }
+  .md-editor:focus-within { border-color: var(--focus); }
+  .md-editor textarea {
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    color: var(--text);
+    border-radius: 0;
+  }
+  .md-editor textarea:focus { box-shadow: none; }
+  .md-toolbar { box-shadow: inset 0 1px 0 #ffffff12; }
+  .md-toolbar button {
+    min-height: 26px;
+    border-radius: 5px;
+    transition: background-color 90ms, color 90ms;
+  }
+  .md-toolbar button:hover { box-shadow: var(--flat-hover-rim); }
+  .md-editor :is(.md-code, .md-quote) { font-family: var(--mono); }
+}
+
+/* Every file in the interface carries an icon of its kind, and nothing you
+   have to aim for stays small on a phone: controls, rows and chips grow to a
+   comfortable touch size while the desktop keeps its density. */
+@layer tactile {
+  :is(.change-file, .tree-row, .login-file) .tree-icon,
+  :is(.deliverable-chip, .attachment-chip) .material-symbols-outlined {
+    flex: 0 0 auto;
+    color: var(--muted);
+    font-size: 15px;
+  }
+  .change-file { grid-template-columns: auto auto minmax(0, 1fr) auto; }
+  :is(.deliverable-chip, .attachment-chip) {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .deliverable-chip:hover .material-symbols-outlined,
+  .attachment-chip:hover .material-symbols-outlined { color: var(--accent-ink); }
+
+  @media (max-width: 760px) {
+    :is(.primary, .small-button, .quick, .danger, .icon-button, .segment-button, .job-state-button) {
+      min-height: 42px;
+      padding-inline: 13px;
+      font-size: 13.5px;
+    }
+    .icon-button { min-width: 42px; }
+    :is(.primary, .small-button, .quick, .danger, .icon-button) .material-symbols-outlined { font-size: 19px; }
+    :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"]), textarea, select) {
+      min-height: 42px;
+      font-size: 16px; /* a smaller size makes iOS zoom the page on focus */
+    }
+    input[type="checkbox"], input[type="radio"] { width: 20px; height: 20px; }
+    :is(.tree-row, .change-file, .login-file, .rule-row, .binding, .comment-card, .revision-button, .channel) {
+      min-height: 40px;
+    }
+    :is(.tag, .decision-route, .deliverable-chip, .attachment-chip, .chip) {
+      min-height: 30px;
+      padding: 5px 10px;
+      font-size: 11.5px;
+    }
+    .contents-tree input[type="checkbox"] { margin-right: 6px; }
+    .tree-size, .change-count { font-size: 10.5px; }
+    .md-toolbar button { min-height: 36px; min-width: 36px; }
+  }
+}

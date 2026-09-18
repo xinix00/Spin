@@ -51,6 +51,8 @@ func TestDashboardServesPinnedRichMarkdownAssets(t *testing.T) {
 		assetPrefix + "ui/navigation.js",
 		assetPrefix + "vendor/material-symbols-outlined.css",
 		assetPrefix + "vendor/material-symbols-outlined.woff2",
+		assetPrefix + "vendor/markdown-1.6.1.js",
+		assetPrefix + "vendor/markdown-1.6.1.css",
 		assetPrefix + "vendor/marked-18.0.11.js",
 		assetPrefix + "vendor/dompurify-3.4.14.min.js",
 		assetPrefix + "vendor/xterm-5.5.0.js",

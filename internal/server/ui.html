@@ -7,6 +7,7 @@
   <link rel="icon" type="image/svg+xml" href="/assets/v__SPIN_UI_VERSION__/spin-mark.svg">
   <link href="/assets/v__SPIN_UI_VERSION__/vendor/material-symbols-outlined.css" rel="preload" as="style">
   <link href="/assets/v__SPIN_UI_VERSION__/vendor/xterm-5.5.0.css" rel="preload" as="style">
+  <link href="/assets/v__SPIN_UI_VERSION__/vendor/markdown-1.6.1.css" rel="stylesheet">
   <link href="/assets/v__SPIN_UI_VERSION__/spin.css" rel="stylesheet">
 </head>
 <body>
@@ -163,7 +164,7 @@
             <div><label for="job-reference">Referentie</label><input id="job-reference" name="reference" placeholder="#1234 · ticketnummer, optioneel" pattern="[A-Za-z0-9#._-]{1,64}" title="Letters, cijfers, #, punt, streepje en underscore; wordt de branch-namespace jobs/&lt;referentie&gt;/…" autocomplete="off"></div>
             <div><label for="job-template">Template</label><select id="job-template" name="template_id" required><option value="">maak eerst een Template</option></select></div>
             <div class="wide"><label>Repositories</label><div class="job-repositories" id="job-repositories"></div><button class="small-button" type="button" id="job-repository-add"><span class="material-symbols-outlined" aria-hidden="true">add</span>Repository</button></div>
-            <div class="wide"><label for="objective">Goal</label><textarea id="objective" name="objective" required placeholder="Werkende single switch voor darkmode"></textarea><small id="objective-hint">Markdown mag. Bij Eerst brainstormen is dit de concept goal waar het gesprek over gaat.</small></div>
+            <div class="wide"><label for="objective">Goal</label><textarea id="objective" name="objective" data-markdown required placeholder="Werkende single switch voor darkmode"></textarea><small id="objective-hint">Markdown mag. Bij Eerst brainstormen is dit de concept goal waar het gesprek over gaat.</small></div>
             <div class="wide"><label for="job-attachments">Bijlagen</label><div class="dropzone" id="job-dropzone" tabindex="0" role="button" aria-label="Bijlagen kiezen of hierheen slepen"><span class="material-symbols-outlined" aria-hidden="true">upload_file</span><span>Sleep PDF's of afbeeldingen hierheen, of <u>kies bestanden</u></span><input id="job-attachments" name="attachments" type="file" multiple accept="application/pdf,image/png,image/jpeg,image/webp,image/gif" hidden></div><small>PDF of afbeelding · maximaal 8 bestanden, 15 MiB per bestand en 40 MiB totaal. Deze komen read-only buiten Git in iedere Session. Op een Job-kaart kun je ook bestanden laten vallen.</small><div class="attachment-selection" id="job-attachment-selection"></div></div>
             <input id="job-owner" name="owner" type="hidden" value="derek">
             <input id="job-forked-from" name="forked_from_job_id" type="hidden">
@@ -370,6 +371,7 @@
     </main>
   </div>
 
+  <script src="/assets/v__SPIN_UI_VERSION__/vendor/markdown-1.6.1.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/marked-18.0.11.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/dompurify-3.4.14.min.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/xterm-5.5.0.js"></script>
