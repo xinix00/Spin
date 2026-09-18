@@ -58,8 +58,6 @@ func TestDashboardServesPinnedRichMarkdownAssets(t *testing.T) {
 		assetPrefix + "vendor/tactile-dialog.js",
 		assetPrefix + "vendor/tactile-combobox.js",
 		assetPrefix + "vendor/tactile-markdown.js",
-		assetPrefix + "vendor/markdown.js",
-		assetPrefix + "vendor/markdown.css",
 		assetPrefix + "vendor/marked-18.0.11.js",
 		assetPrefix + "vendor/dompurify-3.4.14.min.js",
 		assetPrefix + "vendor/xterm-5.5.0.js",

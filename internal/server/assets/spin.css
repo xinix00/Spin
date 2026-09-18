@@ -4,7 +4,6 @@
 @layer vendor, theme, foundation, elements, components, application;
 @import url("vendor/material-symbols-outlined.css") layer(vendor);
 @import url("vendor/xterm-5.5.0.css") layer(vendor);
-@import url("vendor/markdown.css") layer(vendor);
 @import url("vendor/tactile-theme.css") layer(theme);
 @import url("vendor/tactile-elements.css") layer(elements);
 @import url("vendor/tactile-components.css") layer(components);
