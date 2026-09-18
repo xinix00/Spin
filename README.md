@@ -349,6 +349,31 @@ Beide servervarianten, tenantdetectie, status en Backup & restore gebruiken rech
 
 Bij runners buiten het lokale Compose-netwerk moet `SPIN_INTERNAL_URL` op de server een voor de agentcontainers bereikbare HTTPS-URL zijn (meestal dezelfde reverse-proxy-URL als `SPIN_PUBLIC_URL`). De standaard `http://server:8080` is alleen geldig voor de meegeleverde lokale Compose-runner; workflow-MCP gebruikt deze URL vanuit de Session-container.
 
+## Interface en stylesheet
+
+De interface gebruikt Tactile: donkere neutrale oppervlakken, knoppen in de
+accentkleur, een harde gradientovergang op 50% en een witte binnenrand van 1 px
+met een verloop naar transparant. Alleen slagschaduwen zijn zacht. Segmented
+controls hebben een ingedrukte selectie en veranderen niet bij hover.
+
+`internal/server/assets/spin.css` is de centrale applicatiestylesheet:
+
+- `vendor`: imports van de ongewijzigde iconen- en terminalbibliotheken.
+- `foundation`: kleuren, maten, glans, schaduwen en syntax-/terminalkleuren.
+- `application`: componentindeling, inhoud en responsive gedrag.
+- `tactile`: gedeelde materialen en interactietoestanden voor bediening.
+
+Wijzig themakleuren in de tokens bovenaan, niet in losse componentregels.
+Terminal en Mermaid lezen hun palet ook uit deze tokens. De vendorgebonden
+font- en xterm-stylesheets blijven bij hun bibliotheken en worden vanuit
+`spin.css` in de onderste CSS-laag geladen, zodat hun defaults de
+componentafwerking niet overschrijven. De zelfstandige
+referentiegalerij en ontwerpregels staan in het naastliggende Haasstyle-project;
+Spin heeft daar geen runtime-afhankelijkheid van.
+
+Verhoog `frontendAssetVersion` in `internal/server/ui.go` bij frontendwijzigingen,
+omdat de versiegebonden assets immutable worden gecachet.
+
 ## Verifiëren
 
 ```sh

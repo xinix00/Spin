@@ -1,3 +1,8 @@
+// Canvas and SVG renderers read the same palette as the CSS components.
+function themeColor(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
 // Shared rich-text rendering for chat, deliverables and source views.
 const spinAssetBase = new URL('../', import.meta.url).href.replace(/\/$/, '');
 
@@ -36,11 +41,11 @@ function markdown(value){
 }
 let mermaidLoader=null;
 function loadMermaid(){
-  if(window.mermaid)return Promise.resolve(window.mermaid);if(mermaidLoader)return mermaidLoader;mermaidLoader=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src=`${spinAssetBase}/vendor/mermaid-11.17.2.min.js`;script.onload=()=>{if(!window.mermaid){reject(new Error('Mermaid library ontbreekt'));return;}window.mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:'dark',suppressErrorRendering:true,themeVariables:{background:'#101419',primaryColor:'#1a2735',primaryTextColor:'#e9edf1',primaryBorderColor:'#46525f',lineColor:'#82a8d2',secondaryColor:'#202730',tertiaryColor:'#2a2217',fontFamily:'Inter, ui-sans-serif, system-ui, sans-serif'}});resolve(window.mermaid);};script.onerror=()=>reject(new Error('Mermaid kon niet worden geladen'));document.head.appendChild(script);});return mermaidLoader;
+  if(window.mermaid)return Promise.resolve(window.mermaid);if(mermaidLoader)return mermaidLoader;mermaidLoader=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src=`${spinAssetBase}/vendor/mermaid-11.17.2.min.js`;script.onload=()=>{if(!window.mermaid){reject(new Error('Mermaid library ontbreekt'));return;}window.mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:'dark',suppressErrorRendering:true,themeVariables:{background:themeColor('--input'),primaryColor:themeColor('--accent-soft'),primaryTextColor:themeColor('--text'),primaryBorderColor:themeColor('--accent-border'),lineColor:themeColor('--accent-ink'),secondaryColor:themeColor('--soft'),tertiaryColor:themeColor('--warning-surface'),fontFamily:themeColor('--sans')}});resolve(window.mermaid);};script.onerror=()=>reject(new Error('Mermaid kon niet worden geladen'));document.head.appendChild(script);});return mermaidLoader;
 }
 async function renderMermaid(root){
   const nodes=[...(root?.matches?.('.mermaid[data-mermaid-pending]')?[root]:[]),...(root?.querySelectorAll?.('.mermaid[data-mermaid-pending]')||[])];if(!nodes.length)return;nodes.forEach(node=>node.dataset.mermaidPending='rendering');try{const engine=await loadMermaid();for(const node of nodes){if(!node.isConnected)continue;const source=node.textContent||'';try{await engine.run({nodes:[node],suppressErrors:true});if(!node.querySelector('svg'))throw new Error('ongeldige Mermaid-syntax');node.classList.remove('mermaid-loading');node.removeAttribute('data-mermaid-pending');}catch(error){node.className='mermaid-error';node.removeAttribute('data-mermaid-pending');node.textContent=`Diagram kon niet worden gerenderd: ${error.message||error}\n\n${source}`;}}}catch(error){nodes.forEach(node=>{if(!node.isConnected)return;node.className='mermaid-error';node.removeAttribute('data-mermaid-pending');node.textContent=error.message||String(error);});}
 }
 function setMarkdown(root,value){root.innerHTML=markdown(value);return renderMermaid(root);}
 
-export { esc, icon, syntaxLanguage, highlightCode, sourceCode, markdown, renderMermaid, setMarkdown };
+export { themeColor, esc, icon, syntaxLanguage, highlightCode, sourceCode, markdown, renderMermaid, setMarkdown };
