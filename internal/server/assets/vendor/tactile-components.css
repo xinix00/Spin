@@ -10,6 +10,7 @@
 .t-action--neutral { --t-button-face: var(--neutral, #4a4a4a); }
 .t-action--danger { --t-button-face: var(--danger-face, #a32424); }
 .t-action--success { --t-button-face: var(--success-face, #25653a); }
+.t-action--warning { --t-button-face: var(--warning-face, #eaa800); color: #3a2a00; text-shadow: -1px 0 0 #ffffffad, 1px 0 0 #ffffffad, 0 -1px 0 #ffffffad, 0 1px 0 #ffffffad; }
 .t-action:is(.active, [aria-expanded="true"]):not(:disabled) {
   background-image: var(--pressed-gloss); box-shadow: inset 0 1px 0 #0009;
 }

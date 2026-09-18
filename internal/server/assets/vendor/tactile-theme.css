@@ -6,7 +6,7 @@
   --text: #f0f0f0; --muted: #b4b4ae;
   --accent: #811b76; --accent-light: #edb8e6; --accent-ink: #fff;
   --neutral: #4a4a4a; --green: #a0dfb2; --red: #ffaaa5; --yellow: #efcf89;
-  --danger-face: #a32424; --success-face: #25653a;
+  --danger-face: #a32424; --success-face: #25653a; --warning-face: #eaa800;
   --gloss: linear-gradient(to bottom,#ffffff61 0%,#ffffff24 50%,#0000004d 50%,#00000038 100%);
   --hover-gloss: linear-gradient(to bottom,#ffffff8f 0%,#ffffff47 50%,#0000000f 50%,#ffffff0a 100%);
   --pressed-gloss: linear-gradient(to bottom,#00000038 0%,#0000004d 50%,#ffffff24 50%,#ffffff61 100%);
