@@ -117,8 +117,8 @@
   .jobs,.templates,.artifacts,.mcp-list,.git-list,.git-account-list { display: grid; gap: 16px; padding: 0 20px 20px; min-width: 0; }
   .job,.template-card,.artifact,.mcp-card,.git-account-card,.record-card { padding: 20px; min-width: 0; }
   .job.closed,.mcp-card.archived { opacity: .65; }
-  .job-head,.artifact,.mcp-card,.git-account-card,.session { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
-  .job-head > :first-child,.artifact > :first-child,.mcp-card > :first-child,.git-account-card > :first-child { flex: 1; min-width: 0; }
+  .job-head,.mcp-card,.git-account-card,.session { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 20px; }
+  .job-head > :first-child,.mcp-card > :first-child,.git-account-card > :first-child { flex: 1 1 320px; min-width: 0; }
   .job-head-actions { justify-content: flex-end; flex: 0 1 auto; }
   .job h3,.template-card h3,.artifact-title { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.5; }
   .job-title-row,.artifact-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
@@ -130,6 +130,7 @@
   .job-detail > summary { color: var(--muted); }
   .meta,.record-enables,.record-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; min-width: 0; }
   .meta:empty { display: none; }
+  .assignee-select.t-select { flex: 0 1 auto; width: 192px; max-width: 100%; }
   .sessions { display: grid; gap: 12px; margin-top: 14px; }
   .session { padding: 14px; }
   .session small,.artifact small,.mcp-card small,.repo-card small,.git-account-card small,.record-card small { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }

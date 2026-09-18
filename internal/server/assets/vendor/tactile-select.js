@@ -23,6 +23,9 @@
       trigger.setAttribute('role', 'combobox'); trigger.setAttribute('aria-haspopup', 'listbox');
       trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-controls', `${uid}-list`);
       const caption = document.createElement('span'); caption.className = 't-select-caption';
+      const captionIcon = document.createElement('span'); captionIcon.className = 'material-symbols-outlined t-icon t-select-icon'; captionIcon.setAttribute('aria-hidden', 'true');
+      const captionText = document.createElement('span'); captionText.className = 't-select-text';
+      caption.append(captionIcon, captionText);
       const arrow = document.createElement('span'); arrow.className = 't-select-arrow t-action t-icon-button'; arrow.setAttribute('aria-hidden', 'true');
       const symbol = document.createElement('span'); symbol.className = 'material-symbols-outlined t-icon'; symbol.textContent = 'expand_more';
       arrow.append(symbol);
@@ -91,8 +94,10 @@
         trigger.setAttribute('aria-describedby', [source.getAttribute('aria-describedby'), error.id].filter(Boolean).join(' '));
         const selected = opts.filter(option => option.selected);
         const placeholder = source.dataset.placeholder || (source.multiple ? 'Kies opties…' : 'Maak een keuze…');
-        caption.textContent = selected.length ? selected.map(option => option.label).join(', ') : placeholder;
-        trigger.setAttribute('aria-label', `${name}: ${caption.textContent}`);
+        captionIcon.textContent = source.dataset.icon || '';
+        captionIcon.hidden = !source.dataset.icon;
+        captionText.textContent = selected.length ? selected.map(option => option.label).join(', ') : placeholder;
+        trigger.setAttribute('aria-label', `${name}: ${captionText.textContent}`);
         trigger.dataset.placeholder = String(!selected.length || (!source.multiple && selected[0]?.value === ''));
         list.setAttribute('aria-label', name); list.setAttribute('aria-multiselectable', String(source.multiple));
         search.hidden = !source.hasAttribute('data-search') && opts.length < 9;

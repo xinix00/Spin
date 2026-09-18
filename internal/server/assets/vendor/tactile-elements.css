@@ -315,8 +315,8 @@
 .t-panel-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-inline-start: auto; }
 .t-panel-body { display: grid; gap: 12px; padding: 0 20px 20px; min-width: 0; }
 .t-record {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 20px;
   padding: 16px;
@@ -325,7 +325,11 @@
   background: var(--t-surface);
   box-shadow: var(--t-layer-shadow);
 }
-.t-record-content { min-width: 0; overflow-wrap: anywhere; }
+.t-record-content { flex: 1 1 320px; min-width: 0; overflow-wrap: anywhere; }
+.t-record-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; max-width: 100%; }
+.t-record--stacked { flex-direction: column; align-items: stretch; }
+.t-record--stacked > .t-record-content { flex: none; }
+.t-record--stacked > .t-record-actions { justify-content: flex-start; margin-inline-start: 0; }
 .t-record-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
 .t-record-title :is(h3, h4) { margin: 0; font-size: 14px; line-height: 1.5; }
 .t-record-details { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; row-gap: 4px; margin: 0; font-size: 12px; line-height: 1.6; }
@@ -454,7 +458,9 @@
 }
 .t-select-caption {
   box-sizing: border-box;
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex: 1 1 0;
   min-width: 0;
   height: var(--t-field-height);
@@ -468,6 +474,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.t-select-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-select-icon { flex: 0 0 var(--t-icon-size, 20px); color: var(--muted); }
+.t-select-icon[hidden] { display: none; }
 .t-select-trigger:hover:not(:disabled) .t-select-caption { border-color: var(--t-accent); }
 .t-select-trigger:focus-visible { outline: none; }
 .t-select-trigger:is(:focus-visible, [aria-expanded="true"]) .t-select-caption { border-color: var(--t-accent); outline: 1px solid var(--t-accent); outline-offset: -1px; }
