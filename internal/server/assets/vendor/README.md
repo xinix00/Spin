@@ -11,11 +11,10 @@ These files are pinned and served by Spin itself; the UI does not load a CDN.
 | [xterm.js](https://xtermjs.org/) | 5.5.0 | `xterm-5.5.0.js` + `xterm-5.5.0.css` | MIT (`LICENSE.xterm`) |
 | [@xterm/addon-fit](https://github.com/xtermjs/xterm.js) | 0.10.0 | `xterm-addon-fit-0.10.0.js` | MIT (`LICENSE.xterm`) |
 
-The Markdown editor is Spin's own library and is not vendored: `ui.html` loads
-it from jsDelivr at `gh/xinix00/markdown@latest`, so the newest release is in
-the interface without a copy here. The page's Content-Security-Policy admits
-`cdn.jsdelivr.net` for that one script and stylesheet. Everything else below is
-served by Spin itself and stays pinned.
+The Markdown editor uses the same pinned `@xinix00/markdown` 1.6.1 CSS and JS
+as the Haasstyle gallery, served locally with its MIT license (`LICENSE.markdown`).
+Its CSS belongs in the first cascade layer so shared Tactile materials control
+the final appearance.
 
 Update deliberately: verify the upstream version and license, replace the
 versioned file, then update the reference in `ui.html` or `assets/spin.js` and
@@ -49,3 +48,9 @@ Haasstyle application components are vendored from `/Users/derek/Git/haasstyle`:
 `tactile-select.js`, `tactile-markdown.js`, `tactile-dialog.js`, `tactile-combobox.js`.
 The component source and its live examples live in Haasstyle. Make material
 changes there first and sync the exact files here; spin.css only owns layout.
+
+
+Appearance sync: `tactile-matte-material.css`, `tactile95-material.css` and
+`tactile-picker.js` also come from Haasstyle. Markdown's CSS, JS and MIT license
+are pinned locally at 1.6.1, exactly as in the reference gallery. Load vendor CSS
+in the vendor cascade layer, before the shared Tactile materials.

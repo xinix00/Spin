@@ -1,13 +1,19 @@
 // Canvas and SVG renderers read the same palette as the CSS components.
 function themeColor(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  if (!CSS.supports('color', value)) return value;
+  const canvas = document.createElement('canvas'), context = canvas.getContext('2d');
+  context.fillStyle = value;
+  context.fillRect(0, 0, 1, 1);
+  const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+  return `#${[r,g,b].map(channel => channel.toString(16).padStart(2,'0')).join('')}`;
 }
 
 // Shared rich-text rendering for chat, deliverables and source views.
 const spinAssetBase = new URL('../', import.meta.url).href.replace(/\/$/, '');
 
 const esc = value => String(value ?? '').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-const icon = name => `<span class="material-symbols-outlined t-icon" aria-hidden="true">${esc(name)}</span>`;
+const icon = name => name === 'progress_activity' ? '<span class="t-spinner" aria-hidden="true"></span>' : `<span class="material-symbols-outlined t-icon" aria-hidden="true">${esc(name)}</span>`;
 
 function syntaxLanguage(hint=''){
   const aliases={js:'javascript',mjs:'javascript',cjs:'javascript',jsx:'javascript',javascript:'javascript',ts:'typescript',tsx:'typescript',typescript:'typescript',go:'go',cs:'csharp','c#':'csharp',csharp:'csharp',java:'java',c:'c',h:'c',cc:'cpp',cpp:'cpp',cxx:'cpp',hpp:'cpp',rs:'rust',rust:'rust',swift:'swift',kt:'kotlin',kts:'kotlin',kotlin:'kotlin',php:'php',py:'python',python:'python',rb:'ruby',ruby:'ruby',sh:'shell',bash:'shell',zsh:'shell',shell:'shell',json:'json',jsonc:'json',yaml:'yaml',yml:'yaml',toml:'toml',html:'markup',htm:'markup',xml:'markup',svg:'markup',vue:'markup',svelte:'markup',razor:'markup',cshtml:'markup',markup:'markup',css:'css',scss:'css',sass:'css',less:'css',sql:'sql',md:'markdown',markdown:'markdown',mmd:'mermaid',mermaid:'mermaid',dockerfile:'docker',docker:'docker'};
@@ -39,13 +45,72 @@ markdownRenderer.link=function(token){return defaultLinkRenderer.call(this,token
 function markdown(value){
   const source=String(value||'').replace(/^[\u200B\u200C\u200D\u200E\u200F\uFEFF]/,'');try{return DOMPurify.sanitize(marked.parse(source,{gfm:true,breaks:true,renderer:markdownRenderer}),{USE_PROFILES:{html:true},ADD_ATTR:['target','rel'],FORBID_TAGS:['style','form','button','textarea','select','option'],FORBID_ATTR:['style'],SANITIZE_NAMED_PROPS:true});}catch(error){return `<pre class="syntax-code markdown-error"><code>${esc(source)}</code></pre>`;}
 }
-let mermaidLoader=null;
-function loadMermaid(){
-  if(window.mermaid)return Promise.resolve(window.mermaid);if(mermaidLoader)return mermaidLoader;mermaidLoader=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src=`${spinAssetBase}/vendor/mermaid-11.17.2.min.js`;script.onload=()=>{if(!window.mermaid){reject(new Error('Mermaid library ontbreekt'));return;}window.mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:'dark',suppressErrorRendering:true,themeVariables:{background:themeColor('--input'),primaryColor:themeColor('--accent-soft'),primaryTextColor:themeColor('--text'),primaryBorderColor:themeColor('--accent-border'),lineColor:themeColor('--accent-ink'),secondaryColor:themeColor('--soft'),tertiaryColor:themeColor('--warning-surface'),fontFamily:themeColor('--sans')}});resolve(window.mermaid);};script.onerror=()=>reject(new Error('Mermaid kon niet worden geladen'));document.head.appendChild(script);});return mermaidLoader;
+let mermaidLoader = null;
+let mermaidQueue = Promise.resolve();
+const diagramSources = new WeakMap();
+function configureMermaid(engine) {
+  engine.initialize({
+    startOnLoad: false, securityLevel: 'strict', theme: 'base', suppressErrorRendering: true,
+    themeVariables: {
+      darkMode: document.documentElement.dataset.theme !== 'light',
+      background: themeColor('--input'), primaryColor: themeColor('--accent-soft'),
+      primaryTextColor: themeColor('--text'), primaryBorderColor: themeColor('--accent-border'),
+      lineColor: themeColor('--accent-light'), secondaryColor: themeColor('--soft'),
+      tertiaryColor: themeColor('--warning-surface'), fontFamily: themeColor('--sans')
+    }
+  });
 }
-async function renderMermaid(root){
-  const nodes=[...(root?.matches?.('.mermaid[data-mermaid-pending]')?[root]:[]),...(root?.querySelectorAll?.('.mermaid[data-mermaid-pending]')||[])];if(!nodes.length)return;nodes.forEach(node=>node.dataset.mermaidPending='rendering');try{const engine=await loadMermaid();for(const node of nodes){if(!node.isConnected)continue;const source=node.textContent||'';try{await engine.run({nodes:[node],suppressErrors:true});if(!node.querySelector('svg'))throw new Error('ongeldige Mermaid-syntax');node.classList.remove('mermaid-loading');node.removeAttribute('data-mermaid-pending');}catch(error){node.className='mermaid-error';node.removeAttribute('data-mermaid-pending');node.textContent=`Diagram kon niet worden gerenderd: ${error.message||error}\n\n${source}`;}}}catch(error){nodes.forEach(node=>{if(!node.isConnected)return;node.className='mermaid-error';node.removeAttribute('data-mermaid-pending');node.textContent=error.message||String(error);});}
+function loadMermaid() {
+  if (window.mermaid) return Promise.resolve(window.mermaid);
+  if (mermaidLoader) return mermaidLoader;
+  mermaidLoader = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = `${spinAssetBase}/vendor/mermaid-11.17.2.min.js`;
+    script.onload = () => window.mermaid ? resolve(window.mermaid) : reject(new Error('Mermaid library ontbreekt'));
+    script.onerror = () => { mermaidLoader = null; reject(new Error('Mermaid kon niet worden geladen')); };
+    document.head.appendChild(script);
+  });
+  return mermaidLoader;
 }
+function renderMermaid(root) {
+  // Serialize rendering and theme changes; never replace a diagram mid-render.
+  mermaidQueue = mermaidQueue.then(async () => {
+    const nodes = [...(root?.matches?.('.mermaid[data-mermaid-pending]') ? [root] : []), ...(root?.querySelectorAll?.('.mermaid[data-mermaid-pending]') || [])];
+    if (!nodes.length) return;
+    try {
+      const engine = await loadMermaid();
+      configureMermaid(engine);
+      for (const node of nodes) {
+        if (!node.isConnected) continue;
+        const source = node.textContent || '';
+        diagramSources.set(node, source);
+        try {
+          await engine.run({ nodes: [node], suppressErrors: true });
+          if (!node.querySelector('svg')) throw new Error('ongeldige Mermaid-syntax');
+          node.classList.remove('mermaid-loading');
+        } catch (error) {
+          node.className = 'mermaid-error';
+          node.textContent = `Diagram kon niet worden gerenderd: ${error.message || error}\n\n${source}`;
+        }
+        node.removeAttribute('data-mermaid-pending');
+      }
+    } catch (error) {
+      nodes.forEach(node => { node.className = 'mermaid-error'; node.removeAttribute('data-mermaid-pending'); node.textContent = error.message || String(error); });
+    }
+  });
+  return mermaidQueue;
+}
+window.addEventListener('spin-appearance-change', () => {
+  mermaidQueue = mermaidQueue.then(() => {
+    document.querySelectorAll('.mermaid').forEach(node => {
+      if (!diagramSources.has(node)) return;
+      node.textContent = diagramSources.get(node);
+      node.removeAttribute('data-processed');
+      node.dataset.mermaidPending = 'true';
+    });
+  });
+  renderMermaid(document);
+});
 function setMarkdown(root,value){root.innerHTML=markdown(value);return renderMermaid(root);}
 
 export { themeColor, esc, icon, syntaxLanguage, highlightCode, sourceCode, markdown, renderMermaid, setMarkdown };

@@ -7,13 +7,14 @@
   vertical-align: middle; cursor: pointer; border-radius: 6px;
   transition: transform 50ms, box-shadow 100ms;
 }
-.t-action--neutral { --t-button-face: var(--neutral, #4a4a4a); }
+.t-action--neutral { --t-button-ink: var(--text); --t-button-face: var(--neutral, #4a4a4a); }
 .t-action--danger { --t-button-face: var(--danger-face, #a32424); }
 .t-action--success { --t-button-face: var(--success-face, #25653a); }
-.t-action--warning { --t-button-face: var(--warning-face, #eaa800); color: #3a2a00; text-shadow: -1px 0 0 #ffffffad, 1px 0 0 #ffffffad, 0 -1px 0 #ffffffad, 0 1px 0 #ffffffad; }
+.t-action--warning { --t-button-ink: #3a2a00; --t-button-face: var(--warning-face, #eaa800); color: #3a2a00; text-shadow: -1px 0 0 #ffffffad, 1px 0 0 #ffffffad, 0 -1px 0 #ffffffad, 0 1px 0 #ffffffad; }
 .t-action:is(.active, [aria-expanded="true"]):not(:disabled) {
   background-image: var(--pressed-gloss); box-shadow: inset 0 1px 0 #0009;
 }
+.t-action:is(.active, [aria-expanded="true"]):hover:not(:disabled) { background-image: var(--pressed-hover-gloss); }
 .t-action:active:not(:disabled, [aria-disabled="true"]) { transform: translateY(1px); }
 .t-action:focus-visible { outline: 2px solid var(--t-accent); outline-offset: 3px; }
 .t-action.t-icon-button { padding: 0; }
@@ -151,6 +152,43 @@ textarea.t-field { resize: vertical; min-height: 104px; }
 .t-combobox-popup { position: fixed; inset: auto; margin: 0; padding: 8px; overflow-y: auto; }
 .t-combobox-empty { padding: 12px; color: var(--muted); font-size: 12px; }
 
+/* Pickers: the native input keeps its value; native indicators and spinners give way to joined actions. */
+.t-picker { display: flex; width: 100%; }
+.t-picker > input::-webkit-calendar-picker-indicator { display: none; -webkit-appearance: none; }
+.t-picker > input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+.t-picker > input[type="number"]::-webkit-inner-spin-button, .t-picker > input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.t-picker > input:is([type="date"],[type="time"])::-webkit-date-and-time-value { text-align: start; }
+.t-input-action > .t-action.t-icon-button + .t-action.t-icon-button { margin-inline-start: -1px; }
+.t-input-action > .t-action.t-icon-button:not(:last-of-type) { border-start-end-radius: 0; border-end-end-radius: 0; }
+/* The focus ring wraps the whole compound control: field and joined action are one thing. */
+.t-input-action:has(> input:focus-visible) { border-radius: 6px; outline: 2px solid var(--t-accent); outline-offset: 2px; }
+.t-input-action > input:focus-visible { outline: none; }
+/* Number: plus above minus in one column of field height. */
+.t-picker-stack { display: flex; flex-direction: column; flex: 0 0 var(--t-icon-button-size); width: var(--t-icon-button-size); height: var(--t-field-height); }
+.t-input-action > .t-picker-stack > .t-action.t-icon-button { flex: 1 1 0; height: auto; min-height: 0; max-height: none; border-radius: 0; }
+.t-input-action > .t-picker-stack > .t-action.t-icon-button:first-child { border-start-end-radius: 6px; }
+.t-input-action > .t-picker-stack > .t-action.t-icon-button:last-child { border-end-end-radius: 6px; margin-top: -1px; }
+.t-input-action > .t-picker-stack > .t-action.t-icon-button > .t-icon { font-size: 16px; line-height: 16px; }
+.t-picker-popup { --t-icon-button-size: 36px; position: fixed; inset: auto; margin: 0; padding: 10px; gap: 8px; }
+.t-picker-head { display: flex; align-items: center; gap: 6px; }
+.t-picker-caption { flex: 1; min-width: 0; text-align: center; font-weight: 600; text-transform: capitalize; }
+.t-picker-grid { display: grid; grid-template-columns: repeat(7, 36px); gap: 2px; }
+.t-picker-row { display: contents; }
+.t-picker-weekday { color: var(--muted); font-size: 11px; font-weight: 600; line-height: 24px; text-align: center; }
+.t-picker-cell { display: flex; align-items: center; justify-content: center; box-sizing: border-box; min-height: 36px; margin: 0; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font: inherit; font-variant-numeric: tabular-nums; cursor: pointer; box-shadow: none; text-shadow: none; }
+.t-picker-cell[data-outside="true"] { color: var(--muted); opacity: .7; }
+.t-picker-cell[data-today="true"] { box-shadow: inset 0 0 0 1px var(--t-accent); }
+.t-picker-cell:hover:not(:disabled, [aria-selected="true"]) { background: var(--t-hover-fill); }
+.t-picker-cell[aria-selected="true"] { background: var(--accent); color: var(--accent-ink, #fff); opacity: 1; }
+.t-picker-cell[aria-selected="true"]:hover { background: color-mix(in srgb, var(--accent) 82%, #fff); }
+.t-picker-cell:disabled { opacity: .35; cursor: default; }
+.t-picker-cell:focus-visible { outline: 2px solid var(--t-accent); outline-offset: -2px; }
+.t-picker-columns { display: flex; gap: 8px; }
+.t-picker-column { display: grid; align-content: start; gap: 2px; min-width: 64px; max-height: 240px; padding: 2px; overflow-y: auto; overscroll-behavior: contain; }
+.t-picker-foot { display: flex; justify-content: space-between; gap: 8px; }
+.t-picker-foot > .t-action { min-height: 32px; padding: 5px 12px; }
+@media (pointer: coarse) { .t-picker-popup { --t-icon-button-size: 44px; } .t-picker-grid { grid-template-columns: repeat(7, 40px); } .t-picker-cell { min-height: 40px; } }
+
 /* Compound controls keep a single straight seam after component sizing. */
 .t-input-action > input.t-field { flex: 1 1 0; width: 0; height: var(--t-field-height); min-height: var(--t-field-height); }
 :is(.t-select-trigger,.t-input-action) > :is(.t-select-caption,input) { border-start-end-radius: 0; border-end-end-radius: 0; border-inline-end: 0; }
@@ -158,3 +196,55 @@ textarea.t-field { resize: vertical; min-height: 104px; }
 /* Selectable cards use the same quiet state as every other choice. */
 .t-card.t-choice:is(:hover,[data-active="true"]):not(:disabled,[aria-disabled="true"]) { background: var(--t-hover-fill); }
 .t-card.t-choice:is(.active,.selected,[aria-selected="true"],[aria-pressed="true"]) { background: var(--t-selected-fill); box-shadow: var(--t-choice-indicator,inset 3px 0 0 var(--t-accent)); }
+
+/* Shared switches: a 16px border-box thumb with 2px clearance inside the track. */
+input.switch {
+  appearance:none;
+  position:relative;
+  width:38px;
+  height:22px;
+  border:1px solid var(--edge);
+  border-radius:12px;
+  background:var(--input);
+  box-shadow:inset 0 1px 0 #0008;
+  transition:background-color 100ms
+}
+
+.switch::before {
+  box-sizing:border-box;
+  content:"";
+  position:absolute;
+  top:2px;
+  left:2px;
+  width:16px;
+  height:16px;
+  background:var(--gloss),#92928b;
+  border:1px solid #0009;
+  border-radius:50%;
+  box-shadow:inset 0 1px 0 #ffffff8a,0 1px 2px #0008
+}
+
+.switch:checked {
+  background:var(--accent);
+  border-color:color-mix(in srgb,var(--accent-light) 40%,var(--edge))
+}
+
+.switch:checked::before {
+  left:calc(100% - 18px);
+  background-color:#e6e6e0
+}
+
+
+/* The same ring is used in the gallery and applications, with text supplying its name. */
+.t-spinner, .spinner {
+  display: inline-block; box-sizing: border-box; flex: 0 0 16px;
+  width: 16px; height: 16px; border: 2px solid var(--edge);
+  border-top-color: var(--accent-light); border-radius: 50%;
+  animation: tactile-spin 900ms linear infinite; vertical-align: middle;
+}
+@keyframes tactile-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .t-spinner, .spinner { animation: none; } }
+
+:root[data-theme="light"] :is(.t-action--neutral, .t-dismiss) { --t-button-contour: #ffffffb3; }
+
+.t-action > .t-spinner { border-color: color-mix(in srgb, currentColor 25%, transparent); border-top-color: currentColor; }

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="nl">
+<html lang="nl" data-style="08" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,14 +7,14 @@
   <link rel="icon" type="image/svg+xml" href="/assets/v__SPIN_UI_VERSION__/spin-mark.svg">
   <link href="/assets/v__SPIN_UI_VERSION__/vendor/material-symbols-outlined.css" rel="preload" as="style">
   <link href="/assets/v__SPIN_UI_VERSION__/vendor/xterm-5.5.0.css" rel="preload" as="style">
-  <link href="https://cdn.jsdelivr.net/gh/xinix00/markdown@latest/markdown.min.css" rel="stylesheet">
+  <script src="/assets/v__SPIN_UI_VERSION__/ui/appearance.js"></script>
   <link href="/assets/v__SPIN_UI_VERSION__/spin.css" rel="stylesheet">
 </head>
 <body>
 <a class="skip-link t-action" href="#workspace">Naar de werkruimte</a>
   <section class="auth-gate" id="auth-gate">
     <div class="auth-card t-panel">
-      <div class="brand"><h1><img class="spin-mark" src="/assets/v__SPIN_UI_VERSION__/spin-mark.svg" width="32" height="32" alt="">Spin <span class="brand-version"></span></h1><p class="subtitle auth-status"><span class="auth-busy" id="auth-busy"><span class="material-symbols-outlined t-icon" aria-hidden="true">progress_activity</span></span><span id="auth-copy">Verbinden met de server…</span></p></div>
+      <div class="brand"><h1><img class="spin-mark" src="/assets/v__SPIN_UI_VERSION__/spin-mark.svg" width="32" height="32" alt="">Spin <span class="brand-version"></span></h1><p class="subtitle auth-status"><span class="auth-busy" id="auth-busy"><span class="t-spinner" aria-hidden="true"></span></span><span id="auth-copy">Verbinden met de server…</span></p></div>
       <form id="setup-form" class="form-grid" hidden>
         <div><label for="setup-username">Gebruikersnaam owner</label><input class="t-field" id="setup-username" name="username" value="derek" required autocomplete="username"></div>
         <div><label for="setup-name">Naam</label><input class="t-field" id="setup-name" name="display_name" value="Derek" required autocomplete="name"></div>
@@ -26,8 +26,19 @@
         <div><label for="login-password">Wachtwoord</label><input class="t-field" id="login-password" name="password" type="password" required autocomplete="current-password"></div>
         <button class="primary t-action" type="submit">Inloggen</button>
       </form>
+      <button class="t-action t-action--neutral" type="button" data-open-appearance>Weergave instellen</button>
     </div>
   </section>
+  <dialog class="t-dialog" id="appearance-dialog" aria-labelledby="appearance-title" style="--t-dialog-width:480px">
+    <div class="t-dialog-head"><div><h2 id="appearance-title">Jouw weergave</h2><p>Kies je stijl, kleur en modus. Je ziet het verschil direct.</p></div><button class="t-action t-action--neutral t-icon-button" type="button" data-close-appearance aria-label="Weergave sluiten"><span class="material-symbols-outlined t-icon" aria-hidden="true">close</span></button></div>
+    <div class="appearance-options">
+      <label for="appearance-style">Thema<select id="appearance-style"><option value="95">Senior · Classic 95</option><option value="08">Medior · Glossy 08</option><option value="matte">Junior · Tactile Matte</option></select></label>
+      <label for="appearance-color">Themakleur<select id="appearance-color"><option value="plum">Paars</option><option value="red">Rood</option><option value="blue">Blauw</option><option value="petrol">Petrol</option><option value="green">Groen</option></select></label>
+      <div><p id="appearance-mode-label">Modus</p><div class="t-segmented" role="group" aria-labelledby="appearance-mode-label"><button type="button" data-appearance-mode="dark" aria-pressed="true"><span class="material-symbols-outlined t-icon" aria-hidden="true">dark_mode</span>Donker</button><button type="button" data-appearance-mode="light" aria-pressed="false"><span class="material-symbols-outlined t-icon" aria-hidden="true">light_mode</span>Licht</button></div></div>
+      <div class="appearance-preview t-card"><strong>Zo ziet jouw werkvlak eruit</strong><p class="t-muted">Dezelfde bediening, jouw afwerking.</p><div class="t-actions"><button class="t-action" type="button" data-close-appearance>Klaar</button><span class="t-spinner" aria-hidden="true"></span><span class="t-muted">Voorbeeld voortgang</span></div></div>
+      <p class="hint" role="status" id="appearance-status">Je voorkeur wordt bewaard in deze browser.</p>
+    </div>
+  </dialog>
   <div class="app-layout" id="app-shell" hidden>
     <aside class="sidebar">
       <div class="brand-mark"><div class="brand-copy"><div class="brand-name"><img class="spin-mark" src="/assets/v__SPIN_UI_VERSION__/spin-mark.svg" width="24" height="24" alt="">Spin <span class="brand-version"></span></div></div><button class="icon-button nav-toggle t-action t-icon-button t-action--neutral" id="nav-toggle" type="button" title="Menu inklappen" aria-label="Menu inklappen"><span class="material-symbols-outlined t-icon" aria-hidden="true">left_panel_close</span></button></div>
@@ -39,6 +50,7 @@
         <button class="tab-button t-choice" data-tab="access"><span class="material-symbols-outlined nav-icon t-icon" aria-hidden="true">admin_panel_settings</span><span class="nav-label t-nav-label">Access</span><span class="nav-count t-counter" id="nav-count-access">0</span></button>
       </nav></div>
       <div class="sidebar-foot">
+        <button class="appearance-trigger t-action t-action--neutral" type="button" data-open-appearance aria-label="Weergave instellen" title="Weergave instellen"><span class="material-symbols-outlined t-icon" aria-hidden="true">palette</span><span class="appearance-label">Weergave</span></button>
         <div class="online"><span class="dot"></span><span id="server-status">server verbinden…</span></div>
         <div class="user-row"><div class="user-copy"><strong id="current-user">—</strong><small>Ingelogd</small></div><button class="icon-button t-action t-icon-button t-action--neutral" id="logout" type="button" title="Uitloggen" aria-label="Uitloggen"><span class="material-symbols-outlined t-icon" aria-hidden="true">logout</span></button></div>
       </div>
@@ -372,11 +384,12 @@
     </main>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/gh/xinix00/markdown@latest/markdown.min.js"></script>
+  <script src="/assets/v__SPIN_UI_VERSION__/vendor/markdown-1.6.1.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/tactile-markdown.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/tactile-select.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/tactile-dialog.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/tactile-combobox.js"></script>
+  <script src="/assets/v__SPIN_UI_VERSION__/vendor/tactile-picker.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/marked-18.0.11.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/dompurify-3.4.14.min.js"></script>
   <script src="/assets/v__SPIN_UI_VERSION__/vendor/xterm-5.5.0.js"></script>

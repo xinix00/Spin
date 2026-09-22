@@ -49,9 +49,15 @@ func TestDashboardServesPinnedRichMarkdownAssets(t *testing.T) {
 		assetPrefix + "ui/app.js",
 		assetPrefix + "ui/render.js",
 		assetPrefix + "ui/navigation.js",
+		assetPrefix + "ui/appearance.js",
 		assetPrefix + "vendor/material-symbols-outlined.css",
 		assetPrefix + "vendor/material-symbols-outlined.woff2",
 		assetPrefix + "vendor/tactile-theme.css",
+		assetPrefix + "vendor/tactile-matte-material.css",
+		assetPrefix + "vendor/tactile95-material.css",
+		assetPrefix + "vendor/tactile-picker.js",
+		assetPrefix + "vendor/markdown-1.6.1.js",
+		assetPrefix + "vendor/markdown-1.6.1.css",
 		assetPrefix + "vendor/tactile-elements.css",
 		assetPrefix + "vendor/tactile-components.css",
 		assetPrefix + "vendor/tactile-select.js",
@@ -99,6 +105,9 @@ func TestDashboardServesPinnedRichMarkdownAssets(t *testing.T) {
 		assertNotCached(t, fallbackResponse)
 	}
 
+	if strings.Contains(dashboard, "cdn.jsdelivr.net") || strings.Contains(dashboard, "@latest") {
+		t.Fatal("dashboard must use local, pinned Markdown assets")
+	}
 	if strings.Contains(dashboard, "fonts.googleapis.com") {
 		t.Fatal("dashboard still depends on the external Google Fonts stylesheet")
 	}

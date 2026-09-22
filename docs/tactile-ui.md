@@ -1,12 +1,15 @@
 # SPIN-interface · Haasstyle / Tactile
 
-De interface gebruikt de donkere 2009-variant van Haasstyle. De bron van de
+De interface gebruikt Haasstyle met drie materialen: Classic 95, Glossy 08
+en Tactile Matte. Glossy 08 in donkere modus is de standaard. De bron van de
 gedeelde componenten is `../haasstyle`; kopieën staan in
 `internal/server/assets/vendor/`. Er is geen buildstap of CDN nodig.
 
 ## Opbouw
 
-`spin.css` importeert vendorfonts, het thema, materialen en componenten.
+`spin.css` importeert vendorfonts, de lokale Markdown 1.6.1 CSS in de vendorlaag,
+het thema, materialen en componenten. De laatste laag `appearance` bevat de
+gedeelde, op `data-style` begrensde Classic- en Matte-materialen.
 De applicatielaag bevat de shell, pagina-indeling, workflowstatussen en de
 geometrie van documenten, code review en terminal. Knopglans, invoervelden,
 selectiestates, dialogen en iconen komen uit de gedeelde bestanden.
@@ -61,3 +64,19 @@ Verplicht: `node --check internal/server/assets/spin.js` en
 inhoud, toetsenbordbediening, annuleren, formulierwaarden/reset en lange teksten
 mee. Live runners en herstel van echte databases vragen hun eigen functionele
 testomgeving; visuele fixtures starten zulke acties niet.
+
+## Weergavevoorkeuren
+
+Via **Weergave** (ook vóór inloggen) kies je onafhankelijk het thema, één van
+vijf themakleuren en de lichte of donkere modus. `ui/appearance.js` valideert en
+bewaart die voorkeur onder `spin-appearance` en past hem vóór de eerste paint toe.
+Classic houdt grijze knoppen, met het accent op selectie. Matte gebruikt heldere
+matte vullingen. Licht Glossy bouwt op van `#FAFAFA` naar `#F2F2F2` en `#E9E9E9`.
+Terminal, syntaxkleuren, diffs en bestaande Mermaid-diagrammen volgen de modus.
+
+Markdown gebruikt exact dezelfde lokale versie, adapter, materialen, iconen en
+cascade als de Haasstyle-galerij; er is geen `@latest`-stylesheet die deze kan
+overrulen. `tactile-picker.js` verzorgt ook dynamisch toegevoegde getal-, datum-
+en tijdvelden. Alle laadindicaties gebruiken `.t-spinner`: dezelfde ring van
+16 px, 2 px rand en 900 ms als de galerij, met respect voor reduced motion.
+Schakelaars gebruiken een thumb van 16 px inclusief rand en 2 px vrije ruimte.

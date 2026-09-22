@@ -350,10 +350,10 @@
   border-radius: 5px;
   background-color: var(--t-button-face, var(--accent));
   background-image: var(--gloss, var(--control-gloss));
-  color: #fff;
+  color: var(--t-button-ink, var(--accent-ink, #fff));
   box-shadow: var(--t-layer-shadow);
   text-decoration: none;
-  text-shadow: -1px 0 0 #000b, 1px 0 0 #000b, 0 -1px 0 #000b, 0 1px 0 #000b;
+  text-shadow: -1px 0 0 var(--t-button-contour, var(--contour)), 1px 0 0 var(--t-button-contour, var(--contour)), 0 -1px 0 var(--t-button-contour, var(--contour)), 0 1px 0 var(--t-button-contour, var(--contour));
 }
 :is(.t-action, .t-remove, .t-dismiss, .t-supplement.t-hover, .t-editor .md-toolbar button)::after {
   content: "";
@@ -365,16 +365,21 @@
   pointer-events: none;
 }
 .t-supplement.t-hover::before { content: none; }
-.t-dismiss { --t-button-face: var(--neutral, var(--control-neutral, #4a4a4a)); opacity: 1; }
+.t-dismiss { --t-button-ink: var(--text); --t-button-face: var(--neutral, var(--control-neutral, #4a4a4a)); opacity: 1; }
 :is(.t-action, .t-remove, .t-dismiss, .t-supplement.t-hover, .t-editor .md-toolbar button):hover:not(:disabled, [aria-disabled="true"]) {
   background-color: var(--t-button-face, var(--accent));
   background-image: var(--hover-gloss, var(--control-hover));
   border-color: var(--button-edge, var(--control-edge, #0009));
-  color: #fff;
+  color: var(--t-button-ink, var(--accent-ink, #fff));
   box-shadow: var(--t-layer-shadow);
 }
 :is(.t-action, .t-remove, .t-dismiss, .t-supplement.t-hover, .t-editor .md-toolbar button):is(:active, [aria-pressed="true"]):not(:disabled, [aria-disabled="true"]) {
   background-image: var(--pressed-gloss, var(--control-pressed));
+  box-shadow: inset 0 1px 0 #0009;
+}
+/* Hover on a pressed control is the hover gloss, inverted: same reaction, still pressed. */
+:is(.t-action, .t-remove, .t-dismiss, .t-supplement.t-hover, .t-editor .md-toolbar button):is([aria-pressed="true"], .active, [aria-expanded="true"]):hover:not(:disabled, [aria-disabled="true"]) {
+  background-image: var(--pressed-hover-gloss, linear-gradient(to bottom, #ffffff0a 0%, #0000000f 50%, #ffffff47 50%, #ffffff8f 100%));
   box-shadow: inset 0 1px 0 #0009;
 }
 :is(.t-action, .t-remove, .t-dismiss, .t-supplement.t-hover, .t-editor .md-toolbar button):is(:disabled, [aria-disabled="true"]) {
@@ -478,14 +483,16 @@
 .t-select-icon { flex: 0 0 var(--t-icon-size, 20px); color: var(--muted); }
 .t-select-icon[hidden] { display: none; }
 .t-select-trigger:hover:not(:disabled) .t-select-caption { border-color: var(--t-accent); }
-.t-select-trigger:focus-visible { outline: none; }
-.t-select-trigger:is(:focus-visible, [aria-expanded="true"]) .t-select-caption { border-color: var(--t-accent); outline: 1px solid var(--t-accent); outline-offset: -1px; }
+/* One ring around caption and arrow together, exactly like a field with a joined action. */
+.t-select-trigger:focus-visible { border-radius: 6px; outline: 2px solid var(--t-accent); outline-offset: 2px; }
+.t-select-trigger:is(:focus-visible, [aria-expanded="true"]) .t-select-caption { border-color: var(--t-accent); }
 .t-select-trigger:disabled { opacity: .5; cursor: default; }
 .t-select-trigger:disabled .t-select-arrow { pointer-events: none; box-shadow: none; }
 .t-select-trigger[aria-invalid="true"] .t-select-caption { border-color: var(--red); }
 .t-select-trigger[data-placeholder="true"] .t-select-caption { color: var(--muted); }
 .t-select-arrow { margin: 0; }
 .t-select-trigger:hover:not(:disabled) .t-select-arrow { background-image: var(--hover-gloss, var(--control-hover)); }
+.t-select-trigger[aria-expanded="true"]:hover:not(:disabled) .t-select-arrow { background-image: var(--pressed-hover-gloss, linear-gradient(to bottom, #ffffff0a 0%, #0000000f 50%, #ffffff47 50%, #ffffff8f 100%)); }
 .t-select-trigger:is(:active, [aria-expanded="true"]):not(:disabled) .t-select-arrow { background-image: var(--pressed-gloss, var(--control-pressed)); box-shadow: inset 0 1px 0 #0009; }
 .t-select-trigger[aria-expanded="true"] .t-select-arrow > .t-icon { transform: rotate(180deg); }
 .t-select-popup {

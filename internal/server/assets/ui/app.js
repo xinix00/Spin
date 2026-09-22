@@ -716,7 +716,7 @@ function activeRecording(){return snapshot.recordings.find(recording=>recording.
 // PTY sessions render in xterm.js: a real terminal in the browser, with raw
 // keystrokes, colours, cursor movement and resizing, so login flows and
 // TUIs work. The line console above it stays as the log of what was done.
-const terminalTheme = {
+const terminalTheme = () => ({
   background: themeColor('--terminal'),
   foreground: themeColor('--text'),
   cursor: themeColor('--terminal-cursor'),
@@ -732,7 +732,10 @@ const terminalTheme = {
   brightYellow: themeColor('--terminal-bright-yellow'),
   red: themeColor('--terminal-red'),
   brightRed: themeColor('--terminal-bright-red'),
-};
+});
+window.addEventListener('spin-appearance-change', () => {
+  for (const session of terminalSessions.values()) session.term.options.theme = terminalTheme();
+});
 function activeTerminal(){return activeTerminalID?terminalSessions.get(activeTerminalID):null;}
 function liveTerminals(){return [...terminalSessions.values()].filter(session=>!session.exited);}
 function ptyStage(){return document.getElementById('pty-stage');}
@@ -782,7 +785,7 @@ function startTerminalCommand(target,line,options={}){
   const protocol=location.protocol==='https:'?'wss:':'ws:',socket=new WebSocket(`${protocol}//${location.host}${path}`);
   const pane=document.createElement('div');pane.className='pty-pane';ptyStage().appendChild(pane);
   const mono=(getComputedStyle(document.documentElement).getPropertyValue('--mono')||'').trim()||'ui-monospace, Menlo, monospace';
-  const term=new Terminal({cursorBlink:true,fontFamily:mono,fontSize:12.5,lineHeight:1.15,scrollback:5000,theme:terminalTheme,convertEol:false});
+  const term=new Terminal({cursorBlink:true,fontFamily:mono,fontSize:12.5,lineHeight:1.15,scrollback:5000,theme:terminalTheme(),convertEol:false});
   const fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open(pane);
   const session={id,label,socket,targetID:target.id,line,title,exited:false,exitCode:null,pane,term,fit,ready:false};
   terminalSessions.set(id,session);activeTerminalID=id;updateTerminalControls();showTerminalPane(session);

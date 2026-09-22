@@ -1,18 +1,21 @@
 /* SPIN — rebuilt on Haasstyle / Tactile.
    The library owns materials and controls. This file owns application layout,
    workflow semantics and the geometry of code/terminal views. */
-@layer vendor, theme, foundation, elements, components, application;
+@layer vendor, theme, foundation, elements, components, application, appearance;
 @import url("vendor/material-symbols-outlined.css") layer(vendor);
+@import url("vendor/markdown-1.6.1.css") layer(vendor);
 @import url("vendor/xterm-5.5.0.css") layer(vendor);
 @import url("vendor/tactile-theme.css") layer(theme);
 @import url("vendor/tactile-elements.css") layer(elements);
 @import url("vendor/tactile-components.css") layer(components);
+@import url("vendor/tactile-matte-material.css") layer(appearance);
+@import url("vendor/tactile95-material.css") layer(appearance);
 
 @layer foundation {
   :root {
     --bg: var(--workspace); --sidebar: var(--workspace); --surface: var(--panel);
     --raised: var(--card); --soft: var(--toolbar); --line: var(--edge);
-    --line-strong: #62625c; --accent-ink: var(--accent-light);
+    --line-strong: var(--edge);
     --accent-soft: color-mix(in srgb,var(--accent) 10%,var(--card));
     --accent-border: color-mix(in srgb,var(--accent-light) 30%,var(--edge));
     --selection: var(--t-selected-fill); --focus: var(--accent-light);
@@ -26,12 +29,27 @@
     --syntax-keyword: #82baff; --syntax-string: #a8d89b; --syntax-comment: #9a9e99;
     --syntax-number: #efbd70; --syntax-literal: #b9a2ff; --syntax-type: #6edbcf;
     --syntax-property: #9ac7ff; --syntax-tag: #78d6a3; --syntax-variable: #ef9fc5;
-    --terminal: #191919; --terminal-cursor: var(--accent-light); --terminal-selection: #4b3648;
+    --terminal: var(--input); --terminal-cursor: var(--accent-light); --terminal-selection: var(--t-selected-fill);
     --terminal-black: #1e1e1e; --terminal-bright-black: #92928b;
     --terminal-green: var(--green); --terminal-bright-green: #c2eaca;
     --terminal-blue: var(--blue); --terminal-bright-blue: #c6ddfc;
     --terminal-yellow: var(--yellow); --terminal-bright-yellow: #f4dfb5;
     --terminal-red: var(--red); --terminal-bright-red: #ffc4c8;
+  }
+  :root[data-theme="light"] {
+    --blue: #285f9b; --purple: #6a448c;
+    --green-dark: #dfede3; --success-border: #8cb79a;
+    --warning-surface: #f1e9d5; --warning-border: #ad914e;
+    --danger-surface: #f3e0df; --danger-border: #b7807b;
+    --info-surface: #dfe9f3; --info-border: #849fb9;
+    --diff-add: #dfede3; --diff-delete: #f3e0df;
+    --diff-add-text: #205c34; --diff-delete-text: #852727;
+    --syntax-keyword: #245b98; --syntax-string: #3f642d; --syntax-comment: #666b65;
+    --syntax-number: #885612; --syntax-literal: #6d429c; --syntax-type: #22665e;
+    --syntax-property: #2b5b8b; --syntax-tag: #286647; --syntax-variable: #8a3862;
+    --terminal-black: #242424; --terminal-bright-black: #666;
+    --terminal-bright-green: #28743b; --terminal-bright-blue: #235fb6;
+    --terminal-bright-yellow: #856016; --terminal-bright-red: #b22e36;
   }
   * { box-sizing: border-box; }
   html { min-height: 100%; scrollbar-gutter: stable; }
@@ -90,13 +108,26 @@
   .nav-collapsed .tab-button { justify-content: center; padding-inline: 12px; }
   .nav-collapsed .sidebar-foot { display: grid; place-items: center; }
 
+  .appearance-trigger { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
+  .nav-collapsed .appearance-trigger .appearance-label { display: none; }
+  .nav-collapsed .appearance-trigger { width: 36px; padding-inline: 0; }
+  .appearance-options { display: grid; gap: 20px; padding: 20px; }
+  .appearance-options label { display: grid; gap: 8px; font-size: 13px; font-weight: 600; }
+  .appearance-preview { padding: 16px; display: grid; gap: 12px; }
+  .appearance-preview p { margin: 0; }
+  .appearance-options .t-segmented { width: fit-content; }
+  @media (max-width: 760px) {
+    .sidebar-foot { display: flex; gap: 8px; align-items: center; }
+    .appearance-trigger, .nav-collapsed .appearance-trigger { margin: 0; width: 44px; height: 44px; padding: 0; }
+    .appearance-trigger .appearance-label { display: none; }
+  }
+
   /* Authentication uses the same panel and fields as the application. */
   .auth-gate { display: grid; place-items: center; min-height: 100dvh; padding: 24px; }
   .auth-card { width: min(440px,100%); padding: 28px; }
   .auth-card .brand { margin-bottom: 24px; }
   .auth-card h1 { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; font-size: 30px; }
   .auth-status { display: flex; gap: 8px; align-items: center; }
-  .auth-busy .t-icon { animation: spin 1s linear infinite; }
   .auth-card .form-grid { padding: 0; grid-template-columns: minmax(0,1fr); }
   .auth-card .t-action[type=submit] { width: 100%; margin-top: 8px; }
 
@@ -226,7 +257,6 @@
   .status-busy { color: var(--accent-light); } .status-pending { color: var(--amber); }
   .session-presence { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-size: 11px; }
   .session-presence.offline { color: var(--muted); } .session-presence.preparing { color: var(--amber); }
-  .session-presence.preparing .t-icon { animation: spin 1.2s linear infinite; }
 
   /* Files and attachments retain content on a quiet layer. */
   .attachments-pane { padding: 16px; border-bottom: 1px solid var(--line); }
