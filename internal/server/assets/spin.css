@@ -439,10 +439,8 @@
   .recorder-idle p { color: var(--muted); margin: 0; font-size: 12px; }
   .terminal-panel { display: flex; flex-direction: column; min-height: 0; }
   .terminal-bar { flex-wrap: nowrap; }
-  .terminal-channels { display: flex; gap: 8px; min-width: 0; overflow-x: auto; flex: 1; }
-  .terminal-channel { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-  .channel { padding: 8px 12px; border: 0; white-space: nowrap; font-size: 12px; }
-  .channel.exited { color: var(--muted); }
+  .terminal-channels { flex: 1; }
+  .terminal-channels .t-tab.exited { color: var(--muted); }
   .pty-stage { position: relative; flex: 1; min-height: 100px; background: var(--terminal); }
   .pty-pane { position: absolute; inset: 12px; }
   .pty-pane .xterm { height: 100%; }

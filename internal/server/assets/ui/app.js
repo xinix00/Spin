@@ -740,18 +740,41 @@ function activeTerminal(){return activeTerminalID?terminalSessions.get(activeTer
 function liveTerminals(){return [...terminalSessions.values()].filter(session=>!session.exited);}
 function ptyStage(){return document.getElementById('pty-stage');}
 function fitTerminal(session){if(!session?.term||session.pane.hidden||ptyStage().hidden)return;try{session.fit.fit();}catch(_){}}
-function showTerminalPane(session){const stage=ptyStage();stage.querySelectorAll('.pty-pane').forEach(pane=>pane.hidden=pane!==session.pane);updateStage();requestAnimationFrame(()=>{fitTerminal(session);session.term.focus();});}
+function showTerminalPane(session,focus=true){const stage=ptyStage();stage.querySelectorAll('.pty-pane').forEach(pane=>pane.hidden=pane!==session.pane);updateStage();requestAnimationFrame(()=>{fitTerminal(session);if(focus)session.term.focus();});}
 function updateStage(){const any=terminalSessions.size>0,empty=document.getElementById('pty-empty');empty.hidden=any;if(!any)empty.textContent=terminalTarget()?'Shell wordt geopend…':(activeRecording()?'De capsule van je opname start; de shell volgt zodra hij er is.':'Geen draaiende capsule. Start een opname, of Start een laag onder Environments.');}
-function chooseTerminal(id){const session=terminalSessions.get(id);if(!session)return;activeTerminalID=id;updateTerminalControls();showTerminalPane(session);}
+function chooseTerminal(id,focus=true){const session=terminalSessions.get(id);if(!session)return;activeTerminalID=id;updateTerminalControls();showTerminalPane(session,focus);}
 function closeTerminalPane(id){const session=terminalSessions.get(id);if(!session)return;if(!session.exited){session.exited=true;try{session.socket.close();}catch(_){}}terminalSessions.delete(id);try{session.term.dispose();}catch(_){}session.pane.remove();if(activeTerminalID===id)activeTerminalID=[...terminalSessions.keys()].at(-1)||null;updateStage();updateTerminalControls();const next=activeTerminal();if(next)showTerminalPane(next);}
 function updateTerminalControls(){
   updateStage();
   const selected=activeTerminal(),live=liveTerminals().length,channels=document.getElementById('terminal-channels'),recording=activeRecording(),composition=activeComposition(),target=recording||composition;
   document.getElementById('terminal-interrupt').hidden=!selected||selected.exited;
-  channels.innerHTML=[...terminalSessions.values()].map(session=>`<div class="terminal-channel"><button type="button" class="channel ${session.id===activeTerminalID?'active':''} ${session.exited?'exited':''} t-choice t-choice--horizontal" data-terminal-id="${esc(session.id)}">${esc(session.label)} · ${esc(session.title.slice(0,28))}${session.exited?` · exit ${esc(String(session.exitCode??'?'))}`:''}</button><button type="button" class="icon-button channel-close t-action t-icon-button" data-close-terminal="${esc(session.id)}" title="Sluiten" aria-label="Terminal sluiten">${icon('close')}</button></div>`).join('')+(target?'<button class="channel t-choice t-choice--horizontal" id="new-terminal">+ shell</button>':'');
-  channels.querySelectorAll('[data-terminal-id]').forEach(button=>button.onclick=()=>chooseTerminal(button.dataset.terminalId));
-  channels.querySelectorAll('[data-close-terminal]').forEach(button=>button.onclick=event=>{event.stopPropagation();closeTerminalPane(button.dataset.closeTerminal);});
-  const add=channels.querySelector('#new-terminal');if(add)add.onclick=()=>{const target=terminalTarget();if(target)startTerminalCommand(target,shellCommand,{title:'shell'});};
+  const focused = channels.contains(document.activeElement) && document.activeElement.matches('[data-terminal-id],[data-close-terminal]') ? document.activeElement.dataset : null;
+  channels.innerHTML = [...terminalSessions.values()].map(session => `
+    <div class="t-tab-item">
+      <button type="button" class="t-tab${session.exited ? ' exited' : ''}"
+        aria-pressed="${session.id === activeTerminalID}" data-terminal-id="${esc(session.id)}"
+        title="${esc(session.title)}">${esc(session.label)} · ${esc(session.title.slice(0,28))}${session.exited ? ` · exit ${esc(String(session.exitCode ?? '?'))}` : ''}</button>
+      <button type="button" class="t-tab-close" data-close-terminal="${esc(session.id)}"
+        title="${esc(session.label)} sluiten" aria-label="${esc(session.label)} sluiten">${icon('close')}</button>
+    </div>`).join('') + (target ? `<button type="button" class="t-action t-action--neutral t-icon-button" id="new-terminal" title="Nieuwe shell" aria-label="Nieuwe shell">${icon('add')}</button>` : '');
+  channels.querySelectorAll('[data-terminal-id]').forEach(button => button.onclick = () => chooseTerminal(button.dataset.terminalId));
+  channels.querySelectorAll('[data-close-terminal]').forEach(button => button.onclick = () => closeTerminalPane(button.dataset.closeTerminal));
+  channels.onkeydown = event => {
+    const button = event.target.closest('[data-terminal-id]');
+    if (!button) return;
+    const ids = [...terminalSessions.keys()], index = ids.indexOf(button.dataset.terminalId);
+    const next = { ArrowRight: (index + 1) % ids.length, ArrowLeft: (index + ids.length - 1) % ids.length, Home: 0, End: ids.length - 1 }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    chooseTerminal(ids[next], false);
+    channels.querySelector(`[data-terminal-id="${CSS.escape(ids[next])}"]`)?.focus({ preventScroll: true });
+  };
+  if (focused) {
+    const key = focused.terminalId !== undefined ? 'terminalId' : 'closeTerminal';
+    [...channels.querySelectorAll('button')].find(button => button.dataset[key] === focused[key])?.focus({ preventScroll: true });
+  }
+  const add = channels.querySelector('#new-terminal');
+  if (add) add.onclick = () => { const target = terminalTarget(); if (target) startTerminalCommand(target, shellCommand, { title: 'shell' }); };
   const status=document.getElementById('terminal-status');
   if(live){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>${live} shell${live===1?'':'s'}</span>`;}
   else if(recording){status.className='terminal-status recording';status.innerHTML=`<span class="rec-dot"></span><span>REC ${esc(recording.kind)}:${esc(recording.name)}</span>`;}

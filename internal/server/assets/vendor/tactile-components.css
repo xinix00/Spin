@@ -2,7 +2,7 @@
    Load after tactile-elements.css. Local layouts never restyle these materials. */
 .t-action {
   display: inline-flex; align-items: center; justify-content: center;
-  gap: 6px; min-height: 36px; max-width: 100%; padding: 7px 13px;
+  gap: 6px; min-height: 48px; max-width: 100%; padding: 7px 13px;
   font: 500 12px/20px var(--sans, system-ui); text-align: center;
   vertical-align: middle; cursor: pointer; border-radius: 6px;
   transition: transform 50ms, box-shadow 100ms;
@@ -17,7 +17,7 @@
 .t-action:is(.active, [aria-expanded="true"]):hover:not(:disabled) { background-image: var(--pressed-hover-gloss); }
 .t-action:active:not(:disabled, [aria-disabled="true"]) { transform: translateY(1px); }
 .t-action:focus-visible { outline: 2px solid var(--t-accent); outline-offset: 3px; }
-.t-action.t-icon-button { padding: 0; }
+.t-action.t-icon-button { min-height: max(48px, var(--t-icon-button-size)); padding: 0; }
 .t-action > .material-symbols-outlined { color: inherit; font-size: 20px; }
 .t-action.t-icon-button > .material-symbols-outlined { line-height: 20px; }
 .t-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
@@ -51,7 +51,7 @@
 
 /* Inset controls, including dynamically generated forms. */
 .t-field:not([type="checkbox"],[type="radio"],[type="hidden"],[type="file"]), .t-fieldset {
-  box-sizing: border-box; width: 100%; min-width: 0; min-height: 40px; padding: 9px 11px;
+  box-sizing: border-box; width: 100%; min-width: 0; min-height: 48px; padding: 9px 11px;
   border: 1px solid var(--t-edge); border-radius: 6px; background: var(--input);
   color: var(--text); box-shadow: inset 0 1px 0 #0006; font: inherit; line-height: 20px;
 }
@@ -100,7 +100,7 @@ textarea.t-field { resize: vertical; min-height: 104px; }
 .t-prose :not(pre) > code { padding: 2px 4px; background: var(--input); border-radius: 3px; }
 .t-prose :is(img,video) { max-width: 100%; height: auto; border-radius: 6px; }
 .t-table { width: 100%; border-collapse: collapse; font: 12px/1.6 var(--sans,system-ui); font-variant-numeric: tabular-nums; }
-.t-table :is(th,td) { padding: 10px 12px; border-bottom: 1px solid var(--t-edge); text-align: start; vertical-align: top; }
+.t-table :is(th,td) { padding: 10px 12px; border-bottom: 1px solid var(--t-edge); text-align: start; vertical-align: middle; }
 .t-table th { background: var(--panel); color: var(--muted); font-weight: 600; }
 .t-table tr:last-child td { border-bottom: 0; }
 .t-table tbody tr:hover { background: var(--t-hover-fill); }
@@ -138,8 +138,8 @@ textarea.t-field { resize: vertical; min-height: 104px; }
 .t-dropzone > strong { display: block; margin: 8px 0; color: var(--text); }
 .t-dropzone > .t-action { margin-top: 12px; }
 @media (pointer: coarse), (max-width: 760px) {
-  .t-action { min-height: 44px; }
-  .t-field:not([type="checkbox"],[type="radio"],[type="hidden"],[type="file"]) { min-height: 44px; font-size: 16px; }
+  .t-action { min-height: 48px; }
+  .t-field:not([type="checkbox"],[type="radio"],[type="hidden"],[type="file"]) { min-height: 48px; font-size: 16px; }
   .t-segmented > button { min-height: 40px; }
   .t-choice--row, .t-check-row, .t-disclosure > summary { min-height: 44px; }
   .t-dialog--fullscreen { width: calc(100vw - 16px); height: calc(100dvh - 16px); }
@@ -169,7 +169,7 @@ textarea.t-field { resize: vertical; min-height: 104px; }
 .t-input-action > .t-picker-stack > .t-action.t-icon-button:first-child { border-start-end-radius: 6px; }
 .t-input-action > .t-picker-stack > .t-action.t-icon-button:last-child { border-end-end-radius: 6px; margin-top: -1px; }
 .t-input-action > .t-picker-stack > .t-action.t-icon-button > .t-icon { font-size: 16px; line-height: 16px; }
-.t-picker-popup { --t-icon-button-size: 36px; position: fixed; inset: auto; margin: 0; padding: 10px; gap: 8px; }
+.t-picker-popup { --t-icon-button-size: 48px; position: fixed; inset: auto; margin: 0; padding: 10px; gap: 8px; }
 .t-picker-head { display: flex; align-items: center; gap: 6px; }
 .t-picker-caption { flex: 1; min-width: 0; text-align: center; font-weight: 600; text-transform: capitalize; }
 .t-picker-grid { display: grid; grid-template-columns: repeat(7, 36px); gap: 2px; }
@@ -187,7 +187,7 @@ textarea.t-field { resize: vertical; min-height: 104px; }
 .t-picker-column { display: grid; align-content: start; gap: 2px; min-width: 64px; max-height: 240px; padding: 2px; overflow-y: auto; overscroll-behavior: contain; }
 .t-picker-foot { display: flex; justify-content: space-between; gap: 8px; }
 .t-picker-foot > .t-action { min-height: 32px; padding: 5px 12px; }
-@media (pointer: coarse) { .t-picker-popup { --t-icon-button-size: 44px; } .t-picker-grid { grid-template-columns: repeat(7, 40px); } .t-picker-cell { min-height: 40px; } }
+@media (pointer: coarse) { .t-picker-popup { --t-icon-button-size: 48px; } .t-picker-grid { grid-template-columns: repeat(7, 40px); } .t-picker-cell { min-height: 40px; } }
 
 /* Compound controls keep a single straight seam after component sizing. */
 .t-input-action > input.t-field { flex: 1 1 0; width: 0; height: var(--t-field-height); min-height: var(--t-field-height); }
@@ -248,3 +248,21 @@ input.switch {
 :root[data-theme="light"] :is(.t-action--neutral, .t-dismiss) { --t-button-contour: #ffffffb3; }
 
 .t-action > .t-spinner { border-color: color-mix(in srgb, currentColor 25%, transparent); border-top-color: currentColor; }
+
+/* Closable tabs: a single flat surface with two sibling buttons, never nested.
+   The selection line belongs to the whole tab, including its close target. */
+.t-tab-strip { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-x: auto; padding: 4px; }
+.t-tab-item { position: relative; display: inline-flex; align-items: center; flex: 0 0 auto; gap: 0; padding: 2px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
+.t-tab-item:has(> .t-tab:is([aria-pressed="true"], [aria-selected="true"])) { background: var(--t-selected-fill); color: var(--text); }
+.t-tab-item:has(> .t-tab:is([aria-pressed="true"], [aria-selected="true"]))::after { content: ''; position: absolute; inset: auto 6px 0; height: 3px; border-radius: 3px 3px 0 0; background: var(--t-accent); pointer-events: none; }
+.t-tab, .t-tab-close { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; gap: 8px; margin: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; box-shadow: none; text-shadow: none; font: 500 12px/20px var(--sans, system-ui); cursor: pointer; }
+.t-tab { flex: 1 0 auto; min-height: 48px; padding: 8px 14px; white-space: nowrap; }
+.t-tab-close { flex: 0 0 48px; width: 48px; min-width: 48px; max-width: 48px; height: 48px; min-height: 48px; max-height: 48px; padding: 0; }
+.t-tab-close > .t-icon { font-size: 20px; }
+.t-tab:hover:not(:disabled), .t-tab-close:hover:not(:disabled) { background: var(--t-hover-fill); color: var(--text); }
+.t-tab-close:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--t-edge); }
+:is(.t-tab, .t-tab-close):focus-visible { outline: 2px solid var(--t-accent); outline-offset: -3px; }
+:is(.t-tab, .t-tab-close):disabled { opacity: .45; cursor: default; }
+
+/* Explicit status marker keeps material pseudo-elements free for their rim. */
+.t-status-dot { display: inline-block; flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
