@@ -153,6 +153,21 @@ func (t *tracker) markAll(size int64) {
 	t.clean = false
 }
 
+// dirtyCount and isDirty let the source guard tell a legitimate rewrite from
+// a write that went around this VFS (guard.go).
+func (t *tracker) dirtyCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.dirty)
+}
+
+func (t *tracker) isDirty(page uint32) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.dirty[page]
+	return ok
+}
+
 // take removes up to limit dirty pages, lowest first.
 func (t *tracker) take(limit int) []uint32 {
 	t.mu.Lock()

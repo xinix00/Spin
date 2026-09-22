@@ -80,6 +80,31 @@ func Open(path string, options OpenOptions) (*SQLite, error) {
 	return store, nil
 }
 
+// QuickCheck opens a database file read-only and asks SQLite whether it is
+// sound. It is the host side of replica.Options.Verify: the replica composes a
+// restore in a scratch file and will not publish it over a live database until
+// this says yes. No migrations, no initialize, nothing written.
+func QuickCheck(path string, options OpenOptions) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("SQLite path is required")
+	}
+	db, err := sql.Open("sqlite3", sqliteDSN(path, options.VFS)+"&_pragma=query_only(1)")
+	if err != nil {
+		return fmt.Errorf("open SQLite: %w", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	var result string
+	if err := db.QueryRow(`PRAGMA quick_check`).Scan(&result); err != nil {
+		return fmt.Errorf("quick_check: %w", err)
+	}
+	if result != "ok" {
+		return fmt.Errorf("quick_check: %s", result)
+	}
+	return nil
+}
+
 // sqliteDSN builds the connection string. On HopOS the order of the pragmas
 // matters and url.Values would sort them, so the query is written out by hand.
 //

@@ -63,15 +63,21 @@ type Replica struct {
 	// Progress, when set, hears what a long step of Prepare is doing, for
 	// a page that waits on it.
 	Progress func(message string)
-	config   Config
-	s3       ObjectStore
-	domain   string
-	path     string
-	inner    vfs.VFS
-	files    Storage
-	tracker  *tracker
-	vfsName  string
-	logger   *slog.Logger
+	// What the next sync compares the source against (guard.go). Under
+	// markerMu, like the marker it belongs with.
+	witness      witness
+	counter      uint32
+	witnessKnown bool
+	verify       func(path string) error
+	config       Config
+	s3           ObjectStore
+	domain       string
+	path         string
+	inner        vfs.VFS
+	files        Storage
+	tracker      *tracker
+	vfsName      string
+	logger       *slog.Logger
 
 	restoreMu sync.Mutex
 	archiveMu sync.RWMutex
@@ -100,6 +106,14 @@ type Options struct {
 	Objects ObjectStore
 	Storage Storage
 	Now     func() time.Time
+	// Verify, when set, is asked whether a freshly composed database is
+	// sound, before it is published over the live path. The host opens that
+	// path read-only through the same VFS it gave this replica and runs
+	// PRAGMA quick_check; this package stays free of a SQLite driver.
+	// Litestream carries the same idea as IntegrityCheckQuick in its restore
+	// path, and it is the last of the four gates: coverage says the pages are
+	// all there, this says SQLite agrees.
+	Verify func(path string) error
 }
 
 // New prepares a replica and registers the VFS that SQLite must use.
@@ -143,6 +157,7 @@ func NewWithOptions(config Config, domain, path string, inner vfs.VFS, logger *s
 	if options.Now != nil {
 		replica.now = options.Now
 	}
+	replica.verify = options.Verify
 	replica.lifetime, replica.cancel = context.WithCancel(context.Background())
 	replica.tracker = newTracker(newDirtyLog(replica.files, full))
 	replica.tracker.onUnclean = replica.markUnclean
@@ -175,6 +190,27 @@ func (r *Replica) generationPrefix(generation string) string {
 	return r.key("generations", generation) + "/"
 }
 
+// restoreCurrent fetches a generation over the database path and takes it as
+// the local state. Both callers of it are in Prepare: a database that is not
+// there, and one the bucket is provably ahead of (guard.go).
+func (r *Replica) restoreCurrent(ctx context.Context, generation string) error {
+	restored, err := r.restoreInto(ctx, generation, time.Time{}, r.path)
+	if err != nil {
+		return fmt.Errorf("restore generation %s: %w", generation, err)
+	}
+	if err := r.setMarker(restored); err != nil {
+		return err
+	}
+	if err := r.tracker.rewriteLog(restored.Generation, restored.Seq); err != nil {
+		return fmt.Errorf("start the dirty log: %w", err)
+	}
+	r.mu.Lock()
+	r.status.Restored, r.status.Generation, r.status.Complete = true, generation, true
+	r.mu.Unlock()
+	r.logger.Info("replica: database restored from the bucket", "domain", r.domain, "generation", generation, "segments", restored.Seq, "bytes", restored.Size)
+	return nil
+}
+
 // Prepare runs before the database opens: a missing database is restored
 // from the current generation; an existing one continues its generation
 // when the marker says every write was shipped, and starts a new one else.
@@ -199,26 +235,35 @@ func (r *Replica) Prepare(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("read current generation: %w", err)
 		}
-		generation := strings.TrimSpace(string(current))
-		restored, err := r.restoreInto(ctx, generation, time.Time{}, r.path)
-		if err != nil {
-			return fmt.Errorf("restore generation %s: %w", generation, err)
-		}
-		if err := r.setMarker(restored); err != nil {
-			return err
-		}
-		if err := r.tracker.rewriteLog(restored.Generation, restored.Seq); err != nil {
-			return fmt.Errorf("start the dirty log: %w", err)
-		}
-		r.mu.Lock()
-		r.status.Restored, r.status.Generation, r.status.Complete = true, generation, true
-		r.mu.Unlock()
-		r.logger.Info("replica: database restored from the bucket", "domain", r.domain, "generation", generation, "segments", restored.Seq, "bytes", restored.Size)
-		return nil
+		return r.restoreCurrent(ctx, strings.TrimSpace(string(current)))
 	}
 	// The hash index of earlier versions is not read any more.
 	_ = r.files.Remove(r.path + ".replica-index")
 	stored, err := r.readMarker()
+	// Before a database that is already here is taken as the truth: does the
+	// bucket hold a generation this file cannot account for? A legacy marker
+	// and a changed destination keep their old behaviour; the other two cases
+	// are what guard.go is for.
+	if err != nil || (stored.Version == formatVersion && stored.Destination == r.destinationID()) {
+		from, interrupted, guardErr := r.adoptLocal(ctx, stored, err == nil)
+		if guardErr != nil {
+			return guardErr
+		}
+		if from != "" {
+			r.logger.Warn("replica: the bucket is ahead of this database; restoring instead of continuing",
+				"domain", r.domain, "generation", from, "local_generation", stored.Generation, "local_seq", stored.Seq)
+			return r.restoreCurrent(ctx, from)
+		}
+		if interrupted {
+			// The commit reached the bucket, the marker write that records it
+			// did not. The database holds that commit and the writes since, so
+			// it stays; a fresh generation keeps the sequence the bucket holds
+			// from being reused for other data (guard.go).
+			r.logger.Warn("replica: the bucket holds a commit this database's marker never recorded; the database stays and the next sync starts a fresh generation",
+				"domain", r.domain, "generation", stored.Generation, "local_seq", stored.Seq)
+			stored.Complete = false
+		}
+	}
 	switch {
 	case err != nil:
 		r.logger.Warn("replica: no usable marker next to the database; a new generation starts", "domain", r.domain, "error", err)
@@ -383,6 +428,12 @@ func (r *Replica) run(ctx context.Context, blocking bool) error {
 }
 
 func (r *Replica) sync(ctx context.Context, db Database, blocking bool) error {
+	// Is the source still the database this replica has been following? A
+	// write that went around the tracking VFS leaves pages nobody will ever
+	// ship, so it has to end this generation rather than poison it (guard.go).
+	if err := r.checkSource(ctx, db); err != nil {
+		return err
+	}
 	current := r.getMarker()
 	// An incomplete attempt is never resumed: a fresh snapshot and fresh keys
 	// also make a timeout after a successful PUT safe to retry.

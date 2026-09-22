@@ -142,6 +142,7 @@ func (r *Replica) captureBlocking(ctx context.Context, db Database, all bool) (c
 				spool.file.Close()
 				return err
 			}
+			r.rememberSource(seg) // the witness the next sync checks (guard.go)
 			if err := spool.write(&c, seg); err != nil {
 				spool.file.Close()
 				return err
@@ -202,6 +203,7 @@ func (r *Replica) captureLive(ctx context.Context, db Database, all bool) (captu
 				spool.file.Close()
 				return err
 			}
+			r.rememberSource(seg) // the witness the next sync checks (guard.go)
 			if err := spool.write(&c, seg); err != nil {
 				spool.file.Close()
 				return err
@@ -239,6 +241,7 @@ func (r *Replica) captureLive(ctx context.Context, db Database, all bool) (captu
 				break
 			}
 			c.pages = append(c.pages, again...)
+			r.rememberSource(seg) // the witness the next sync checks (guard.go)
 			if err := spool.write(&c, seg); err != nil {
 				spool.file.Close()
 				return err

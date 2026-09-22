@@ -89,6 +89,21 @@ func (r *Replica) restoreInto(ctx context.Context, generation string, at time.Ti
 	if err := file.Sync(); err != nil {
 		return marker{}, err
 	}
+	// And the last gate: does SQLite agree that this is a database? The
+	// coverage check above proves every page arrived; this proves they compose
+	// into something openable, before it replaces a database that may still be
+	// serving (replica.go, Options.Verify).
+	if r.verify != nil {
+		if err := file.Close(); err != nil {
+			return marker{}, err
+		}
+		if err := r.verify(temporary); err != nil {
+			return marker{}, fmt.Errorf("verify generation %s: %w", generation, err)
+		}
+		if file, err = r.files.Open(temporary, false); err != nil {
+			return marker{}, err
+		}
+	}
 	intent := path + ".replica-restoring"
 	if err := r.writeLocal(intent, []byte(generation)); err != nil {
 		return marker{}, err

@@ -400,7 +400,13 @@ func (t *Tenants) open(domain string) (*Tenant, error) {
 	t.setStage(domain, "replica", "Replica in de bucket controleren")
 	if t.config.Replication != nil {
 		var err error
-		rep, err = replica.New(*t.config.Replication, domain, path, vfs.Find(t.config.StorageVFS), logger)
+		// The replica asks before it publishes a restore over a database that
+		// may still be serving: SQLite itself has to agree that the composed
+		// file is sound (replica.Options.Verify).
+		rep, err = replica.NewWithOptions(*t.config.Replication, domain, path, vfs.Find(t.config.StorageVFS), logger,
+			replica.Options{Verify: func(scratch string) error {
+				return persistence.QuickCheck(scratch, persistence.OpenOptions{VFS: t.config.StorageVFS, FSPath: fsPath})
+			}})
 		if err != nil {
 			return nil, err
 		}

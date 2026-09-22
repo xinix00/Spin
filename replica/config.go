@@ -30,6 +30,11 @@ type Config struct {
 	// Default: a generation a week, kept four weeks.
 	Generation time.Duration
 	Retention  time.Duration
+	// AdoptLocalDatabase lets a database file without replica state of its
+	// own take over from a generation that is already in the bucket. Off by
+	// default, because that is the one case where nothing orders the two and
+	// adopting silently buries a backup (guard.go, measured 22 September).
+	AdoptLocalDatabase bool
 }
 
 // Level is one tier of restore points: windows of Window, kept for Keep.

@@ -51,9 +51,13 @@ func TestSyncRefusesASizeTheGenerationCannotFill(t *testing.T) {
 		t.Fatal("no dirty pages to steal; the write did not reach the tracker")
 	}
 
+	// Two guards cover this, and they overlap on purpose: the source guard
+	// sees the change counter move while nothing is marked (guard.go), and
+	// behind it the commit gate refuses a size the chain cannot fill
+	// (coverage.go). Whichever fires, the sync must not commit.
 	err := source.Sync(context.Background())
-	if !errors.Is(err, errGenerationShort) {
-		t.Fatalf("sync with missing pages = %v, want errGenerationShort", err)
+	if !errors.Is(err, errForeignWrite) && !errors.Is(err, errGenerationShort) {
+		t.Fatalf("sync with missing pages = %v, want errForeignWrite or errGenerationShort", err)
 	}
 	if source.getMarker().Complete {
 		t.Fatal("the marker stayed complete; the next sync would continue the broken generation")
