@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,6 +48,12 @@ func TestSteeringQueuesAMessageWrittenDuringATurnAndSendsItNext(t *testing.T) {
 		}
 	}()
 	answer := func(running turn) {
+		// A real agent says something before it ends its turn; a turn that
+		// stays silent is treated as a failure.
+		process.send(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{
+			"sessionId": "agent-session",
+			"update":    map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "ok"}},
+		}})
 		process.send(map[string]any{"jsonrpc": "2.0", "id": running.id, "result": map[string]string{"stopReason": "end_turn"}})
 	}
 	events, _ := active.subscribe()
@@ -137,5 +144,69 @@ func TestSteeringQueuesAMessageWrittenDuringATurnAndSendsItNext(t *testing.T) {
 	case <-idle:
 	case <-time.After(2 * time.Second):
 		t.Fatal("session never settled as idle after the queue drained")
+	}
+}
+
+// A turn that ends without the agent saying anything, and a turn the agent
+// answers with an error, both report a reason: the step goes back in the
+// queue with that reason instead of staying quietly "running".
+func TestFailedTurnReportsItsReason(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reply func(id json.RawMessage) map[string]any
+		want  string
+	}{
+		{
+			name: "silent turn",
+			reply: func(id json.RawMessage) map[string]any {
+				return map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]string{"stopReason": "end_turn"}}
+			},
+			want: "zonder iets te zeggen",
+		},
+		{
+			name: "agent error",
+			reply: func(id json.RawMessage) map[string]any {
+				return map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": -32603, "message": "Failed to authenticate: OAuth session expired"}}
+			},
+			want: "OAuth session expired",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			process := newScriptedACPProcess()
+			_, cancel := context.WithCancel(context.Background())
+			active := &activeACP{
+				sessionID: "spin-session", agentSessionID: "agent-session", protocolVersion: 1,
+				process: process, cancel: cancel, done: make(chan struct{}), pending: map[string]chan acpRPCResponse{},
+				permissions: map[string]bool{}, subscribers: map[chan acpBrowserEvent]struct{}{}, history: []acpBrowserEvent{},
+			}
+			defer active.close()
+			failures := make(chan string, 4)
+			active.onTurnFailed = func(reason string) { failures <- reason }
+			go active.readLoop(slog.New(slog.NewTextHandler(io.Discard, nil)))
+			go func() {
+				scanner := bufio.NewScanner(process.inputReader)
+				for scanner.Scan() {
+					var request struct {
+						Method string          `json:"method"`
+						ID     json.RawMessage `json:"id"`
+					}
+					if json.Unmarshal(scanner.Bytes(), &request) != nil || request.Method != "session/prompt" {
+						continue
+					}
+					process.send(tc.reply(request.ID))
+				}
+			}()
+			if err := active.startPrompt("ga verder"); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case reason := <-failures:
+				if !strings.Contains(reason, tc.want) {
+					t.Fatalf("reason = %q, want it to mention %q", reason, tc.want)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("a failed turn reported nothing")
+			}
+		})
 	}
 }

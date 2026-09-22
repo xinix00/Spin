@@ -417,6 +417,29 @@ func (r *Replica) sync(ctx context.Context, db Database, blocking bool) error {
 			return err
 		}
 	}
+	// A commit may not record a size this generation cannot fill. The pages a
+	// growing database added are written, so they are dirty and this capture
+	// holds them; missing means the tracker never saw those writes, and no
+	// later increment repairs that. Continuing would ship increments for hours
+	// onto a generation that can never restore, which is exactly what happened
+	// on 22 September. So: keep the generation restorable as it stands, say it,
+	// and let the next sync start a fresh one (coverage.go).
+	if !captured.snapshot {
+		if first, missing, gap := growthGap(current.Size, captured.size, captured.pageSize, captured.pages); gap {
+			r.tracker.putBack(captured.pages)
+			r.markerMu.Lock()
+			r.marker.Complete = false
+			err := r.writeMarker(r.marker)
+			r.markerMu.Unlock()
+			r.logger.Warn("replica: the database grew by pages this replica never saw; the next sync starts a fresh generation",
+				"domain", r.domain, "generation", current.Generation, "missing_pages", missing, "first_missing_page", first,
+				"size", captured.size, "previous_size", current.Size)
+			if err != nil {
+				return err
+			}
+			return errGenerationShort
+		}
+	}
 	if len(captured.parts) > 0 {
 		// Monotone times keep new batches out of already sealed time windows.
 		at := captured.at

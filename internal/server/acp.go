@@ -144,6 +144,13 @@ type activeACP struct {
 	queued          []queuedPrompt
 	failure         error
 	onIdle          func() // runs when a turn ends with nothing queued behind it
+	// onTurnFailed runs when a turn ends badly: the agent answered with an
+	// error, or it ended without having said anything at all. The step must
+	// not stay quietly "running" then.
+	onTurnFailed func(reason string)
+	// received counts what the agent sent during the current turn, so an
+	// empty turn is told apart from a silent one that did work.
+	received int
 	// steering is set when the agent accepts _session/steering: a message
 	// written during a turn is injected into that turn instead of queued.
 	steering bool
@@ -704,10 +711,34 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 		}
 		go s.afterTurn(session.ID, composition.ID)
 	}
+	active.onTurnFailed = func(reason string) { go s.turnFailed(session.ID, reason) }
 	active.mu.Unlock()
 	s.rememberAgentOptions(composition, active)
 	s.acpSessions[sessionID] = active
 	return active, nil
+}
+
+// turnFailed is what a Job does when a turn of its step went wrong: the
+// agent answered with an error (an expired login, a provider that refuses)
+// or ended without saying anything. The step goes back to the queue with
+// the reason on its card, the agent session is dropped so the next attempt
+// starts a fresh one, and the sweep tries again. A step that is waiting for
+// a person, or a chat outside a Job, is left alone.
+func (s *Server) turnFailed(sessionID, reason string) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return
+	}
+	_, _, run, _, _, _, err := s.store.WorkflowForSession(sessionID)
+	if err != nil || run.Status != domain.PhaseRunRunning {
+		return
+	}
+	s.logger.Warn("workflow turn failed", "session", sessionID, "reason", reason)
+	s.recordLaunchFailure(sessionID, fmt.Errorf("de agent kon deze stap niet doen: %s", reason))
+	s.stopACPSession(sessionID)
+	if _, err := s.store.RequeueWorkflowPhase(sessionID); err != nil {
+		s.logger.Warn("requeue workflow phase after a failed turn", "session", sessionID, "error", err)
+	}
 }
 
 // afterTurn is what follows an agent's turn: the work goes to the Job
@@ -1373,6 +1404,9 @@ func (a *activeACP) receiveMethod(envelope acpEnvelope) {
 		agentSessionID := a.agentSessionID
 		a.mu.Unlock()
 		if json.Unmarshal(envelope.Params, &params) == nil && (agentSessionID == "" || params.SessionID == agentSessionID) {
+			a.mu.Lock()
+			a.received++
+			a.mu.Unlock()
 			a.broadcast(acpBrowserEvent{Type: "update", Update: params.Update}, true)
 		}
 	case "session/request_permission":
@@ -1529,6 +1563,9 @@ func (a *activeACP) runPrompts(first queuedPrompt) {
 		current, stillWaiting := first, 0
 		for {
 			prompt, newAttachmentIDs := a.buildPrompt(current)
+			a.mu.Lock()
+			a.received = 0
+			a.mu.Unlock()
 			a.broadcast(acpBrowserEvent{Type: "user", Text: current.text, Queued: stillWaiting}, true)
 			result, err := a.request(context.Background(), "session/prompt", map[string]any{
 				"sessionId": a.agentSessionID,
@@ -1549,12 +1586,27 @@ func (a *activeACP) runPrompts(first queuedPrompt) {
 				}
 				a.broadcast(acpBrowserEvent{Type: "error", Error: message}, true)
 				a.settleIdle()
+				a.reportTurnFailure(err.Error())
 				return
 			}
 			var completed struct {
 				StopReason string `json:"stopReason"`
 			}
 			_ = json.Unmarshal(result, &completed)
+			a.mu.Lock()
+			received := a.received
+			a.mu.Unlock()
+			if received == 0 {
+				// A turn that ends without a word is not a finished turn: the
+				// agent could not start, so the step says so instead of
+				// standing still.
+				reason := "de agent beëindigde zijn beurt zonder iets te zeggen"
+				if stop := strings.TrimSpace(completed.StopReason); stop != "" && stop != "end_turn" {
+					reason += " (" + stop + ")"
+				}
+				a.broadcast(acpBrowserEvent{Type: "error", Error: "ACP: " + reason}, true)
+				a.reportTurnFailure(reason)
+			}
 			if !more {
 				// Settle before the browser hears the turn ended, so its next
 				// refresh already shows the decision as pending again.
@@ -1567,6 +1619,17 @@ func (a *activeACP) runPrompts(first queuedPrompt) {
 			current, stillWaiting = next, remaining-1
 		}
 	}()
+}
+
+// reportTurnFailure tells the server a turn went wrong, once the turn is
+// settled, so the Job can show what happened and try again.
+func (a *activeACP) reportTurnFailure(reason string) {
+	a.mu.Lock()
+	report := a.onTurnFailed
+	a.mu.Unlock()
+	if report != nil {
+		report(reason)
+	}
 }
 
 func (a *activeACP) settleIdle() {
@@ -1795,6 +1858,18 @@ func (a *activeACP) close() {
 	case <-a.done:
 	case <-time.After(3 * time.Second):
 		a.fail(errors.New("ACP process stopped"))
+	}
+}
+
+// stopACPSession closes the agent of one Session, so a next attempt starts
+// a fresh agent session instead of continuing a broken one.
+func (s *Server) stopACPSession(sessionID string) {
+	s.acpMu.Lock()
+	active := s.acpSessions[sessionID]
+	delete(s.acpSessions, sessionID)
+	s.acpMu.Unlock()
+	if active != nil {
+		active.close()
 	}
 }
 

@@ -33,6 +33,9 @@ func (r *Replica) restoreInto(ctx context.Context, generation string, at time.Ti
 	}
 	result := marker{Version: formatVersion, Generation: generation, Complete: true, Clean: true, StartedAt: generationTime(generation)}
 	pageSize := 0
+	// Which pages this generation ever shipped, so a chain that never held
+	// them is caught here instead of by SQLite (coverage.go).
+	shipped := pageSet{}
 	for _, m := range plan {
 		// A merged shrink-then-grow must clear truncated pages from the baseline.
 		if err := file.Truncate(m.MinSize); err != nil {
@@ -54,6 +57,7 @@ func (r *Replica) restoreInto(ctx context.Context, generation string, at time.Ti
 				if err := writeAt(file, seg.Data[index], int64(page-1)*int64(pageSize)); err != nil {
 					return marker{}, err
 				}
+				shipped.add(page)
 			}
 			if err := file.Truncate(seg.DBSize); err != nil {
 				return marker{}, err
@@ -64,6 +68,15 @@ func (r *Replica) restoreInto(ctx context.Context, generation string, at time.Ti
 		}
 		result.Seq = m.Seq
 		result.At = m.At
+	}
+	// Before anything is published: did this generation ever hold every page
+	// the size claims? A page it never carried is a hole, which is what SQLite
+	// calls malformed, and by then the cause is invisible. Saying it here
+	// keeps the old database in place and names the generation that is beyond
+	// repair. A page that was shipped and later truncated away is fine: the
+	// source has the same zero there (coverage.go).
+	if first, missing, ok := shipped.shortfall(result.Size, pageSize); !ok {
+		return marker{}, &errShortReplica{Generation: generation, Size: result.Size, PageSize: pageSize, First: first, Missing: missing}
 	}
 	// Preserve the compaction frontier when continuing an idle generation.
 	for _, windows := range l.windows {
