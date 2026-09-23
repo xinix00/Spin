@@ -46,10 +46,7 @@ func (c capture) close(files Storage) {
 //
 // Network I/O starts only after the spool is complete. The scratch name is
 // reused, so a process crash cannot leak a spool per attempt.
-func (r *Replica) capture(ctx context.Context, db Database, all, blocking bool) (capture, error) {
-	if blocking {
-		return r.captureBlocking(ctx, db, all)
-	}
+func (r *Replica) capture(ctx context.Context, db Database, all bool) (capture, error) {
 	return r.captureLive(ctx, db, all)
 }
 
@@ -119,51 +116,6 @@ func (w *spoolWriter) finish() error {
 	return w.file.Close()
 }
 
-func (r *Replica) captureBlocking(ctx context.Context, db Database, all bool) (capture, error) {
-	var c capture
-	err := db.WithReadTransaction(ctx, func() error {
-		var err error
-		c, all, err = r.captureBegin(all)
-		if err != nil || c.pageSize == 0 || (len(c.pages) == 0 && !all) {
-			return err
-		}
-		spool, err := r.openSpool(&c)
-		if err != nil {
-			return err
-		}
-		limit := max(1, r.config.SegmentBytes/c.pageSize)
-		for offset := 0; offset < len(c.pages) || offset == 0; offset += limit {
-			if err := ctx.Err(); err != nil {
-				spool.file.Close()
-				return err
-			}
-			seg, err := r.readPages(c.pageSize, c.pages[offset:min(offset+limit, len(c.pages))])
-			if err != nil {
-				spool.file.Close()
-				return err
-			}
-			r.rememberSource(seg) // the witness the next sync checks (guard.go)
-			if err := spool.write(&c, seg); err != nil {
-				spool.file.Close()
-				return err
-			}
-			if len(c.pages) == 0 {
-				break
-			}
-		}
-		if err := spool.finish(); err != nil {
-			return err
-		}
-		c.at = r.now().UTC()
-		return nil
-	})
-	if err != nil {
-		r.tracker.putBack(c.pages)
-		c.close(r.files)
-	}
-	return c, err
-}
-
 func (r *Replica) captureLive(ctx context.Context, db Database, all bool) (capture, error) {
 	var c capture
 	err := db.WithReadTransaction(ctx, func() error {
@@ -207,6 +159,9 @@ func (r *Replica) captureLive(ctx context.Context, db Database, all bool) (captu
 			if err := spool.write(&c, seg); err != nil {
 				spool.file.Close()
 				return err
+			}
+			if c.snapshot {
+				r.reportCopy("read", int64(min(offset+limit, len(c.pages)))*int64(c.pageSize), int64(len(c.pages))*int64(c.pageSize))
 			}
 			runtime.Gosched()
 			if len(c.pages) == 0 {

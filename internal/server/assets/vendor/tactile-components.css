@@ -2,7 +2,7 @@
    Load after tactile-elements.css. Local layouts never restyle these materials. */
 .t-action {
   display: inline-flex; align-items: center; justify-content: center;
-  gap: 6px; min-height: 48px; max-width: 100%; padding: 7px 13px;
+  gap: 6px; min-height: 36px; max-width: 100%; padding: 5px 13px;
   font: 500 12px/20px var(--sans, system-ui); text-align: center;
   vertical-align: middle; cursor: pointer; border-radius: 6px;
   transition: transform 50ms, box-shadow 100ms;
@@ -17,7 +17,7 @@
 .t-action:is(.active, [aria-expanded="true"]):hover:not(:disabled) { background-image: var(--pressed-hover-gloss); }
 .t-action:active:not(:disabled, [aria-disabled="true"]) { transform: translateY(1px); }
 .t-action:focus-visible { outline: 2px solid var(--t-accent); outline-offset: 3px; }
-.t-action.t-icon-button { min-height: max(48px, var(--t-icon-button-size)); padding: 0; }
+.t-action.t-icon-button { min-height: max(var(--t-control-min), var(--t-icon-button-size)); padding: 0; }
 .t-action > .material-symbols-outlined { color: inherit; font-size: 20px; }
 .t-action.t-icon-button > .material-symbols-outlined { line-height: 20px; }
 .t-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
@@ -28,7 +28,7 @@
 
 /* Navigation is a flat row, never a collection of little icon tiles. */
 .t-nav { display: grid; gap: 4px; min-width: 0; }
-.t-nav > .t-choice { display: flex; align-items: center; gap: 12px; min-height: 44px; width: 100%; padding: 10px 12px; border: 0; font: 500 13px/20px var(--sans,system-ui); text-align: start; text-decoration: none; cursor: pointer; }
+.t-nav > .t-choice { display: flex; align-items: center; gap: 12px; min-height: 36px; width: 100%; padding: 6px 12px; border: 0; font: 500 13px/20px var(--sans,system-ui); text-align: start; text-decoration: none; cursor: pointer; }
 .t-nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t-nav > .t-choice > .t-counter { margin-inline-start: auto; }
 .t-nav > .t-choice > .t-icon { color: inherit; background: transparent; border: 0; padding: 0; }
@@ -36,13 +36,13 @@
 .t-choice--horizontal { --t-choice-indicator: inset 0 -3px 0 var(--t-accent); }
 .t-choice:disabled { opacity: .45; cursor: default; }
 .t-choice:has(input:checked) { background: var(--t-selected-fill); box-shadow: none; }
-.t-choice--row { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; min-height: 36px; padding: 8px 10px; border: 0; font: inherit; text-align: start; text-decoration: none; }
+.t-choice--row { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; min-height: 36px; padding: 6px 10px; border: 0; font: inherit; line-height: 20px; text-align: start; text-decoration: none; }
 .t-choice--row > :not(.t-icon, input) { min-width: 0; }
 
 /* One shared glossy shell, flat choices, deliberately no hover reaction. */
 .t-segmented { position: relative; display: inline-flex; flex-wrap: nowrap; align-items: stretch; gap: 8px; max-width: 100%; padding: 4px; border: 1px solid var(--button-edge); border-radius: 6px; background: var(--gloss),var(--t-segment-face); box-shadow: var(--shadow); overflow-x: auto; }
 .t-segmented::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--rim); mask-image: linear-gradient(#000,transparent); pointer-events: none; }
-.t-segmented > button { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 6px; min-height: 32px; margin: 0; padding: 6px 12px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #fff; font: 500 12px/20px var(--sans,system-ui); cursor: pointer; box-shadow: none; text-shadow: none; transform: none; }
+.t-segmented > button { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 6px; min-height: 36px; margin: 0; padding: 5px 12px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #fff; font: 500 12px/20px var(--sans,system-ui); cursor: pointer; box-shadow: none; text-shadow: none; transform: none; }
 .t-segmented > button + button::before { content: ''; position: absolute; inset: 20% auto 20% -5px; width: 1px; background: #0009; box-shadow: 1px 0 #ffffff20; }
 .t-segmented > button:is(.active,[aria-pressed="true"]) { background: var(--t-segment-selected); border-color: color-mix(in srgb,var(--accent) 60%,#000); box-shadow: inset 0 1px 0 #0009; }
 .t-segmented > button:focus-visible { outline: 2px solid var(--t-accent); outline-offset: -2px; }
@@ -51,7 +51,7 @@
 
 /* Inset controls, including dynamically generated forms. */
 .t-field:not([type="checkbox"],[type="radio"],[type="hidden"],[type="file"]), .t-fieldset {
-  box-sizing: border-box; width: 100%; min-width: 0; min-height: 48px; padding: 9px 11px;
+  box-sizing: border-box; width: 100%; min-width: 0; min-height: 36px; padding: 5px 11px;
   border: 1px solid var(--t-edge); border-radius: 6px; background: var(--input);
   color: var(--text); box-shadow: inset 0 1px 0 #0006; font: inherit; line-height: 20px;
 }
@@ -138,10 +138,10 @@ textarea.t-field { resize: vertical; min-height: 104px; }
 .t-dropzone > strong { display: block; margin: 8px 0; color: var(--text); }
 .t-dropzone > .t-action { margin-top: 12px; }
 @media (pointer: coarse), (max-width: 760px) {
-  .t-action { min-height: 48px; }
-  .t-field:not([type="checkbox"],[type="radio"],[type="hidden"],[type="file"]) { min-height: 48px; font-size: 16px; }
-  .t-segmented > button { min-height: 40px; }
-  .t-choice--row, .t-check-row, .t-disclosure > summary { min-height: 44px; }
+  .t-action { min-height: 36px; }
+  .t-field:not([type="checkbox"],[type="radio"],[type="hidden"],[type="file"]) { min-height: 36px; font-size: 16px; }
+  .t-segmented > button { min-height: 36px; }
+  .t-check-row { min-height: 36px; }
   .t-dialog--fullscreen { width: calc(100vw - 16px); height: calc(100dvh - 16px); }
   .t-dialog-head, .t-dialog-body { padding: 16px; }
   .t-dialog-foot { padding: 14px 16px; }
@@ -168,8 +168,8 @@ textarea.t-field { resize: vertical; min-height: 104px; }
 .t-input-action > .t-picker-stack > .t-action.t-icon-button { flex: 1 1 0; height: auto; min-height: 0; max-height: none; border-radius: 0; }
 .t-input-action > .t-picker-stack > .t-action.t-icon-button:first-child { border-start-end-radius: 6px; }
 .t-input-action > .t-picker-stack > .t-action.t-icon-button:last-child { border-end-end-radius: 6px; margin-top: -1px; }
-.t-input-action > .t-picker-stack > .t-action.t-icon-button > .t-icon { font-size: 16px; line-height: 16px; }
-.t-picker-popup { --t-icon-button-size: 48px; position: fixed; inset: auto; margin: 0; padding: 10px; gap: 8px; }
+.t-input-action > .t-picker-stack > .t-action.t-icon-button > .t-icon { font-size: 12px; line-height: 12px; }
+.t-picker-popup { --t-icon-button-size: 36px; position: fixed; inset: auto; margin: 0; padding: 10px; gap: 8px; }
 .t-picker-head { display: flex; align-items: center; gap: 6px; }
 .t-picker-caption { flex: 1; min-width: 0; text-align: center; font-weight: 600; text-transform: capitalize; }
 .t-picker-grid { display: grid; grid-template-columns: repeat(7, 36px); gap: 2px; }
@@ -186,8 +186,8 @@ textarea.t-field { resize: vertical; min-height: 104px; }
 .t-picker-columns { display: flex; gap: 8px; }
 .t-picker-column { display: grid; align-content: start; gap: 2px; min-width: 64px; max-height: 240px; padding: 2px; overflow-y: auto; overscroll-behavior: contain; }
 .t-picker-foot { display: flex; justify-content: space-between; gap: 8px; }
-.t-picker-foot > .t-action { min-height: 32px; padding: 5px 12px; }
-@media (pointer: coarse) { .t-picker-popup { --t-icon-button-size: 48px; } .t-picker-grid { grid-template-columns: repeat(7, 40px); } .t-picker-cell { min-height: 40px; } }
+.t-picker-foot > .t-action { min-height: 36px; padding: 5px 12px; }
+@media (pointer: coarse) { .t-picker-popup { --t-icon-button-size: 36px; } .t-picker-grid { grid-template-columns: repeat(7, 40px); } .t-picker-cell { min-height: 36px; } }
 
 /* Compound controls keep a single straight seam after component sizing. */
 .t-input-action > input.t-field { flex: 1 1 0; width: 0; height: var(--t-field-height); min-height: var(--t-field-height); }
@@ -256,8 +256,8 @@ input.switch {
 .t-tab-item:has(> .t-tab:is([aria-pressed="true"], [aria-selected="true"])) { background: var(--t-selected-fill); color: var(--text); }
 .t-tab-item:has(> .t-tab:is([aria-pressed="true"], [aria-selected="true"]))::after { content: ''; position: absolute; inset: auto 6px 0; height: 3px; border-radius: 3px 3px 0 0; background: var(--t-accent); pointer-events: none; }
 .t-tab, .t-tab-close { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; gap: 8px; margin: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; box-shadow: none; text-shadow: none; font: 500 12px/20px var(--sans, system-ui); cursor: pointer; }
-.t-tab { flex: 1 0 auto; min-height: 48px; padding: 8px 14px; white-space: nowrap; }
-.t-tab-close { flex: 0 0 48px; width: 48px; min-width: 48px; max-width: 48px; height: 48px; min-height: 48px; max-height: 48px; padding: 0; }
+.t-tab { flex: 1 0 auto; min-height: 36px; padding: 6px 14px; white-space: nowrap; }
+.t-tab-close { flex: 0 0 36px; width: 36px; min-width: 36px; max-width: 36px; height: 36px; min-height: 36px; max-height: 36px; padding: 0; }
 .t-tab-close > .t-icon { font-size: 20px; }
 .t-tab:hover:not(:disabled), .t-tab-close:hover:not(:disabled) { background: var(--t-hover-fill); color: var(--text); }
 .t-tab-close:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--t-edge); }

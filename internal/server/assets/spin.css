@@ -118,7 +118,7 @@
   .appearance-options .t-segmented { width: fit-content; }
   @media (max-width: 760px) {
     .sidebar-foot { display: flex; gap: 8px; align-items: center; }
-    .appearance-trigger, .nav-collapsed .appearance-trigger { margin: 0; width: 44px; height: 44px; padding: 0; }
+    .appearance-trigger, .nav-collapsed .appearance-trigger { margin: 0; width: 36px; height: 36px; padding: 0; }
     .appearance-trigger .appearance-label { display: none; }
   }
 
@@ -553,7 +553,7 @@
     .sidebar-heading,.nav-toggle,.online,.user-copy { display: none; }
     .sidebar-foot { position: absolute; right: 16px; top: 16px; padding: 0; margin: 0; border: 0; }
     .tabs.t-nav { display: flex; overflow-x: auto; gap: 6px; padding-bottom: 6px; }
-    .tabs.t-nav > .tab-button,.nav-collapsed .tab-button { flex: 0 0 auto; width: auto; padding: 10px 12px; }
+    .tabs.t-nav > .tab-button,.nav-collapsed .tab-button { flex: 0 0 auto; width: auto; padding: 6px 12px; }
     .tabs .nav-label,.nav-collapsed .nav-label { display: block; }
     .tabs .nav-count { display: none; }
     .tab-button { --t-choice-indicator: inset 0 -3px 0 var(--t-accent); }

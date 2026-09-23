@@ -39,6 +39,19 @@ type Status struct {
 	LastError     string    `json:"last_error,omitempty"`
 	PendingPages  int       `json:"pending_pages"`
 	UploadedBytes int64     `json:"uploaded_bytes"`
+	// Copy is how far a whole-database copy has come while one runs.
+	Copy *CopyProgress `json:"copy,omitempty"`
+}
+
+// CopyProgress is how far a whole-database copy has come. It has two stages:
+// "read" puts the database's pages in the local spool, "upload" sends the
+// spool to the bucket. StartedAt is the start of the stage, on the wall
+// clock, so a page can tell the rate and what is left.
+type CopyProgress struct {
+	Stage     string    `json:"stage"`
+	Done      int64     `json:"done"`
+	Total     int64     `json:"total"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 // marker is the replica's own state, next to the database on storage. Clean
@@ -63,6 +76,12 @@ type Replica struct {
 	// Progress, when set, hears what a long step of Prepare is doing, for
 	// a page that waits on it.
 	Progress func(message string)
+	// OnCopy, when set, hears how far a whole-database copy has come: the
+	// one before a Spin opens and a renewal while it serves alike.
+	OnCopy func(CopyProgress)
+	// freshReason says why Prepare started a new generation, for the page
+	// that waits on the copy it makes.
+	freshReason string
 	// What the next sync compares the source against (guard.go). Under
 	// markerMu, like the marker it belongs with.
 	witness      witness
@@ -267,6 +286,7 @@ func (r *Replica) Prepare(ctx context.Context) error {
 	switch {
 	case err != nil:
 		r.logger.Warn("replica: no usable marker next to the database; a new generation starts", "domain", r.domain, "error", err)
+		r.freshReason = "no usable marker next to the database"
 	case stored.Version != formatVersion:
 		r.logger.Warn("replica: legacy local marker; starting a generation with commit manifests", "domain", r.domain)
 	case stored.Destination != r.destinationID():
@@ -276,9 +296,19 @@ func (r *Replica) Prepare(ctx context.Context) error {
 		// generation continues with those. A clean marker means none,
 		// and whatever the log names then is shipped once more, which
 		// costs nothing but a few pages.
+		if !stored.Complete {
+			// A new generation writes its name in the marker before its copy
+			// starts and in the dirty log after its first commit. A stop in
+			// between is an interrupted copy, not a database that changed
+			// behind the replica's back; the copy starts over.
+			r.logger.Warn("replica: the copy of generation "+stored.Generation+" did not finish; a new generation is copied in the background", "domain", r.domain)
+			r.freshReason = "the copy of generation " + stored.Generation + " did not finish"
+			return r.tracker.rewriteLog("", 0)
+		}
 		pages, err := r.tracker.log.read(stored.Generation, stored.Seq)
 		if err != nil && !stored.Clean {
 			r.logger.Warn("replica: the database changed after its last sync and the dirty log is unusable; a new generation starts", "domain", r.domain, "generation", stored.Generation, "error", err)
+			r.freshReason = "the dirty log of generation " + stored.Generation + " is unusable (" + err.Error() + ")"
 			return r.tracker.rewriteLog("", 0)
 		}
 		if err := r.setMarker(stored); err != nil {
@@ -304,27 +334,14 @@ func (r *Replica) SnapshotDue() bool {
 	return r.SnapshotReason() != ""
 }
 
-// SnapshotRequiredBeforeServing says why a Spin must copy its database
-// before it opens, or is empty: only when the bucket has no complete
-// generation to fall back on. A generation that is merely old or heavy
-// renews itself in the background while the Spin serves.
-func (r *Replica) SnapshotRequiredBeforeServing() string {
-	current := r.getMarker()
-	switch {
-	case current.Generation == "":
-		return "no generation yet"
-	case !current.Complete:
-		return "the last sync of generation " + current.Generation + " did not complete"
-	}
-	return ""
-}
-
 // SnapshotReason says why the next sync copies the whole database, or is
 // empty when it does not: no generation yet, an interrupted generation,
 // a generation past its age, or more shipped than the database is worth.
 func (r *Replica) SnapshotReason() string {
 	current := r.getMarker()
 	switch {
+	case current.Generation == "" && r.freshReason != "":
+		return r.freshReason
 	case current.Generation == "":
 		return "no generation yet"
 	case !current.Complete:
@@ -383,20 +400,20 @@ func (r *Replica) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	status := r.status
+	if status.Copy != nil {
+		progress := *status.Copy
+		status.Copy = &progress
+	}
 	status.PendingPages = r.tracker.pendingPages()
 	return status
 }
 
-// Sync ships what changed: one pass, segments of at most SegmentBytes.
-// Sync ships what changed while the Spin serves; a snapshot it needs goes
-// in short transactions so the database stays usable.
-func (r *Replica) Sync(ctx context.Context) error { return r.run(ctx, false) }
-
-// SyncAtOpen ships what changed before the Spin serves; a snapshot it
-// needs holds the database, which nothing else uses yet.
-func (r *Replica) SyncAtOpen(ctx context.Context) error { return r.run(ctx, true) }
-
-func (r *Replica) run(ctx context.Context, blocking bool) error {
+// Sync ships what changed: one pass, segments of at most SegmentBytes. A
+// whole-database copy it needs goes in short transactions while the Spin
+// serves. Like Litestream, nothing waits for a copy: the database here holds
+// every write, and the bucket keeps the generation before until the new one
+// is complete.
+func (r *Replica) Sync(ctx context.Context) error {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -414,7 +431,7 @@ func (r *Replica) run(ctx context.Context, blocking bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	stopCancel := context.AfterFunc(r.lifetime, cancel)
 	defer func() { stopCancel(); cancel() }()
-	err := r.sync(ctx, db, blocking)
+	err := r.sync(ctx, db)
 	r.mu.Lock()
 	r.syncing = false
 	if err != nil {
@@ -427,7 +444,90 @@ func (r *Replica) run(ctx context.Context, blocking bool) error {
 	return err
 }
 
-func (r *Replica) sync(ctx context.Context, db Database, blocking bool) error {
+// uploadParts sends the spooled parts to the bucket, a few at a time: one PUT
+// after another leaves the line idle for a round trip per segment, which is
+// most of the time a copy of gigabytes takes. The refs keep the spool order.
+func (r *Replica) uploadParts(ctx context.Context, captured capture, prefix string) ([]partRef, error) {
+	refs := make([]partRef, len(captured.parts))
+	var total int64
+	for _, part := range captured.parts {
+		total += int64(part.length)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		mu       sync.Mutex
+		next     int
+		done     int64
+		firstErr error
+		workers  sync.WaitGroup
+	)
+	for worker := 0; worker < min(r.config.UploadParallelism, len(captured.parts)); worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				mu.Lock()
+				if next >= len(captured.parts) || firstErr != nil {
+					mu.Unlock()
+					return
+				}
+				index := next
+				next++
+				mu.Unlock()
+				part := captured.parts[index]
+				data, err := r.readSpool(captured.path, part)
+				if err == nil {
+					ref := partRef{Key: fmt.Sprintf("%s%06d.seg", prefix, index+1), Size: int64(len(data)), Hash: sha256hex(data)}
+					if err = r.s3.Put(ctx, ref.Key, data); err == nil {
+						refs[index] = ref
+					}
+				}
+				mu.Lock()
+				if err != nil {
+					if firstErr == nil {
+						firstErr = err
+						cancel()
+					}
+					mu.Unlock()
+					return
+				}
+				done += int64(part.length)
+				sent := done
+				mu.Unlock()
+				if captured.snapshot {
+					r.reportCopy("upload", sent, total)
+				}
+			}
+		}()
+	}
+	workers.Wait()
+	return refs, firstErr
+}
+
+// reportCopy records how far a whole-database copy has come and tells OnCopy.
+func (r *Replica) reportCopy(stage string, done, total int64) {
+	r.mu.Lock()
+	if r.status.Copy == nil || r.status.Copy.Stage != stage {
+		r.status.Copy = &CopyProgress{Stage: stage, StartedAt: time.Now().UTC()}
+	}
+	r.status.Copy.Done, r.status.Copy.Total = done, total
+	progress := *r.status.Copy
+	hook := r.OnCopy
+	r.mu.Unlock()
+	if hook != nil {
+		hook(progress)
+	}
+}
+
+func (r *Replica) endCopy() {
+	r.mu.Lock()
+	r.status.Copy = nil
+	r.mu.Unlock()
+}
+
+func (r *Replica) sync(ctx context.Context, db Database) error {
+	defer r.endCopy()
 	// Is the source still the database this replica has been following? A
 	// write that went around the tracking VFS leaves pages nobody will ever
 	// ship, so it has to end this generation rather than poison it (guard.go).
@@ -438,6 +538,7 @@ func (r *Replica) sync(ctx context.Context, db Database, blocking bool) error {
 	// An incomplete attempt is never resumed: a fresh snapshot and fresh keys
 	// also make a timeout after a successful PUT safe to retry.
 	fresh := !current.Complete || r.compactionDue(current)
+	reason := r.SnapshotReason()
 	if fresh {
 		current = marker{Version: formatVersion, Generation: newGenerationID(r.now()), StartedAt: r.now()}
 		if err := r.setMarker(current); err != nil {
@@ -446,13 +547,9 @@ func (r *Replica) sync(ctx context.Context, db Database, blocking bool) error {
 	}
 	started := r.now()
 	if fresh {
-		if blocking {
-			r.logger.Info("replica: snapshot copy starts before the Spin opens", "domain", r.domain, "generation", current.Generation)
-		} else {
-			r.logger.Info("replica: snapshot copy starts in the background; the database stays usable", "domain", r.domain, "generation", current.Generation, "reason", r.SnapshotReason())
-		}
+		r.logger.Info("replica: snapshot copy starts in the background; the database stays usable", "domain", r.domain, "generation", current.Generation, "reason", reason)
 	}
-	captured, err := r.capture(ctx, db, fresh, blocking)
+	captured, err := r.capture(ctx, db, fresh)
 	if err != nil {
 		return err
 	}
@@ -517,17 +614,11 @@ func (r *Replica) sync(ctx context.Context, db Database, blocking bool) error {
 				}
 			}
 		}()
-		for index, part := range captured.parts {
-			data, err := r.readSpool(captured.path, part)
-			if err != nil {
-				return err
-			}
-			ref := partRef{Key: fmt.Sprintf("%s%06d.seg", prefix, index+1), Size: int64(len(data)), Hash: sha256hex(data)}
-			if err := r.s3.Put(ctx, ref.Key, data); err != nil {
-				return err
-			}
-			m.Parts = append(m.Parts, ref)
+		refs, err := r.uploadParts(ctx, captured, prefix)
+		if err != nil {
+			return err
 		}
+		m.Parts = refs
 		key := r.rawKey(current.Generation, m.Seq, m.At)
 		if fresh {
 			key = r.snapshotKey(current.Generation)

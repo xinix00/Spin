@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ncruces/go-sqlite3/vfs"
 )
@@ -350,4 +352,72 @@ func quickCheck(path string) error {
 		return errors.New("quick_check: " + result)
 	}
 	return nil
+}
+
+// A restart while a new generation is being copied is not a database that
+// changed behind the replica's back: the marker names the new generation, the
+// dirty log still the one before, and the database is whole. With a complete
+// generation in the bucket the Spin opens and the copy starts over in the
+// background, with its progress.
+func TestAnInterruptedCopyStartsOverInTheBackground(t *testing.T) {
+	bucket := &fakeBucket{objects: map[string][]byte{}}
+	server := httptest.NewServer(bucket)
+	defer server.Close()
+	config := testConfig(server)
+	dir := t.TempDir()
+
+	source, database := openReplicated(t, config, "interrupted-copy.example.test", dir+"/copy.db")
+	if err := database.WriteFile("state", []byte(`{"version":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	complete := source.getMarker().Generation
+	if err := database.WriteFile("state", []byte(`{"version":2}`)); err != nil {
+		t.Fatal(err)
+	}
+	// What a stop in the middle of a new generation's copy leaves: its name
+	// in the marker, incomplete, and a dirty log of the generation before.
+	interrupted := marker{Version: formatVersion, Generation: newGenerationID(time.Now().Add(time.Hour)), StartedAt: time.Now()}
+	if err := source.setMarker(interrupted); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	source.Close()
+
+	replica, reopened := openReplicated(t, config, "interrupted-copy.example.test", dir+"/copy.db")
+	defer replica.Close()
+	defer reopened.Close()
+	if reason := replica.SnapshotReason(); !strings.Contains(reason, "did not finish") {
+		t.Fatalf("snapshot reason = %q", reason)
+	}
+	var stages []string
+	replica.OnCopy = func(progress CopyProgress) {
+		if len(stages) == 0 || stages[len(stages)-1] != progress.Stage {
+			stages = append(stages, progress.Stage)
+		}
+		if progress.Done > progress.Total || progress.Total <= 0 {
+			t.Errorf("progress %+v", progress)
+		}
+	}
+	if err := replica.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(stages, ","); got != "read,upload" {
+		t.Fatalf("copy stages = %q", got)
+	}
+	if replica.Status().Copy != nil {
+		t.Fatal("the copy's progress stays after it finished")
+	}
+	fresh := replica.getMarker()
+	if !fresh.Complete || fresh.Generation == complete || fresh.Generation == interrupted.Generation {
+		t.Fatalf("marker after the background copy = %+v", fresh)
+	}
+	state, err := reopened.ReadFile("state")
+	if err != nil || string(state) != `{"version":2}` {
+		t.Fatalf("state = %q, %v", state, err)
+	}
 }

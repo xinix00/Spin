@@ -19,6 +19,9 @@ type Config struct {
 	// segment (and the memory a sync pass holds).
 	Interval     time.Duration
 	SegmentBytes int
+	// UploadParallelism is how many segments travel to the bucket at once.
+	// Default 4.
+	UploadParallelism int
 	// Schedule is how restore points thin out with age: level 1 merges the
 	// raw segments into windows of its size and keeps them for its Keep,
 	// level 2 merges level 1 windows, and so on. The last level is kept as
@@ -89,6 +92,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.Interval <= 0 {
 		c.Interval = 15 * time.Second
+	}
+	if c.UploadParallelism <= 0 {
+		c.UploadParallelism = 4
 	}
 	if c.SegmentBytes <= 0 {
 		c.SegmentBytes = 16 << 20

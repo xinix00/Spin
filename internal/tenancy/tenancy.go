@@ -474,17 +474,13 @@ func (t *Tenants) open(domain string) (*Tenant, error) {
 	tenant := &Tenant{Domain: domain, Path: path, Database: database, Store: st, Broker: broker, Server: server, Handler: server.Handler(), Replica: rep}
 	if rep != nil {
 		rep.Attach(database)
-		// A whole-database copy holds the database; it runs before the
-		// Spin opens, not while it serves.
-		// Only a Spin without a complete generation in the bucket copies
-		// itself before it serves; renewing an old or heavy generation
-		// happens in the background, in short transactions.
-		if reason := rep.SnapshotRequiredBeforeServing(); reason != "" {
-			logger.Info("replica: a new generation starts with a full copy before opening", "reason", reason)
-			t.setStage(domain, "snapshot", "Volledige kopie van de database naar de bucket · "+reason)
-			if err := rep.SyncAtOpen(t.ctx); err != nil {
-				logger.Warn("replica: first snapshot", "error", err)
-			}
+		// Like Litestream, the Spin never waits for a whole-database copy:
+		// the database here holds every write, the copy goes in short
+		// transactions while it serves, and the bucket keeps the generation
+		// before until the new one is complete. Its progress is in the
+		// replica status.
+		if reason := rep.SnapshotReason(); reason != "" {
+			logger.Info("replica: a new generation is copied in the background; the Spin serves meanwhile", "reason", reason)
 		}
 		rep.Start(t.ctx)
 	}

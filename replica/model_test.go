@@ -192,6 +192,9 @@ func newModelHarness(t *testing.T, seed uint64) *modelHarness {
 	config.Schedule = []Level{{Window: 15 * time.Minute, Keep: 2 * time.Hour}, {Window: time.Hour, Keep: 24 * time.Hour}}
 	config.Generation = 12 * time.Hour
 	config.Retention = 36 * time.Hour
+	// One segment at a time: an injected fault must land on the same
+	// request every run of a seed.
+	config.UploadParallelism = 1
 	dir := t.TempDir()
 	h := &modelHarness{
 		t: t, ctx: context.Background(), rng: rand.New(rand.NewPCG(seed, 0x9e3779b97f4a7c15)), stats: map[string]int{},

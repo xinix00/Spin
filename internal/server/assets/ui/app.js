@@ -1406,10 +1406,20 @@ mkdir -p var && printf '%s' '&lt;worker-token&gt;' &gt; var/spin-worker.token
 }
 // renderStorage shows what the server's database occupies; the volume under
 // it is finite and Spin cannot see how much is left.
+// A whole-database copy: how far, how fast, and how long it still takes.
+function copyProgressText(copy){
+  const percent=copy.total?Math.min(100,Math.floor(copy.done/copy.total*100)):0,spent=(Date.now()-new Date(copy.started_at).getTime())/1000,rate=spent>1?copy.done/spent:0;
+  const gib=value=>`${(value/1073741824).toLocaleString('nl-NL',{minimumFractionDigits:1,maximumFractionDigits:1})} GiB`;
+  const parts=[`${copy.stage==='upload'?'nieuwe generatie naar de bucket':'nieuwe generatie lezen'} ${gib(copy.done)} van ${gib(copy.total)} (${percent}%)`];
+  if(rate>0)parts.push(`${(rate/1048576).toFixed(1)} MiB/s`);
+  if(rate>0&&copy.total>copy.done){const left=Math.round((copy.total-copy.done)/rate);parts.push(`nog ~${left>=60?`${Math.round(left/60)} min`:`${left} s`}`);}
+  return parts.join(' · ');
+}
 function replicationLine(replication){
   if(!replication)return `<span class="hint warning-text">${icon('cloud_off')} Geen replica: deze Spin staat alleen op zijn eigen volume.</span>`;
   const parts=[`${icon('cloud_done')} Replica in ${esc(replication.bucket||'S3')}`];
   parts.push(replication.complete?'generatie compleet':replication.generation?'snapshot loopt':'nog geen generatie');
+  if(replication.copy)parts.push(copyProgressText(replication.copy));
   if(replication.last_sync_at&&!replication.last_sync_at.startsWith('0001'))parts.push(`laatste sync ${esc(elapsedSince(replication.last_sync_at))} geleden`);
   if(replication.pending_pages)parts.push(`${replication.pending_pages} pagina${replication.pending_pages===1?'':"'s"} wacht${replication.pending_pages===1?'':'en'}`);
   if(replication.restored)parts.push('bij het opstarten hersteld uit de replica');

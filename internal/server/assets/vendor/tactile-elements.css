@@ -10,7 +10,8 @@
   --t-sheen-hover: linear-gradient(to bottom, #ffffff33, #ffffff0a 75%, #0000000a);
   --t-rim: #ffffff66;
   --t-notice-width: 380px;
-  --t-icon-button-size: 48px;
+  --t-icon-button-size: 36px;
+  --t-control-min: 36px;
   --t-icon-size: 20px;
   --t-dismiss-size: var(--t-icon-button-size);
   --t-segment-face: color-mix(in srgb, var(--accent) 80%, #000);
@@ -91,7 +92,7 @@
   align-items: center;
   gap: 7px;
   max-width: 100%;
-  min-height: 52px;
+  min-height: 32px;
   padding: 4px 9px;
   border: 1px solid var(--t-edge);
   border-radius: 5px;
@@ -108,7 +109,7 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  min-height: calc(max(48px, var(--t-icon-button-size)) + 4px);
+  min-height: 32px;
   padding: 0 9px;
   font-family: inherit;
   font-size: 12px;
@@ -442,7 +443,7 @@
 }
 .t-select[hidden], .t-select-source { display: none !important; }
 .t-select-trigger {
-  --t-field-height: max(48px, var(--t-select-height, 48px));
+  --t-field-height: max(var(--t-control-min), var(--t-select-height, 36px));
   --t-icon-button-size: var(--t-field-height);
   display: flex;
   align-items: center;
@@ -469,12 +470,12 @@
   flex: 1 1 0;
   min-width: 0;
   height: var(--t-field-height);
-  padding: 7px 11px;
+  padding: 5px 11px;
   border: 1px solid var(--t-edge);
   border-radius: 6px;
   background: var(--input);
   box-shadow: inset 0 1px 0 #0004;
-  line-height: calc(var(--t-field-height) - 16px);
+  line-height: 20px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -516,8 +517,9 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 40px;
-  padding: 9px 12px;
+  min-height: 32px;
+  padding: 6px 12px;
+  line-height: 20px;
   margin: 2px 0;
   cursor: pointer;
 }
@@ -618,12 +620,12 @@ input:is([type="checkbox"], [type="radio"]):not(.switch, [role="switch"]):disabl
 .t-select-empty { margin: 0; padding: 12px; color: var(--muted); }
 .t-select-error { display: block; margin-top: 5px; font-size: 12px; color: var(--red); }
 .t-select-popup .t-select-search { flex: 0 0 auto; min-height: 36px; width: 100%; padding: 7px 10px; border: 1px solid var(--t-edge); border-radius: 5px; background: var(--input); color: var(--text); font: inherit; box-shadow: none; }
-.t-label .t-select { --t-select-height: 32px; width: auto; flex-basis: 100px; }
+.t-label .t-select { --t-control-min: 28px; --t-select-height: 28px; width: auto; flex-basis: 100px; }
 .t-label .t-select-trigger { font-size: 12px; }
 @media (pointer: coarse), (max-width: 760px) {
-  .t-select, .t-label .t-select { --t-select-height: 44px; }
+  .t-select, .t-label .t-select { --t-control-min: 28px; --t-select-height: 28px; }
   .t-select-trigger { font-size: 16px; }
-  .t-select-option { min-height: 44px; }
+  .t-select-option { min-height: 32px; }
   .t-select-popup .t-select-search { font-size: 16px; }
 }
 
@@ -654,13 +656,13 @@ input:is([type="checkbox"], [type="radio"]):not(.switch, [role="switch"]):disabl
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 max(48px, var(--t-icon-button-size));
-  width: max(48px, var(--t-icon-button-size));
-  min-width: max(48px, var(--t-icon-button-size));
-  max-width: max(48px, var(--t-icon-button-size));
-  height: max(48px, var(--t-icon-button-size));
-  min-height: max(48px, var(--t-icon-button-size));
-  max-height: max(48px, var(--t-icon-button-size));
+  flex: 0 0 max(var(--t-control-min), var(--t-icon-button-size));
+  width: max(var(--t-control-min), var(--t-icon-button-size));
+  min-width: max(var(--t-control-min), var(--t-icon-button-size));
+  max-width: max(var(--t-control-min), var(--t-icon-button-size));
+  height: max(var(--t-control-min), var(--t-icon-button-size));
+  min-height: max(var(--t-control-min), var(--t-icon-button-size));
+  max-height: max(var(--t-control-min), var(--t-icon-button-size));
   padding: 0;
   gap: 0;
   line-height: 1;
@@ -680,7 +682,7 @@ input:is([type="checkbox"], [type="radio"]):not(.switch, [role="switch"]):disabl
 }
 .t-icon--display { font-size: 36px; }
 @media (pointer: coarse), (max-width: 760px) {
-  :root { --t-icon-button-size: 48px; }
+  :root { --t-icon-button-size: 36px; }
 }
 /* Horizontal tabs share the flat selection; their accent sits underneath. */
 .t-tabs { display: block; min-width: 0; }
@@ -737,7 +739,7 @@ input:is([type="checkbox"], [type="radio"]):not(.switch, [role="switch"]):disabl
   gap: 8px;
   min-height: 36px;
   max-width: 100%;
-  padding: 7px 14px;
+  padding: 5px 14px;
   font: inherit;
   font-size: 12px;
   line-height: 20px;
@@ -746,12 +748,12 @@ input:is([type="checkbox"], [type="radio"]):not(.switch, [role="switch"]):disabl
 }
 .t-alert-actions > .t-action:focus-visible { outline: 2px solid var(--t-alert-ink); outline-offset: 3px; }
 @media (pointer: coarse), (max-width: 760px) {
-  .t-alert-actions > .t-action { min-height: 44px; }
+  .t-alert-actions > .t-action { min-height: 36px; }
 }
 
 /* An input and its adjacent square action share one control height. */
 .t-input-action {
-  --t-field-height: 48px;
+  --t-field-height: 36px;
   --t-icon-button-size: var(--t-field-height);
   display: flex;
   align-items: center;
@@ -765,11 +767,11 @@ input:is([type="checkbox"], [type="radio"]):not(.switch, [role="switch"]):disabl
   min-width: 0;
   height: var(--t-field-height);
   min-height: var(--t-field-height);
-  padding: 7px 11px;
+  padding: 5px 11px;
 }
 .t-input-action > .t-icon-button { position: relative; inset: auto; }
 @media (pointer: coarse), (max-width: 760px) {
-  .t-input-action { --t-field-height: 48px; }
+  .t-input-action { --t-field-height: 36px; }
 }
 
 /* Joined field/action: one straight seam, rounding only on the outside. */
@@ -786,3 +788,6 @@ input:is([type="checkbox"], [type="radio"]):not(.switch, [role="switch"]):disabl
   border-start-end-radius: 6px;
   border-end-end-radius: 6px;
 }
+
+/* The inset remove action fits inside a 32px information label. */
+:is(.t-label, .t-tag) > .t-remove { --t-control-min: 28px; --t-icon-button-size: 28px; }

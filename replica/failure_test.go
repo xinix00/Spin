@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,14 +179,13 @@ func TestIncompleteBatchNeverBecomesRestorePoint(t *testing.T) {
 			generation := f.rep.Status().Generation
 			f.clock.Add(time.Minute)
 			f.write(t, next)
-			parts := 0
+			var parts atomic.Int32 // segments travel several at a time
 			f.objects.setHook(func(method, key string, data []byte) error {
 				if method != "put" {
 					return nil
 				}
 				if strings.HasSuffix(key, ".seg") {
-					parts++
-					if failure == "part" && parts == 2 {
+					if failure == "part" && parts.Add(1) == 2 {
 						return errInjected
 					}
 				}
@@ -855,10 +855,11 @@ func TestCompactionPreservesShrinkThenGrow(t *testing.T) {
 type cancelStore struct {
 	ObjectStore
 	entered chan struct{}
+	once    *sync.Once // segments travel several at a time
 }
 
 func (s cancelStore) Put(ctx context.Context, key string, data []byte) error {
-	close(s.entered)
+	s.once.Do(func() { close(s.entered) })
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -866,7 +867,7 @@ func TestCloseCancelsSyncBeforeReleasingRegistration(t *testing.T) {
 	f := newFixture(t)
 	f.write(t, []byte("close"))
 	entered := make(chan struct{})
-	f.rep.s3 = cancelStore{ObjectStore: f.objects, entered: entered}
+	f.rep.s3 = cancelStore{ObjectStore: f.objects, entered: entered, once: &sync.Once{}}
 	synced := make(chan error, 1)
 	go func() { synced <- f.rep.Sync(context.Background()) }()
 	select {

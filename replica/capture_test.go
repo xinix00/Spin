@@ -25,11 +25,10 @@ func (d *countingDatabase) WithReadTransaction(ctx context.Context, fn func() er
 	return err
 }
 
-// A snapshot taken while the Spin serves goes in short transactions and
-// still restores to the database as it was when the copy finished: pages
-// written during the copy are read again. A snapshot taken before the
-// Spin opens is one transaction.
-func TestLiveSnapshotStaysConsistentAndOpeningSnapshotIsOneTransaction(t *testing.T) {
+// A snapshot goes in short transactions while the Spin serves and still
+// restores to the database as it was when the copy finished: pages written
+// during the copy are read again.
+func TestLiveSnapshotStaysConsistent(t *testing.T) {
 	bucket := &fakeBucket{objects: map[string][]byte{}}
 	server := httptest.NewServer(bucket)
 	defer server.Close()
@@ -71,9 +70,6 @@ func TestLiveSnapshotStaysConsistentAndOpeningSnapshotIsOneTransaction(t *testin
 	// A generation past its limit renews in the background, one transaction
 	// per segment again.
 	source.config.Generation = 0
-	if source.SnapshotRequiredBeforeServing() != "" {
-		t.Fatal("an old generation must not block the opening")
-	}
 	if source.SnapshotReason() == "" {
 		t.Fatal("an old generation is due for a background snapshot")
 	}
@@ -103,23 +99,4 @@ func TestLiveSnapshotStaysConsistentAndOpeningSnapshotIsOneTransaction(t *testin
 	}
 	restored.Close()
 	restoredReplica.Close()
-
-	// Before a Spin opens, the copy is one transaction.
-	opening, openingDB := openReplicated(t, config, "two.example.test", dir+"/two.db")
-	defer opening.Close()
-	defer openingDB.Close()
-	if err := openingDB.WriteFile("large", first); err != nil {
-		t.Fatal(err)
-	}
-	counting := &countingDatabase{testDatabase: openingDB}
-	opening.Attach(counting)
-	if opening.SnapshotRequiredBeforeServing() == "" {
-		t.Fatal("a Spin without a generation must copy before it opens")
-	}
-	if err := opening.SyncAtOpen(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if counting.calls != 1 {
-		t.Fatalf("the opening snapshot used %d read transactions; expected one", counting.calls)
-	}
 }
