@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -51,16 +52,22 @@ func (r *Replica) loadLayout(ctx context.Context, generation string) (*layout, e
 		return nil, err
 	}
 	l := &layout{generation: generation, windows: map[int][]window{}}
-	seqs := map[int64]bool{}
+	var keys []string
 	for _, object := range objects {
 		rest := strings.TrimPrefix(object.Key, prefix)
-		if rest != "snapshot" && !(strings.HasPrefix(rest, "L0/") && strings.HasSuffix(rest, ".json")) && !(strings.HasPrefix(rest, "L") && strings.HasSuffix(rest, "/complete")) {
-			continue
+		if rest == "snapshot" || (strings.HasPrefix(rest, "L0/") && strings.HasSuffix(rest, ".json")) || (strings.HasPrefix(rest, "L") && strings.HasSuffix(rest, "/complete")) {
+			keys = append(keys, object.Key)
 		}
-		m, err := r.getManifest(ctx, generation, object.Key)
-		if err != nil {
-			return nil, err
-		}
+	}
+	manifests, err := r.getManifests(ctx, generation, keys)
+	if err != nil {
+		return nil, err
+	}
+	seqs := map[int64]bool{}
+	for index, key := range keys {
+		rest := strings.TrimPrefix(key, prefix)
+		m := manifests[index]
+		object := Object{Key: key}
 		switch {
 		case rest == "snapshot":
 			if m.Level != 0 || m.FirstSeq != 1 || m.Seq != 1 {
@@ -90,6 +97,53 @@ func (r *Replica) loadLayout(ctx context.Context, generation string) (*layout, e
 // errCommitGap: a window's commits do not follow each other. Nothing merges
 // across it, so the generation cannot thin out any more; it ends.
 var errCommitGap = errors.New("cannot merge a gap in commit sequence")
+
+// manifestFetchers is how many manifests are fetched at once. A generation
+// whose compaction was stuck for a day holds thousands of them, and one GET
+// after another made a start wait minutes for its layout.
+const manifestFetchers = 8
+
+// getManifests fetches manifests in parallel, in the order of keys.
+func (r *Replica) getManifests(ctx context.Context, generation string, keys []string) ([]manifest, error) {
+	out := make([]manifest, len(keys))
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		mu       sync.Mutex
+		next     int
+		firstErr error
+		workers  sync.WaitGroup
+	)
+	for worker := 0; worker < min(manifestFetchers, len(keys)); worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				mu.Lock()
+				if next >= len(keys) || firstErr != nil {
+					mu.Unlock()
+					return
+				}
+				index := next
+				next++
+				mu.Unlock()
+				m, err := r.getManifest(ctx, generation, keys[index])
+				if err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = err
+						cancel()
+					}
+					mu.Unlock()
+					return
+				}
+				out[index] = m
+			}
+		}()
+	}
+	workers.Wait()
+	return out, firstErr
+}
 
 func (r *Replica) compact(ctx context.Context, generation string) error {
 	r.archiveMu.Lock()

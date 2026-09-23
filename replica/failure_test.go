@@ -1098,3 +1098,40 @@ func TestAFailedRenewalLetsTheGenerationGoOn(t *testing.T) {
 	}
 	f.check(t, f.rep.getMarker().Generation, time.Time{}, []byte("three"))
 }
+
+// A restore says how far it is, for the page that waits on it: bytes of the
+// total, ending at all of them. Parts arrive ahead of the one being applied
+// and still go in order, so the database is the one that was shipped.
+func TestARestoreReportsItsProgressAndKeepsOrder(t *testing.T) {
+	f := newFixture(t)
+	for index := 0; index < 6; index++ {
+		f.clock.Add(time.Minute)
+		f.write(t, bytes.Repeat([]byte{byte('a' + index)}, 40<<10))
+		f.sync(t)
+	}
+	config := Config{SegmentBytes: 4096, Schedule: []Level{{Window: 15 * time.Minute, Keep: 2 * time.Hour}, {Window: time.Hour, Keep: 24 * time.Hour}}}
+	into := t.TempDir()
+	restored, err := NewWithOptions(config, t.Name()+"-restored", into+"/restored.db", vfs.Find(""), nil, Options{Objects: f.objects, Now: f.clock.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	// The restored replica reads the source's domain from the bucket.
+	restored.domain = f.rep.domain
+	var messages []string
+	restored.Progress = func(message string) { messages = append(messages, message) }
+	if err := restored.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) == 0 || !strings.Contains(messages[len(messages)-1], "(100%)") {
+		t.Fatalf("restore progress = %q", messages)
+	}
+	db, err := openTestDatabase(into+"/restored.db", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if got, err := db.ReadFile("state"); err != nil || !bytes.Equal(got, bytes.Repeat([]byte("f"), 40<<10)) {
+		t.Fatalf("restored %d bytes, %v", len(got), err)
+	}
+}

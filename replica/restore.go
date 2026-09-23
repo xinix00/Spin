@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -36,13 +37,24 @@ func (r *Replica) restoreInto(ctx context.Context, generation string, at time.Ti
 	// Which pages this generation ever shipped, so a chain that never held
 	// them is caught here instead of by SQLite (coverage.go).
 	shipped := pageSet{}
+	var refs []partRef
+	var total int64
+	for _, m := range plan {
+		refs = append(refs, m.Parts...)
+		for _, ref := range m.Parts {
+			total += ref.Size
+		}
+	}
+	next, stop := r.prefetchParts(ctx, refs, restorePrefetch)
+	defer stop()
+	progress := restoreProgress{r: r, total: total, started: time.Now()}
 	for _, m := range plan {
 		// A merged shrink-then-grow must clear truncated pages from the baseline.
 		if err := file.Truncate(m.MinSize); err != nil {
 			return marker{}, err
 		}
 		for _, ref := range m.Parts {
-			seg, err := r.readPart(ctx, ref)
+			seg, err := next()
 			if err != nil {
 				return marker{}, err
 			}
@@ -65,6 +77,7 @@ func (r *Replica) restoreInto(ctx context.Context, generation string, at time.Ti
 			result.Size = seg.DBSize
 			result.PageSize = seg.PageSize
 			result.Bytes += ref.Size
+			progress.add(ref.Size)
 		}
 		result.Seq = m.Seq
 		result.At = m.At
@@ -144,6 +157,86 @@ func (r *Replica) restoreInto(ctx context.Context, generation string, at time.Ti
 		return marker{}, fmt.Errorf("finish restore: %w", err)
 	}
 	return result, nil
+}
+
+// restorePrefetch is how many parts a restore fetches ahead of the one it
+// applies: the parts go in order, the network does not have to.
+const restorePrefetch = 4
+
+// prefetchParts fetches parts ahead, at most ahead of them unapplied, and
+// hands them out in order.
+func (r *Replica) prefetchParts(ctx context.Context, refs []partRef, ahead int) (next func() (segment, error), stop func()) {
+	type fetched struct {
+		seg segment
+		err error
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	results := make([]chan fetched, len(refs))
+	for index := range results {
+		results[index] = make(chan fetched, 1)
+	}
+	slots := make(chan struct{}, ahead)
+	go func() {
+		for index, ref := range refs {
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			go func() {
+				seg, err := r.readPart(ctx, ref)
+				results[index] <- fetched{seg, err}
+			}()
+		}
+	}()
+	position := 0
+	next = func() (segment, error) {
+		if position >= len(results) {
+			return segment{}, errors.New("restore asked for more parts than the plan has")
+		}
+		select {
+		case got := <-results[position]:
+			position++
+			<-slots
+			return got.seg, got.err
+		case <-ctx.Done():
+			return segment{}, ctx.Err()
+		}
+	}
+	return next, cancel
+}
+
+// restoreProgress says how far a restore has come, to the page that waits
+// for it (Progress).
+type restoreProgress struct {
+	r       *Replica
+	total   int64
+	done    int64
+	started time.Time
+	told    time.Time
+}
+
+func (p *restoreProgress) add(bytes int64) {
+	p.done += bytes
+	if time.Since(p.told) < 2*time.Second && p.done < p.total {
+		return
+	}
+	p.told = time.Now()
+	if p.r.Progress == nil || p.total <= 0 {
+		return
+	}
+	gib := func(value int64) string {
+		return strings.Replace(fmt.Sprintf("%.1f GiB", float64(value)/(1<<30)), ".", ",", 1)
+	}
+	message := fmt.Sprintf("Database uit de replica halen · %s van %s (%d%%)", gib(p.done), gib(p.total), p.done*100/p.total)
+	if spent := time.Since(p.started).Seconds(); spent > 1 {
+		rate := float64(p.done) / spent
+		message += fmt.Sprintf(" · %.0f MiB/s", rate/(1<<20))
+		if rate > 0 && p.done < p.total {
+			message += fmt.Sprintf(" · nog ~%d min", int(float64(p.total-p.done)/rate/60)+1)
+		}
+	}
+	p.r.Progress(message)
 }
 
 func writeAt(file File, data []byte, offset int64) error {
