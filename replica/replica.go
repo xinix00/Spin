@@ -74,6 +74,12 @@ type marker struct {
 	// new one's first commit: a restart in the middle of the copy continues
 	// it instead of copying everything again (Prepare).
 	Previous *marker `json:"previous,omitempty"`
+	// Uncertain is a commit whose manifest PUT has no known outcome: an error
+	// after the request left, or a stop right after it. The next sync looks
+	// in the bucket whether it is there, and counts it or tries its sequence
+	// again. A failed PUT used to end the generation, so one 503 from the
+	// object store cost a copy of the whole database.
+	Uncertain int64 `json:"uncertain,omitempty"`
 }
 
 // renewal is the marker of a new generation that takes over from current.
@@ -137,6 +143,9 @@ type Replica struct {
 	stop        chan struct{}
 	stopOnce    sync.Once
 	lastCompact time.Time
+	// renewAfter holds a renewal back after one failed: meanwhile the
+	// generation it renews goes on shipping changes.
+	renewAfter time.Time
 	// now is the clock; tests move it.
 	now func() time.Time
 }
@@ -287,23 +296,31 @@ func (r *Replica) Prepare(ctx context.Context) error {
 	// and a changed destination keep their old behaviour; the other two cases
 	// are what guard.go is for.
 	if err != nil || (stored.Version == formatVersion && stored.Destination == r.destinationID()) {
-		from, interrupted, guardErr := r.adoptLocal(ctx, stored, err == nil)
+		decision, guardErr := r.adoptLocal(ctx, stored, err == nil)
 		if guardErr != nil {
 			return guardErr
 		}
-		if from != "" {
-			r.logger.Warn("replica: the bucket is ahead of this database; restoring instead of continuing",
-				"domain", r.domain, "generation", from, "local_generation", stored.Generation, "local_seq", stored.Seq)
-			return r.restoreCurrent(ctx, from)
-		}
-		if interrupted {
-			// The commit reached the bucket, the marker write that records it
-			// did not. The database holds that commit and the writes since, so
-			// it stays; a fresh generation keeps the sequence the bucket holds
-			// from being reused for other data (guard.go).
-			r.logger.Warn("replica: the bucket holds a commit this database's marker never recorded; the database stays and the next sync starts a fresh generation",
-				"domain", r.domain, "generation", stored.Generation, "local_seq", stored.Seq)
-			stored.Complete = false
+		switch {
+		case decision.restoreFrom != "":
+			r.logger.Warn("replica: the bucket moved to a generation this database never made, and it has nothing unshipped; restoring that generation",
+				"domain", r.domain, "generation", decision.restoreFrom, "local_generation", stored.Generation, "local_seq", stored.Seq)
+			return r.restoreCurrent(ctx, decision.restoreFrom)
+		case decision.continueAt != nil:
+			// A commit reached the bucket and the marker write that records it
+			// did not (guard.go): continue at the bucket's tip, with the pages
+			// the dirty log names since the marker.
+			r.logger.Warn("replica: the bucket holds commits past this marker; the generation continues at the bucket's tip",
+				"domain", r.domain, "generation", stored.Generation, "local_seq", stored.Seq, "bucket_seq", decision.continueAt.Seq)
+			stored = *decision.continueAt
+			pages, logErr := r.tracker.log.read(decision.logGeneration, decision.logSeq)
+			if logErr != nil {
+				return fmt.Errorf("read the dirty log again: %w", logErr)
+			}
+			return r.continueGeneration(stored, pages)
+		case decision.fresh != "":
+			r.logger.Warn("replica: "+decision.fresh+"; a new generation is copied in the background", "domain", r.domain)
+			r.freshReason = decision.fresh
+			return r.tracker.rewriteLog("", 0)
 		}
 	}
 	switch {
@@ -344,22 +361,28 @@ func (r *Replica) Prepare(ctx context.Context) error {
 			r.freshReason = "the dirty log of generation " + stored.Generation + " is unusable (" + err.Error() + ")"
 			return r.tracker.rewriteLog("", 0)
 		}
-		if err := r.setMarker(stored); err != nil {
-			return err
-		}
-		r.tracker.markPages(pages)
-		if err := r.tracker.rewriteLog(stored.Generation, stored.Seq); err != nil {
-			return fmt.Errorf("start the dirty log: %w", err)
-		}
-		r.mu.Lock()
-		r.status.Generation, r.status.Complete = stored.Generation, stored.Complete
-		r.mu.Unlock()
-		if !stored.Clean {
-			r.logger.Info("replica: the database changed after its last sync; the generation continues with the pages the dirty log names", "domain", r.domain, "generation", stored.Generation, "pages", len(pages))
-		}
-		return nil
+		return r.continueGeneration(stored, pages)
 	}
 	return r.tracker.rewriteLog("", 0)
+}
+
+// continueGeneration makes stored the marker and pages the pages to ship
+// next: a start that goes on where the last one stopped.
+func (r *Replica) continueGeneration(stored marker, pages []uint32) error {
+	if err := r.setMarker(stored); err != nil {
+		return err
+	}
+	r.tracker.markPages(pages)
+	if err := r.tracker.rewriteLog(stored.Generation, stored.Seq); err != nil {
+		return fmt.Errorf("start the dirty log: %w", err)
+	}
+	r.mu.Lock()
+	r.status.Generation, r.status.Complete = stored.Generation, stored.Complete
+	r.mu.Unlock()
+	if !stored.Clean {
+		r.logger.Info("replica: the database changed after its last sync; the generation continues with the pages the dirty log names", "domain", r.domain, "generation", stored.Generation, "pages", len(pages))
+	}
+	return nil
 }
 
 // SnapshotDue reports whether the next sync copies the whole database.
@@ -379,6 +402,8 @@ func (r *Replica) SnapshotReason() string {
 		return "no generation yet"
 	case !current.Complete:
 		return "the last sync of generation " + current.Generation + " did not complete"
+	case r.now().Before(r.renewAfter):
+		return ""
 	case r.now().Sub(current.StartedAt) > r.config.Generation:
 		return fmt.Sprintf("generation %s is %s old, the limit is %s", current.Generation, r.now().Sub(current.StartedAt).Round(time.Hour), r.config.Generation)
 	case current.Bytes > 2*current.Size+64<<20:
@@ -477,6 +502,41 @@ func (r *Replica) Sync(ctx context.Context) error {
 	return err
 }
 
+// renewalBackoff is how long a failed renewal waits before it is tried again.
+const renewalBackoff = 10 * time.Minute
+
+// resolveUncertain settles a commit whose manifest PUT has no known outcome:
+// there, it counts, and the pages it carried go again with the next commit
+// (they were put back when the sync failed); not there, its sequence is free.
+func (r *Replica) resolveUncertain(ctx context.Context, current marker) (marker, error) {
+	prefix := r.generationPrefix(current.Generation) + fmt.Sprintf("L0/%012d-", current.Uncertain)
+	objects, err := r.s3.List(ctx, prefix)
+	if err != nil {
+		return current, err
+	}
+	landed := false
+	for _, object := range objects {
+		if !strings.HasSuffix(object.Key, ".json") {
+			continue
+		}
+		m, err := r.getManifest(ctx, current.Generation, object.Key)
+		if err != nil {
+			return current, err
+		}
+		landed = true
+		current.Seq = max(current.Seq, m.Seq)
+		if m.At.After(current.At) {
+			current.At = m.At
+		}
+	}
+	r.logger.Info("replica: a commit whose outcome was unknown is settled", "domain", r.domain, "generation", current.Generation, "seq", current.Uncertain, "in_bucket", landed)
+	current.Uncertain = 0
+	if err := r.setMarker(current); err != nil {
+		return current, err
+	}
+	return current, nil
+}
+
 // uploadParts sends the spooled parts to the bucket, a few at a time: one PUT
 // after another leaves the line idle for a round trip per segment, which is
 // most of the time a copy of gigabytes takes. The refs keep the spool order.
@@ -568,14 +628,41 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		return err
 	}
 	current := r.getMarker()
+	if current.Complete && current.Uncertain != 0 {
+		resolved, err := r.resolveUncertain(ctx, current)
+		if err != nil {
+			return err
+		}
+		current = resolved
+	}
 	// An incomplete attempt is never resumed: a fresh snapshot and fresh keys
 	// also make a timeout after a successful PUT safe to retry.
 	fresh := !current.Complete || r.compactionDue(current)
 	reason := r.SnapshotReason()
+	renewed := false
 	if fresh {
 		current = r.renewal(current)
 		if err := r.setMarker(current); err != nil {
 			return err
+		}
+		if current.Previous != nil {
+			// A renewal that does not finish leaves the generation it renews
+			// as it was: that one goes on with what changed since its last
+			// commit, and the renewal waits before it is tried again. Without
+			// this, one failed upload meant the next sync copied everything
+			// again, and a copy that keeps failing meant nothing shipped.
+			previous := *current.Previous
+			defer func() {
+				if renewed || !r.tracker.resetToLog() {
+					return
+				}
+				previous.Clean = false
+				if err := r.setMarker(previous); err != nil {
+					return
+				}
+				r.renewAfter = r.now().Add(renewalBackoff)
+				r.logger.Warn("replica: the renewal did not finish; the generation it renews goes on", "domain", r.domain, "generation", previous.Generation, "retry_after", renewalBackoff)
+			}()
 		}
 	}
 	started := r.now()
@@ -640,7 +727,11 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 				r.tracker.putBack(captured.pages)
 				if publishing {
 					r.markerMu.Lock()
-					r.marker.Complete = false
+					if fresh {
+						r.marker.Complete = false
+					} else {
+						r.marker.Uncertain = m.Seq
+					}
 					r.marker.Clean = false
 					_ = r.writeMarker(r.marker)
 					r.markerMu.Unlock()
@@ -658,9 +749,15 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		}
 		publishing = true
 		if err := r.putManifest(ctx, key, m); err != nil {
-			// The server may have accepted the commit despite a lost response. Never
-			// reuse its sequence for different data on the next attempt.
-			current.Complete = false
+			// The server may have accepted the commit despite a lost response,
+			// so its sequence is never reused blindly: the next sync looks
+			// whether it is there (resolveUncertain). A snapshot that may not
+			// be there ends its generation instead.
+			if fresh {
+				current.Complete = false
+			} else {
+				current.Uncertain = m.Seq
+			}
 			current.Clean = false
 			_ = r.setMarker(current)
 			return err
@@ -669,6 +766,7 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 			if err := r.s3.Put(ctx, r.currentKey(), []byte(current.Generation)); err != nil {
 				return err
 			}
+			renewed = true
 		}
 		current.Seq = m.Seq
 		current.At = m.At
@@ -680,6 +778,15 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 			current.Bytes += part.Size
 		}
 		if err := r.setMarker(current); err != nil {
+			// The commit is in the bucket; only its record here failed. Memory
+			// keeps the truth and the next sync goes on from it; a start that
+			// finds the older marker continues at the bucket's tip (guard.go).
+			r.markerMu.Lock()
+			current.Clean = false
+			current.Destination = r.destinationID()
+			r.marker = current
+			r.markerMu.Unlock()
+			committed = true
 			return err
 		}
 		committed = true
@@ -730,6 +837,20 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		// that every 15 seconds.
 		r.lastCompact = frontier
 		if err := r.compact(ctx, current.Generation); err != nil {
+			if errors.Is(err, errCommitGap) {
+				// The generation stays restorable as it is but can never be
+				// compacted again; a stuck one read every manifest of it every
+				// minute for days. It ends, like after a write the replica
+				// never saw, and the next sync starts a fresh one.
+				r.markerMu.Lock()
+				r.marker.Complete = false
+				writeErr := r.writeMarker(r.marker)
+				r.markerMu.Unlock()
+				r.logger.Warn("replica: the generation has a gap in its commit sequence; the next sync starts a fresh generation", "domain", r.domain, "generation", current.Generation)
+				if writeErr != nil {
+					return writeErr
+				}
+			}
 			return fmt.Errorf("compact: %w", err)
 		}
 	}
@@ -739,7 +860,7 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 // compactionDue: the changes outweigh the database, or the generation is a
 // configured generation age is reached; a fresh snapshot keeps restores short.
 func (r *Replica) compactionDue(current marker) bool {
-	if !current.Complete {
+	if !current.Complete || r.now().Before(r.renewAfter) {
 		return false
 	}
 	if current.Bytes > 2*current.Size+64<<20 {

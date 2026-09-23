@@ -45,16 +45,62 @@ seeing every write, and that price is what the guards below pay.
 | A crash mid-restore | The restore composes in a scratch file and publishes under a durable intent, retried at the next start |
 | An interrupted prune | Visibility is removed before data, so what remains is orphaned data, never an advertised point that cannot be fetched |
 | The page size changes | A new generation with a full snapshot; old page numbers mean nothing |
-| A gap in the commit sequence | Compaction refuses to merge across it |
+| A gap in the commit sequence | Compaction refuses to merge across it, and the generation ends: the next sync starts a fresh one |
+| **Two processes on one database** (a rolling update on a shared volume) | **The lease next to the database, `lease.go`: the new process waits until the old one lets go** |
+| **A commit PUT whose outcome is unknown** (a 503, a lost reply) | **`Uncertain` in the marker: the next sync looks in the bucket, counts the commit or retries its sequence** |
+| **A stop between a commit and its marker write** | **`adoptLocal` continues at the bucket's tip with the pages the dirty log names since the marker** |
+| **A renewal that fails, or a stop in the middle of one** | **`Previous` in the marker and `resetToLog`: the renewed generation goes on, the renewal waits ten minutes** |
 | **The database grows by pages this replica never saw** | **The commit gate: `growthGap`, `coverage.go`** |
 | **A write that went around the tracking VFS** | **The source guard: `checkSource`, `guard.go`** |
 | **A database that lost writes winning over the replica** | **`adoptLocal`, `guard.go`** |
 | **A composition that is short of the size it records** | **`pageSet.shortfall`, `coverage.go`** |
 | **A composed file SQLite would reject** | **`Options.Verify`, the host's `PRAGMA quick_check`** |
 
-The five in bold are new since 22 September. The four rows above them were
-there all along and held; they are why the bucket was intact while the data was
-still unreachable.
+The first five in bold are new since 22 September, the last four since 23
+September. The rows above them were there all along and held; they are why the
+bucket was intact while the data was still unreachable.
+
+## Crashes: the database here is the truth
+
+On 23 September a crash was followed by a Spin that copied its whole database
+again, after every restart, and ran out of memory doing so. Three causes, and
+one rule that answers all three.
+
+The rule, as Litestream has it: **the database file is the truth for
+everything it wrote.** A crash never makes the bucket more right than the
+file. Litestream's `checkDatabaseBehindReplica` moves its own position to the
+replica's and never writes the replica over the database; neither does this
+package, except for a file that has nothing unshipped and whose bucket moved to
+a generation it never made (a stale copy).
+
+- **One writer.** HopOS starts the new slot of a rolling update while the old
+  one runs, on the same volume: two processes wrote one SQLite file, one dirty
+  log and one generation. That is where the gaps in the commit sequence and the
+  markers behind the bucket came from. The lease (`lease.go`, the equivalent of
+  Litestream's `lock.json`) sits next to the database because both slots share
+  the volume; a holder renews it every five seconds, a start waits until it is
+  released or has not been renewed for thirty. The Spin job also runs with
+  `update_policy: recreate`.
+- **An outcome nobody knows is looked up, not assumed.** A commit PUT that
+  failed or lost its reply used to end the generation, so one 503 from the
+  object store cost a copy of the whole database. The marker now says which
+  sequence is uncertain; the next sync lists it and counts it or retries it.
+  A stop between a commit and its marker write is the same question at start:
+  the bucket's tip is past the marker, the dirty log still names every page
+  since the marker, and the generation continues at the tip.
+- **A renewal never takes the generation it renews with it.** Until the new
+  generation's first commit the dirty log follows the old one, and the marker
+  keeps the old one as `Previous`. A renewal that fails goes back to it, with
+  only the pages that changed since its last commit; a stop in the middle of
+  one continues it at the next start. The renewal is tried again after ten
+  minutes, and meanwhile changes keep shipping.
+
+`TestCrashMatrix` stops a sync at each of these places (a segment, a commit,
+a lost reply, the marker, the dirty log, the clean marker, compaction, and the
+same for a renewal), once followed by a retry in the same process and once by a
+crash and a start. Each time the database keeps every write, nothing is
+restored over it, no whole-database copy follows, and after one more sync the
+bucket restores exactly what the database holds.
 
 ## The failure that produced the bold rows
 
@@ -98,13 +144,18 @@ once, marks the marker incomplete, and clears its own witness, because the
 fresh generation is the remedy and a guard that refuses its own repair is
 worse than no guard.
 
-**Provenance at open** (`adoptLocal`, in `Prepare`). Three outcomes. The local
-marker names the bucket's generation and is at or past its tip: it continues.
-The marker is behind that tip: the replica is provably ahead and wins, which is
-Litestream's `checkDatabaseBehindReplica`. The file has no replica state at all
-while the bucket holds a generation: nothing orders the two, so neither is
-buried. It refuses, names both, and the operator chooses. `AdoptLocalDatabase`
-is the opt-in for "this file is the new truth", and it logs that it was used.
+**Provenance at open** (`adoptLocal`, in `Prepare`). The local marker names the
+bucket's generation and is at or past its tip: it continues. It is behind that
+tip: those commits were this process's own (the lease makes it the only
+writer), so it continues at the tip with what the dirty log names, or starts a
+fresh generation from the file when the log cannot say; it never restores over
+the file, which is what Litestream's `checkDatabaseBehindReplica` does too. The
+bucket moved to a generation this marker never made: a file with nothing
+unshipped is a stale copy and the bucket wins, a file with writes the bucket
+lacks refuses. The file has no replica state at all while the bucket holds a
+generation: nothing orders the two, so neither is buried. It refuses, names
+both, and the operator chooses. `AdoptLocalDatabase` is the opt-in for "this
+file is the new truth", and it logs that it was used.
 
 **Coverage at restore** (`pageSet.shortfall`). While composing, the restore
 records every page it ever wrote. A page the generation never carried is a
@@ -133,6 +184,8 @@ the restore path.
 | `lastPageMatch` | `checkSource`, same idea on the page shipped last |
 | `detectFullCheckpoint` | Not applicable: rollback-journal mode, no checkpoints |
 | `checkDatabaseBehindReplica` | `adoptLocal`, plus the refusal for a file with no provenance |
+| The lease (`lock.json`, conditional PUT) | `lease.go`, next to the database on the shared volume |
+| A snapshot streamed next to the incremental line | A renewal in short transactions with `Previous` to fall back on; while it copies, increments wait (see below) |
 | `IntegrityCheckQuick` on restore | `Options.Verify` |
 | Per-file checksums: not on every object | Size and sha256 on every part, verified on every read |
 | Generations, snapshots, retention | The same, plus tiered windows so points thin out instead of disappearing |
@@ -143,6 +196,11 @@ missed, not which pages it touched, so the remedy is always a fresh snapshot.
 Stronger: every byte in the bucket is checksummed and every commit is atomic.
 
 ## What is still open
+
+- While a renewal copies the whole database (for 8 GiB, tens of minutes) no
+  increments ship; Litestream streams its snapshot beside them. A crash in that
+  window loses nothing (the file and the dirty log hold it, and `Previous`
+  continues), but the bucket lags for as long as the copy takes.
 
 - The change counter only holds while the process runs. Persisting it in the
   marker would extend the guard across restarts, and that needs a format bump.

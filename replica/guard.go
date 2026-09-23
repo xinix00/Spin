@@ -156,86 +156,146 @@ func (r *Replica) rememberSource(seg segment) {
 	r.witnessKnown = true
 }
 
-// remoteTip is where the bucket stands: its current generation and the
-// highest sequence that generation can restore to.
-func (r *Replica) remoteTip(ctx context.Context) (generation string, seq int64, err error) {
+// bucketTip is where the bucket stands: its current generation, the highest
+// sequence that generation can restore to, the time of that commit, and the
+// end of the last window compaction sealed.
+type bucketTip struct {
+	generation string
+	seq        int64
+	at         time.Time
+	sealed     time.Time
+	size       int64 // the database size the tip records
+	bytes      int64 // what a restore of the tip reads
+}
+
+func (r *Replica) remoteTip(ctx context.Context) (bucketTip, error) {
 	data, err := r.s3.Get(ctx, r.currentKey())
 	if errors.Is(err, ErrNotFound) {
-		return "", 0, nil
+		return bucketTip{}, nil
 	}
 	if err != nil {
-		return "", 0, err
+		return bucketTip{}, err
 	}
-	generation = strings.TrimSpace(string(data))
-	if generation == "" {
-		return "", 0, nil
+	tip := bucketTip{generation: strings.TrimSpace(string(data))}
+	if tip.generation == "" {
+		return bucketTip{}, nil
 	}
-	l, err := r.loadLayout(ctx, generation)
+	l, err := r.loadLayout(ctx, tip.generation)
 	if err != nil {
-		return generation, 0, err
+		return tip, err
 	}
 	plan, err := l.plan(time.Time{})
 	if err != nil {
-		return generation, 0, err
+		return tip, err
 	}
 	if len(plan) > 0 {
-		seq = plan[len(plan)-1].Seq
+		tip.seq, tip.at, tip.size = plan[len(plan)-1].Seq, plan[len(plan)-1].At, plan[len(plan)-1].MinSize
 	}
-	return generation, seq, nil
+	for _, m := range plan {
+		for _, part := range m.Parts {
+			tip.bytes += part.Size
+		}
+	}
+	for _, windows := range l.windows {
+		for _, w := range windows {
+			if w.end.After(tip.sealed) {
+				tip.sealed = w.end
+			}
+		}
+	}
+	return tip, nil
 }
 
-// adoptLocal decides what happens when a database file is already there.
-// Three outcomes, and the middle one is what this whole file is for:
+// adoption is what Prepare does with a database that is already here.
+type adoption struct {
+	// restoreFrom replaces the database with this generation: only for a
+	// database with nothing unshipped whose bucket moved to a generation it
+	// never made.
+	restoreFrom string
+	// continueAt is the marker to continue with: the bucket holds commits of
+	// this database's own generation past its marker, which a stop between a
+	// commit and the marker write leaves. The dirty log to continue with is
+	// the one of logGeneration at logSeq.
+	continueAt    *marker
+	logGeneration string
+	logSeq        int64
+	// fresh says why a new generation starts from the database here.
+	fresh string
+}
+
+// adoptLocal decides what happens when a database file is already there. The
+// file is the truth for everything it wrote: SQLite and the lease make this
+// process its only writer, so a commit in the bucket past the marker is one of
+// its own whose marker write did not happen. Litestream's
+// checkDatabaseBehindReplica does the same: it moves its own position to the
+// replica's and never writes the replica over the database.
 //
-//   - the local marker names the bucket's generation and is at or past its
-//     tip: the database is current, it continues (the normal path);
-//   - the local marker is behind that tip while it is complete and clean:
-//     nothing was written since the commit it names, so writes this file once
-//     had are missing, the replica is provably ahead and wins. This is
-//     Litestream's checkDatabaseBehindReplica;
+//   - the marker names the bucket's generation and is at or past its tip: it
+//     continues (the normal path);
+//   - it names that generation but is behind its tip: the dirty log still
+//     names every page written since the marker, a superset of what those
+//     commits carried, so the generation continues at the tip with them.
+//     Without that log a new generation starts from the file;
+//   - the bucket's generation is one this marker never made: with nothing
+//     unshipped here the bucket wins (the file is a stale copy), with writes
+//     here that the bucket does not have, nothing orders the two and it
+//     refuses, naming both;
 //   - the file has no replica state at all while the bucket holds a
-//     generation: nothing orders the two, so neither is buried. It refuses,
-//     names both, and the operator chooses. Measured on 22 September: a
-//     database created from nothing was adopted as the truth, its fresh
-//     snapshot became the current generation, and a day of real data sat one
-//     pointer away in the bucket.
-//
-// A marker that is behind but interrupted (incomplete) or unclean is the
-// fourth case, and it is not a database that lost writes: a commit reached
-// the bucket while the marker write that records it did not, which is the
-// window sync already guards with an incomplete marker. The file then holds
-// that commit and everything written since, so it is ahead, not behind, and
-// restoring would throw those writes away. interrupted says so: the file
-// stays, and the next sync starts a fresh generation, because the sequence
-// the bucket already holds may never be reused for other data.
-func (r *Replica) adoptLocal(ctx context.Context, stored marker, usable bool) (restoreFrom string, interrupted bool, err error) {
-	generation, seq, err := r.remoteTip(ctx)
-	if err != nil || generation == "" {
-		return "", false, err
+//     generation: it refuses too. Measured on 22 September: a database
+//     created from nothing was adopted as the truth, its fresh snapshot became
+//     the current generation, and a day of real data sat one pointer away.
+func (r *Replica) adoptLocal(ctx context.Context, stored marker, usable bool) (adoption, error) {
+	tip, err := r.remoteTip(ctx)
+	if err != nil || tip.generation == "" {
+		return adoption{}, err
 	}
-	r.remoteGeneration, r.remoteSeq = generation, seq
-	if usable && stored.Generation == generation {
-		if stored.Seq >= seq {
-			return "", false, nil
+	r.remoteGeneration, r.remoteSeq = tip.generation, tip.seq
+	switch {
+	case usable && stored.Generation == tip.generation && stored.Seq >= tip.seq:
+		return adoption{}, nil
+	case usable && stored.Generation == tip.generation:
+		logGeneration, logSeq := stored.Generation, stored.Seq
+		if _, err := r.tracker.log.read(logGeneration, logSeq); err != nil && stored.Previous != nil {
+			// A renewal whose snapshot reached the bucket while its marker
+			// write did not: the dirty log still follows the generation it
+			// renewed, and names every page written since that one's last
+			// commit, a superset of what changed after the snapshot.
+			logGeneration, logSeq = stored.Previous.Generation, stored.Previous.Seq
 		}
-		if stored.Complete && stored.Clean {
-			return generation, false, nil
+		if _, err := r.tracker.log.read(logGeneration, logSeq); err != nil {
+			return adoption{fresh: fmt.Sprintf("the bucket holds commits of generation %s past this marker (%d of %d) and the dirty log cannot say what changed since", stored.Generation, stored.Seq, tip.seq)}, nil
 		}
-		return "", true, nil
-	}
-	if usable && stored.Generation > generation {
+		next := stored
+		next.Seq, next.Complete, next.Clean = tip.seq, true, false
+		if next.PageSize == 0 && stored.Previous != nil {
+			next.PageSize = stored.Previous.PageSize
+		}
+		if next.Size == 0 {
+			next.Size = tip.size
+		}
+		next.Bytes = max(next.Bytes, tip.bytes)
+		if tip.at.After(next.At) {
+			next.At = tip.at
+		}
+		if tip.sealed.After(next.SealedAt) {
+			next.SealedAt = tip.sealed
+		}
+		next.Previous = nil
+		return adoption{continueAt: &next, logGeneration: logGeneration, logSeq: logSeq}, nil
+	case usable && stored.Generation > tip.generation:
 		// Generation ids are time ordered: ours started later, so this file
-		// is the newer lineage and takes over with a fresh generation.
-		return "", false, nil
-	}
-	if usable {
-		return generation, false, nil
-	}
-	if r.config.AdoptLocalDatabase {
+		// is the newer lineage (a renewal in progress, see Prepare).
+		return adoption{}, nil
+	case usable && stored.Complete && stored.Clean:
+		return adoption{restoreFrom: tip.generation}, nil
+	case usable:
+		return adoption{}, fmt.Errorf("%w: this database holds writes of generation %s that the bucket's generation %s (%d commits) does not; restore that one, or set AdoptLocalDatabase to declare this file the new truth",
+			errUnprovenDatabase, stored.Generation, tip.generation, tip.seq)
+	case r.config.AdoptLocalDatabase:
 		r.logger.Warn("replica: adopting a database without replica state over the generation in the bucket, as configured",
-			"domain", r.domain, "generation", generation)
-		return "", false, nil
+			"domain", r.domain, "generation", tip.generation)
+		return adoption{}, nil
 	}
-	return "", false, fmt.Errorf("%w: generation %s holds %d commits; restore it, or set AdoptLocalDatabase to declare this file the new truth",
-		errUnprovenDatabase, generation, seq)
+	return adoption{}, fmt.Errorf("%w: generation %s holds %d commits; restore it, or set AdoptLocalDatabase to declare this file the new truth",
+		errUnprovenDatabase, tip.generation, tip.seq)
 }

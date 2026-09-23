@@ -1426,7 +1426,23 @@ function replicationLine(replication){
   if(replication.last_error)parts.push(`fout: ${esc(replication.last_error)}`);
   return `<span class="hint ${replication.last_error?'warning-text':''}">${parts.join(' · ')}</span>`;
 }
-function renderStorage(){const root=region('storage-line'),storage=snapshot.storage||{};if(!root)return;if(storage.error){root.innerHTML=`<span class="hint">Opslag · ${esc(storage.error)}</span>`;return;}if(!storage.database_bytes){root.innerHTML='';return;}root.innerHTML=`<span class="hint">${icon('database')} Opslag op de server · database ${esc(formatBytes(storage.database_bytes))} · ${storage.objects} snapshots en bijlagen ${esc(formatBytes(storage.object_bytes))}${storage.prunable?` · ${storage.prunable} oude versie${storage.prunable===1?'':'s'} wacht op opruimen`:''}</span>${replicationLine(storage.replication)}`;}
+// Spin's verdict on itself: the replica, the heap, a recent restart. The
+// backup panel shows every finding; a warning or a problem also shows beside
+// the server status, wherever you are.
+function renderHealth(health){
+  const block=document.getElementById('health-block'),flag=document.getElementById('health-flag');
+  if(!block||!flag)return;
+  if(!health){block.innerHTML='';flag.hidden=true;return;}
+  const labels={ok:['check_circle','Gezond'],info:['info','Gezond, met een opmerking'],warning:['warning','Let op'],error:['error','Probleem']},[symbol,label]=labels[health.level]||labels.ok;
+  const findings=(health.findings||[]).map(finding=>`<li class="health-${esc(finding.level)}">${icon((labels[finding.level]||labels.info)[0])}<span>${esc(finding.message)}</span></li>`).join('');
+  block.className=`health-block health-${esc(health.level)}`;
+  block.innerHTML=`<div class="health-verdict">${icon(symbol)}<strong>${esc(label)}</strong></div>${findings?`<ul class="health-findings">${findings}</ul>`:'<p class="hint">Replica, geheugen en server: niets gevonden.</p>'}`;
+  flag.hidden=health.level!=='warning'&&health.level!=='error';
+  flag.className=`health-flag health-${esc(health.level)}`;
+  flag.textContent=health.level==='error'?' · probleem':' · let op';
+  flag.title=(health.findings||[]).map(finding=>finding.message).join('\n');
+}
+function renderStorage(){const root=region('storage-line'),storage=snapshot.storage||{};renderHealth(storage.health);if(!root)return;if(storage.error){root.innerHTML=`<span class="hint">Opslag · ${esc(storage.error)}</span>`;return;}if(!storage.database_bytes){root.innerHTML='';return;}root.innerHTML=`<span class="hint">${icon('database')} Opslag op de server · database ${esc(formatBytes(storage.database_bytes))} · ${storage.objects} snapshots en bijlagen ${esc(formatBytes(storage.object_bytes))}${storage.prunable?` · ${storage.prunable} oude versie${storage.prunable===1?'':'s'} wacht op opruimen`:''}</span>${replicationLine(storage.replication)}`;}
 function renderRunners(){
   renderRunnerDownloads();renderStorage();renderReplicaGenerations();
   const root=region('runner-list');

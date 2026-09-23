@@ -137,6 +137,28 @@ func (t *tracker) rewriteLog(generation string, seq int64) error {
 	return t.log.rewrite(generation, seq, pages)
 }
 
+// resetToLog makes the dirty set what the dirty log names: every page written
+// since the generation's last commit. After a renewal that failed, that is
+// what the generation it renewed still has to ship, not every page the copy
+// took. It reports false when the log cannot be trusted for that.
+func (t *tracker) resetToLog() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.log.mu.Lock()
+	if t.log.broken || len(t.pending) > 0 {
+		t.log.mu.Unlock()
+		return false
+	}
+	dirty := make(map[uint32]struct{}, len(t.log.noted))
+	for page := range t.log.noted {
+		dirty[page] = struct{}{}
+	}
+	t.log.mu.Unlock()
+	t.dirty = dirty
+	t.revision++
+	return true
+}
+
 // markAll marks every page of a database of the given size: the start of a
 // generation, or a database whose replica cannot be trusted.
 func (t *tracker) markAll(size int64) {

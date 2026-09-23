@@ -30,10 +30,13 @@ type storageInfo struct {
 	Error         string `json:"error,omitempty"`
 	// Replication is the replica's state, absent when the server has none.
 	Replication *replica.Status `json:"replication,omitempty"`
+	// Health is the verdict on all of the above, with its reasons.
+	Health healthReport `json:"health"`
 }
 
-func (s *Server) storageInfo(ctx context.Context) storageInfo {
-	info := storageInfo{Prunable: len(s.store.PrunableArtifacts())}
+func (s *Server) storageInfo(ctx context.Context) (info storageInfo) {
+	defer func() { info.Health = s.health(info) }()
+	info = storageInfo{Prunable: len(s.store.PrunableArtifacts())}
 	if s.replica != nil {
 		status := s.replica.Status()
 		info.Replication = &status

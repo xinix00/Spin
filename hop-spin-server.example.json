@@ -38,5 +38,6 @@
   "memory_limit": 2147483648,
   "cpu_shares": 1024,
   "max_restarts": -1,
-  "priority": 100
+  "priority": 100,
+  "update_policy": "recreate"
 }

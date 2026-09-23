@@ -171,3 +171,46 @@ func TestSlowOpenAnswersWithItsStage(t *testing.T) {
 	}
 	t.Fatal("the Spin never opened")
 }
+
+// A rolling update runs the old and the new slot side by side on the same
+// volume. The new one does not open a database the old one still holds; it
+// opens it the moment the old one lets go.
+func TestASecondServerWaitsForTheFirstToLetGoOfADatabase(t *testing.T) {
+	dir := t.TempDir()
+	options := func(string) spinserver.ServerOptions { return spinserver.ServerOptions{DisableAuthentication: true} }
+	old := New(Config{DataDir: dir, Domains: []string{"rolling.test"}, WorkerTokenSeed: "seed-token", Options: options})
+	if _, err := old.Open(context.Background(), "rolling.test"); err != nil {
+		t.Fatal(err)
+	}
+	next := New(Config{DataDir: dir, Domains: []string{"rolling.test"}, WorkerTokenSeed: "seed-token", Options: options})
+	defer next.Close()
+	opened := make(chan error, 1)
+	go func() {
+		_, err := next.Open(context.Background(), "rolling.test")
+		opened <- err
+	}()
+	select {
+	case err := <-opened:
+		old.Close()
+		t.Fatalf("the new server opened a database the old one still holds (err %v)", err)
+	case <-time.After(2 * time.Second):
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://rolling.test/api/opening", nil)
+	request.Host = "rolling.test"
+	response := httptest.NewRecorder()
+	next.ServeHTTP(response, request)
+	if !strings.Contains(response.Body.String(), `"stage":"lease"`) {
+		t.Fatalf("while it waits the opening says %s", response.Body.String())
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-opened:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the new server never opened the database the old one let go")
+	}
+}

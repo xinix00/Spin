@@ -64,6 +64,8 @@ type Tenant struct {
 	Server   *spinserver.Server
 	Handler  http.Handler
 	Replica  *replica.Replica
+	// Lease makes this process the database's only writer (replica.Lease).
+	Lease *replica.Lease
 }
 
 type Tenants struct {
@@ -389,9 +391,45 @@ func (t *Tenants) databasePath(domain string) string {
 	return strings.TrimRight(t.config.DataDir, "/") + "/" + domain + ".db"
 }
 
+// open takes the database's lease first: SQLite and the replica both assume
+// one writer, and a rolling update runs the old and the new slot side by side
+// on the same volume. The new one waits until the old one lets go.
 func (t *Tenants) open(domain string) (*Tenant, error) {
 	path := t.databasePath(domain)
 	logger := t.logger.With("tenant", domain)
+	t.setStage(domain, "lease", "Wachten tot een vorig proces deze database loslaat")
+	lease, err := replica.HoldLease(t.ctx, vfs.Find(t.config.StorageVFS), path, logger, func(err error) { t.leaseLost(domain, err) })
+	if err != nil {
+		return nil, fmt.Errorf("database lease: %w", err)
+	}
+	tenant, err := t.openHeld(domain, path, logger)
+	if err != nil {
+		lease.Release()
+		return nil, err
+	}
+	tenant.Lease = lease
+	return tenant, nil
+}
+
+// leaseLost closes a tenant whose database another process has taken: it must
+// not write one more page. The next request opens it again, which waits for
+// the lease like any start.
+func (t *Tenants) leaseLost(domain string, err error) {
+	t.logger.Error("tenant closed: another process holds its database", "tenant", domain, "error", err)
+	t.mu.Lock()
+	tenant := t.tenants[domain]
+	delete(t.tenants, domain)
+	t.mu.Unlock()
+	if tenant == nil {
+		return
+	}
+	_ = tenant.Database.Close()
+	if tenant.Replica != nil {
+		tenant.Replica.Close()
+	}
+}
+
+func (t *Tenants) openHeld(domain, path string, logger *slog.Logger) (*Tenant, error) {
 	vfsName, fsPath := t.config.StorageVFS, ""
 	if vfsName == "" {
 		fsPath = path
@@ -501,6 +539,9 @@ func (t *Tenants) Close() error {
 		}
 		if tenant.Replica != nil {
 			tenant.Replica.Close()
+		}
+		if tenant.Lease != nil {
+			tenant.Lease.Release()
 		}
 		delete(t.tenants, domain)
 	}

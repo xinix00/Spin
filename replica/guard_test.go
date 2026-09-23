@@ -86,10 +86,11 @@ func TestPrepareRefusesToBuryAGenerationWithoutProvenance(t *testing.T) {
 	}
 }
 
-// A database that lost writes does not win over the replica: Litestream's
-// checkDatabaseBehindReplica, in our terms a local marker behind the tip of
-// the generation it names.
-func TestPrepareRestoresWhenTheBucketIsAhead(t *testing.T) {
+// A marker behind the bucket's tip of its own generation is never a reason to
+// write the bucket over the database: this process is the only writer, so the
+// file holds those commits and whatever came after. When the dirty log cannot
+// say what changed since the marker, a new generation starts from the file.
+func TestPrepareNeverRestoresOverItsOwnDatabase(t *testing.T) {
 	bucket := &fakeBucket{objects: map[string][]byte{}}
 	server := httptest.NewServer(bucket)
 	defer server.Close()
@@ -110,29 +111,107 @@ func TestPrepareRestoresWhenTheBucketIsAhead(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored := source.getMarker()
-	if stored.Seq < 2 {
-		t.Fatalf("marker seq = %d; the second sync did not commit", stored.Seq)
-	}
+	generation := stored.Generation
 	if err := database.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// Rewind the local state to before the last commit, the way a database
-	// that lost its newest writes looks.
+	// A marker behind the bucket and a dirty log already past it.
 	stored.Seq--
 	if err := source.setMarker(stored); err != nil {
 		t.Fatal(err)
 	}
 	source.Close()
 
-	replica, restored := openReplicated(t, config, "behind.example.test", dir+"/behind.db")
+	replica, reopened := openReplicated(t, config, "behind.example.test", dir+"/behind.db")
 	defer replica.Close()
-	defer restored.Close()
-	if !replica.Status().Restored {
-		t.Fatalf("status = %+v; the replica was ahead and should have won", replica.Status())
+	defer reopened.Close()
+	if replica.Status().Restored {
+		t.Fatal("the bucket was written over the database")
 	}
-	state, err := restored.ReadFile("state")
-	if err != nil || string(state) != `{"version":2}` {
-		t.Fatalf("restored state = %q, %v", state, err)
+	if state, err := reopened.ReadFile("state"); err != nil || string(state) != `{"version":2}` {
+		t.Fatalf("state = %q, %v", state, err)
+	}
+	if reason := replica.SnapshotReason(); !strings.Contains(reason, "past this marker") {
+		t.Fatalf("snapshot reason = %q", reason)
+	}
+	if err := replica.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if replica.getMarker().Generation == generation {
+		t.Fatal("the generation continued without knowing what changed")
+	}
+}
+
+// The bucket moved to a generation this database never made (another copy
+// of the Spin ran on and replicated). With nothing unshipped here the file is
+// a stale copy and the bucket wins; with writes here the bucket lacks, nothing
+// orders the two and the open refuses, naming both.
+func TestPrepareMeetsABucketThatMovedOn(t *testing.T) {
+	for _, unshipped := range []bool{false, true} {
+		bucket := &fakeBucket{objects: map[string][]byte{}}
+		server := httptest.NewServer(bucket)
+		config := testConfig(server)
+		here, elsewhere := t.TempDir(), t.TempDir()
+
+		first, database := openReplicated(t, config, "moved.example.test", here+"/moved.db")
+		if err := database.WriteFile("state", []byte(`{"from":"here"}`)); err != nil {
+			t.Fatal(err)
+		}
+		if err := first.Sync(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if unshipped {
+			if err := database.WriteFile("state", []byte(`{"from":"here, unshipped"}`)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := database.Close(); err != nil {
+			t.Fatal(err)
+		}
+		first.Close()
+
+		// Another copy restores the Spin, runs on and renews the generation.
+		other, otherDatabase := openReplicated(t, config, "moved.example.test", elsewhere+"/moved.db")
+		if err := otherDatabase.WriteFile("state", []byte(`{"from":"elsewhere"}`)); err != nil {
+			t.Fatal(err)
+		}
+		other.config.Generation = time.Nanosecond
+		// Generation ids order by the second they start in.
+		time.Sleep(1100 * time.Millisecond)
+		if err := other.Sync(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := otherDatabase.Close(); err != nil {
+			t.Fatal(err)
+		}
+		other.Close()
+
+		replica, err := New(config, "moved.example.test", here+"/moved.db", vfs.Find(""), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepareErr := replica.Prepare(context.Background())
+		restored := replica.Status().Restored
+		replica.Close()
+		server.Close()
+		if unshipped {
+			if !errors.Is(prepareErr, errUnprovenDatabase) {
+				t.Fatalf("writes here that the bucket lacks: prepare = %v", prepareErr)
+			}
+			continue
+		}
+		if prepareErr != nil || !restored {
+			t.Fatalf("a stale copy with nothing unshipped: prepare = %v, restored = %v", prepareErr, restored)
+		}
+		check, err := openTestDatabase(here+"/moved.db", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, err := check.ReadFile("state")
+		check.Close()
+		if err != nil || string(state) != `{"from":"elsewhere"}` {
+			t.Fatalf("state after the restore = %q, %v", state, err)
+		}
 	}
 }
 

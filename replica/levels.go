@@ -87,6 +87,10 @@ func (r *Replica) loadLayout(ctx context.Context, generation string) (*layout, e
 	return l, nil
 }
 
+// errCommitGap: a window's commits do not follow each other. Nothing merges
+// across it, so the generation cannot thin out any more; it ends.
+var errCommitGap = errors.New("cannot merge a gap in commit sequence")
+
 func (r *Replica) compact(ctx context.Context, generation string) error {
 	r.archiveMu.Lock()
 	defer r.archiveMu.Unlock()
@@ -180,7 +184,7 @@ func (r *Replica) mergeWindow(ctx context.Context, generation string, level int,
 	seq := inputs[0].FirstSeq - 1
 	for _, m := range inputs {
 		if m.FirstSeq != seq+1 {
-			return errors.New("cannot merge a gap in commit sequence")
+			return errCommitGap
 		}
 		seq = m.Seq
 		refs = append(refs, m.Parts...)

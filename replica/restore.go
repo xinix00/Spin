@@ -155,7 +155,12 @@ func writeAt(file File, data []byte, offset int64) error {
 }
 
 func (r *Replica) writeLocal(path string, data []byte) error {
-	file, err := r.files.Open(path, true)
+	return writeLocalFile(r.files, path, data)
+}
+
+// writeLocalFile replaces a small local file durably.
+func writeLocalFile(files Storage, path string, data []byte) error {
+	file, err := files.Open(path, true)
 	if err != nil {
 		return err
 	}

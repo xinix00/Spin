@@ -965,19 +965,12 @@ func TestAnInterruptedRenewalContinuesThePreviousGeneration(t *testing.T) {
 	f.sync(t)
 	renewed := f.rep.getMarker()
 
-	// The renewal: its copy fails half way.
-	f.rep.config.Generation = time.Nanosecond
+	// The renewal starts, and the process dies in the middle of its copy:
+	// its marker is on disk, nothing of it is in the bucket.
 	f.clock.Add(time.Minute)
-	f.objects.setHook(func(method, key string, data []byte) error {
-		if method == "put" && strings.HasSuffix(key, ".seg") {
-			return errInjected
-		}
-		return nil
-	})
-	if err := f.rep.Sync(context.Background()); !errors.Is(err, errInjected) {
-		t.Fatalf("renewal = %v", err)
+	if err := f.rep.setMarker(f.rep.renewal(f.rep.getMarker())); err != nil {
+		t.Fatal(err)
 	}
-	f.objects.setHook(nil)
 	if interrupted := f.rep.getMarker(); interrupted.Complete || interrupted.Previous == nil || interrupted.Previous.Generation != renewed.Generation {
 		t.Fatalf("marker during the renewal = %+v", interrupted)
 	}
@@ -1016,4 +1009,92 @@ func TestAnInterruptedRenewalContinuesThePreviousGeneration(t *testing.T) {
 		t.Fatalf("the sync after the restart did not continue the generation: %+v", after)
 	}
 	f.check(t, renewed.Generation, time.Time{}, []byte("three"))
+}
+
+// A generation whose commits have a gap can never be compacted again. It ends
+// and the next sync starts a fresh generation from the database, instead of
+// failing every minute for days.
+func TestAGapInTheCommitSequenceEndsTheGeneration(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, []byte("one"))
+	f.sync(t)
+	gapped := f.rep.getMarker().Generation
+	for index, value := range []string{"two", "three", "four"} {
+		f.clock.Add(time.Minute)
+		f.write(t, []byte(value))
+		f.sync(t)
+		if index == 1 {
+			// The commit of "three" goes missing from the bucket.
+			f.objects.mu.Lock()
+			for key := range f.objects.data {
+				if strings.Contains(key, "/L0/000000000003-") {
+					delete(f.objects.data, key)
+				}
+			}
+			f.objects.mu.Unlock()
+		}
+	}
+	// Past the window, so compaction runs over the gap.
+	f.clock.Add(20 * time.Minute)
+	if err := f.rep.Sync(context.Background()); !errors.Is(err, errCommitGap) {
+		t.Fatalf("sync over the gap = %v", err)
+	}
+	if reason := f.rep.SnapshotReason(); reason == "" {
+		t.Fatal("the gapped generation goes on")
+	}
+	f.clock.Add(time.Minute)
+	f.sync(t)
+	fresh := f.rep.getMarker()
+	if fresh.Generation == gapped || !fresh.Complete {
+		t.Fatalf("after the gap the marker is %+v", fresh)
+	}
+	f.check(t, fresh.Generation, time.Time{}, []byte("four"))
+}
+
+// A renewal that fails in a running process leaves the generation it renews
+// as it was: that one ships what changed since its last commit, and the
+// renewal waits ten minutes before it is tried again, instead of copying the
+// whole database at every sync while nothing else ships.
+func TestAFailedRenewalLetsTheGenerationGoOn(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, []byte("one"))
+	f.sync(t)
+	renewed := f.rep.getMarker()
+	f.rep.config.Generation = time.Nanosecond
+	f.clock.Add(time.Minute)
+	f.write(t, []byte("two"))
+	failing := true
+	f.objects.setHook(func(method, key string, data []byte) error {
+		if failing && method == "put" && strings.HasSuffix(key, ".seg") {
+			return errInjected
+		}
+		return nil
+	})
+	if err := f.rep.Sync(context.Background()); !errors.Is(err, errInjected) {
+		t.Fatalf("renewal = %v", err)
+	}
+	failing = false
+	if back := f.rep.getMarker(); back.Generation != renewed.Generation || !back.Complete || back.Previous != nil {
+		t.Fatalf("after the failed renewal the marker is %+v", back)
+	}
+	if pending := f.rep.Status().PendingPages; pending == 0 || pending > 4 {
+		t.Fatalf("%d pages pending after the failed renewal; only what changed should be", pending)
+	}
+	if reason := f.rep.SnapshotReason(); reason != "" {
+		t.Fatalf("the renewal is tried again at once: %s", reason)
+	}
+	f.clock.Add(time.Minute)
+	f.write(t, []byte("three"))
+	f.sync(t)
+	if after := f.rep.getMarker(); after.Generation != renewed.Generation || after.Seq != renewed.Seq+1 {
+		t.Fatalf("the generation did not go on: %+v", after)
+	}
+	f.check(t, renewed.Generation, time.Time{}, []byte("three"))
+	// After the wait the renewal runs again, and now it finishes.
+	f.clock.Add(renewalBackoff + time.Minute)
+	f.sync(t)
+	if fresh := f.rep.getMarker(); fresh.Generation == renewed.Generation || !fresh.Complete {
+		t.Fatalf("the renewal did not run after the wait: %+v", fresh)
+	}
+	f.check(t, f.rep.getMarker().Generation, time.Time{}, []byte("three"))
 }
