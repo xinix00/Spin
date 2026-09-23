@@ -65,12 +65,16 @@ type persistedState struct {
 }
 
 type Store struct {
-	mu       sync.Mutex
-	path     string
-	backend  StateBackend
-	leaseTTL time.Duration
-	secrets  *secretCipher
-	state    persistedState
+	mu      sync.Mutex
+	path    string
+	backend StateBackend
+	// saveBuffer is reused by every save: the state is megabytes, and on
+	// HopOS a fresh buffer per save, grown by doubling, is what ran the
+	// server out of memory.
+	saveBuffer bytes.Buffer
+	leaseTTL   time.Duration
+	secrets    *secretCipher
+	state      persistedState
 	// version counts saves; watchers learn of every one, so a browser can
 	// be pushed the state instead of asking for it.
 	version  uint64
@@ -3334,13 +3338,13 @@ func (s *Store) saveLocked() error {
 	if err != nil {
 		return fmt.Errorf("encrypt state: %w", err)
 	}
-	var encoded bytes.Buffer
-	enc := json.NewEncoder(&encoded)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(persisted); err != nil {
+	// No indentation: that made a second copy of the whole state on every
+	// save, growing by doubling, and nobody reads this file by eye.
+	s.saveBuffer.Reset()
+	if err := json.NewEncoder(&s.saveBuffer).Encode(persisted); err != nil {
 		return fmt.Errorf("encode state: %w", err)
 	}
-	if err := s.backend.WriteFile(s.path, encoded.Bytes()); err != nil {
+	if err := s.backend.WriteFile(s.path, s.saveBuffer.Bytes()); err != nil {
 		return fmt.Errorf("replace state: %w", err)
 	}
 	return nil
