@@ -97,7 +97,10 @@ func (c Config) withDefaults() Config {
 		c.UploadParallelism = 2
 	}
 	if c.SegmentBytes <= 0 {
-		c.SegmentBytes = 16 << 20
+		// A segment is held twice while it is read and once per upload in
+		// flight; on HopOS, with half a gigabyte for everything, 16 MiB
+		// segments ran the server out of memory during a copy.
+		c.SegmentBytes = 4 << 20
 	}
 	if len(c.Schedule) == 0 {
 		c.Schedule = append([]Level(nil), DefaultSchedule...)

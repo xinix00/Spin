@@ -306,6 +306,9 @@ func TestPartialWindowRetryPreservesSourceAndPublishesAllParts(t *testing.T) {
 			}
 			f.objects.setHook(nil)
 			f.check(t, snapshot.Generation, time.Time{}, value)
+			// A failed compaction waits its turn, a minute, like one that
+			// succeeded.
+			f.clock.Add(time.Minute)
 			f.sync(t)
 			f.check(t, snapshot.Generation, time.Time{}, value)
 			f.check(t, snapshot.Generation, snapshot.At, []byte("snapshot"))

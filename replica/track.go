@@ -180,6 +180,12 @@ func (t *tracker) take(limit int) []uint32 {
 	if len(pages) > limit {
 		pages = pages[:limit]
 	}
+	if len(pages) == len(t.dirty) {
+		// A Go map never gives its memory back, and a whole-database copy
+		// put every page of the database in it: millions of entries.
+		t.dirty = map[uint32]struct{}{}
+		return pages
+	}
 	for _, page := range pages {
 		delete(t.dirty, page)
 	}

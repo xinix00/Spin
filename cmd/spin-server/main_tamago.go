@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -83,6 +84,17 @@ func main() {
 		config.Replication = &replication
 	}
 	tenants := tenancy.New(config)
+	// One line a minute on what the heap holds: on HopOS the whole server
+	// shares one fixed window, and an out-of-memory stop says nothing about
+	// what grew before it.
+	go func() {
+		for range time.Tick(time.Minute) {
+			var stats runtime.MemStats
+			runtime.ReadMemStats(&stats)
+			app.Logf("mem: heap %d MiB in use, %d MiB live objects, %d MiB from the window, %d GCs, %d goroutines",
+				stats.HeapInuse>>20, stats.HeapAlloc>>20, stats.Sys>>20, stats.NumGC, runtime.NumGoroutine())
+		}
+	}()
 	// The known Spins open in the background: a restore from the bucket
 	// can take a while, and the port must answer meanwhile.
 	go func() {

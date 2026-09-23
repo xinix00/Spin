@@ -692,10 +692,13 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		if err != nil {
 			return err
 		}
+		// A failed compaction waits its turn like a successful one: it reads
+		// every manifest of the generation, and retrying it every sync did
+		// that every 15 seconds.
+		r.lastCompact = frontier
 		if err := r.compact(ctx, current.Generation); err != nil {
 			return fmt.Errorf("compact: %w", err)
 		}
-		r.lastCompact = frontier
 	}
 	return nil
 }
