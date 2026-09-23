@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"path/filepath"
 	"sync"
@@ -102,5 +104,54 @@ func TestSnapshotUploadAssemblesChunksIntoTheArchive(t *testing.T) {
 	}
 	if _, err := upload.WriteAt(ctx, 0, 1, bytes.NewReader([]byte{1})); !errors.Is(err, err) || err == nil {
 		t.Fatal("wrote into a completed upload")
+	}
+}
+
+// The digest is taken while the chunks arrive, so completing a snapshot of
+// gigabytes does not read it back under the server's one connection. A chunk
+// written twice ahead of the prefix makes that running digest unreliable, and
+// Complete reads the rows back instead; both ways the digest is the content's.
+func TestSnapshotUploadDigestIsTheContentsWhateverTheOrder(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "spin.db"), OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	ctx := context.Background()
+	content := make([]byte, 3*blobChunkSize+777)
+	if _, err := rand.Read(content); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(content)
+	want := "sha256:" + hex.EncodeToString(sum[:])
+	write := func(upload *SnapshotUpload, offset int64) {
+		t.Helper()
+		end := min(offset+blobChunkSize, int64(len(content)))
+		if _, err := upload.WriteAt(ctx, offset, end-offset, bytes.NewReader(content[offset:end])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, order := range map[string][]int64{
+		"running digest": {3 * blobChunkSize, blobChunkSize, 0, 2 * blobChunkSize},
+		"read back":      {blobChunkSize, blobChunkSize, 0, 2 * blobChunkSize, 3 * blobChunkSize},
+	} {
+		upload, err := database.BeginSnapshotUpload(ctx, domain.CapsuleSnapshot{Driver: "docker", Ref: "spin/artifact:" + name, Digest: "sha256:" + name, Restorable: true}, int64(len(content)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, offset := range order {
+			write(upload, offset)
+		}
+		_, running := upload.runningDigest()
+		if running != (name == "running digest") {
+			t.Fatalf("%s: running digest usable = %v", name, running)
+		}
+		info, err := upload.Complete(ctx)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if info.Digest != want {
+			t.Fatalf("%s: digest %s, content is %s", name, info.Digest, want)
+		}
 	}
 }

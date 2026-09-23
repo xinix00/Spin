@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -32,6 +34,17 @@ type SnapshotUpload struct {
 
 	mu        sync.Mutex
 	completed bool
+
+	// The digest is taken while the chunks arrive, in the order of the
+	// committed prefix, so Complete does not have to read gigabytes back.
+	// Chunks that land ahead of the prefix wait in ahead (at most the
+	// assembler's reorder window). A chunk written twice makes the running
+	// digest unreliable; Complete then reads the rows back instead.
+	hashMu    sync.Mutex
+	hash      hash.Hash
+	hashed    int64
+	ahead     map[int64][]byte
+	rewritten bool
 }
 
 type blobSink struct{ upload *SnapshotUpload }
@@ -65,7 +78,8 @@ func (s *SQLite) beginObjectUpload(ctx context.Context, kind, refPrefix string, 
 	if err != nil {
 		return nil, err
 	}
-	upload := &SnapshotUpload{database: s, snapshot: snapshot, kind: kind, refPrefix: refPrefix, objectID: objectID, size: size}
+	upload := &SnapshotUpload{database: s, snapshot: snapshot, kind: kind, refPrefix: refPrefix, objectID: objectID, size: size,
+		hash: sha256.New(), ahead: map[int64][]byte{}}
 	upload.chunks = newChunkAssembler(blobSink{upload}, size)
 	return upload, nil
 }
@@ -87,7 +101,40 @@ func (b blobSink) writeChunk(ctx context.Context, offset, length int64, source i
 	if err != nil {
 		return 0, err
 	}
+	upload.digestChunk(offset, data)
 	return length, nil
+}
+
+// digestChunk feeds a stored chunk to the running digest once every byte
+// before it has been fed.
+func (u *SnapshotUpload) digestChunk(offset int64, data []byte) {
+	u.hashMu.Lock()
+	defer u.hashMu.Unlock()
+	if _, waiting := u.ahead[offset]; waiting || offset < u.hashed {
+		u.rewritten = true
+		return
+	}
+	u.ahead[offset] = data
+	for {
+		next, ok := u.ahead[u.hashed]
+		if !ok {
+			return
+		}
+		delete(u.ahead, u.hashed)
+		_, _ = u.hash.Write(next)
+		u.hashed += int64(len(next))
+	}
+}
+
+// runningDigest is the digest taken on arrival, when it covers exactly the
+// declared size and no chunk was written twice.
+func (u *SnapshotUpload) runningDigest() (string, bool) {
+	u.hashMu.Lock()
+	defer u.hashMu.Unlock()
+	if u.rewritten || len(u.ahead) != 0 || u.hashed != u.size {
+		return "", false
+	}
+	return "sha256:" + hex.EncodeToString(u.hash.Sum(nil)), true
 }
 
 // Offset reports the committed prefix.
@@ -101,52 +148,39 @@ func (u *SnapshotUpload) WriteAt(ctx context.Context, offset, length int64, sour
 // Complete verifies the assembled object against its declared size, records
 // its content digest and publishes it under the snapshot reference. A snapshot
 // that already exists with the same content is reused rather than duplicated.
+//
+// A snapshot runs to gigabytes, and the server has one database connection
+// and, on HopOS, nothing that preempts a goroutine. Reading it back under one
+// transaction to hash it held every request in the server until the last
+// chunk was done: the browser following End & save gave up, and the runner's
+// complete ran into the edge's 100 second limit. So the digest is taken on
+// arrival, and only the publish is a transaction. Nothing else writes these
+// rows (the assembler is closed, Close waits for u.mu).
 func (u *SnapshotUpload) Complete(ctx context.Context) (BlobInfo, error) {
 	if err := u.chunks.finish(u.size); err != nil {
 		return BlobInfo{}, fmt.Errorf("snapshot %w", err)
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	chunks := (u.size + blobChunkSize - 1) / blobChunkSize
+	var stored, size int64
+	if err := u.database.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(length(data)), 0) FROM spin_object_chunks WHERE object_id = ?`, u.objectID).Scan(&stored, &size); err != nil {
+		return BlobInfo{}, err
+	}
+	if stored != chunks || size != u.size {
+		return BlobInfo{}, fmt.Errorf("snapshot has %d chunks and %d bytes, declared %d chunks and %d bytes", stored, size, chunks, u.size)
+	}
+	digest, ok := u.runningDigest()
+	if !ok {
+		var err error
+		if digest, err = u.readDigest(ctx, chunks); err != nil {
+			return BlobInfo{}, err
+		}
+	}
 	tx, err := u.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return BlobInfo{}, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT sequence, data FROM spin_object_chunks WHERE object_id = ? ORDER BY sequence`, u.objectID)
-	if err != nil {
-		_ = tx.Rollback()
-		return BlobInfo{}, err
-	}
-	hash := sha256.New()
-	var size int64
-	expected := int64(0)
-	for rows.Next() {
-		var sequence int64
-		var data []byte
-		if err := rows.Scan(&sequence, &data); err != nil {
-			rows.Close()
-			_ = tx.Rollback()
-			return BlobInfo{}, err
-		}
-		if sequence != expected {
-			rows.Close()
-			_ = tx.Rollback()
-			return BlobInfo{}, fmt.Errorf("snapshot chunk %d is missing", expected)
-		}
-		expected++
-		_, _ = hash.Write(data)
-		size += int64(len(data))
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		_ = tx.Rollback()
-		return BlobInfo{}, err
-	}
-	rows.Close()
-	if size != u.size {
-		_ = tx.Rollback()
-		return BlobInfo{}, fmt.Errorf("snapshot has %d bytes, declared %d", size, u.size)
-	}
-	digest := "sha256:" + hex.EncodeToString(hash.Sum(nil))
 	objectID := u.objectID
 	var existingID int64
 	err = tx.QueryRowContext(ctx, `SELECT id FROM spin_objects WHERE digest = ? AND complete = 1`, digest).Scan(&existingID)
@@ -180,6 +214,28 @@ func (u *SnapshotUpload) Complete(ctx context.Context) (BlobInfo, error) {
 	}
 	u.completed = true
 	return BlobInfo{Ref: ref, Digest: digest, Kind: u.kind, Size: size}, nil
+}
+
+// readDigest reads the rows back to hash them: one chunk per statement, and
+// the processor given up after each, so the server keeps serving meanwhile.
+func (u *SnapshotUpload) readDigest(ctx context.Context, chunks int64) (string, error) {
+	hash := sha256.New()
+	for sequence := int64(0); sequence < chunks; sequence++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		var data []byte
+		err := u.database.db.QueryRowContext(ctx, `SELECT data FROM spin_object_chunks WHERE object_id = ? AND sequence = ?`, u.objectID, sequence).Scan(&data)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("snapshot chunk %d is missing", sequence)
+		}
+		if err != nil {
+			return "", err
+		}
+		_, _ = hash.Write(data)
+		runtime.Gosched()
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 // Close abandons an upload that did not complete and drops its rows.
