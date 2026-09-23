@@ -951,3 +951,69 @@ func TestCleanMarkerCannotResumeInDifferentBucketNamespace(t *testing.T) {
 	f.db = db
 	f.check(t, next.Status().Generation, time.Time{}, []byte("kept locally"))
 }
+
+// A restart in the middle of renewing a generation does not copy the whole
+// database again: until the new generation's first commit the dirty log still
+// follows the one being renewed, and while the bucket ends where that one did
+// it simply continues, with the writes made since.
+func TestAnInterruptedRenewalContinuesThePreviousGeneration(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, []byte("one"))
+	f.sync(t)
+	f.clock.Add(time.Minute)
+	f.write(t, []byte("two"))
+	f.sync(t)
+	renewed := f.rep.getMarker()
+
+	// The renewal: its copy fails half way.
+	f.rep.config.Generation = time.Nanosecond
+	f.clock.Add(time.Minute)
+	f.objects.setHook(func(method, key string, data []byte) error {
+		if method == "put" && strings.HasSuffix(key, ".seg") {
+			return errInjected
+		}
+		return nil
+	})
+	if err := f.rep.Sync(context.Background()); !errors.Is(err, errInjected) {
+		t.Fatalf("renewal = %v", err)
+	}
+	f.objects.setHook(nil)
+	if interrupted := f.rep.getMarker(); interrupted.Complete || interrupted.Previous == nil || interrupted.Previous.Generation != renewed.Generation {
+		t.Fatalf("marker during the renewal = %+v", interrupted)
+	}
+	f.write(t, []byte("three"))
+	if err := f.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.rep.Close()
+
+	config := Config{SegmentBytes: 4096, Schedule: []Level{{Window: 15 * time.Minute, Keep: 2 * time.Hour}, {Window: time.Hour, Keep: 24 * time.Hour}}}
+	var err error
+	f.rep, err = NewWithOptions(config, t.Name(), f.dir+"/source.db", vfs.Find(""), nil, Options{Objects: f.objects, Now: f.clock.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.rep.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.db, err = openTestDatabase(f.rep.path, f.rep.VFSName()); err != nil {
+		t.Fatal(err)
+	}
+	f.rep.Attach(f.db)
+	continued := f.rep.getMarker()
+	if continued.Generation != renewed.Generation || continued.Seq != renewed.Seq || !continued.Complete {
+		t.Fatalf("after the restart the marker is %+v; generation %s at %d should continue", continued, renewed.Generation, renewed.Seq)
+	}
+	if f.rep.Status().PendingPages == 0 {
+		t.Fatal("the write made during the renewal is not pending")
+	}
+	if reason := f.rep.SnapshotReason(); reason != "" {
+		t.Fatalf("the next sync copies everything again: %s", reason)
+	}
+	f.clock.Add(time.Minute)
+	f.sync(t)
+	if after := f.rep.getMarker(); after.Generation != renewed.Generation || after.Seq != renewed.Seq+1 {
+		t.Fatalf("the sync after the restart did not continue the generation: %+v", after)
+	}
+	f.check(t, renewed.Generation, time.Time{}, []byte("three"))
+}

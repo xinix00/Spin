@@ -213,6 +213,7 @@ func (r *Replica) adoptLocal(ctx context.Context, stored marker, usable bool) (r
 	if err != nil || generation == "" {
 		return "", false, err
 	}
+	r.remoteGeneration, r.remoteSeq = generation, seq
 	if usable && stored.Generation == generation {
 		if stored.Seq >= seq {
 			return "", false, nil

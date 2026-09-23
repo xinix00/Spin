@@ -70,6 +70,25 @@ type marker struct {
 	Complete    bool      `json:"complete"`
 	Clean       bool      `json:"clean"`
 	StartedAt   time.Time `json:"started_at"`
+	// Previous is the complete generation a new one renews, kept until the
+	// new one's first commit: a restart in the middle of the copy continues
+	// it instead of copying everything again (Prepare).
+	Previous *marker `json:"previous,omitempty"`
+}
+
+// renewal is the marker of a new generation that takes over from current.
+func (r *Replica) renewal(current marker) marker {
+	next := marker{Version: formatVersion, Generation: newGenerationID(r.now()), StartedAt: r.now()}
+	switch {
+	case current.Complete:
+		current.Previous = nil
+		next.Previous = &current
+	case current.Previous != nil:
+		// A copy that failed in this process is tried again; what it renews
+		// has not changed.
+		next.Previous = current.Previous
+	}
+	return next
 }
 
 type Replica struct {
@@ -82,6 +101,10 @@ type Replica struct {
 	// freshReason says why Prepare started a new generation, for the page
 	// that waits on the copy it makes.
 	freshReason string
+	// remoteGeneration and remoteSeq are where the bucket stood when
+	// Prepare looked (guard.go), empty when it did not.
+	remoteGeneration string
+	remoteSeq        int64
 	// What the next sync compares the source against (guard.go). Under
 	// markerMu, like the marker it belongs with.
 	witness      witness
@@ -300,10 +323,20 @@ func (r *Replica) Prepare(ctx context.Context) error {
 			// A new generation writes its name in the marker before its copy
 			// starts and in the dirty log after its first commit. A stop in
 			// between is an interrupted copy, not a database that changed
-			// behind the replica's back; the copy starts over.
-			r.logger.Warn("replica: the copy of generation "+stored.Generation+" did not finish; a new generation is copied in the background", "domain", r.domain)
-			r.freshReason = "the copy of generation " + stored.Generation + " did not finish"
-			return r.tracker.rewriteLog("", 0)
+			// behind the replica's back. Until that first commit the dirty
+			// log still follows the generation being renewed, so when the
+			// bucket still ends where that one did, it simply continues, as
+			// Litestream continues after a restart. Otherwise the copy starts
+			// over.
+			previous := stored.Previous
+			if previous == nil || previous.Generation != r.remoteGeneration || previous.Seq != r.remoteSeq {
+				r.logger.Warn("replica: the copy of generation "+stored.Generation+" did not finish; a new generation is copied in the background", "domain", r.domain)
+				r.freshReason = "the copy of generation " + stored.Generation + " did not finish"
+				return r.tracker.rewriteLog("", 0)
+			}
+			r.logger.Warn("replica: the copy of generation "+stored.Generation+" did not finish; generation "+previous.Generation+" continues", "domain", r.domain, "seq", previous.Seq)
+			stored = *previous
+			stored.Clean = false
 		}
 		pages, err := r.tracker.log.read(stored.Generation, stored.Seq)
 		if err != nil && !stored.Clean {
@@ -540,7 +573,7 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 	fresh := !current.Complete || r.compactionDue(current)
 	reason := r.SnapshotReason()
 	if fresh {
-		current = marker{Version: formatVersion, Generation: newGenerationID(r.now()), StartedAt: r.now()}
+		current = r.renewal(current)
 		if err := r.setMarker(current); err != nil {
 			return err
 		}
@@ -559,7 +592,7 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 	}
 	if captured.snapshot && !fresh {
 		fresh = true
-		current = marker{Version: formatVersion, Generation: newGenerationID(r.now()), StartedAt: r.now()}
+		current = r.renewal(current)
 		if err := r.setMarker(current); err != nil {
 			r.tracker.putBack(captured.pages)
 			return err
