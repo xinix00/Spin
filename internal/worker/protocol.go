@@ -94,6 +94,9 @@ type wireMessage struct {
 type startRecordingPayload struct {
 	Recording domain.Recording  `json:"recording"`
 	Parents   []domain.Artifact `json:"parents"`
+	// Stack, when set, is the parent's stack the capsule runs on
+	// (capsule.StackRecorder); a runner without it starts on the parent.
+	Stack *capsule.RecordingStack `json:"stack,omitempty"`
 }
 
 type recordingPayload struct {

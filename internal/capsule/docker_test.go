@@ -406,9 +406,9 @@ func TestDockerMaterializesIndependentSnapshotsLive(t *testing.T) {
 	second := domain.Artifact{ID: "layer-b", Snapshot: secondSnapshot}
 	composition := domain.Composition{
 		ID: "cmp_merge_" + suffix, Operator: "tester", Selector: "test:a", WithSelectors: []string{"test:b"},
-		RequestedArtifactIDs: []string{first.ID, second.ID},
-		ResolvedArtifacts:    []domain.ResolvedArtifact{{ArtifactID: first.ID}, {ArtifactID: second.ID}},
-		SlotBindings:         map[string]string{"test:a": first.ID, "test:b": second.ID},
+		RequestedArtifactIDs: []string{first.ID, second.ID}, Layers: []string{first.ID, second.ID},
+		ResolvedArtifacts: []domain.ResolvedArtifact{{ArtifactID: first.ID}, {ArtifactID: second.ID}},
+		SlotBindings:      map[string]string{"test:a": first.ID, "test:b": second.ID},
 	}
 	runtime, err := engine.Materialize(ctx, composition, []domain.Artifact{first, second})
 	if err != nil {
@@ -426,5 +426,95 @@ func TestDockerMaterializesIndependentSnapshotsLive(t *testing.T) {
 	}
 	if _, code, _ := engine.run(ctx, "image", "inspect", runtime.BaseRef); code == 0 {
 		t.Fatalf("ephemeral composition image %s still exists after Stop", runtime.BaseRef)
+	}
+}
+
+// A credential recorded on an older tool is edited on the tool as it is now:
+// the capsule runs on the parent's stack, every layer at its newest version,
+// and the saved version goes back on the credential's own image as a small
+// delta. Composing the stack afterwards gives the new tool and both
+// credential versions.
+func TestDockerRecordingRunsOnTheParentsCurrentStackLive(t *testing.T) {
+	if os.Getenv("SPIN_DOCKER_LIVE") != "1" {
+		t.Skip("set SPIN_DOCKER_LIVE=1 to run the Docker integration")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	engine, err := NewDocker(ctx, DockerConfig{BaseImage: "alpine:3.24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	suffix := time.Now().UTC().Format("150405.000000000")
+	exec := func(recording domain.Recording, script string) string {
+		t.Helper()
+		execution, err := engine.Execute(ctx, recording, script)
+		if err != nil || execution.ExitCode != 0 {
+			t.Fatalf("%s: exit=%d err=%v output=%s", script, execution.ExitCode, err, execution.Output)
+		}
+		return execution.Output
+	}
+	record := func(id, script string, parent *domain.Artifact, parents ...string) domain.Artifact {
+		t.Helper()
+		recording := domain.Recording{ID: id + suffix, Kind: domain.ArtifactKind("test"), Name: id, ParentArtifactIDs: parents}
+		var from []domain.Artifact
+		if parent != nil {
+			from = []domain.Artifact{*parent}
+		}
+		runtime, err := engine.StartRecording(ctx, recording, from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recording.Runtime = &runtime
+		exec(recording, script)
+		snapshot, err := engine.Seal(ctx, recording)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = engine.RemoveSnapshot(context.Background(), snapshot) })
+		return domain.Artifact{ID: id, ParentArtifactIDs: parents, Snapshot: snapshot}
+	}
+	tool1 := record("tool1", "mkdir -p /tool && echo 2.223 > /tool/version", nil)
+	credential := record("cred1", "echo secret > /root/credential", &tool1, "tool1")
+	tool2 := record("tool2", "echo 2.280 > /tool/version", &tool1, "tool1")
+	tool1.SupersededBy = "tool2"
+
+	// Editing the credential: its own image still holds the old tool.
+	edit := domain.Recording{ID: "cred2" + suffix, Kind: domain.ArtifactKind("test"), Name: "cred2", ParentArtifactIDs: []string{"cred1"}}
+	stack := RecordingStack{Layers: []string{"tool1", "tool2", "cred1"}, Artifacts: []domain.Artifact{tool1, tool2, credential}}
+	runtime, err := engine.StartRecordingOnStack(ctx, edit, []domain.Artifact{credential}, stack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.ParentRef != credential.Snapshot.Ref {
+		t.Fatalf("parent ref = %q, want %q", runtime.ParentRef, credential.Snapshot.Ref)
+	}
+	edit.Runtime = &runtime
+	if got := strings.TrimSpace(exec(edit, "cat /tool/version")); got != "2.280" {
+		t.Fatalf("the edit runs on tool %s, not the newest", got)
+	}
+	if got := strings.TrimSpace(exec(edit, "cat /root/credential")); got != "secret" {
+		t.Fatalf("the credential is missing from the edit: %q", got)
+	}
+	exec(edit, "echo renewed > /root/credential")
+	sealed, err := engine.Seal(ctx, edit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = engine.RemoveSnapshot(context.Background(), sealed) })
+	if !sealed.Delta || sealed.ParentRef != credential.Snapshot.Ref || !engine.imageExtends(ctx, sealed.Ref, credential.Snapshot.Ref) {
+		t.Fatalf("the new version is not one layer over the credential: delta=%v parent=%q", sealed.Delta, sealed.ParentRef)
+	}
+	renewed := domain.Artifact{ID: "cred2", ParentArtifactIDs: []string{"cred1"}, Snapshot: sealed}
+	credential.SupersededBy = "cred2"
+
+	composition := domain.Composition{ID: "cmp_stack_" + suffix, Operator: "tester", Layers: []string{"tool1", "tool2", "cred1", "cred2"}}
+	use, err := engine.Materialize(ctx, composition, []domain.Artifact{tool1, tool2, credential, renewed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = engine.Stop(context.Background(), use) }()
+	output, code, err := engine.run(ctx, "exec", use.ContainerID, "sh", "-lc", "cat /tool/version /root/credential")
+	if err != nil || code != 0 || strings.Fields(output)[0] != "2.280" || strings.Fields(output)[1] != "renewed" {
+		t.Fatalf("composed stack reads %q (code %d, err %v)", output, code, err)
 	}
 }

@@ -345,7 +345,13 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {
 			return nil, false, err
 		}
-		runtime, err := w.engine.StartRecording(ctx, payload.Recording, payload.Parents)
+		var runtime domain.CapsuleRuntime
+		var err error
+		if stacker, ok := w.engine.(capsule.StackRecorder); ok && payload.Stack != nil {
+			runtime, err = stacker.StartRecordingOnStack(ctx, payload.Recording, payload.Parents, *payload.Stack)
+		} else {
+			runtime, err = w.engine.StartRecording(ctx, payload.Recording, payload.Parents)
+		}
 		if err == nil {
 			w.adjustLiveWorkloads(1)
 		}

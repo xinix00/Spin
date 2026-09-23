@@ -160,7 +160,7 @@ func (s *Server) runStart(ctx context.Context, job *startJob, recording domain.R
 		}
 		close(job.done)
 	}
-	runtime, err := s.engine.StartRecording(ctx, recording, parents)
+	runtime, err := s.startRecordingCapsule(ctx, recording, parents)
 	if err != nil {
 		fail(fmt.Errorf("start capsule recording: %w", err))
 		return

@@ -194,7 +194,7 @@ func (s *Server) attachCapsuleParent(ctx context.Context, recordingID string, re
 	if err != nil {
 		return domain.Recording{}, err
 	}
-	runtime, err := s.engine.StartRecording(ctx, updated, parents)
+	runtime, err := s.startRecordingCapsule(ctx, updated, parents)
 	if err != nil {
 		return domain.Recording{}, fmt.Errorf("rebase capsule recording: %w", err)
 	}
@@ -340,6 +340,27 @@ func (s *Server) stopCapsule(ctx context.Context, compositionID, operator string
 
 func normalizeOperator(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+// startRecordingCapsule starts the capsule of a recording. The parent's image
+// holds the layers under it as they were when it was sealed; when one of them
+// has a newer version since (a credential recorded on an older tool), the
+// capsule runs on the parent's stack as a composition builds it, so the layer
+// is edited against the tool as it is now.
+func (s *Server) startRecordingCapsule(ctx context.Context, recording domain.Recording, parents []domain.Artifact) (domain.CapsuleRuntime, error) {
+	stacker, ok := s.engine.(capsule.StackRecorder)
+	if !ok {
+		return s.engine.StartRecording(ctx, recording, parents)
+	}
+	layers, artifacts, lifted := s.store.RecordingStack(recording)
+	if !lifted {
+		return s.engine.StartRecording(ctx, recording, parents)
+	}
+	if _, err := capsule.PlanLayers(domain.Composition{Layers: layers}, artifacts); err != nil {
+		s.logger.Warn("recording runs on its parent's own image: its stack cannot be built", "recording", recording.ID, "error", err)
+		return s.engine.StartRecording(ctx, recording, parents)
+	}
+	return stacker.StartRecordingOnStack(ctx, recording, parents, capsule.RecordingStack{Layers: layers, Artifacts: artifacts})
 }
 
 func (s *Server) recordingParents(recording domain.Recording) ([]domain.Artifact, error) {

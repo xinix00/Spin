@@ -30,7 +30,11 @@ import (
 // cleanLayer returns the manifest of the image tagged tag over its parent
 // image, rebuilding the image without the identical and cache files when
 // there are any.
-func (d *Docker) cleanLayer(ctx context.Context, tag, parentImage, recordingID string) (*domain.LayerContents, error) {
+//
+// rebase rebuilds the layer on parentImage even when nothing is dropped: the
+// capsule ran on another image (its parent's stack) and the layer has to end
+// up as its own diff over the parent.
+func (d *Docker) cleanLayer(ctx context.Context, tag, parentImage, recordingID string, rebase bool) (*domain.LayerContents, error) {
 	save, err := os.CreateTemp("", "spin-seal-*.tar")
 	if err != nil {
 		return nil, err
@@ -97,7 +101,7 @@ func (d *Docker) cleanLayer(ctx context.Context, tag, parentImage, recordingID s
 	}
 	summary := summarize(kept)
 	summary.DroppedIdentical = contents.DroppedIdentical
-	if len(drop) == 0 {
+	if len(drop) == 0 && !rebase {
 		return &summary, nil
 	}
 	if _, err := diff.Seek(0, io.SeekStart); err != nil {

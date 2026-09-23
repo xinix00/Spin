@@ -42,6 +42,21 @@ type Engine interface {
 	Stop(context.Context, domain.CapsuleRuntime) error
 }
 
+// StackRecorder is an optional engine extension: it starts a recording on its
+// parent's stack as a composition would build it, every layer at its newest
+// version, instead of on the image the parent was once sealed on. A layer
+// recorded on an older tool is then edited against the tool as it is now.
+type StackRecorder interface {
+	StartRecordingOnStack(context.Context, domain.Recording, []domain.Artifact, RecordingStack) (domain.CapsuleRuntime, error)
+}
+
+// RecordingStack is the parent's stack, bottom to top, and every artifact
+// the plan for it may need.
+type RecordingStack struct {
+	Layers    []string          `json:"layers"`
+	Artifacts []domain.Artifact `json:"artifacts"`
+}
+
 // GitAuthentication is resolved by the control plane immediately before a
 // checkout. It is never part of a Composition, Artifact or CapsuleRuntime.
 type GitAuthentication struct {

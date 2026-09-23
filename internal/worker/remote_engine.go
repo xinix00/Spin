@@ -66,9 +66,38 @@ func (e *RemoteEngine) reportPlacement(sessionID, clientID string) {
 }
 
 func (e *RemoteEngine) StartRecording(ctx context.Context, recording domain.Recording, parents []domain.Artifact) (domain.CapsuleRuntime, error) {
+	return e.startRecording(ctx, recording, parents, nil)
+}
+
+// StartRecordingOnStack starts the recording on its parent's stack. Every
+// layer the plan applies has to reach the runner, as for a composition.
+func (e *RemoteEngine) StartRecordingOnStack(ctx context.Context, recording domain.Recording, parents []domain.Artifact, stack capsule.RecordingStack) (domain.CapsuleRuntime, error) {
+	return e.startRecording(ctx, recording, parents, &stack)
+}
+
+func (e *RemoteEngine) startRecording(ctx context.Context, recording domain.Recording, parents []domain.Artifact, stack *capsule.RecordingStack) (domain.CapsuleRuntime, error) {
 	target, err := e.broker.choose(ctx, "")
 	if err != nil {
 		return domain.CapsuleRuntime{}, err
+	}
+	if stack != nil {
+		needed := stack.Artifacts
+		if plan, err := capsule.PlanLayers(domain.Composition{Layers: stack.Layers}, stack.Artifacts); err == nil {
+			needed = plan.Needed()
+		}
+		for index := range stack.Artifacts {
+			artifact := &stack.Artifacts[index]
+			if !slices.ContainsFunc(needed, func(candidate domain.Artifact) bool { return candidate.ID == artifact.ID }) {
+				continue
+			}
+			if !artifact.Snapshot.Restorable || artifact.Snapshot.Ref == "" || artifact.SnapshotPrunedAt != nil || snapshotAvailableOn(artifact.Snapshot, target.id) {
+				continue
+			}
+			if err := e.ensureSnapshotOn(ctx, *artifact, target.id); err != nil {
+				return domain.CapsuleRuntime{}, fmt.Errorf("provide %s to runner %s: %w", artifact.ID, target.id, err)
+			}
+			artifact.Snapshot.ReplicaClientIDs = append(artifact.Snapshot.ReplicaClientIDs, target.id)
+		}
 	}
 	for index := range parents {
 		parent := &parents[index]
@@ -82,7 +111,7 @@ func (e *RemoteEngine) StartRecording(ctx context.Context, recording domain.Reco
 	}
 	capsule.ReportProgress(ctx, "start", "Capsule starten op runner "+target.name, 0, 0)
 	var runtime domain.CapsuleRuntime
-	peer, err := e.broker.call(ctx, target.id, methodStartRecording, startRecordingPayload{Recording: recording, Parents: parents}, &runtime)
+	peer, err := e.broker.call(ctx, target.id, methodStartRecording, startRecordingPayload{Recording: recording, Parents: parents, Stack: stack}, &runtime)
 	if err != nil {
 		if ctx.Err() != nil {
 			// The start was abandoned while the runner may have been creating

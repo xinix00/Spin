@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -138,6 +139,44 @@ func (d *Docker) StartRecording(ctx context.Context, recording domain.Recording,
 	}, nil
 }
 
+// StartRecordingOnStack runs the recording on its parent's stack as a
+// composition builds it: every layer at its newest version, the parent's own
+// diff over it. The parent's image was sealed on the layers as they were then;
+// a credential recorded on an older tool would otherwise be edited, and saved,
+// against that older tool. Seal puts the result back on the parent's image
+// (Runtime.ParentRef), so the new version stays a small delta of it.
+func (d *Docker) StartRecordingOnStack(ctx context.Context, recording domain.Recording, parents []domain.Artifact, stack RecordingStack) (domain.CapsuleRuntime, error) {
+	if len(parents) != 1 || len(stack.Layers) == 0 {
+		return d.StartRecording(ctx, recording, parents)
+	}
+	parent := parents[0]
+	if parent.Snapshot.Driver != "docker" || !parent.Snapshot.Restorable || parent.Snapshot.Ref == "" {
+		return domain.CapsuleRuntime{}, fmt.Errorf("parent artifact %s is not a restorable Docker snapshot", parent.ID)
+	}
+	onStack := func(runtime domain.CapsuleRuntime, err error) (domain.CapsuleRuntime, error) {
+		if err == nil {
+			runtime.ParentRef = parent.Snapshot.Ref
+		}
+		return runtime, err
+	}
+	// A capsule this runner already made for the recording is resumed as is.
+	if id, err := d.containerID(ctx, runtimeName("spin-rec", recording.ID)); err == nil && id != "" {
+		return onStack(d.StartRecording(ctx, recording, parents))
+	}
+	composition := domain.Composition{ID: "rec-" + recording.ID, Layers: stack.Layers}
+	selected, ephemeral, err := d.materializationArtifact(ctx, composition, stack.Artifacts)
+	if err != nil {
+		return domain.CapsuleRuntime{}, fmt.Errorf("build the stack of %s: %w", parent.ID, err)
+	}
+	if ephemeral {
+		// The capsule holds the layers; the tag has no use after it starts.
+		defer func() { _ = d.removeImage(context.Background(), selected.Snapshot.Ref) }()
+	}
+	base := parent
+	base.Snapshot.Ref = selected.Snapshot.Ref
+	return onStack(d.StartRecording(ctx, recording, []domain.Artifact{base}))
+}
+
 func (d *Docker) Execute(ctx context.Context, recording domain.Recording, input string) (Execution, error) {
 	if recording.Runtime == nil || recording.Runtime.Driver != "docker" || recording.Runtime.ContainerID == "" {
 		return Execution{}, errors.New("recording has no live Docker capsule")
@@ -249,6 +288,12 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 	d.tidyCapsule(ctx, recording.Runtime.ContainerID)
 	parentImage, _ := d.control(ctx, "inspect", "--format", "{{.Config.Image}}", recording.Runtime.ContainerID)
 	parentImage = strings.TrimSpace(parentImage)
+	// A capsule that ran on its parent's stack goes back on the parent's own
+	// image: the layer is its diff, whatever was under it while it ran.
+	rebase := recording.Runtime.ParentRef != ""
+	if rebase {
+		parentImage = recording.Runtime.ParentRef
+	}
 	// Every layer, a new version of one as well, commits over the image it
 	// was recorded on; the archive later holds only its own difference.
 	_, err := d.control(ctx,
@@ -265,12 +310,28 @@ func (d *Docker) Seal(ctx context.Context, recording domain.Recording) (domain.C
 		if _, inspectErr := d.control(ctx, "image", "inspect", "--format", "{{.Id}}", tag); inspectErr != nil {
 			return domain.CapsuleSnapshot{}, err
 		}
+		// That attempt may have ended between the commit and putting the
+		// layer back on its parent.
+		if rebase && !d.imageExtends(ctx, tag, parentImage) {
+			cleaned, cleanErr := d.cleanLayer(ctx, tag, parentImage, recording.ID, true)
+			if cleanErr != nil {
+				return domain.CapsuleSnapshot{}, fmt.Errorf("put the layer back on its parent: %w", cleanErr)
+			}
+			contents = cleaned
+		}
 	} else {
 		// The layer keeps its real difference: what is byte-for-byte the
 		// same in the layer below, and every cache, goes.
-		cleaned, cleanErr := d.cleanLayer(ctx, tag, parentImage, recording.ID)
-		if cleanErr != nil && d.logger != nil {
-			d.logger.Warn("seal: the layer keeps its full diff", "recording", recording.ID, "error", cleanErr)
+		cleaned, cleanErr := d.cleanLayer(ctx, tag, parentImage, recording.ID, rebase)
+		if cleanErr != nil {
+			// Over its own parent a layer may keep its full diff; a layer that
+			// ran on a stack has to go back on its parent or it is no delta.
+			if rebase {
+				return domain.CapsuleSnapshot{}, fmt.Errorf("put the layer back on its parent: %w", cleanErr)
+			}
+			if d.logger != nil {
+				d.logger.Warn("seal: the layer keeps its full diff", "recording", recording.ID, "error", cleanErr)
+			}
 		}
 		contents = cleaned
 	}
@@ -732,6 +793,18 @@ func (d *Docker) imageRootFS(ctx context.Context, ref string) (string, error) {
 		return "", err
 	}
 	return rootFSDigest(layers), nil
+}
+
+// imageExtends reports whether ref is parent plus exactly one layer.
+func (d *Docker) imageExtends(ctx context.Context, ref, parent string) bool {
+	var layers, below []string
+	for target, name := range map[*[]string]string{&layers: ref, &below: parent} {
+		output, err := d.control(ctx, "image", "inspect", "--format", "{{json .RootFS.Layers}}", name)
+		if err != nil || json.Unmarshal([]byte(strings.TrimSpace(output)), target) != nil {
+			return false
+		}
+	}
+	return len(below) > 0 && len(layers) == len(below)+1 && slices.Equal(layers[:len(below)], below)
 }
 
 func rootFSDigest(layersJSON string) string {

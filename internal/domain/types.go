@@ -586,6 +586,10 @@ type CapsuleRuntime struct {
 	ContainerID   string `json:"container_id,omitempty"`
 	ContainerName string `json:"container_name,omitempty"`
 	BaseRef       string `json:"base_ref,omitempty"`
+	// ParentRef is set when a recording runs on its parent's stack rather
+	// than on the parent's own image: the image the sealed layer is put back
+	// on, so it stays a small delta of its parent.
+	ParentRef     string `json:"parent_ref,omitempty"`
 	WorkspaceRef  string `json:"workspace_ref,omitempty"`
 	AttachCommand string `json:"attach_command,omitempty"`
 	Status        string `json:"status"`

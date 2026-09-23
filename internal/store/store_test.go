@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1052,6 +1053,32 @@ func TestUseLiftsEditedLayersIntoTheStack(t *testing.T) {
 		if enabled.Name == "acp" && enabled.Command != "claude-agent-acp" {
 			t.Fatalf("acp command = %q; the edit did not reach the stack", enabled.Command)
 		}
+	}
+}
+
+// A recording over a layer whose tool has a newer version runs on the stack a
+// composition would build, not on the image the layer was once sealed on; a
+// recording whose lineage is current needs nothing of the kind.
+func TestRecordingStackLiftsTheToolUnderAnEditedCredential(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "git", Scope: domain.ScopeGlobal})
+	claudeV1 := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "claude", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{git.ID}})
+	credential := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactCredential, Name: "claude", Scope: domain.ScopeUser, ParentArtifactIDs: []string{claudeV1.ID}})
+	edit := domain.Recording{Actor: "derek", ParentArtifactIDs: []string{credential.ID}}
+	if _, _, lifted := st.RecordingStack(edit); lifted {
+		t.Fatal("a credential on the newest tool was lifted")
+	}
+	claudeV2 := recordArtifact(t, st, domain.CreateRecordingRequest{Actor: "derek", Kind: domain.ArtifactTool, Name: "claude", Scope: domain.ScopeGlobal, ParentArtifactIDs: []string{claudeV1.ID}, ReplacesArtifactID: claudeV1.ID})
+	layers, artifacts, lifted := st.RecordingStack(edit)
+	if !lifted {
+		t.Fatal("editing the credential after a tool update does not run on the new tool")
+	}
+	want := []string{git.ID, claudeV1.ID, claudeV2.ID, credential.ID}
+	if !slices.Equal(layers, want) || len(artifacts) != len(want) {
+		t.Fatalf("stack = %v, want %v", layers, want)
 	}
 }
 

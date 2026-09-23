@@ -3501,6 +3501,47 @@ func (s *Store) newestVersionLocked(artifact domain.Artifact, operator string) (
 // selection after its parents, selections in the order given, and every
 // layer lifted to its newest usable version, placed right above the version
 // it replaces so a new version reaches every layer built on the old one.
+// RecordingStack is the stack a recording's capsule runs on: its parent with
+// every layer under it lifted to its newest usable version, bottom to top, as
+// a composition of that parent would have it. lifted reports whether that
+// differs from the lineage the parent was sealed on; only then is the parent's
+// own image out of date.
+func (s *Store) RecordingStack(recording domain.Recording) (layers []string, artifacts []domain.Artifact, lifted bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(recording.ParentArtifactIDs) != 1 {
+		return nil, nil, false
+	}
+	parent, ok := s.state.Artifacts[recording.ParentArtifactIDs[0]]
+	if !ok {
+		return nil, nil, false
+	}
+	lineage := map[string]bool{}
+	var walk func(string)
+	walk = func(id string) {
+		if lineage[id] {
+			return
+		}
+		artifact, ok := s.state.Artifacts[id]
+		if !ok {
+			return
+		}
+		lineage[id] = true
+		for _, parentID := range artifact.ParentArtifactIDs {
+			walk(parentID)
+		}
+	}
+	walk(parent.ID)
+	for _, artifact := range s.layerStackLocked([]domain.Artifact{parent}, recording.Actor) {
+		layers = append(layers, artifact.ID)
+		artifacts = append(artifacts, artifact)
+		if !lineage[artifact.ID] {
+			lifted = true
+		}
+	}
+	return layers, artifacts, lifted
+}
+
 func (s *Store) layerStackLocked(selections []domain.Artifact, operator string) []domain.Artifact {
 	var stack []domain.Artifact
 	present := map[string]bool{}
