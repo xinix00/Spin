@@ -55,6 +55,11 @@ type persistedState struct {
 	AuthSessions           map[string]domain.AuthSession           `json:"auth_sessions"`
 	GitOAuthConfigurations map[string]domain.GitOAuthConfiguration `json:"git_oauth_configurations"`
 	Logins                 map[string]domain.Login                 `json:"logins,omitempty"`
+	// WorkflowTokens are the hashes of the bearer tokens the agent of a
+	// Session calls the Spin workflow tools with, by Session. They outlive
+	// a restart of the server: the agent keeps running on its runner, with
+	// the token it was given.
+	WorkflowTokens map[string]string `json:"workflow_tokens,omitempty"`
 	// LoginStates is how logins were kept before v1.28.53: one per layer.
 	// Read once and turned into the layer's first login, never written.
 	LoginStates map[string]legacyLoginState `json:"login_states,omitempty"`
@@ -282,6 +287,9 @@ func (s *Store) ensureMaps() {
 	}
 	if s.state.Logins == nil {
 		s.state.Logins = map[string]domain.Login{}
+	}
+	if s.state.WorkflowTokens == nil {
+		s.state.WorkflowTokens = map[string]string{}
 	}
 }
 
@@ -743,8 +751,58 @@ func (s *Store) SetCompositionRuntime(compositionID, operator string, runtime do
 		return domain.Composition{}, ErrConflict
 	}
 	composition.Runtime = &runtime
+	if runtime.Status == "stopped" {
+		// A stopped capsule runs no agent any more.
+		composition.Agent = nil
+	}
 	s.state.Compositions[composition.ID] = composition
 	return composition, s.saveLocked()
+}
+
+// SetCompositionAgent keeps the agent process a running capsule runs, so a
+// restarted server takes it up again. Nil forgets the agent of that stream,
+// and only that one: a newer agent that already took its place stays.
+func (s *Store) SetCompositionAgent(compositionID, streamID string, agent *domain.AgentProcess) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	composition, ok := s.state.Compositions[compositionID]
+	if !ok {
+		return ErrNotFound
+	}
+	if agent == nil {
+		if composition.Agent == nil || composition.Agent.StreamID != streamID {
+			return nil
+		}
+		composition.Agent = nil
+	} else {
+		if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+			return fmt.Errorf("an agent runs in a capsule that runs: %w", ErrConflict)
+		}
+		kept := *agent
+		composition.Agent = &kept
+	}
+	s.state.Compositions[compositionID] = composition
+	return s.saveLocked()
+}
+
+// ClientWorkloads counts what runs on a runner according to the state: its
+// capsules and open recordings. A server that starts again learns from it
+// how full a runner that reconnects already is.
+func (s *Store) ClientWorkloads(clientID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for _, composition := range s.state.Compositions {
+		if composition.Runtime != nil && composition.Runtime.ClientID == clientID && composition.Runtime.Status != "stopped" {
+			count++
+		}
+	}
+	for _, recording := range s.state.Recordings {
+		if recording.Runtime != nil && recording.Runtime.ClientID == clientID && recording.Runtime.Status != "stopped" {
+			count++
+		}
+	}
+	return count
 }
 
 // SetArtifactContents records the manifest of a layer sealed before
@@ -2376,6 +2434,7 @@ func (s *Store) DeleteJob(jobID, operator string) (domain.Job, error) {
 	}
 	for sessionID := range sessionIDs {
 		delete(s.state.Sessions, sessionID)
+		delete(s.state.WorkflowTokens, sessionID)
 	}
 	for key, mappedJobID := range s.state.JobRequestKeys {
 		if mappedJobID == job.ID {

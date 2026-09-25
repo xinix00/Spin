@@ -42,6 +42,9 @@ type localStream struct {
 	process capsule.EnabledProcess
 	resize  func(uint16, uint16) error
 	cancel  context.CancelFunc
+	// agent names the capsule and entrypoint of an enabled process: a
+	// capsule runs one agent, and a newer one ends the one before.
+	agent string
 }
 
 type Worker struct {
@@ -64,6 +67,9 @@ type Worker struct {
 	connections   uint64
 	// watchers holds the tracked-file watcher per capsule.
 	watchers map[string]context.CancelFunc
+	// agentStarts serializes replacement within a capsule, including the
+	// interval before StartEnabled returns and the stream is registered.
+	agentStarts map[string]chan struct{}
 }
 
 func New(config Config, logger *slog.Logger) *Worker {
@@ -164,6 +170,7 @@ func (w *Worker) runConnection(ctx context.Context) error {
 			OS: runtime.GOOS, Arch: runtime.GOARCH, Tools: append([]string(nil), w.config.Tools...), SnapshotModes: []string{"docker-image", snapshotModePull},
 			Engine: w.engine.Info(), MaxWorkloads: w.config.MaxWorkloads,
 		},
+		Streams: w.streamIDs(), StreamsReported: true,
 	}
 	if err := connection.WriteJSON(hello); err != nil {
 		return err
@@ -433,11 +440,23 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		if !ok {
 			return nil, false, errors.New("runner engine cannot stream enabled entrypoints")
 		}
+		agent := payload.Runtime.ContainerID + "\x00" + payload.Enablement.Name
+		unlock, err := w.lockAgentStart(ctx, agent)
+		if err != nil {
+			return nil, false, err
+		}
+		defer unlock()
+		// One agent per capsule. A server that restarted and could not
+		// take up the agent it left here starts a new one; two agents on
+		// one login lock each other out as soon as one refreshes a token.
+		if err := w.endAgents(agent); err != nil {
+			return nil, false, err
+		}
 		process, err := engine.StartEnabled(ctx, payload.Runtime, payload.Enablement)
 		if err != nil {
 			return nil, false, err
 		}
-		w.bindStream(request.ID, localStream{process: process})
+		w.bindStream(request.ID, localStream{process: process, agent: agent})
 		go w.pumpStream(request.ID, process)
 		return streamResponse{StreamID: request.ID}, true, nil
 	case methodStartInteractive:
@@ -781,6 +800,79 @@ func (w *Worker) injectAttachments(ctx context.Context, injector capsule.Workspa
 		attachments = append(attachments, capsule.WorkspaceAttachment{SourcePath: path, TargetPath: attachment.TargetPath})
 	}
 	return injector.InjectWorkspaceAttachments(ctx, payload.Runtime, attachments)
+}
+
+// endAgents ends the enabled processes that run as this agent.
+func (w *Worker) endAgents(agent string) error {
+	w.mu.Lock()
+	var ended []localStream
+	for _, stream := range w.streams {
+		if stream.agent == agent {
+			ended = append(ended, stream)
+		}
+	}
+	w.mu.Unlock()
+	for _, stream := range ended {
+		w.logger.Info("ending the agent a new one replaces", "agent", strings.ReplaceAll(agent, "\x00", " "))
+		if err := stream.process.Close(); err != nil {
+			return fmt.Errorf("end previous agent: %w", err)
+		}
+		if stream.cancel != nil {
+			stream.cancel()
+		}
+	}
+	return nil
+}
+
+func (w *Worker) lockAgentStart(ctx context.Context, agent string) (func(), error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		w.mu.Lock()
+		if w.agentStarts == nil {
+			w.agentStarts = make(map[string]chan struct{})
+		}
+		pending := w.agentStarts[agent]
+		if pending == nil {
+			pending = make(chan struct{})
+			w.agentStarts[agent] = pending
+			w.mu.Unlock()
+			return func() {
+				w.mu.Lock()
+				delete(w.agentStarts, agent)
+				close(pending)
+				w.mu.Unlock()
+			}, nil
+		}
+		w.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-pending:
+		}
+	}
+}
+
+// streamIDs are the processes this runner runs for the server now.
+func (w *Worker) streamIDs() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	ids := make([]string, 0, len(w.streams))
+	seen := make(map[string]bool, len(w.streams))
+	for id := range w.streams {
+		ids = append(ids, id)
+		seen[id] = true
+	}
+	// A process can finish while disconnected. Its buffered final output
+	// and exit must drain before the broker considers the stream gone.
+	for _, message := range w.outbox {
+		if (message.Type == messageStreamData || message.Type == messageStreamExit) && !seen[message.ID] {
+			ids = append(ids, message.ID)
+			seen[message.ID] = true
+		}
+	}
+	return ids
 }
 
 func (w *Worker) stream(id string) (localStream, bool) {

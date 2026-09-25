@@ -546,10 +546,9 @@ func (s *Server) launchWorkflowSessionContext(ctx context.Context, sessionID, op
 		needsMaterialization = compositionIndex < 0 || snapshot.Compositions[compositionIndex].Runtime == nil || snapshot.Compositions[compositionIndex].Runtime.Status == "stopped"
 	}
 	if needsMaterialization {
-		// The capsules of the Job's earlier steps go first: a step that is
-		// done holds nothing the next one needs, and the login of a
-		// credential layer it still holds is the one the next capsule gets.
-		// A chat on an earlier step starts its capsule again when asked.
+		// Workspaces of the Job that no Session uses any more go first;
+		// the capsules of its earlier steps stay open (see
+		// retireWorkflowCompositions).
 		s.retireWorkflowCompositions(session.JobID, session.ID)
 		materializeContext, cancel := s.launchContext(ctx, session.ID)
 		_, materializeErr := s.useCapsule(materializeContext, domain.UseRequest{Selector: "session:" + session.ID, Operator: operator, MergeRef: s.mergeToResolve(session.ID)})
@@ -645,14 +644,19 @@ func (s *Server) retireWorkflowCompositions(jobID, keepSessionID string) {
 	for _, sessionID := range snapshot.Jobs[jobIndex].SessionIDs {
 		sessionIDs[sessionID] = true
 	}
-	// The kept Session keeps exactly its prepared workspace; anything else of
-	// this Job, including an extra workspace of the same Session, goes.
-	keep := ""
-	if index := slices.IndexFunc(snapshot.Sessions, func(session domain.Session) bool { return session.ID == keepSessionID }); index >= 0 {
-		keep = snapshot.Sessions[index].PreparedCompositionID
+	// Every Session of the Job keeps the workspace it works in: an earlier
+	// step's capsule stays open, with its agent and its conversation, until
+	// the Job ends or a person closes it. What goes is a workspace no
+	// Session uses any more, such as the one a retry replaced.
+	keep := map[string]bool{}
+	jobFinished := snapshot.Jobs[jobIndex].Status == domain.JobDone || snapshot.Jobs[jobIndex].Status == domain.JobCancelled
+	for _, session := range snapshot.Sessions {
+		if !jobFinished && sessionIDs[session.ID] && session.PreparedCompositionID != "" {
+			keep[session.PreparedCompositionID] = true
+		}
 	}
 	for _, composition := range snapshot.Compositions {
-		if !sessionIDs[composition.SessionID] || composition.ID == keep || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+		if !sessionIDs[composition.SessionID] || keep[composition.ID] || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -980,9 +984,11 @@ func (s *Server) workflowMCPServer(sessionID string) (domain.MCPServer, error) {
 	if err != nil {
 		return domain.MCPServer{}, err
 	}
-	s.workflowMu.Lock()
-	s.workflowTokens[sessionID] = secretHash(token)
-	s.workflowMu.Unlock()
+	// The token is kept in the state, not in memory: the agent keeps
+	// running on its runner when Spin restarts, and keeps calling with it.
+	if err := s.store.SetWorkflowToken(sessionID, secretHash(token)); err != nil {
+		return domain.MCPServer{}, fmt.Errorf("keep workflow token: %w", err)
+	}
 	return domain.MCPServer{
 		Name: "spin-workflow", Transport: domain.MCPTransportHTTP,
 		URL:     s.internalURL + "/api/workflow/mcp/" + sessionID,
@@ -994,9 +1000,7 @@ func (s *Server) validWorkflowBearer(sessionID, header string) bool {
 	if !strings.HasPrefix(header, "Bearer ") {
 		return false
 	}
-	s.workflowMu.Lock()
-	expected := s.workflowTokens[sessionID]
-	s.workflowMu.Unlock()
+	expected := s.store.WorkflowToken(sessionID)
 	actual := secretHash(strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")))
 	return expected != "" && subtle.ConstantTimeCompare([]byte(expected), []byte(actual)) == 1
 }

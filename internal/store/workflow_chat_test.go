@@ -151,7 +151,28 @@ func TestChatTurnRestoresADecisionAnOlderBuildClosedAsChat(t *testing.T) {
 		t.Fatalf("legacy state still has an open question: %+v", open)
 	}
 
-	// The server repairs this on start, before any agent could be working.
+	// A restarted server can now inherit an agent that is still working.
+	// Do not expose an approval for its half-edited workspace.
+	st.mu.Lock()
+	currentSession := st.state.Sessions[session]
+	currentSession.PreparedCompositionID = "cmp_surviving"
+	st.state.Sessions[session] = currentSession
+	st.state.Compositions["cmp_surviving"] = domain.Composition{
+		ID: "cmp_surviving", SessionID: session,
+		Runtime: &domain.CapsuleRuntime{Status: "ready"},
+		Agent:   &domain.AgentProcess{SessionID: session, PromptID: "7"},
+	}
+	st.mu.Unlock()
+	if restored, err := st.RepairStandingDecisions(); err != nil || restored != 0 {
+		t.Fatalf("repair interrupted a surviving turn: restored=%d error=%v", restored, err)
+	}
+	if run := phaseRunByID(t, st, accepted.PhaseRun.ID); run.Status != domain.PhaseRunRunning {
+		t.Fatalf("surviving agent's step changed: %+v", run)
+	}
+	st.mu.Lock()
+	st.state.Compositions["cmp_surviving"].Agent.PromptID = ""
+	st.mu.Unlock()
+	// Once no turn is running, the legacy decision can be repaired.
 	restored, err := st.RepairStandingDecisions()
 	if err != nil || restored != 1 {
 		t.Fatalf("repair on start: restored=%d error=%v", restored, err)

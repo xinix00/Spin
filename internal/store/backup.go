@@ -168,8 +168,10 @@ func normalizeRestoredState(state *persistedState) {
 	}
 	for id, composition := range state.Compositions {
 		composition.Runtime = nil
+		composition.Agent = nil
 		state.Compositions[id] = composition
 	}
+	state.WorkflowTokens = map[string]string{}
 	for id, recording := range state.Recordings {
 		if recording.Status == domain.RecordingOpen {
 			recording.Status = domain.RecordingCancelled

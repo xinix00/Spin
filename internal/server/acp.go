@@ -117,22 +117,23 @@ type acpPromptAttachment struct {
 }
 
 type activeACP struct {
-	sessionID       string
-	compositionID   string
-	operator        string
-	agentSessionID  string
-	agentName       string
-	protocolVersion int
-	promptCaps      acpPromptCapabilities
-	process         capsule.EnabledProcess
-	cancel          context.CancelFunc
-	done            chan struct{}
-	doneOnce        sync.Once
-	writeMu         sync.Mutex
-	mu              sync.Mutex
-	nextID          int64
-	pending         map[string]chan acpRPCResponse
-	permissions     map[string]bool
+	sessionID        string
+	compositionID    string
+	operator         string
+	agentSessionID   string
+	agentName        string
+	protocolVersion  int
+	promptCaps       acpPromptCapabilities
+	process          capsule.EnabledProcess
+	cancel           context.CancelFunc
+	done             chan struct{}
+	doneOnce         sync.Once
+	writeMu          sync.Mutex
+	mu               sync.Mutex
+	nextID           int64
+	pending          map[string]chan acpRPCResponse
+	permissions      map[string]bool
+	permissionParams map[string]json.RawMessage
 	// autoAccept answers the agent's permission requests with allow, so a
 	// run keeps going; an agent's own full-access mode still asks now and
 	// then, this does not. Off per Session from the chat.
@@ -159,10 +160,28 @@ type activeACP struct {
 	// at session/new.
 	settings []acpSetting
 	// primed is set once this agent session has read the phase's full
-	// prompt. An agent session is not durable (a deploy or runner restart
-	// makes a new one), and a resumed one must not act on a bare answer or
-	// chat line without the instructions and rules the phase was given.
+	// prompt. An agent session is not durable (a runner restart makes a
+	// new one), and a resumed one must not act on a bare answer or chat
+	// line without the instructions and rules the phase was given.
 	primed bool
+	// promptID is the request of the turn that runs; adoptedPrompt is set
+	// while that turn is one an earlier server started (see resumeTurn).
+	promptID      string
+	adoptedPrompt string
+	// persist keeps what a restarted server needs to take this agent up
+	// again; it runs after every change of that (see Server.keepAgent).
+	persist   func()
+	persistMu sync.Mutex
+}
+
+// changed hands the agent's state to persist, when anyone keeps it.
+func (a *activeACP) changed() {
+	a.mu.Lock()
+	persist := a.persist
+	a.mu.Unlock()
+	if persist != nil {
+		persist()
+	}
 }
 
 func (a *activeACP) isPrimed() bool {
@@ -173,8 +192,12 @@ func (a *activeACP) isPrimed() bool {
 
 func (a *activeACP) markPrimed() {
 	a.mu.Lock()
+	primed := a.primed
 	a.primed = true
 	a.mu.Unlock()
+	if !primed {
+		a.changed()
+	}
 }
 
 // acpConfigOption is one session config option as an ACP agent reports it.
@@ -700,22 +723,185 @@ func (s *Server) getOrStartACP(sessionID, operator string) (*activeACP, error) {
 		return nil, err
 	}
 	active.mu.Lock()
-	active.sessionID = session.ID
 	// The layer's default; the chat switch changes it for this Session.
 	if settings := s.agentSettingsFor(composition); settings.AutoAccept != nil {
 		active.autoAccept = *settings.AutoAccept
 	}
-	active.onIdle = func() {
-		if _, err := s.store.SettleWorkflowChatTurn(session.ID); err != nil {
-			s.logger.Warn("settle workflow phase after ACP turn", "session", session.ID, "error", err)
-		}
-		go s.afterTurn(session.ID, composition.ID)
-	}
-	active.onTurnFailed = func(reason string) { go s.turnFailed(session.ID, reason) }
 	active.mu.Unlock()
+	s.bindSessionACP(active, session.ID, composition.ID)
 	s.rememberAgentOptions(composition, active)
 	s.acpSessions[sessionID] = active
+	s.keepAgent(active)
+	go s.forgetAgentWhenDone(active)
 	return active, nil
+}
+
+// bindSessionACP makes the agent the one of a Session: its turns settle
+// the Session's step, and its state is kept for a restart.
+func (s *Server) bindSessionACP(active *activeACP, sessionID, compositionID string) {
+	active.mu.Lock()
+	defer active.mu.Unlock()
+	active.sessionID = sessionID
+	active.onIdle = func() {
+		if _, err := s.store.SettleWorkflowChatTurn(sessionID); err != nil {
+			s.logger.Warn("settle workflow phase after ACP turn", "session", sessionID, "error", err)
+		}
+		go s.afterTurn(sessionID, compositionID)
+	}
+	active.onTurnFailed = func(reason string) { go s.turnFailed(sessionID, reason) }
+	active.persist = func() { s.keepAgent(active) }
+}
+
+// agentRecord is what the state keeps of a running agent; nothing for a
+// process that dies with the server anyway (a local engine).
+func (a *activeACP) agentRecord() (domain.AgentProcess, bool) {
+	detached, ok := a.process.(capsule.DetachedProcess)
+	if !ok {
+		return domain.AgentProcess{}, false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	promptCaps, _ := json.Marshal(a.promptCaps)
+	settings, _ := json.Marshal(a.settings)
+	sent := make([]string, 0, len(a.sentAttachments))
+	for attachmentID, isSent := range a.sentAttachments {
+		if isSent {
+			sent = append(sent, attachmentID)
+		}
+	}
+	slices.Sort(sent)
+	permissions := make(map[string]json.RawMessage, len(a.permissionParams))
+	for id, params := range a.permissionParams {
+		if a.permissions[id] {
+			permissions[id] = slices.Clone(params)
+		}
+	}
+	return domain.AgentProcess{
+		SessionID: a.sessionID, Operator: a.operator, StreamID: detached.StreamID(), AgentSessionID: a.agentSessionID,
+		AgentName: a.agentName, ProtocolVersion: a.protocolVersion, Steering: a.steering, PromptCaps: promptCaps, Settings: settings,
+		AutoAccept: a.autoAccept, Primed: a.primed, PromptID: a.promptID, SentAttachments: sent, PendingPermissions: permissions,
+	}, true
+}
+
+// keepAgent writes the agent's state to the composition it runs in, so a
+// server that restarts takes the same agent up again (adoptAgents).
+func (s *Server) keepAgent(active *activeACP) {
+	active.persistMu.Lock()
+	defer active.persistMu.Unlock()
+	select {
+	case <-active.done:
+		return
+	default:
+	}
+	record, ok := active.agentRecord()
+	if !ok || record.SessionID == "" {
+		return
+	}
+	if err := s.store.SetCompositionAgent(active.compositionID, record.StreamID, &record); err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.logger.Warn("keep agent state", "composition", active.compositionID, "session", record.SessionID, "error", err)
+	}
+}
+
+// forgetAgentWhenDone takes the agent out of the state once it ended.
+func (s *Server) forgetAgentWhenDone(active *activeACP) {
+	detached, ok := active.process.(capsule.DetachedProcess)
+	if !ok {
+		return
+	}
+	<-active.done
+	active.persistMu.Lock()
+	defer active.persistMu.Unlock()
+	if err := s.store.SetCompositionAgent(active.compositionID, detached.StreamID(), nil); err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.logger.Warn("forget ended agent", "composition", active.compositionID, "error", err)
+	}
+}
+
+// adoptAgents takes up the agents an earlier server left running. A
+// restart of Spin does not stop its runners: the capsules go on, the
+// agents in them too, and the runner keeps what they write until a server
+// listens again. Starting a second agent beside one that still works would
+// put two processes on one login, and the first to refresh its token
+// locks the other out. So the same agent is taken up, with the same agent
+// session, the turn it was in the middle of included: its answer comes
+// once the runner is back, and the step settles as if nothing happened.
+// This runs before the server takes connections, so nothing a runner
+// kept arrives before it is claimed.
+func (s *Server) adoptAgents() {
+	adopter, ok := s.engine.(capsule.EnabledAdopter)
+	if !ok {
+		return
+	}
+	for _, composition := range s.store.RunningCompositions() {
+		agent := composition.Agent
+		if agent == nil {
+			continue
+		}
+		forget := func(reason string, err error) {
+			s.logger.Warn("agent left by an earlier server not taken up", "composition", composition.ID, "session", agent.SessionID, "reason", reason, "error", err)
+			if err := s.store.SetCompositionAgent(composition.ID, agent.StreamID, nil); err != nil {
+				s.logger.Warn("forget agent", "composition", composition.ID, "error", err)
+			}
+		}
+		session, err := s.sessionRecord(agent.SessionID)
+		if err != nil || session.PreparedCompositionID != composition.ID {
+			forget("its Session no longer runs in this capsule", err)
+			continue
+		}
+		process, err := adopter.AdoptEnabled(*composition.Runtime, agent.StreamID)
+		if err != nil {
+			forget("the runner cannot be asked for it", err)
+			continue
+		}
+		active := adoptedACP(composition.ID, *agent, process)
+		s.bindSessionACP(active, session.ID, composition.ID)
+		s.acpMu.Lock()
+		s.acpSessions[session.ID] = active
+		s.acpMu.Unlock()
+		go active.readLoop(s.logger)
+		go s.forgetAgentWhenDone(active)
+		note := "Spin is opnieuw gestart; de agent liep door in dezelfde capsule en gaat verder waar hij was"
+		if agent.PromptID != "" {
+			note = "Spin is opnieuw gestart; de agent werkte door in dezelfde capsule en maakt zijn beurt af"
+		}
+		active.broadcast(acpBrowserEvent{Type: "steered", Text: note}, true)
+		s.logger.Info("agent taken up after a restart", "composition", composition.ID, "session", session.ID, "stream", agent.StreamID, "turn_running", agent.PromptID != "")
+	}
+}
+
+// adoptedACP rebuilds the client side of an agent an earlier server
+// started, from what that server kept of it.
+func adoptedACP(compositionID string, agent domain.AgentProcess, process capsule.EnabledProcess) *activeACP {
+	active := &activeACP{
+		compositionID: compositionID, operator: normalizeOperator(agent.Operator), agentSessionID: agent.AgentSessionID,
+		agentName: agent.AgentName, protocolVersion: agent.ProtocolVersion, steering: agent.Steering,
+		process: process, cancel: func() {}, done: make(chan struct{}),
+		pending: map[string]chan acpRPCResponse{}, permissions: map[string]bool{}, sentAttachments: map[string]bool{},
+		subscribers: map[chan acpBrowserEvent]struct{}{}, history: []acpBrowserEvent{},
+		autoAccept: agent.AutoAccept, primed: agent.Primed,
+		// Above every number the earlier server used: an answer to one
+		// of its requests must never be taken for an answer to ours.
+		nextID: time.Now().UnixMilli(),
+	}
+	if active.protocolVersion == 0 {
+		active.protocolVersion = 1
+	}
+	_ = json.Unmarshal(agent.PromptCaps, &active.promptCaps)
+	_ = json.Unmarshal(agent.Settings, &active.settings)
+	for _, attachmentID := range agent.SentAttachments {
+		active.sentAttachments[attachmentID] = true
+	}
+	active.permissionParams = make(map[string]json.RawMessage, len(agent.PendingPermissions))
+	for id, params := range agent.PendingPermissions {
+		active.permissions[id] = true
+		active.permissionParams[id] = slices.Clone(params)
+		active.broadcast(acpBrowserEvent{Type: "permission", RequestID: id, Params: params}, true)
+	}
+	// Register the old request before any reader can consume a buffered
+	// reply. Otherwise the reply is discarded and the turn stays busy.
+	if agent.PromptID != "" {
+		active.resumeTurn(agent.PromptID)
+	}
+	return active
 }
 
 // turnFailed is what a Job does when a turn of its step went wrong: the
@@ -742,13 +928,11 @@ func (s *Server) turnFailed(sessionID, reason string) {
 }
 
 // afterTurn is what follows an agent's turn: the work goes to the Job
-// branch and the login files are kept. A step that now waits for a
-// person's answer is done for the moment: its capsule goes, so the login
-// it held is free for the next capsule; the answer, or a chat, brings a
-// capsule back.
+// branch and what the capsule changed is noted. The capsule stays open,
+// also when the step now waits for a person's answer: the answer goes to
+// the same agent, which still has the conversation.
 func (s *Server) afterTurn(sessionID, compositionID string) {
-	waiting := s.stepWaitsForAnswer(sessionID)
-	if waiting {
+	if s.stepWaitsForAnswer(sessionID) {
 		s.syncWorkspaceWithin(sessionID, 0)
 	} else {
 		s.syncWorkspace(sessionID)
@@ -762,14 +946,6 @@ func (s *Server) afterTurn(sessionID, compositionID string) {
 	// The logins are kept as files change (the runner watches them); a
 	// turn's end only notes what the capsule changed.
 	s.captureCapsuleChanges(ctx, composition)
-	if !waiting {
-		return
-	}
-	if _, err := s.stopCapsule(ctx, composition.ID, composition.Operator); err != nil {
-		s.logger.Warn("close the capsule of a step that waits for an answer", "session", sessionID, "error", err)
-		return
-	}
-	s.logger.Info("step waits for an answer; its capsule is closed", "session", sessionID, "composition", composition.ID)
 }
 
 // stepWaitsForAnswer says whether the Session's step asked a person
@@ -1377,7 +1553,13 @@ func (a *activeACP) readLoop(logger *slog.Logger) {
 		response := a.pending[key]
 		a.mu.Unlock()
 		if response != nil {
-			response <- acpRPCResponse{Result: envelope.Result, Error: envelope.Error}
+			// Cancellation of an adopted turn can already have supplied a
+			// terminal response. A late or duplicate reply must not block
+			// the reader and every subsequent request on this process.
+			select {
+			case response <- acpRPCResponse{Result: envelope.Result, Error: envelope.Error}:
+			default:
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -1416,8 +1598,13 @@ func (a *activeACP) receiveMethod(envelope acpEnvelope) {
 		key := string(envelope.ID)
 		a.mu.Lock()
 		a.permissions[key] = true
+		if a.permissionParams == nil {
+			a.permissionParams = make(map[string]json.RawMessage)
+		}
+		a.permissionParams[key] = slices.Clone(envelope.Params)
 		auto := a.autoAccept
 		a.mu.Unlock()
+		a.changed()
 		if option, ok := allowOption(envelope.Params); auto && ok {
 			if err := a.resolvePermission(key, option.ID); err == nil {
 				a.broadcast(acpBrowserEvent{Type: "permission", RequestID: key, Params: envelope.Params, Auto: true, Choice: option.Name}, true)
@@ -1433,6 +1620,11 @@ func (a *activeACP) receiveMethod(envelope acpEnvelope) {
 }
 
 func (a *activeACP) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	return a.call(ctx, method, params, nil)
+}
+
+// call is request that also tells sent the request's ID once it went out.
+func (a *activeACP) call(ctx context.Context, method string, params any, sent func(key string)) (json.RawMessage, error) {
 	a.mu.Lock()
 	a.nextID++
 	id := a.nextID
@@ -1451,6 +1643,9 @@ func (a *activeACP) request(ctx context.Context, method string, params any) (jso
 	}
 	if err := a.write(acpEnvelope{JSONRPC: "2.0", ID: json.RawMessage(key), Method: method, Params: encodedParams}); err != nil {
 		return nil, err
+	}
+	if sent != nil {
+		sent(key)
 	}
 	select {
 	case received := <-response:
@@ -1560,65 +1755,126 @@ func (a *activeACP) steer(message queuedPrompt) {
 // not in a state to receive what was meant to follow.
 func (a *activeACP) runPrompts(first queuedPrompt) {
 	go func() {
-		current, stillWaiting := first, 0
-		for {
-			prompt, newAttachmentIDs := a.buildPrompt(current)
-			a.mu.Lock()
-			a.received = 0
-			a.mu.Unlock()
-			a.broadcast(acpBrowserEvent{Type: "user", Text: current.text, Queued: stillWaiting}, true)
-			result, err := a.request(context.Background(), "session/prompt", map[string]any{
-				"sessionId": a.agentSessionID,
-				"prompt":    prompt,
-			})
-			if err != nil {
-				a.mu.Lock()
-				for _, attachmentID := range newAttachmentIDs {
-					delete(a.sentAttachments, attachmentID)
-				}
-				a.mu.Unlock()
-			}
-			next, remaining, more := a.finishTurn(err != nil)
-			if err != nil {
-				message := "ACP prompt: " + err.Error()
-				if remaining > 0 {
-					message += fmt.Sprintf(" · %d wachtende bericht(en) verwijderd", remaining)
-				}
-				a.broadcast(acpBrowserEvent{Type: "error", Error: message}, true)
-				a.settleIdle()
-				a.reportTurnFailure(err.Error())
-				return
-			}
-			var completed struct {
-				StopReason string `json:"stopReason"`
-			}
-			_ = json.Unmarshal(result, &completed)
-			a.mu.Lock()
-			received := a.received
-			a.mu.Unlock()
-			if received == 0 {
-				// A turn that ends without a word is not a finished turn: the
-				// agent could not start, so the step says so instead of
-				// standing still.
-				reason := "de agent beëindigde zijn beurt zonder iets te zeggen"
-				if stop := strings.TrimSpace(completed.StopReason); stop != "" && stop != "end_turn" {
-					reason += " (" + stop + ")"
-				}
-				a.broadcast(acpBrowserEvent{Type: "error", Error: "ACP: " + reason}, true)
-				a.reportTurnFailure(reason)
-			}
-			if !more {
-				// Settle before the browser hears the turn ended, so its next
-				// refresh already shows the decision as pending again.
-				a.settleIdle()
-			}
-			a.broadcast(acpBrowserEvent{Type: "turn_end", StopReason: completed.StopReason, Queued: remaining}, true)
-			if !more {
-				return
-			}
-			current, stillWaiting = next, remaining-1
-		}
+		result, err := a.sendPrompt(first, 0)
+		a.continueTurns(result, err)
 	}()
+}
+
+// sendPrompt runs one turn: the prompt goes out, the agent's answer to it
+// comes back when the turn ends.
+func (a *activeACP) sendPrompt(message queuedPrompt, stillWaiting int) (json.RawMessage, error) {
+	prompt, newAttachmentIDs := a.buildPrompt(message)
+	a.mu.Lock()
+	a.received = 0
+	a.mu.Unlock()
+	a.broadcast(acpBrowserEvent{Type: "user", Text: message.text, Queued: stillWaiting}, true)
+	result, err := a.call(context.Background(), "session/prompt", map[string]any{
+		"sessionId": a.agentSessionID,
+		"prompt":    prompt,
+	}, func(key string) {
+		a.mu.Lock()
+		a.promptID = key
+		a.mu.Unlock()
+		a.changed()
+	})
+	if err != nil {
+		a.mu.Lock()
+		for _, attachmentID := range newAttachmentIDs {
+			delete(a.sentAttachments, attachmentID)
+		}
+		a.mu.Unlock()
+	}
+	return result, err
+}
+
+// resumeTurn waits for the turn an earlier server started. The agent
+// answers that server's request when the turn ends, as it would have; the
+// runner kept the answer, and it arrives here under the same ID.
+func (a *activeACP) resumeTurn(promptID string) {
+	response := make(chan acpRPCResponse, 1)
+	a.mu.Lock()
+	a.pending[promptID] = response
+	a.busy = true
+	a.promptID = promptID
+	a.adoptedPrompt = promptID
+	// What the agent said before the restart went to the earlier server:
+	// this turn is not silent for lack of it.
+	a.received = 1
+	a.mu.Unlock()
+	go func() {
+		var result json.RawMessage
+		var err error
+		select {
+		case received := <-response:
+			if received.Error != nil {
+				err = received.Error.asError()
+			} else {
+				result = received.Result
+			}
+		case <-a.done:
+			err = a.err()
+		}
+		a.mu.Lock()
+		delete(a.pending, promptID)
+		a.mu.Unlock()
+		a.continueTurns(result, err)
+	}()
+}
+
+// continueTurns settles the turn that ended and runs whatever was queued
+// behind it, turn after turn.
+func (a *activeACP) continueTurns(result json.RawMessage, err error) {
+	for {
+		next, remaining, more := a.endTurn(result, err)
+		if !more {
+			return
+		}
+		result, err = a.sendPrompt(next, remaining-1)
+	}
+}
+
+// endTurn settles one turn and hands back the next queued message, if any.
+func (a *activeACP) endTurn(result json.RawMessage, err error) (queuedPrompt, int, bool) {
+	a.mu.Lock()
+	a.promptID, a.adoptedPrompt = "", ""
+	a.mu.Unlock()
+	a.changed()
+	next, remaining, more := a.finishTurn(err != nil)
+	if err != nil {
+		message := "ACP prompt: " + err.Error()
+		if remaining > 0 {
+			message += fmt.Sprintf(" · %d wachtende bericht(en) verwijderd", remaining)
+		}
+		a.broadcast(acpBrowserEvent{Type: "error", Error: message}, true)
+		a.settleIdle()
+		a.reportTurnFailure(err.Error())
+		return queuedPrompt{}, 0, false
+	}
+	var completed struct {
+		StopReason string `json:"stopReason"`
+	}
+	_ = json.Unmarshal(result, &completed)
+	a.mu.Lock()
+	received := a.received
+	a.mu.Unlock()
+	if received == 0 {
+		// A turn that ends without a word is not a finished turn: the
+		// agent could not start, so the step says so instead of
+		// standing still.
+		reason := "de agent beëindigde zijn beurt zonder iets te zeggen"
+		if stop := strings.TrimSpace(completed.StopReason); stop != "" && stop != "end_turn" {
+			reason += " (" + stop + ")"
+		}
+		a.broadcast(acpBrowserEvent{Type: "error", Error: "ACP: " + reason}, true)
+		a.reportTurnFailure(reason)
+	}
+	if !more {
+		// Settle before the browser hears the turn ended, so its next
+		// refresh already shows the decision as pending again.
+		a.settleIdle()
+	}
+	a.broadcast(acpBrowserEvent{Type: "turn_end", StopReason: completed.StopReason, Queued: remaining}, true)
+	return next, remaining, more
 }
 
 // reportTurnFailure tells the server a turn went wrong, once the turn is
@@ -1724,7 +1980,25 @@ func (a *activeACP) cancelPrompt() error {
 	for _, id := range pending {
 		_ = a.resolvePermissionOutcome(id, map[string]string{"outcome": "cancelled"})
 	}
-	return a.notify("session/cancel", map[string]string{"sessionId": a.agentSessionID})
+	if err := a.notify("session/cancel", map[string]string{"sessionId": a.agentSessionID}); err != nil {
+		return err
+	}
+	// A turn an earlier server started may have ended while no server
+	// listened, its answer lost with that server's socket: cancelling it
+	// ends it here too, so it can never hang.
+	a.mu.Lock()
+	adopted := a.pending[a.adoptedPrompt]
+	if a.adoptedPrompt == "" {
+		adopted = nil
+	}
+	a.mu.Unlock()
+	if adopted != nil {
+		select {
+		case adopted <- acpRPCResponse{Result: json.RawMessage(`{"stopReason":"cancelled"}`)}:
+		default:
+		}
+	}
+	return nil
 }
 
 type permissionOption struct {
@@ -1762,6 +2036,7 @@ func (a *activeACP) setAutoAccept(enabled bool) {
 	a.mu.Lock()
 	a.autoAccept = enabled
 	a.mu.Unlock()
+	a.changed()
 	a.broadcast(acpBrowserEvent{Type: "auto_accept", Enabled: &enabled}, true)
 }
 
@@ -1786,7 +2061,17 @@ func (a *activeACP) resolvePermissionOutcome(requestID string, outcome map[strin
 	if err != nil {
 		return err
 	}
-	return a.write(acpEnvelope{JSONRPC: "2.0", ID: json.RawMessage(requestID), Result: result})
+	if err := a.write(acpEnvelope{JSONRPC: "2.0", ID: json.RawMessage(requestID), Result: result}); err != nil {
+		a.mu.Lock()
+		a.permissions[requestID] = true
+		a.mu.Unlock()
+		return err
+	}
+	a.mu.Lock()
+	delete(a.permissionParams, requestID)
+	a.mu.Unlock()
+	a.changed()
+	return nil
 }
 
 func (a *activeACP) subscribe() (chan acpBrowserEvent, []acpBrowserEvent) {

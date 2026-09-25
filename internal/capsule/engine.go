@@ -94,6 +94,21 @@ type EnabledEngine interface {
 	StartEnabled(context.Context, domain.CapsuleRuntime, domain.Enablement) (EnabledProcess, error)
 }
 
+// DetachedProcess is an enabled process that lives on without the server:
+// on a runner, which keeps it and what it writes while the server is away.
+// Its stream ID finds it back.
+type DetachedProcess interface {
+	EnabledProcess
+	StreamID() string
+}
+
+// EnabledAdopter takes up an enabled process an earlier server started, by
+// its stream, instead of starting a second one. When the runner reconnects
+// without it, the process ends with an error.
+type EnabledAdopter interface {
+	AdoptEnabled(runtime domain.CapsuleRuntime, streamID string) (EnabledProcess, error)
+}
+
 type WorkspaceFileChange struct {
 	Path   string `json:"path"`
 	Status string `json:"status"`

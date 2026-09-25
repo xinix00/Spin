@@ -332,6 +332,12 @@ func (e *RemoteEngine) StartEnabled(ctx context.Context, runtime domain.CapsuleR
 	return e.broker.openStream(ctx, runtime.ClientID, methodStartEnabled, enabledPayload{Runtime: runtime, Enablement: enablement})
 }
 
+// AdoptEnabled takes up an enabled process an earlier server started in
+// the capsule; see Broker.adoptStream.
+func (e *RemoteEngine) AdoptEnabled(runtime domain.CapsuleRuntime, streamID string) (capsule.EnabledProcess, error) {
+	return e.broker.adoptStream(runtime.ClientID, streamID)
+}
+
 func (e *RemoteEngine) StartInteractive(ctx context.Context, recording domain.Recording, input string, rows, cols uint16) (capsule.InteractiveProcess, error) {
 	return e.broker.openStream(ctx, recordingAffinity(recording), methodStartInteractive, interactivePayload{Recording: recording, Input: input, Rows: rows, Cols: cols})
 }
@@ -873,6 +879,9 @@ func (p *remoteProcess) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// StreamID names the process on its runner.
+func (p *remoteProcess) StreamID() string { return p.id }
+
 func (p *remoteProcess) Resize(rows, cols uint16) error {
 	return p.peer.enqueue(wireMessage{Version: ProtocolVersion, Type: messageStreamResize, ID: p.id, Rows: rows, Cols: cols})
 }
@@ -898,6 +907,8 @@ var (
 	_ capsule.TrackedFiles                = (*RemoteEngine)(nil)
 	_ capsule.CapsuleInspector            = (*RemoteEngine)(nil)
 	_ capsule.EnabledEngine               = (*RemoteEngine)(nil)
+	_ capsule.EnabledAdopter              = (*RemoteEngine)(nil)
+	_ capsule.DetachedProcess             = (*remoteProcess)(nil)
 	_ capsule.EnabledProber               = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceInspector          = (*RemoteEngine)(nil)
 	_ capsule.WorkspaceInspectorAt        = (*RemoteEngine)(nil)

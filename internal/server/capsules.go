@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
@@ -323,12 +324,24 @@ func (s *Server) stopCapsule(ctx context.Context, compositionID, operator string
 		if !errors.Is(err, worker.ErrRunnerOffline) {
 			return domain.Composition{}, fmt.Errorf("stop composition capsule: %w", err)
 		}
-		// The runner is away; its capsule cannot be reached and is done
-		// here. Comes it back, cleanup of stopped runtimes takes it.
-		s.logger.Warn("composition stopped without its runner", "composition", composition.ID, "runner", composition.Runtime.ClientID)
+		// The runner is away, not its capsule: that runs on, with its
+		// agent and on its logins. Calling it stopped would hand those
+		// logins to the next capsule while they are still in use, and
+		// what the capsule refreshes meanwhile would never be kept. The
+		// stop waits for the runner (runnerAttached, the sweep).
+		if !composition.Runtime.StopPending {
+			runtime := *composition.Runtime
+			runtime.StopPending = true
+			if _, setErr := s.store.SetCompositionRuntime(composition.ID, composition.Operator, runtime); setErr != nil {
+				s.logger.Warn("mark capsule stop pending", "composition", composition.ID, "error", setErr)
+			}
+		}
+		s.logger.Warn("capsule stops once its runner is back", "composition", composition.ID, "runner", composition.Runtime.ClientID)
+		return composition, fmt.Errorf("de runner van deze capsule is niet verbonden; de capsule stopt zodra hij terug is: %w", err)
 	}
 	runtime := *composition.Runtime
 	runtime.Status = "stopped"
+	runtime.StopPending = false
 	stopped, err := s.store.SetCompositionRuntime(composition.ID, composition.Operator, runtime)
 	if err == nil && len(composition.Logins) > 0 {
 		// The logins this capsule held are free: a Job that waited for one
@@ -336,6 +349,32 @@ func (s *Server) stopCapsule(ctx context.Context, compositionID, operator string
 		go s.launchQueuedWorkflowPhases("login released")
 	}
 	return stopped, err
+}
+
+// runnerAttached picks up what runs on a runner that (re)connected, after a
+// restart of Spin or of the link: a stop that waited for it is done now;
+// every other capsule has its logins read back and watched again. A runner
+// that restarted lost its watchers, and a token an agent rotated while no
+// server listened must be kept now, not at the next change.
+func (s *Server) runnerAttached(clientID string) {
+	for _, composition := range s.store.RunningCompositions() {
+		if composition.Runtime.ClientID != clientID {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		if composition.Runtime.StopPending {
+			if _, err := s.stopCapsule(ctx, composition.ID, composition.Operator); err != nil {
+				s.logger.Warn("stop a capsule whose runner is back", "composition", composition.ID, "error", err)
+			} else {
+				s.logger.Info("capsule stopped now its runner is back", "composition", composition.ID, "runner", clientID)
+			}
+			cancel()
+			continue
+		}
+		s.keepLogins(ctx, composition)
+		s.watchLogins(ctx, composition)
+		cancel()
+	}
 }
 
 func normalizeOperator(value string) string {

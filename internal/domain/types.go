@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"time"
@@ -593,6 +594,10 @@ type CapsuleRuntime struct {
 	WorkspaceRef  string `json:"workspace_ref,omitempty"`
 	AttachCommand string `json:"attach_command,omitempty"`
 	Status        string `json:"status"`
+	// StopPending is a stop that could not reach the runner: the capsule
+	// still runs there and keeps its logins until the runner is back and
+	// the stop is done after all.
+	StopPending bool `json:"stop_pending,omitempty"`
 }
 
 type CapsuleEngineInfo struct {
@@ -916,9 +921,37 @@ type Composition struct {
 	// ForLogin marks a capsule started to log in once more: it holds no
 	// login and keeps the layer's own files until a person saves what they
 	// logged in as a new login.
-	ForLogin        bool      `json:"for_login,omitempty"`
-	ForLoginPrivate bool      `json:"for_login_private,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
+	ForLogin        bool `json:"for_login,omitempty"`
+	ForLoginPrivate bool `json:"for_login_private,omitempty"`
+	// Agent is the agent process the capsule runs for its Session, while
+	// it runs.
+	Agent     *AgentProcess `json:"agent,omitempty"`
+	CreatedAt time.Time     `json:"created_at"`
+}
+
+// AgentProcess is what a server needs to take up an agent again after a
+// restart: the runner keeps the process and what it writes meanwhile, the
+// server finds it back by its stream and goes on with the same agent
+// session, the turn that ran included, instead of starting a second agent
+// beside it on the same login.
+type AgentProcess struct {
+	SessionID       string          `json:"session_id"`
+	Operator        string          `json:"operator"`
+	StreamID        string          `json:"stream_id"`
+	AgentSessionID  string          `json:"agent_session_id"`
+	AgentName       string          `json:"agent_name,omitempty"`
+	ProtocolVersion int             `json:"protocol_version,omitempty"`
+	Steering        bool            `json:"steering,omitempty"`
+	PromptCaps      json.RawMessage `json:"prompt_caps,omitempty"`
+	Settings        json.RawMessage `json:"settings,omitempty"`
+	AutoAccept      bool            `json:"auto_accept"`
+	Primed          bool            `json:"primed,omitempty"`
+	// PromptID is the request of the turn that runs; empty between turns.
+	PromptID string `json:"prompt_id,omitempty"`
+	// SentAttachments are the Job attachments the agent already has.
+	SentAttachments []string `json:"sent_attachments,omitempty"`
+	// PendingPermissions restores questions the agent is waiting on.
+	PendingPermissions map[string]json.RawMessage `json:"pending_permissions,omitempty"`
 }
 
 // GitWorkspaces are the repositories in the capsule: Workspaces when the

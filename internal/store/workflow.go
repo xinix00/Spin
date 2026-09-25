@@ -1502,14 +1502,18 @@ func (s *Store) SettleWorkflowChatTurn(sessionID string) (bool, error) {
 
 // RepairStandingDecisions puts back every decision that a chat under an older
 // build closed while the phase kept running. It runs when the server starts:
-// that is the one moment no agent is working on anything, so a running run
-// with a standing outcome and no open decision can only be that leftover.
+// A persisted agent with an unfinished turn may still be working on its
+// runner; its decision is settled when that turn actually finishes.
 func (s *Store) RepairStandingDecisions() (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	restored := 0
 	for _, session := range s.state.Sessions {
 		if session.PhaseRunID == "" {
+			continue
+		}
+		composition := s.state.Compositions[session.PreparedCompositionID]
+		if composition.Runtime != nil && composition.Runtime.Status != "stopped" && composition.Agent != nil && composition.Agent.PromptID != "" {
 			continue
 		}
 		run, ok := s.state.PhaseRuns[session.PhaseRunID]
@@ -1740,4 +1744,43 @@ func (s *Store) StartProcess(sessionID, goal string) (domain.CreateJobResponse, 
 		return domain.CreateJobResponse{}, "", err
 	}
 	return domain.CreateJobResponse{Job: job, Session: next}, session.PreparedCompositionID, nil
+}
+
+// SetWorkflowToken keeps the hash of the token the agent of a Session calls
+// the Spin workflow tools with; a new agent gets a new token.
+func (s *Store) SetWorkflowToken(sessionID, hash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.state.Sessions[sessionID]; !ok {
+		return ErrNotFound
+	}
+	if s.state.WorkflowTokens == nil {
+		s.state.WorkflowTokens = map[string]string{}
+	}
+	s.state.WorkflowTokens[sessionID] = hash
+	return s.saveLocked()
+}
+
+// WorkflowToken is the hash of the Session's workflow token, if it has one.
+func (s *Store) WorkflowToken(sessionID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state.WorkflowTokens[sessionID]
+}
+
+// ForgetWorkflowTokens takes the workflow tokens of these Sessions away.
+func (s *Store) ForgetWorkflowTokens(sessionIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := false
+	for _, sessionID := range sessionIDs {
+		if _, ok := s.state.WorkflowTokens[sessionID]; ok {
+			delete(s.state.WorkflowTokens, sessionID)
+			removed = true
+		}
+	}
+	if !removed {
+		return nil
+	}
+	return s.saveLocked()
 }

@@ -43,8 +43,6 @@ type Server struct {
 	terminals       map[string]map[*activeTerminal]struct{}
 	acpMu           sync.Mutex
 	acpSessions     map[string]*activeACP
-	workflowMu      sync.Mutex
-	workflowTokens  map[string]string
 	jobLaunchMu     sync.Mutex
 	jobLaunching    map[string]*backgroundJobLaunch
 	launchFailures  map[string]launchFailure // why the last launch of a queued Session gave up
@@ -99,7 +97,7 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 		internalURL:  strings.TrimRight(strings.TrimSpace(options.InternalURL), "/"),
 		attachments:  attachmentStorage, snapshotArchive: options.SnapshotArchive, database: options.Database,
 		loginLimiter: loginLimiter{attempts: map[string]loginAttempt{}}, csrfTokens: csrfTokenCache{values: map[string]string{}},
-		terminals: map[string]map[*activeTerminal]struct{}{}, acpSessions: map[string]*activeACP{}, workflowTokens: map[string]string{}, jobLaunching: map[string]*backgroundJobLaunch{}, launchFailures: map[string]launchFailure{}, launchSweep: launchSweepInterval, backupTickets: map[string]backupTicket{}, uploads: map[string]*chunkedUpload{}, seals: map[string]*sealJob{}, sealWait: sealAnswerWait, starts: map[string]*startJob{}, startWait: startAnswerWait, startCancelWait: startCancelWait, restoreJobs: map[string]*restoreJob{}, appStarts: map[string]*appStart{},
+		terminals: map[string]map[*activeTerminal]struct{}{}, acpSessions: map[string]*activeACP{}, jobLaunching: map[string]*backgroundJobLaunch{}, launchFailures: map[string]launchFailure{}, launchSweep: launchSweepInterval, backupTickets: map[string]backupTicket{}, uploads: map[string]*chunkedUpload{}, seals: map[string]*sealJob{}, sealWait: sealAnswerWait, starts: map[string]*startJob{}, startWait: startAnswerWait, startCancelWait: startCancelWait, restoreJobs: map[string]*restoreJob{}, appStarts: map[string]*appStart{},
 	}
 	if restored, err := st.RepairStandingDecisions(); err != nil {
 		logger.Warn("repair standing workflow decisions", "error", err)
@@ -116,7 +114,10 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 	}
 	if s.runnerBroker != nil {
 		s.runnerBroker.OnTrackedFilesChanged(s.trackedFilesChanged)
+		s.runnerBroker.OnRunnerAttached(s.runnerAttached)
 	}
+	s.adoptAgents()
+	s.requeueUnattendedSteps()
 	go s.resumeQueuedWorkflowActions()
 	s.resumeStartingRecordings()
 	s.pruneLater()
@@ -635,7 +636,7 @@ func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 	}
 	cleanupContext, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	if err := s.stopJobRuntimes(cleanupContext, job, operator); err != nil {
+	if err := s.stopJobRuntimes(cleanupContext, job, operator, true); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -653,11 +654,6 @@ func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.workflowMu.Lock()
-	for _, sessionID := range deleted.SessionIDs {
-		delete(s.workflowTokens, sessionID)
-	}
-	s.workflowMu.Unlock()
 	writeJSON(w, http.StatusOK, deleted)
 }
 
@@ -696,7 +692,7 @@ func (s *Server) closeJob(w http.ResponseWriter, r *http.Request) {
 	}
 	cleanupContext, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	if err := s.stopJobRuntimes(cleanupContext, job, operator); err != nil {
+	if err := s.stopJobRuntimes(cleanupContext, job, operator, false); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -705,15 +701,16 @@ func (s *Server) closeJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	s.workflowMu.Lock()
-	for _, sessionID := range closed.SessionIDs {
-		delete(s.workflowTokens, sessionID)
+	if err := s.store.ForgetWorkflowTokens(closed.SessionIDs); err != nil {
+		s.logger.Warn("forget workflow tokens of a closed Job", "job", closed.ID, "error", err)
 	}
-	s.workflowMu.Unlock()
 	writeJSON(w, http.StatusOK, closed)
 }
 
-func (s *Server) stopJobRuntimes(ctx context.Context, job domain.Job, operator string) error {
+// stopJobRuntimes stops the capsules of a Job. A capsule whose runner is
+// away stops once it is back. Deletion requires a confirmed stop, since
+// deleting its composition would release logins that are still in use.
+func (s *Server) stopJobRuntimes(ctx context.Context, job domain.Job, operator string, requireStopped bool) error {
 	for _, sessionID := range job.SessionIDs {
 		if err := s.cancelJobLaunch(ctx, sessionID); err != nil {
 			return fmt.Errorf("cancel Job Session start %s: %w", sessionID, err)
@@ -729,6 +726,9 @@ func (s *Server) stopJobRuntimes(ctx context.Context, job domain.Job, operator s
 			continue
 		}
 		if _, err := s.stopCapsule(ctx, composition.ID, composition.Operator); err != nil {
+			if !requireStopped && errors.Is(err, worker.ErrRunnerOffline) {
+				continue
+			}
 			return fmt.Errorf("stop Job composition %s: %w", composition.ID, err)
 		}
 	}

@@ -89,6 +89,11 @@ type wireMessage struct {
 	Execution    *capsule.Execution        `json:"execution,omitempty"`
 	Error        string                    `json:"error,omitempty"`
 	Idle         bool                      `json:"idle,omitempty"`
+	// Streams are the processes a runner still runs, sent with its hello
+	// when StreamsReported is set: a server that lost its link (or
+	// restarted) learns which of the processes it waits on are still there.
+	Streams         []string `json:"streams,omitempty"`
+	StreamsReported bool     `json:"streams_reported,omitempty"`
 }
 
 type startRecordingPayload struct {

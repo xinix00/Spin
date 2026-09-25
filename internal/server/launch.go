@@ -84,13 +84,13 @@ func (s *Server) sweepQueuedWorkflowPhases() {
 	}
 }
 
-// sweepIdleCapsules closes the capsule of every Job step that is over: a
-// step the Job moved past, a Job that is done or closed, a step waiting
-// for a person's answer, a Session that no longer exists. Each of those
-// is closed the moment it happens as well; the sweep is what catches the
-// ones that slipped through (a server restart at the wrong moment, an
-// older version), so runners do not fill up with capsules nobody uses
-// and the logins they hold come free.
+// sweepIdleCapsules closes the capsules whose work is over: of a Job that is
+// done or closed, of a Session or Job that no longer exists, a workspace a
+// Session no longer uses. A capsule of a Job that is still going stays open,
+// also while its step waits for an answer or after the Job moved on: a
+// person can come back to it, and its agent still has the conversation.
+// Closing it is theirs to do; a Job that needs more capsules at once needs
+// more logins. The sweep also finishes a stop that waited for its runner.
 func (s *Server) sweepIdleCapsules() {
 	snapshot := s.store.Snapshot()
 	sessions := map[string]domain.Session{}
@@ -100,10 +100,6 @@ func (s *Server) sweepIdleCapsules() {
 	jobs := map[string]domain.Job{}
 	for _, job := range snapshot.Jobs {
 		jobs[job.ID] = job
-	}
-	runs := map[string]domain.PhaseRun{}
-	for _, run := range snapshot.PhaseRuns {
-		runs[run.ID] = run
 	}
 	s.jobLaunchMu.Lock()
 	launching := map[string]bool{}
@@ -121,30 +117,32 @@ func (s *Server) sweepIdleCapsules() {
 			}
 			continue
 		}
-		if composition.SessionID == "" || composition.Runtime == nil || composition.Runtime.Status == "stopped" {
+		if composition.Runtime == nil || composition.Runtime.Status == "stopped" {
 			continue
 		}
 		reason := ""
-		session, ok := sessions[composition.SessionID]
-		switch {
-		case !ok:
-			reason = "its Session no longer exists"
-		case session.PhaseRunID == "":
-			continue // a person's own Session: theirs to stop
-		default:
-			job, hasJob := jobs[session.JobID]
-			run, hasRun := runs[session.PhaseRunID]
+		if composition.Runtime.StopPending {
+			if !s.engineConnected(composition.Runtime.ClientID) {
+				continue
+			}
+			reason = "its stop waited for the runner"
+		} else if composition.SessionID != "" {
+			session, ok := sessions[composition.SessionID]
 			switch {
-			case !hasJob:
-				reason = "its Job no longer exists"
-			case job.Status == domain.JobDone || job.Status == domain.JobCancelled:
-				reason = "its Job is " + string(job.Status)
-			case job.CurrentPhaseRunID != session.PhaseRunID:
-				reason = "the Job moved past its step"
-			case hasRun && run.Status == domain.PhaseRunPending && run.PendingReason == "ask":
-				reason = "its step waits for an answer"
-			case hasRun && run.Status != domain.PhaseRunQueued && run.Status != domain.PhaseRunRunning && run.Status != domain.PhaseRunPending:
-				reason = "its step is " + string(run.Status)
+			case !ok:
+				reason = "its Session no longer exists"
+			case session.PhaseRunID == "":
+				continue // a person's own Session: theirs to stop
+			case session.PreparedCompositionID != composition.ID:
+				reason = "its Session works in another capsule"
+			default:
+				job, hasJob := jobs[session.JobID]
+				switch {
+				case !hasJob:
+					reason = "its Job no longer exists"
+				case job.Status == domain.JobDone || job.Status == domain.JobCancelled:
+					reason = "its Job is " + string(job.Status)
+				}
 			}
 		}
 		if reason == "" {
@@ -158,6 +156,32 @@ func (s *Server) sweepIdleCapsules() {
 			continue
 		}
 		s.logger.Info("idle capsule closed", "composition", composition.ID, "session", composition.SessionID, "reason", reason)
+	}
+}
+
+// requeueUnattendedSteps runs at start, after adoptAgents: a step that is
+// running on paper, in a capsule that runs, without an agent this server
+// took up (an earlier version kept none) has nobody working on it. It goes
+// back to the queue; the launch starts an agent in the same capsule, where
+// the work so far still is, and the runner ends the old one there.
+func (s *Server) requeueUnattendedSteps() {
+	snapshot := s.store.Snapshot()
+	for _, session := range snapshot.Sessions {
+		if session.PhaseRunID == "" || session.Executor == domain.WorkflowExecutorAction || session.Executor == domain.WorkflowExecutorExpose {
+			continue
+		}
+		runIndex := slices.IndexFunc(snapshot.PhaseRuns, func(run domain.PhaseRun) bool { return run.ID == session.PhaseRunID })
+		if runIndex < 0 || snapshot.PhaseRuns[runIndex].Status != domain.PhaseRunRunning || workflowRunNeedsLaunch(snapshot, session, snapshot.PhaseRuns[runIndex]) {
+			continue
+		}
+		if s.runningACP(session.ID) != nil {
+			continue
+		}
+		if _, err := s.store.RequeueWorkflowPhase(session.ID); err != nil {
+			s.logger.Warn("requeue a step without an agent after a restart", "session", session.ID, "error", err)
+			continue
+		}
+		s.logger.Info("step without an agent after a restart goes back to the queue", "session", session.ID, "job", session.JobID)
 	}
 }
 

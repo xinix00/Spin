@@ -98,7 +98,11 @@ func (p *runnerPeer) touch() {
 	p.mu.Unlock()
 }
 
-func (p *runnerPeer) attach(connection *websocket.Conn, client domain.Client, process string) uint64 {
+// attach binds a new socket to the peer. running are the processes the
+// runner reports it still runs (nil when it does not report them): a
+// process the server waits on that the runner no longer has ends here,
+// or its reader would wait for output that is never coming.
+func (p *runnerPeer) attach(connection *websocket.Conn, client domain.Client, process string, running []string) uint64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.connection != nil {
@@ -119,6 +123,15 @@ func (p *runnerPeer) attach(connection *websocket.Conn, client domain.Client, pr
 	for _, pending := range p.pending {
 		if !containsMessageID(p.outbox, pending.request.ID) {
 			p.outbox = append(p.outbox, pending.request)
+		}
+	}
+	if running != nil {
+		for id, stream := range p.streams {
+			if _, starting := p.pending[id]; starting || slices.Contains(running, id) {
+				continue
+			}
+			delete(p.streams, id)
+			go stream.finish(nil, "the runner no longer runs this process")
 		}
 	}
 	p.signalLocked()
@@ -221,6 +234,12 @@ func (p *runnerPeer) engineInfo() (domain.CapsuleEngineInfo, bool) {
 	return p.capabilities.Engine, p.connected && !p.draining
 }
 
+func (p *runnerPeer) setWorkloads(count int) {
+	p.mu.Lock()
+	p.workloads = max(count, 0)
+	p.mu.Unlock()
+}
+
 func (p *runnerPeer) addWorkload(delta int) {
 	p.mu.Lock()
 	p.workloads += delta
@@ -255,6 +274,9 @@ type Broker struct {
 	cursor    int
 	available chan struct{}
 	listeners []func()
+	// attached hear which runner came (back): the server picks up what it
+	// has running there.
+	attached []func(clientID string)
 	// instance makes every request ID unique to this server incarnation. A
 	// runner answers a repeated ID from its cache of earlier responses, which
 	// is what makes replay after a reconnect safe; a restarted server that
@@ -336,9 +358,17 @@ func (b *Broker) Handler(w http.ResponseWriter, r *http.Request) {
 	if err := connection.WriteJSON(wireMessage{Version: ProtocolVersion, Type: messageWelcome, Client: &client}); err != nil {
 		return
 	}
-	generation := peer.attach(connection, client, hello.Process)
+	var running []string
+	if hello.StreamsReported {
+		running = append([]string{}, hello.Streams...)
+	}
+	generation := peer.attach(connection, client, hello.Process, running)
+	// What runs there is what the state says runs there; a server that
+	// just started would otherwise count the runner as empty.
+	peer.setWorkloads(b.store.ClientWorkloads(client.ID))
 	b.notifyAvailable()
 	b.logger.Info("runner connected", "client_id", client.ID, "instance_id", client.InstanceID, "name", client.Name)
+	b.announceAttached(client.ID)
 	b.announceConnected()
 
 	ctx, cancel := context.WithCancel(r.Context())
@@ -479,6 +509,48 @@ func (b *Broker) OnRunnerConnected(listener func()) {
 	b.mu.Lock()
 	b.listeners = append(b.listeners, listener)
 	b.mu.Unlock()
+}
+
+// OnRunnerAttached registers a callback that hears which runner completed
+// its hello handshake, after a first connect and after every reconnect.
+func (b *Broker) OnRunnerAttached(listener func(clientID string)) {
+	if listener == nil {
+		return
+	}
+	b.mu.Lock()
+	b.attached = append(b.attached, listener)
+	b.mu.Unlock()
+}
+
+func (b *Broker) announceAttached(clientID string) {
+	b.mu.Lock()
+	listeners := slices.Clone(b.attached)
+	b.mu.Unlock()
+	for _, listener := range listeners {
+		go listener(clientID)
+	}
+}
+
+// adoptStream takes up a process an earlier server started on a runner:
+// its output, which the runner kept while no server listened, arrives
+// here once the runner is connected. It works before the runner is.
+func (b *Broker) adoptStream(clientID, streamID string) (*remoteProcess, error) {
+	if strings.TrimSpace(clientID) == "" || strings.TrimSpace(streamID) == "" {
+		return nil, fmt.Errorf("a process is adopted by its runner and stream: %w", store.ErrConflict)
+	}
+	client, err := b.store.Client(clientID)
+	if err != nil {
+		return nil, err
+	}
+	peer := b.peer(client)
+	peer.mu.Lock()
+	defer peer.mu.Unlock()
+	if existing := peer.streams[streamID]; existing != nil {
+		return existing, nil
+	}
+	process := newRemoteProcess(peer, streamID)
+	peer.streams[streamID] = process
+	return process, nil
 }
 
 func (b *Broker) announceConnected() {
