@@ -262,7 +262,7 @@ func TestReplicaShipsPagesAndRestoresTheDatabase(t *testing.T) {
 	// Outside the retention it goes.
 	again.config.Retention = time.Nanosecond
 	again.now = func() time.Time { return time.Now().UTC().Add(time.Hour) }
-	again.pruneGenerations(again.Status().Generation)
+	again.pruneGenerations(context.Background(), again.Status().Generation)
 	for key := range bucket.objects {
 		if strings.Contains(key, status.Generation) {
 			t.Fatalf("expired generation %s still in the bucket: %s", status.Generation, key)
@@ -350,7 +350,7 @@ func TestReplicaMergesWindowsIntoTieredRestorePoints(t *testing.T) {
 	// Raw segments older than a quarter and covered by a window are gone;
 	// the quarter windows stay (their keep is two hours); latest is intact.
 	for _, raw := range lay.raw {
-		if raw.at.Before(clock.Add(-15 * time.Minute)) {
+		if raw.At.Before(clock.Add(-15 * time.Minute)) {
 			t.Fatalf("raw segment %s still there", raw.key)
 		}
 	}

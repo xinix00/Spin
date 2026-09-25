@@ -5,33 +5,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
-type rawFile struct {
+type committedManifest struct {
 	key string
-	seq int64
-	at  time.Time
-	manifest
-}
-
-type window struct {
-	key        string
-	level      int
-	start, end time.Time
-	parts      []partRef
 	manifest
 }
 
 type layout struct {
-	generation string
-	raw        []rawFile
-	windows    map[int][]window
-	snapshot   manifest
+	raw      []committedManifest
+	windows  map[int][]committedManifest
+	snapshot manifest
 }
 
 func (r *Replica) rawKey(generation string, seq int64, at time.Time) string {
@@ -47,15 +34,17 @@ func (r *Replica) snapshotKey(generation string) string {
 // Listing ignores uncommitted parts, including leftovers from failed attempts.
 func (r *Replica) loadLayout(ctx context.Context, generation string) (*layout, error) {
 	prefix := r.generationPrefix(generation)
-	objects, err := r.s3.List(ctx, prefix)
+	// Parts can outnumber manifests by orders of magnitude. They have no
+	// bearing on commit visibility and do not belong in a layout listing.
+	objects, err := r.s3.List(ctx, prefix+"L")
 	if err != nil {
 		return nil, err
 	}
-	l := &layout{generation: generation, windows: map[int][]window{}}
-	var keys []string
+	l := &layout{windows: map[int][]committedManifest{}}
+	keys := []string{r.snapshotKey(generation)}
 	for _, object := range objects {
 		rest := strings.TrimPrefix(object.Key, prefix)
-		if rest == "snapshot" || (strings.HasPrefix(rest, "L0/") && strings.HasSuffix(rest, ".json")) || (strings.HasPrefix(rest, "L") && strings.HasSuffix(rest, "/complete")) {
+		if (strings.HasPrefix(rest, "L0/") && strings.HasSuffix(rest, ".json")) || (strings.HasPrefix(rest, "L") && strings.HasSuffix(rest, "/complete")) {
 			keys = append(keys, object.Key)
 		}
 	}
@@ -67,29 +56,31 @@ func (r *Replica) loadLayout(ctx context.Context, generation string) (*layout, e
 	for index, key := range keys {
 		rest := strings.TrimPrefix(key, prefix)
 		m := manifests[index]
-		object := Object{Key: key}
 		switch {
 		case rest == "snapshot":
+			if m.At.IsZero() {
+				continue // A failed or pruned generation has no snapshot.
+			}
 			if m.Level != 0 || m.FirstSeq != 1 || m.Seq != 1 {
-				return nil, errors.New("invalid snapshot manifest")
+				return nil, fmt.Errorf("%w: invalid snapshot manifest", errReplicaCorrupt)
 			}
 			l.snapshot = m
 		case strings.HasPrefix(rest, "L0/"):
 			if m.Level != 0 || m.FirstSeq != m.Seq || m.Seq <= 1 || seqs[m.Seq] {
-				return nil, errors.New("invalid or duplicate raw commit")
+				return nil, fmt.Errorf("%w: invalid or duplicate raw commit", errReplicaCorrupt)
 			}
 			seqs[m.Seq] = true
-			l.raw = append(l.raw, rawFile{key: object.Key, seq: m.Seq, at: m.At, manifest: m})
+			l.raw = append(l.raw, committedManifest{key: key, manifest: m})
 		default:
 			if m.Level < 1 || m.FirstSeq <= 1 {
-				return nil, errors.New("invalid window manifest")
+				return nil, fmt.Errorf("%w: invalid window manifest", errReplicaCorrupt)
 			}
-			l.windows[m.Level] = append(l.windows[m.Level], window{key: object.Key, level: m.Level, start: m.Start, end: m.End, parts: m.Parts, manifest: m})
+			l.windows[m.Level] = append(l.windows[m.Level], committedManifest{key: key, manifest: m})
 		}
 	}
-	sort.Slice(l.raw, func(i, j int) bool { return l.raw[i].seq < l.raw[j].seq })
+	sort.Slice(l.raw, func(i, j int) bool { return l.raw[i].Seq < l.raw[j].Seq })
 	for level := range l.windows {
-		sort.Slice(l.windows[level], func(i, j int) bool { return l.windows[level][i].start.Before(l.windows[level][j].start) })
+		sort.Slice(l.windows[level], func(i, j int) bool { return l.windows[level][i].Start.Before(l.windows[level][j].Start) })
 	}
 	return l, nil
 }
@@ -103,70 +94,49 @@ var errCommitGap = errors.New("cannot merge a gap in commit sequence")
 // after another made a start wait minutes for its layout.
 const manifestFetchers = 8
 
-// getManifests fetches manifests in parallel, in the order of keys.
+// getManifests fetches manifests in parallel, in the order of keys. A missing
+// snapshot manifest stays zero: a failed or pruned generation has none.
 func (r *Replica) getManifests(ctx context.Context, generation string, keys []string) ([]manifest, error) {
 	out := make([]manifest, len(keys))
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	var (
-		mu       sync.Mutex
-		next     int
-		firstErr error
-		workers  sync.WaitGroup
-	)
-	for worker := 0; worker < min(manifestFetchers, len(keys)); worker++ {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for {
-				mu.Lock()
-				if next >= len(keys) || firstErr != nil {
-					mu.Unlock()
-					return
-				}
-				index := next
-				next++
-				mu.Unlock()
-				m, err := r.getManifest(ctx, generation, keys[index])
-				if err != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = err
-						cancel()
-					}
-					mu.Unlock()
-					return
-				}
-				out[index] = m
-			}
-		}()
-	}
-	workers.Wait()
-	return out, firstErr
-}
-
-func (r *Replica) compact(ctx context.Context, generation string) error {
-	r.archiveMu.Lock()
-	defer r.archiveMu.Unlock()
-	now := r.now()
-	for level := 1; level <= len(r.config.Schedule); level++ {
-		l, err := r.loadLayout(ctx, generation)
+	err := each(ctx, manifestFetchers, len(keys), func(ctx context.Context, index int) error {
+		m, err := r.getManifest(ctx, generation, keys[index])
+		if errors.Is(err, ErrNotFound) && keys[index] == r.snapshotKey(generation) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
+		out[index] = m
+		return nil
+	})
+	return out, err
+}
+
+func (r *Replica) compact(ctx context.Context, generation string, now time.Time) error {
+	r.archiveMu.Lock()
+	defer r.archiveMu.Unlock()
+	l, err := r.loadLayout(ctx, generation)
+	if err != nil {
+		return err
+	}
+	if l.snapshot.At.IsZero() {
+		return fmt.Errorf("%w: generation has no committed snapshot", errReplicaCorrupt)
+	}
+	for level := 1; level <= len(r.config.Schedule); level++ {
 		for _, span := range r.elapsedWindows(l, level, now) {
 			inputs := l.inputs(level, span[0], span[1])
 			if len(inputs) == 0 {
 				continue
 			}
-			if err := r.mergeWindow(ctx, generation, level, span[0], span[1], inputs); err != nil {
+			m, err := r.mergeWindow(ctx, generation, level, span[0], span[1], inputs)
+			if err != nil {
 				return err
 			}
+			key := r.windowPrefix(generation, level, span[0], span[1]) + "complete"
+			l.windows[level] = append(l.windows[level], committedManifest{key: key, manifest: m})
 		}
-	}
-	l, err := r.loadLayout(ctx, generation)
-	if err != nil {
-		return err
+		// A retry may fill a hole before an already committed window.
+		sort.Slice(l.windows[level], func(i, j int) bool { return l.windows[level][i].Start.Before(l.windows[level][j].Start) })
 	}
 	return r.expire(ctx, l, now)
 }
@@ -175,7 +145,7 @@ func (r *Replica) elapsedWindows(l *layout, level int, now time.Time) [][2]time.
 	size := r.config.Schedule[level-1].Window
 	merged := map[int64]bool{}
 	for _, w := range l.windows[level] {
-		merged[w.start.Unix()] = true
+		merged[w.Start.Unix()] = true
 	}
 	candidates := map[int64]time.Time{}
 	// A window is (start, end]: a commit exactly on a boundary belongs to
@@ -192,11 +162,11 @@ func (r *Replica) elapsedWindows(l *layout, level int, now time.Time) [][2]time.
 	}
 	if level == 1 {
 		for _, raw := range l.raw {
-			note(raw.at)
+			note(raw.At)
 		}
 	} else {
 		for _, w := range l.windows[level-1] {
-			note(w.end)
+			note(w.End)
 		}
 	}
 	var spans [][2]time.Time
@@ -211,34 +181,31 @@ func (l *layout) inputs(level int, start, end time.Time) []manifest {
 	var inputs []manifest
 	if level == 1 {
 		for _, raw := range l.raw {
-			if raw.at.After(start) && !raw.at.After(end) {
+			if raw.At.After(start) && !raw.At.After(end) {
 				inputs = append(inputs, raw.manifest)
 			}
 		}
 	} else {
 		for _, w := range l.windows[level-1] {
-			if !w.start.Before(start) && !w.end.After(end) {
+			if !w.Start.Before(start) && !w.End.After(end) {
 				inputs = append(inputs, w.manifest)
 			}
 		}
-		// A lower window that ends exactly at this window's start belongs
-		// to the window before this one.
-		inputs = slices.DeleteFunc(inputs, func(m manifest) bool { return !m.End.After(start) })
 	}
 	return inputs
 }
 
 // Merge retains the last page state and last database size. Every attempt uses
 // new part keys; the single manifest PUT publishes all parts atomically.
-func (r *Replica) mergeWindow(ctx context.Context, generation string, level int, start, end time.Time, inputs []manifest) error {
+func (r *Replica) mergeWindow(ctx context.Context, generation string, level int, start, end time.Time, inputs []manifest) (manifest, error) {
 	if len(inputs) == 0 {
-		return nil
+		return manifest{}, nil
 	}
 	var refs []partRef
 	seq := inputs[0].FirstSeq - 1
 	for _, m := range inputs {
 		if m.FirstSeq != seq+1 {
-			return errCommitGap
+			return manifest{}, errCommitGap
 		}
 		seq = m.Seq
 		refs = append(refs, m.Parts...)
@@ -259,13 +226,13 @@ func (r *Replica) mergeWindow(ctx context.Context, generation string, level int,
 		for _, ref := range input.Parts {
 			seg, err := r.readPart(ctx, ref)
 			if err != nil {
-				return err
+				return manifest{}, err
 			}
 			if pageSize != 0 && pageSize != seg.PageSize {
-				return errors.New("page size changed within generation")
+				return manifest{}, fmt.Errorf("%w: page size changed within generation", errReplicaCorrupt)
 			}
 			if input.MinSize > seg.DBSize || input.MinSize%int64(seg.PageSize) != 0 {
-				return errors.New("inconsistent database size in manifest")
+				return manifest{}, fmt.Errorf("%w: inconsistent database size in manifest", errReplicaCorrupt)
 			}
 			// Live captures can change size between parts. Honor every
 			// truncation in order, just as restoreInto does.
@@ -301,7 +268,7 @@ func (r *Replica) mergeWindow(ctx context.Context, generation string, level int,
 	for index, ref := range refs {
 		seg, err := r.readPart(ctx, ref)
 		if err != nil {
-			return err
+			return manifest{}, err
 		}
 		for position, page := range seg.Pages {
 			win, ok := winner[page]
@@ -312,17 +279,17 @@ func (r *Replica) mergeWindow(ctx context.Context, generation string, level int,
 			out.Data = append(out.Data, bytes.Clone(seg.Data[position]))
 			if len(out.Pages)*pageSize >= r.config.SegmentBytes {
 				if err := flush(); err != nil {
-					return err
+					return manifest{}, err
 				}
 			}
 		}
 	}
 	if len(out.Pages) > 0 || len(m.Parts) == 0 {
 		if err := flush(); err != nil {
-			return err
+			return manifest{}, err
 		}
 	}
-	return r.putManifest(ctx, r.windowPrefix(generation, level, start, end)+"complete", m)
+	return m, r.putManifest(ctx, r.windowPrefix(generation, level, start, end)+"complete", m)
 }
 
 func (r *Replica) expire(ctx context.Context, l *layout, now time.Time) error {
@@ -348,7 +315,7 @@ func (r *Replica) expire(ctx context.Context, l *layout, now time.Time) error {
 		return nil
 	}
 	for _, raw := range l.raw {
-		if raw.at.Before(now.Add(-r.config.Schedule[0].Window)) && covered(0, raw.manifest) {
+		if raw.At.Before(now.Add(-r.config.Schedule[0].Window)) && covered(0, raw.manifest) {
 			if err := remove(raw.key, raw.manifest); err != nil {
 				return err
 			}
@@ -356,7 +323,7 @@ func (r *Replica) expire(ctx context.Context, l *layout, now time.Time) error {
 	}
 	for level := 1; level < len(r.config.Schedule); level++ {
 		for _, w := range l.windows[level] {
-			if w.end.Before(now.Add(-r.config.Schedule[level-1].Keep)) && covered(level, w.manifest) {
+			if w.End.Before(now.Add(-r.config.Schedule[level-1].Keep)) && covered(level, w.manifest) {
 				if err := remove(w.key, w.manifest); err != nil {
 					return err
 				}
@@ -388,6 +355,12 @@ func (r *Replica) Points(ctx context.Context) ([]Point, error) {
 		if errors.Is(err, ErrLegacyFormat) {
 			continue
 		}
+		if errors.Is(err, errReplicaCorrupt) && generation != current.Generation {
+			// A repaired current generation must remain discoverable while
+			// damaged older metadata is still retained for investigation.
+			r.logger.Warn("replica: damaged generation omitted from restore points", "generation", generation, "error", err)
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -408,11 +381,11 @@ func (r *Replica) Points(ctx context.Context) ([]Point, error) {
 		add(l.snapshot.At, -1)
 		for level, windows := range l.windows {
 			for _, w := range windows {
-				add(w.end, level)
+				add(w.End, level)
 			}
 		}
 		for _, raw := range l.raw {
-			add(raw.at, 0)
+			add(raw.At, 0)
 		}
 	}
 	sort.Slice(points, func(i, j int) bool {
@@ -450,7 +423,7 @@ func (r *Replica) generationIDs(ctx context.Context) ([]string, error) {
 // refuses gaps, including requests for fine points that have already expired.
 func (l *layout) plan(at time.Time) ([]manifest, error) {
 	if l.snapshot.At.IsZero() {
-		return nil, errors.New("generation has no committed snapshot")
+		return nil, fmt.Errorf("%w: generation has no committed snapshot", errReplicaCorrupt)
 	}
 	latest := at.IsZero()
 	if !latest && at.Before(l.snapshot.At) {
@@ -459,14 +432,14 @@ func (l *layout) plan(at time.Time) ([]manifest, error) {
 	target := l.snapshot.Seq
 	for _, windows := range l.windows {
 		for _, w := range windows {
-			if (latest || !w.end.After(at)) && w.Seq > target {
+			if (latest || !w.End.After(at)) && w.Seq > target {
 				target = w.Seq
 			}
 		}
 	}
 	for _, raw := range l.raw {
-		if (latest || !raw.at.After(at)) && raw.seq > target {
-			target = raw.seq
+		if (latest || !raw.At.After(at)) && raw.Seq > target {
+			target = raw.Seq
 		}
 	}
 	result := []manifest{l.snapshot}
@@ -488,7 +461,7 @@ func (l *layout) plan(at time.Time) ([]manifest, error) {
 			}
 		}
 		if best == nil {
-			return nil, errors.New("missing committed batch before restore point")
+			return nil, fmt.Errorf("%w: missing committed batch before restore point", errReplicaCorrupt)
 		}
 		result = append(result, *best)
 		seq = best.Seq

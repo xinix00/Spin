@@ -2,7 +2,7 @@
 
 `replica` is a schema-independent Go library for SQLite replication through the
 [ncruces/go-sqlite3](https://github.com/ncruces/go-sqlite3) VFS. It has no imports
-from Spin. Its tests use a small SQLite table, an in-memory object store, a fake
+from Spin. Its tests use SQLite, in-memory and disk-backed object stores, a fake
 clock and fault-injecting storage adapters. Spin's environment parsing lives in
 `internal/replicaconfig`; Spin supplies its database adapter and lifecycle.
 
@@ -20,10 +20,10 @@ clock and fault-injecting storage adapters. Spin's environment parsing lives in
    cancels and drains active syncs before unregistering the VFS.
 
 See `example_test.go` for the SQL adapter. `Options.Objects`, `Options.Storage`
-and `Options.Now` replace the external dependencies. `OSStorage()` and
-`VFSStorage(vfs)` are the standard local adapters. The storage adapter must
-access the same bytes as SQLite's VFS. The default object adapter is `S3`, whose
-HTTP client can also be replaced.
+and `Options.Now` replace the external dependencies; `OSStorage()` is the
+standard adapter for ordinary files. The storage adapter must access the same
+bytes as SQLite's VFS. The default object adapter is `S3`, whose HTTP client
+can also be replaced.
 
 Requirements: exactly one writer per namespace; atomic object PUT and strongly
 consistent GET/LIST; durable file Sync and durable creation/deletion in local
@@ -37,7 +37,8 @@ host must serialize starts and enforce one instance per database and bucket
 namespace (on HopOS, use `update_policy: recreate`). A damaged lease fails
 closed; recovery requires confirming that no writer remains before removing
 that file. See [the production review](PRODUCTION_REVIEW.md) for tested failure
-paths and remaining operational limits.
+paths and remaining operational limits, and [the scale review](SCALE_REVIEW.md)
+for the subsequent max review, memory reductions and reproducible large tests.
 
 ## Commit and recovery protocol
 
@@ -45,21 +46,22 @@ paths and remaining operational limits.
   read transactions. One final transaction reconciles pages written during
   the copy, in bounded segments; later writes remain pending. Database size
   and page size are checked under the same locks. SQLite's writer is released
-  before any network transfer. A generation starts with all pages; a page-size
-  change during copying aborts that attempt and the next sync starts a fresh
-  snapshot. Captures retain both the minimum size and the final size.
+  before any network transfer. A generation streams all pages as a range without
+  adding the whole database to the dirty set; a page-size change during copying
+  aborts that attempt and the next sync starts a fresh snapshot. Captures retain
+  both the minimum size and the final size.
 - A **dirty log** next to the database (`<db>.replica-dirty-a` and `-b`) names
   the pages written since the last sync: before the database file is synced,
   the tracking VFS appends their numbers and syncs the log first, the way a
-  journal goes before the pages it protects, so a page can be on disk only
-  when the log names it. After a committed sync the log is rewritten into the
-  other file with what is still dirty, records first and the header (magic,
-  sequence, generation, checksum) last. A start after an unclean stop reads
-  the file of the marker's generation with the highest sequence not past the
-  marker and continues with the pages it names; nothing is hashed or read. A
-  file of an older sequence (a crash between the marker write and the
-  rewrite) names more, never less. A damaged file, one past the marker, or
-  none at all costs a full snapshot, never a missed page.
+  journal goes before the pages it protects. A successful database-file Sync
+  therefore follows a durable record of those pages. After a committed sync the
+  log is rewritten into the other file with what is still dirty, records first
+  and the header (magic, sequence, generation, checksum) last. A start after an
+  unclean stop reads the file of the marker's generation with the highest
+  sequence not past the marker and continues with the pages it names, without
+  scanning the database. A file of an older sequence (a crash between the marker
+  write and the rewrite) names more, never less. A damaged file, one past the
+  marker, or none at all costs a full snapshot, never a missed page.
 - A window is `(start, end]`: a commit exactly on a boundary belongs to the
   window that ends there, the rule `plan` uses for a point at that boundary, so
   a point restores the same database before and after compaction. A commit
@@ -89,13 +91,27 @@ paths and remaining operational limits.
   nanosecond timestamp precision; round-trip the timestamp without truncation.
 - Downloads are validated in a scratch database before touching the destination.
   Since a generic VFS has no rename operation, publication writes a durable
-  `.replica-restoring` intent, copies and syncs the destination, then removes the
-  intent durably. `Prepare` retries interrupted publication even if the database
-  already exists. `Fetch` must target an offline file and refuses the live DB.
+  `.replica-restoring` intent, removes a stale `-journal` of the file being
+  replaced, copies and syncs the destination, then removes the intent durably.
+  `Prepare` retries interrupted publication even if the database already
+  exists. `Fetch` must target an offline file and refuses the live DB.
 - In-process restore readers are protected from concurrent compaction/pruning.
   A process restart with an unclean marker resumes from the dirty log when
   usable, otherwise starts a fresh snapshot. An idle restored generation
   retains its sequence number and compaction frontier.
+- Proven damaged metadata or parts encountered during sync invalidate that
+  generation. The background loop builds a replacement from the local source;
+  an optional `repair_from` marker field retains ownership across interrupted
+  repairs without allowing fallback to the damaged chain. Transport and service
+  failures remain ordinary retries. A new instance with no local database
+  refuses to start empty if `current` is missing while generations remain.
+
+Automatic repair requires a readable local source and working storage. Sync
+does not continuously verify every old snapshot part, nor run a complete SQLite
+integrity check on the source. A new snapshot cannot reconstruct lost historical
+states. Unproven ownership, damaged local state or failed restore verification
+can require operator intervention; preserving data takes precedence over
+silently choosing a source. See the [recovery review](SCALE_REVIEW.md#automatic-recovery-and-safe-refusal).
 
 Layout (manifest format version 2):
 
@@ -108,11 +124,17 @@ Layout (manifest format version 2):
 ```
 
 Memory holds at most a few segment buffers plus dirty-page and manifest
-metadata. Local scratch space must hold the captured dirty data (a full database
-for a snapshot); restore needs one full scratch database. Sync uses one reusable
-spool name, so crashes cannot accumulate one local spool per attempt. Failed
-remote attempts may leave unreferenced parts; generation pruning removes these
-along with the rest of the generation. They never influence restore planning.
+metadata. Full snapshots enumerate page numbers one segment at a time;
+dirty-log encoding and decoding use 64 KiB record buffers. Dirty-page maps,
+replayed page numbers and compaction's winning-page map still grow with the
+changed-page count; restore's coverage bitmap grows with database size.
+SegmentBytes is not a total memory limit. Local scratch space must hold the
+captured dirty data: approximately the full database for a snapshot, plus
+pages rewritten during the copy and encoding overhead. Restore needs one full
+scratch database in addition to its destination. Sync uses one reusable spool
+name, so crashes cannot accumulate one local spool per attempt. Failed remote
+attempts may leave unreferenced parts; generation pruning removes these along
+with the rest of the generation. They never influence restore planning.
 
 ## Spin integration
 
@@ -131,6 +153,8 @@ with `ErrLegacyFormat` because they cannot prove complete batches or windows.
 ```sh
 go test ./replica ./internal/replicaconfig
 go test -race ./replica ./internal/persistence ./internal/tenancy ./internal/server
+# Opt-in scale run; allow roughly five times the requested payload in free disk.
+REPLICA_SCALE_MIB=1024 go test ./replica -run '^TestReplicaScale$' -count=1 -v -timeout=30m
 ```
 
 The failure suite covers incomplete and uncertain uploads, partial window

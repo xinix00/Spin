@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ncruces/go-sqlite3/vfs"
@@ -74,6 +75,10 @@ type marker struct {
 	// new one's first commit: a restart in the middle of the copy continues
 	// it instead of copying everything again (Prepare).
 	Previous *marker `json:"previous,omitempty"`
+	// RepairFrom records our damaged generation while a replacement snapshot
+	// is in progress. It proves local lineage at restart, but is never a
+	// fallback to resume. Clear it only after publishing the replacement.
+	RepairFrom string `json:"repair_from,omitempty"`
 	// Uncertain is a commit whose manifest PUT has no known outcome: an error
 	// after the request left, or a stop right after it. The next sync looks
 	// in the bucket whether it is there, and counts it or tries its sequence
@@ -84,7 +89,7 @@ type marker struct {
 
 // renewal is the marker of a new generation that takes over from current.
 func (r *Replica) renewal(current marker) marker {
-	next := marker{Version: formatVersion, Generation: newGenerationID(r.now()), StartedAt: r.now()}
+	next := marker{Version: formatVersion, Generation: newGenerationID(r.now()), StartedAt: r.now(), RepairFrom: current.RepairFrom}
 	switch {
 	case current.Complete:
 		current.Previous = nil
@@ -107,10 +112,6 @@ type Replica struct {
 	// freshReason says why Prepare started a new generation, for the page
 	// that waits on the copy it makes.
 	freshReason string
-	// remoteGeneration and remoteSeq are where the bucket stood when
-	// Prepare looked (guard.go), empty when it did not.
-	remoteGeneration string
-	remoteSeq        int64
 	// What the next sync compares the source against (guard.go). Under
 	// markerMu, like the marker it belongs with.
 	witness      witness
@@ -140,7 +141,6 @@ type Replica struct {
 	lifetime    context.Context
 	cancel      context.CancelFunc
 	status      Status
-	stop        chan struct{}
 	stopOnce    sync.Once
 	lastCompact time.Time
 	// renewAfter holds a renewal back after one failed: meanwhile the
@@ -196,8 +196,8 @@ func NewWithOptions(config Config, domain, path string, inner vfs.VFS, logger *s
 	replica := &Replica{
 		config: config, domain: domain, path: full, inner: inner, files: storageFor(inner), vfsName: name, logger: logger,
 		s3:     &S3{Endpoint: config.Endpoint, Bucket: config.Bucket, Region: config.Region, AccessKey: config.AccessKey, SecretKey: config.SecretKey},
-		status: Status{Enabled: true, Bucket: config.Bucket}, stop: make(chan struct{}),
-		now: func() time.Time { return time.Now().UTC() },
+		status: Status{Enabled: true, Bucket: config.Bucket},
+		now:    func() time.Time { return time.Now().UTC() },
 	}
 	if options.Objects != nil {
 		replica.s3 = options.Objects
@@ -280,6 +280,13 @@ func (r *Replica) Prepare(ctx context.Context) error {
 			if interrupted {
 				return errors.New("interrupted restore has no current generation")
 			}
+			generations, err := r.generationIDs(ctx)
+			if err != nil {
+				return fmt.Errorf("check archive before empty database bootstrap: %w", err)
+			}
+			if len(generations) > 0 {
+				return errors.New("current generation pointer is missing but archived generations exist; refusing to start an empty database")
+			}
 			r.logger.Info("replica: no generation in the bucket; the database starts empty", "domain", r.domain)
 			return r.tracker.rewriteLog("", 0)
 		}
@@ -288,80 +295,50 @@ func (r *Replica) Prepare(ctx context.Context) error {
 		}
 		return r.restoreCurrent(ctx, strings.TrimSpace(string(current)))
 	}
-	// The hash index of earlier versions is not read any more.
-	_ = r.files.Remove(r.path + ".replica-index")
 	stored, err := r.readMarker()
-	// Before a database that is already here is taken as the truth: does the
-	// bucket hold a generation this file cannot account for? A legacy marker
-	// and a changed destination keep their old behaviour; the other two cases
-	// are what guard.go is for.
-	if err != nil || (stored.Version == formatVersion && stored.Destination == r.destinationID()) {
-		decision, guardErr := r.adoptLocal(ctx, stored, err == nil)
-		if guardErr != nil {
-			return guardErr
-		}
-		switch {
-		case decision.restoreFrom != "":
-			r.logger.Warn("replica: the bucket moved to a generation this database never made, and it has nothing unshipped; restoring that generation",
-				"domain", r.domain, "generation", decision.restoreFrom, "local_generation", stored.Generation, "local_seq", stored.Seq)
-			return r.restoreCurrent(ctx, decision.restoreFrom)
-		case decision.continueAt != nil:
-			// A commit reached the bucket and the marker write that records it
-			// did not (guard.go): continue at the bucket's tip, with the pages
-			// the dirty log names since the marker.
-			r.logger.Warn("replica: the bucket holds commits past this marker; the generation continues at the bucket's tip",
-				"domain", r.domain, "generation", stored.Generation, "local_seq", stored.Seq, "bucket_seq", decision.continueAt.Seq)
-			stored = *decision.continueAt
-			pages, logErr := r.tracker.log.read(decision.logGeneration, decision.logSeq)
-			if logErr != nil {
-				return fmt.Errorf("read the dirty log again: %w", logErr)
-			}
-			return r.continueGeneration(stored, pages)
-		case decision.fresh != "":
-			r.logger.Warn("replica: "+decision.fresh+"; a new generation is copied in the background", "domain", r.domain)
-			r.freshReason = decision.fresh
-			return r.tracker.rewriteLog("", 0)
-		}
-	}
 	switch {
 	case err != nil:
+		// A file without provenance never buries a generation that is in
+		// the bucket (guard.go).
+		if _, guardErr := r.adoptLocal(ctx, stored, false); guardErr != nil {
+			return guardErr
+		}
 		r.logger.Warn("replica: no usable marker next to the database; a new generation starts", "domain", r.domain, "error", err)
 		r.freshReason = "no usable marker next to the database"
+		return r.tracker.rewriteLog("", 0)
 	case stored.Version != formatVersion:
 		r.logger.Warn("replica: legacy local marker; starting a generation with commit manifests", "domain", r.domain)
+		return r.tracker.rewriteLog("", 0)
 	case stored.Destination != r.destinationID():
 		r.logger.Info("replica: object-store destination changed; starting a fresh generation", "domain", r.domain)
-	default:
-		// The dirty log names the pages written since the last sync: the
-		// generation continues with those. A clean marker means none,
-		// and whatever the log names then is shipped once more, which
-		// costs nothing but a few pages.
-		if !stored.Complete {
-			// A new generation writes its name in the marker before its copy
-			// starts and in the dirty log after its first commit. A stop in
-			// between is an interrupted copy, not a database that changed
-			// behind the replica's back. Until that first commit the dirty
-			// log still follows the generation being renewed, so when the
-			// bucket still ends where that one did, it simply continues, as
-			// Litestream continues after a restart. Otherwise the copy starts
-			// over.
-			previous := stored.Previous
-			if previous == nil || previous.Generation != r.remoteGeneration || previous.Seq != r.remoteSeq {
-				r.logger.Warn("replica: the copy of generation "+stored.Generation+" did not finish; a new generation is copied in the background", "domain", r.domain)
-				r.freshReason = "the copy of generation " + stored.Generation + " did not finish"
-				return r.tracker.rewriteLog("", 0)
-			}
-			r.logger.Warn("replica: the copy of generation "+stored.Generation+" did not finish; generation "+previous.Generation+" continues", "domain", r.domain, "seq", previous.Seq)
-			stored = *previous
-			stored.Clean = false
+		return r.tracker.rewriteLog("", 0)
+	}
+	// Before a database that is already here is taken as the truth: does the
+	// bucket hold a generation this file cannot account for (guard.go)? The
+	// dirty log names the pages written since the last sync, and the
+	// generation continues with those; a clean marker means none, and
+	// whatever the log names then is shipped once more.
+	decision, err := r.adoptLocal(ctx, stored, true)
+	if err != nil {
+		return err
+	}
+	switch {
+	case decision.restoreFrom != "":
+		r.logger.Warn("replica: the bucket moved to a generation this database never made, and it has nothing unshipped; restoring that generation",
+			"domain", r.domain, "generation", decision.restoreFrom, "local_generation", stored.Generation, "local_seq", stored.Seq)
+		return r.restoreCurrent(ctx, decision.restoreFrom)
+	case decision.continueAt != nil:
+		return r.continueGeneration(*decision.continueAt, decision.pages)
+	}
+	r.logger.Warn("replica: "+decision.fresh+"; a new generation is copied in the background", "domain", r.domain)
+	r.freshReason = decision.fresh
+	if decision.repairFrom != "" {
+		stored.Complete, stored.Clean = false, false
+		stored.Previous = nil
+		stored.RepairFrom = decision.repairFrom
+		if err := r.setMarker(stored); err != nil {
+			return err
 		}
-		pages, err := r.tracker.log.read(stored.Generation, stored.Seq)
-		if err != nil && !stored.Clean {
-			r.logger.Warn("replica: the database changed after its last sync and the dirty log is unusable; a new generation starts", "domain", r.domain, "generation", stored.Generation, "error", err)
-			r.freshReason = "the dirty log of generation " + stored.Generation + " is unusable (" + err.Error() + ")"
-			return r.tracker.rewriteLog("", 0)
-		}
-		return r.continueGeneration(stored, pages)
 	}
 	return r.tracker.rewriteLog("", 0)
 }
@@ -400,7 +377,11 @@ func (r *Replica) SnapshotDue() bool {
 // empty when it does not: no generation yet, an interrupted generation,
 // a generation past its age, or more shipped than the database is worth.
 func (r *Replica) SnapshotReason() string {
-	current := r.getMarker()
+	return r.snapshotReason(r.getMarker())
+}
+
+func (r *Replica) snapshotReason(current marker) string {
+	now := r.now()
 	switch {
 	case current.Generation == "" && r.freshReason != "":
 		return r.freshReason
@@ -408,10 +389,13 @@ func (r *Replica) SnapshotReason() string {
 		return "no generation yet"
 	case !current.Complete:
 		return "the last sync of generation " + current.Generation + " did not complete"
-	case r.now().Before(r.renewAfter):
+	case r.tracker.currentPageSize() != 0 && current.PageSize != r.tracker.currentPageSize():
+		// Old page numbers mean nothing at the new size (VACUUM).
+		return fmt.Sprintf("the page size changed from %d to %d", current.PageSize, r.tracker.currentPageSize())
+	case now.Before(r.renewAfter):
 		return ""
-	case r.now().Sub(current.StartedAt) > r.config.Generation:
-		return fmt.Sprintf("generation %s is %s old, the limit is %s", current.Generation, r.now().Sub(current.StartedAt).Round(time.Hour), r.config.Generation)
+	case now.Sub(current.StartedAt) > r.config.Generation:
+		return fmt.Sprintf("generation %s is %s old, the limit is %s", current.Generation, now.Sub(current.StartedAt).Round(time.Hour), r.config.Generation)
 	case current.Bytes > 2*current.Size+64<<20:
 		return fmt.Sprintf("generation %s shipped %d MiB against a database of %d MiB", current.Generation, current.Bytes>>20, current.Size>>20)
 	}
@@ -433,7 +417,7 @@ func (r *Replica) Start(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-r.stop:
+			case <-r.lifetime.Done():
 				return
 			case <-ticker.C:
 				if err := r.Sync(ctx); err != nil && ctx.Err() == nil {
@@ -451,7 +435,6 @@ func (r *Replica) Close() {
 		r.mu.Lock()
 		r.closed = true
 		r.cancel()
-		close(r.stop)
 		r.mu.Unlock()
 		r.active.Wait()
 		r.tracker.log.close()
@@ -496,6 +479,19 @@ func (r *Replica) Sync(ctx context.Context) error {
 	stopCancel := context.AfterFunc(r.lifetime, cancel)
 	defer func() { stopCancel(); cancel() }()
 	err := r.sync(ctx, db)
+	archiveDamaged := errors.Is(err, errReplicaCorrupt) || errors.Is(err, errCommitGap)
+	if archiveDamaged || errors.Is(err, errForeignWrite) || errors.Is(err, errGenerationShort) {
+		// All detectors report their cause here; one transition schedules
+		// repair. A source mismatch during an unfinished repair must retain
+		// its original lineage; damage to a published replacement updates it.
+		var damaged string
+		if archiveDamaged {
+			damaged = r.getMarker().Generation
+		}
+		writeErr := r.invalidateGeneration(damaged)
+		r.logger.Warn("replica: the generation cannot continue; the next sync starts a fresh generation", "domain", r.domain, "generation", r.getMarker().Generation, "error", err)
+		err = errors.Join(err, writeErr)
+	}
 	r.mu.Lock()
 	r.syncing = false
 	if err != nil {
@@ -549,41 +545,54 @@ func (r *Replica) resolveUncertain(ctx context.Context, current marker) (marker,
 func (r *Replica) uploadParts(ctx context.Context, captured capture, prefix string) ([]partRef, error) {
 	refs := make([]partRef, len(captured.parts))
 	var total int64
+	var done atomic.Int64
 	for _, part := range captured.parts {
 		total += int64(part.length)
 	}
+	err := each(ctx, r.config.UploadParallelism, len(captured.parts), func(ctx context.Context, index int) error {
+		part := captured.parts[index]
+		data, err := r.readSpool(captured.path, part)
+		if err != nil {
+			return err
+		}
+		ref := partRef{Key: fmt.Sprintf("%s%06d.seg", prefix, index+1), Size: int64(len(data)), Hash: sha256hex(data)}
+		if err := r.s3.Put(ctx, ref.Key, data); err != nil {
+			return err
+		}
+		refs[index] = ref
+		if captured.snapshot {
+			r.reportCopy("upload", done.Add(int64(part.length)), total)
+		}
+		return nil
+	})
+	return refs, err
+}
+
+// each calls fn for every index below count, workers at a time, and stops
+// at the first error, which it returns.
+func each(ctx context.Context, workers, count int, fn func(ctx context.Context, index int) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var (
 		mu       sync.Mutex
 		next     int
-		done     int64
 		firstErr error
-		workers  sync.WaitGroup
+		group    sync.WaitGroup
 	)
-	for worker := 0; worker < min(r.config.UploadParallelism, len(captured.parts)); worker++ {
-		workers.Add(1)
+	for worker := 0; worker < min(workers, count); worker++ {
+		group.Add(1)
 		go func() {
-			defer workers.Done()
+			defer group.Done()
 			for {
 				mu.Lock()
-				if next >= len(captured.parts) || firstErr != nil {
-					mu.Unlock()
-					return
-				}
-				index := next
+				index, stop := next, next >= count || firstErr != nil
 				next++
 				mu.Unlock()
-				part := captured.parts[index]
-				data, err := r.readSpool(captured.path, part)
-				if err == nil {
-					ref := partRef{Key: fmt.Sprintf("%s%06d.seg", prefix, index+1), Size: int64(len(data)), Hash: sha256hex(data)}
-					if err = r.s3.Put(ctx, ref.Key, data); err == nil {
-						refs[index] = ref
-					}
+				if stop {
+					return
 				}
-				mu.Lock()
-				if err != nil {
+				if err := fn(ctx, index); err != nil {
+					mu.Lock()
 					if firstErr == nil {
 						firstErr = err
 						cancel()
@@ -591,17 +600,11 @@ func (r *Replica) uploadParts(ctx context.Context, captured capture, prefix stri
 					mu.Unlock()
 					return
 				}
-				done += int64(part.length)
-				sent := done
-				mu.Unlock()
-				if captured.snapshot {
-					r.reportCopy("upload", sent, total)
-				}
 			}
 		}()
 	}
-	workers.Wait()
-	return refs, firstErr
+	group.Wait()
+	return firstErr
 }
 
 // reportCopy records how far a whole-database copy has come and tells OnCopy.
@@ -628,27 +631,26 @@ func (r *Replica) endCopy() {
 func (r *Replica) sync(ctx context.Context, db Database) error {
 	defer r.endCopy()
 	// A snapshot/current PUT may have succeeded even when both its reply
-	// and the immediate read-back failed. Keep that attempt's marker until
-	// the bucket can settle it; never fall back to an older generation while
-	// current may already name the new snapshot.
+	// and the immediate read-back failed. Ask the bucket what a start asks
+	// (guard.go): the attempt goes on at its tip, or the generation it
+	// renews does; never fall back blindly while current may already name
+	// the new snapshot.
 	if current := r.getMarker(); !current.Complete && current.Seq == 0 && current.Generation != "" {
-		remote, err := r.s3.Get(ctx, r.currentKey())
-		if err != nil && !errors.Is(err, ErrNotFound) {
+		decision, err := r.adoptLocal(ctx, current, true)
+		if err != nil {
 			return err
 		}
-		if err == nil && strings.TrimSpace(string(remote)) == current.Generation {
-			decision, err := r.adoptLocal(ctx, current, true)
-			if err != nil {
+		if decision.repairFrom != "" {
+			// An uncertain publication may have moved current to this
+			// attempt before its snapshot became damaged. Preserve that
+			// proven lineage when starting the next replacement.
+			if err := r.invalidateGeneration(decision.repairFrom); err != nil {
 				return err
 			}
-			if decision.continueAt != nil {
-				pages, err := r.tracker.log.read(decision.logGeneration, decision.logSeq)
-				if err != nil {
-					return err
-				}
-				if err := r.continueGeneration(*decision.continueAt, pages); err != nil {
-					return err
-				}
+		}
+		if decision.continueAt != nil {
+			if err := r.continueGeneration(*decision.continueAt, decision.pages); err != nil {
+				return err
 			}
 		}
 	}
@@ -669,8 +671,8 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 	}
 	// An incomplete attempt is never resumed: a fresh snapshot and fresh keys
 	// also make a timeout after a successful PUT safe to retry.
-	fresh := !current.Complete || r.compactionDue(current)
-	reason := r.SnapshotReason()
+	reason := r.snapshotReason(current)
+	fresh := reason != ""
 	renewed := false
 	if fresh {
 		current = r.renewal(current)
@@ -707,38 +709,14 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 	}
 	defer captured.close(r.files)
 	if captured.snapshot {
-		r.logger.Info("replica: snapshot copied; the upload starts", "domain", r.domain, "pages", len(captured.pages), "bytes", captured.size, "took", r.now().Sub(started).Round(time.Millisecond))
+		r.logger.Info("replica: snapshot copied; the upload starts", "domain", r.domain, "pages", captured.size/int64(captured.pageSize), "bytes", captured.size, "took", r.now().Sub(started).Round(time.Millisecond))
 	}
-	if captured.snapshot && !fresh {
-		fresh = true
-		current = r.renewal(current)
-		if err := r.setMarker(current); err != nil {
-			r.tracker.putBack(captured.pages)
-			return err
-		}
-	}
-	// A commit may not record a size this generation cannot fill. The pages a
-	// growing database added are written, so they are dirty and this capture
-	// holds them; missing means the tracker never saw those writes, and no
-	// later increment repairs that. Continuing would ship increments for hours
-	// onto a generation that can never restore, which is exactly what happened
-	// on 22 September. So: keep the generation restorable as it stands, say it,
-	// and let the next sync start a fresh one (coverage.go).
+	// Do not commit growth whose pages this capture cannot account for.
+	// Sync applies the same repair transition as for other broken chains.
 	if !captured.snapshot {
 		if first, missing, gap := growthGap(current.Size, captured.size, captured.pageSize, captured.pages); gap {
 			r.tracker.putBack(captured.pages)
-			r.markerMu.Lock()
-			r.marker.Complete = false
-			r.marker.Previous = nil
-			err := r.writeMarker(r.marker)
-			r.markerMu.Unlock()
-			r.logger.Warn("replica: the database grew by pages this replica never saw; the next sync starts a fresh generation",
-				"domain", r.domain, "generation", current.Generation, "missing_pages", missing, "first_missing_page", first,
-				"size", captured.size, "previous_size", current.Size)
-			if err != nil {
-				return err
-			}
-			return errGenerationShort
+			return fmt.Errorf("%w: %d missing pages, first %d, size %d (previous %d)", errGenerationShort, missing, first, captured.size, current.Size)
 		}
 	}
 	if len(captured.parts) > 0 {
@@ -756,19 +734,19 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		prefix := r.generationPrefix(current.Generation) + "data/" + newGenerationID(r.now()) + "/"
 		committed, publishing := false, false
 		defer func() {
-			if !committed {
-				r.tracker.putBack(captured.pages)
-				if publishing {
-					r.markerMu.Lock()
+			if committed {
+				return
+			}
+			r.tracker.putBack(captured.pages)
+			if publishing {
+				_ = r.updateMarker(func(mk *marker) {
 					if fresh {
-						r.marker.Complete = false
+						mk.Complete = false
 					} else {
-						r.marker.Uncertain = m.Seq
+						mk.Uncertain = m.Seq
 					}
-					r.marker.Clean = false
-					_ = r.writeMarker(r.marker)
-					r.markerMu.Unlock()
-				}
+					mk.Clean = false
+				})
 			}
 		}()
 		refs, err := r.uploadParts(ctx, captured, prefix)
@@ -780,19 +758,13 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		if fresh {
 			key = r.snapshotKey(current.Generation)
 		}
+		// From here on the server may have accepted the commit despite a lost
+		// response, so its sequence is never reused blindly: the deferred
+		// marker write above records it as uncertain and the next sync looks
+		// whether it is there (resolveUncertain). A snapshot that may not be
+		// there ends its generation instead.
 		publishing = true
 		if err := r.putManifest(ctx, key, m); err != nil {
-			// The server may have accepted the commit despite a lost response,
-			// so its sequence is never reused blindly: the next sync looks
-			// whether it is there (resolveUncertain). A snapshot that may not
-			// be there ends its generation instead.
-			if fresh {
-				current.Complete = false
-			} else {
-				current.Uncertain = m.Seq
-			}
-			current.Clean = false
-			_ = r.setMarker(current)
 			return err
 		}
 		if fresh {
@@ -821,25 +793,21 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		current.Complete = true
 		current.Clean = false
 		current.Previous = nil
+		current.RepairFrom = ""
 		for _, part := range m.Parts {
 			current.Bytes += part.Size
 		}
+		committed = true
 		if err := r.setMarker(current); err != nil {
 			// The commit is in the bucket; only its record here failed. Memory
 			// keeps the truth and the next sync goes on from it; a start that
 			// finds the older marker continues at the bucket's tip (guard.go).
-			r.markerMu.Lock()
-			current.Clean = false
-			current.Destination = r.destinationID()
-			r.marker = current
-			r.markerMu.Unlock()
-			committed = true
 			return err
 		}
-		committed = true
 		if err := r.tracker.rewriteLog(current.Generation, current.Seq); err != nil {
-			// The previous log stays and names more than is dirty, which
-			// is safe; the next start just ships a few pages twice.
+			// Before header publication the old log remains authoritative;
+			// after an uncertain header publication the candidate stays active
+			// and subsequent writes persist an invalidation before DB sync.
 			r.logger.Warn("replica: rewrite the dirty log", "domain", r.domain, "error", err)
 		}
 		if captured.snapshot {
@@ -852,69 +820,36 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 			r.status.UploadedBytes += part.Size
 		}
 		r.mu.Unlock()
-		if err := r.tracker.settle(captured.revision, func() error { current.Clean = true; return r.setMarker(current) }); err != nil {
-			return err
-		}
 	}
-	if len(captured.parts) == 0 && current.Complete {
-		if err := r.tracker.settle(captured.revision, func() error { current = r.getMarker(); current.Clean = true; return r.setMarker(current) }); err != nil {
+	if current.Complete {
+		persistClean := func() error { return r.updateMarker(func(m *marker) { m.Clean = true }) }
+		if err := r.tracker.settle(captured.revision, persistClean); err != nil {
 			return err
 		}
 	}
 	if fresh && current.Complete {
-		r.pruneGenerations(current.Generation)
+		r.pruneGenerations(ctx, current.Generation)
 	}
 	if current.Complete && r.now().Sub(r.lastCompact) >= time.Minute {
 		// Persist the frontier before merging; after restart no commit can land in
 		// a window which may already have been published.
 		frontier := r.now()
-		r.markerMu.Lock()
-		next := r.marker
-		next.SealedAt = frontier
-		err := r.writeMarker(next)
-		if err == nil {
-			r.marker = next
-		}
-		r.markerMu.Unlock()
-		if err != nil {
+		if err := r.updateMarker(func(m *marker) {
+			if frontier.After(m.SealedAt) {
+				m.SealedAt = frontier
+			}
+		}); err != nil {
 			return err
 		}
 		// A failed compaction waits its turn like a successful one: it reads
 		// every manifest of the generation, and retrying it every sync did
 		// that every 15 seconds.
 		r.lastCompact = frontier
-		if err := r.compact(ctx, current.Generation); err != nil {
-			if errors.Is(err, errCommitGap) {
-				// The generation stays restorable as it is but can never be
-				// compacted again; a stuck one read every manifest of it every
-				// minute for days. It ends, like after a write the replica
-				// never saw, and the next sync starts a fresh one.
-				r.markerMu.Lock()
-				r.marker.Complete = false
-				r.marker.Previous = nil
-				writeErr := r.writeMarker(r.marker)
-				r.markerMu.Unlock()
-				r.logger.Warn("replica: the generation has a gap in its commit sequence; the next sync starts a fresh generation", "domain", r.domain, "generation", current.Generation)
-				if writeErr != nil {
-					return writeErr
-				}
-			}
+		if err := r.compact(ctx, current.Generation, frontier); err != nil {
 			return fmt.Errorf("compact: %w", err)
 		}
 	}
 	return publicationErr
-}
-
-// compactionDue: the changes outweigh the database, or the generation is a
-// configured generation age is reached; a fresh snapshot keeps restores short.
-func (r *Replica) compactionDue(current marker) bool {
-	if !current.Complete || r.now().Before(r.renewAfter) {
-		return false
-	}
-	if current.Bytes > 2*current.Size+64<<20 {
-		return true
-	}
-	return r.now().Sub(current.StartedAt) > r.config.Generation
 }
 
 // readPages reads the pages that still exist, contiguous ones in one read:
@@ -934,7 +869,7 @@ func (r *Replica) readPages(pageSize int, pages []uint32) (segment, error) {
 	last := uint32(size / int64(pageSize))
 	for index := 0; index < len(pages); {
 		first := pages[index]
-		if first == 0 || first > last {
+		if first > last {
 			index++
 			continue
 		}
@@ -990,12 +925,12 @@ func generationTime(id string) time.Time {
 
 // pruneGenerations removes generations past the retention, and unfinished
 // ones older than a day that are not this one (a snapshot another start
-// never completed). The one kept always stays.
-func (r *Replica) pruneGenerations(keep string) {
+// never completed). The one kept always stays. It runs on the sync's context:
+// a stop interrupts it, which leaves orphaned data at worst, and the next
+// generation start tries again.
+func (r *Replica) pruneGenerations(ctx context.Context, keep string) {
 	r.archiveMu.Lock()
 	defer r.archiveMu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
 	objects, err := r.s3.List(ctx, r.key("generations")+"/")
 	if err != nil {
 		r.logger.Warn("replica: list generations", "domain", r.domain, "error", err)
@@ -1026,10 +961,11 @@ func (r *Replica) pruneGenerations(keep string) {
 	}
 	sort.SliceStable(objects, func(i, j int) bool { return rank(objects[i].Key) < rank(objects[j].Key) })
 	removed, failed := 0, 0
+	blocked := map[string]bool{}
 	for _, object := range objects {
 		rest := strings.TrimPrefix(object.Key, r.key("generations")+"/")
 		id, _, _ := strings.Cut(rest, "/")
-		if id == keep {
+		if id == keep || blocked[id] {
 			continue
 		}
 		created := generationTime(id)
@@ -1040,6 +976,7 @@ func (r *Replica) pruneGenerations(keep string) {
 		}
 		if err := r.s3.Delete(ctx, object.Key); err != nil {
 			failed++
+			blocked[id] = true // Keep every dependency if removing visibility failed.
 			r.logger.Warn("replica: delete old segment", "domain", r.domain, "key", object.Key, "error", err)
 			continue
 		}
@@ -1069,6 +1006,20 @@ func (r *Replica) getMarker() marker {
 	return r.marker
 }
 
+// invalidateGeneration retains provenance but never lets a failed repair fall
+// back to the damaged chain. Drop its witness so it cannot veto the repair.
+func (r *Replica) invalidateGeneration(damaged string) error {
+	return r.updateMarker(func(m *marker) {
+		m.Complete, m.Previous = false, nil
+		if damaged != "" {
+			m.RepairFrom = damaged
+		} else if m.RepairFrom == "" {
+			m.RepairFrom = m.Generation
+		}
+		r.witnessKnown = false
+	})
+}
+
 // A local clean marker only applies to the object-store namespace it synced.
 func (r *Replica) destinationID() string {
 	return sha256hex([]byte(strings.Join([]string{r.config.Endpoint, r.config.Bucket, r.config.Prefix, r.domain}, "\x00")))
@@ -1076,27 +1027,28 @@ func (r *Replica) destinationID() string {
 
 func (r *Replica) setMarker(value marker) error {
 	value.Destination = r.destinationID()
-	r.markerMu.Lock()
-	defer r.markerMu.Unlock()
-	// A failed clean write must never leave a clean in-memory state.
-	if err := r.writeMarker(value); err != nil {
-		r.marker.Clean = false
-		return err
-	}
-	r.marker = value
-	return nil
+	return r.updateMarker(func(m *marker) { *m = value })
 }
 
 func (r *Replica) markUnclean() error {
+	return r.updateMarker(func(m *marker) { m.Clean = false })
+}
+
+// updateMarker changes the marker under its lock and writes it. Memory keeps
+// the change even when the write fails, unclean: what was decided stays
+// decided (a commit is in the bucket whether its record here landed or not),
+// and a failed clean write must never leave a clean state.
+func (r *Replica) updateMarker(change func(*marker)) error {
 	r.markerMu.Lock()
 	defer r.markerMu.Unlock()
-	value := r.marker
-	value.Clean = false
-	if err := r.writeMarker(value); err != nil {
-		return err
+	next := r.marker
+	change(&next)
+	err := r.writeMarker(next)
+	if err != nil {
+		next.Clean = false
 	}
-	r.marker = value
-	return nil
+	r.marker = next
+	return err
 }
 
 func (r *Replica) writeMarker(value marker) error {

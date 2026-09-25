@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -46,7 +47,7 @@ func TestSyncRefusesASizeTheGenerationCannotFill(t *testing.T) {
 	if err := database.WriteFile("grown", grown); err != nil {
 		t.Fatal(err)
 	}
-	stolen := source.tracker.take(int(^uint(0) >> 1))
+	stolen := source.tracker.take()
 	if len(stolen) == 0 {
 		t.Fatal("no dirty pages to steal; the write did not reach the tracker")
 	}
@@ -178,12 +179,8 @@ func TestRestoreRefusesAGenerationThatIsShort(t *testing.T) {
 	}
 	defer replica.Close()
 	err = replica.Prepare(context.Background())
-	var short *errShortReplica
-	if !errors.As(err, &short) {
-		t.Fatalf("prepare on a short generation = %v, want errShortReplica", err)
-	}
-	if short.Missing == 0 || short.Size != claimed {
-		t.Fatalf("error = %+v; it should name the claimed size and the missing pages", short)
+	if !errors.Is(err, errGenerationShort) || !strings.Contains(err.Error(), fmt.Sprintf("for a database of %d bytes", claimed)) {
+		t.Fatalf("prepare on a short generation = %v; it should name the claimed size and the missing pages", err)
 	}
 	if _, err := os.Stat(dir + "/restored.db"); err == nil {
 		t.Fatal("a short restore was published anyway")
@@ -232,5 +229,44 @@ func TestGrowthGapNamesTheFirstMissingPage(t *testing.T) {
 	first, missing, gap := growthGap(100*pageSize, 200*pageSize, pageSize, pages)
 	if !gap || first != 101 || missing != 100 {
 		t.Fatalf("doubling without the new pages: first=%d missing=%d gap=%v, want 101, 100, true", first, missing, gap)
+	}
+}
+
+func TestCoverageExcludesOnlySQLiteLockBytePage(t *testing.T) {
+	for _, pageSize := range []int{512, 4096, 65536} {
+		lockPage := uint32((1<<30)/pageSize + 1)
+		previous := int64(lockPage-2) * int64(pageSize)
+		size := int64(lockPage+2) * int64(pageSize)
+		pages := []uint32{lockPage - 1, lockPage + 1, lockPage + 2}
+		if first, missing, gap := growthGap(previous, size, pageSize, pages); gap {
+			t.Fatalf("page size %d: lock page reported as a gap: first=%d missing=%d", pageSize, first, missing)
+		}
+		if first, missing, gap := growthGap(previous, size, pageSize, pages[1:]); !gap || first != lockPage-1 || missing != 1 {
+			t.Fatalf("page size %d: real missing page not detected: first=%d missing=%d gap=%v", pageSize, first, missing, gap)
+		}
+		var shipped pageSet
+		for page := uint32(1); page <= lockPage+2; page++ {
+			if page != lockPage {
+				shipped.add(page)
+			}
+		}
+		if first, missing, ok := shipped.shortfall(size, pageSize); !ok {
+			t.Fatalf("page size %d: restore rejects missing lock page: first=%d missing=%d", pageSize, first, missing)
+		}
+		if first, missing, ok := shipped.shortfall(size+int64(pageSize), pageSize); ok || first != lockPage+3 || missing != 1 {
+			t.Fatalf("page size %d: restore accepted a real hole: first=%d missing=%d ok=%v", pageSize, first, missing, ok)
+		}
+	}
+}
+
+func BenchmarkGrowthGapAtTerabyte(b *testing.B) {
+	const previous = 1 << 40
+	const pageSize = 4096
+	pages := []uint32{1, previous/pageSize + 1}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, _, gap := growthGap(previous, previous+pageSize, pageSize, pages); gap {
+			b.Fatal("the new tail page is present")
+		}
 	}
 }

@@ -316,7 +316,7 @@ func TestPartialWindowRetryPreservesSourceAndPublishesAllParts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(l.raw) != 0 || len(l.windows[1]) != 1 || len(l.windows[1][0].parts) < 2 {
+			if len(l.raw) != 0 || len(l.windows[1]) != 1 || len(l.windows[1][0].Parts) < 2 {
 				t.Fatalf("unexpected completed layout: raw=%d windows=%v", len(l.raw), l.windows)
 			}
 		})
@@ -577,7 +577,7 @@ func TestTruncateOnlyChangeAndSegmentValidation(t *testing.T) {
 	tracker := newTracker(newDirtyLog(OSStorage(), t.TempDir()+"/tracker.db"))
 	calls := 0
 	tracker.onUnclean = func() error { calls++; return nil }
-	if err := tracker.truncate(0); err != nil {
+	if err := tracker.truncate(); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 || tracker.pendingPages() != 1 {
@@ -761,6 +761,63 @@ func TestFetchDoesNotTouchExistingDestinationOnDownloadFailure(t *testing.T) {
 	}
 }
 
+// A restore replaces the file at its destination. A hot journal a crash left
+// next to that file belongs to the old contents: SQLite would roll it back
+// into the restored database at the first open.
+func TestRestoreRemovesTheStaleJournalOfTheFileItReplaces(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, []byte("from the bucket"))
+	f.sync(t)
+	path := f.dir + "/destination.db"
+	stale, err := openTestDatabase(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Without syncs SQLite marks the journal valid up to its end, the way a
+	// crash after the journal sync of a commit leaves it.
+	if _, err := stale.db.Exec(`PRAGMA synchronous=OFF`); err != nil {
+		t.Fatal(err)
+	}
+	if err := stale.WriteFile("state", []byte("stale")); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := stale.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE spin_kv SET value=? WHERE key='state'`, []byte("uncommitted")); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := os.ReadFile(path + "-journal")
+	if err != nil || len(journal) == 0 {
+		t.Fatalf("no journal during the transaction: %d bytes, %v", len(journal), err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stale.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+"-journal", journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.rep.Fetch(context.Background(), f.rep.Status().Generation, time.Time{}, path); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := openTestDatabase(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	var integrity string
+	if err := restored.db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
+		t.Fatalf("integrity = %q, %v", integrity, err)
+	}
+	if state, err := restored.ReadFile("state"); err != nil || string(state) != "from the bucket" {
+		t.Fatalf("state after the restore = %q, %v: the stale journal was rolled back into it", state, err)
+	}
+}
+
 func TestMissingCommittedPartFailsRestoreWithoutPublishing(t *testing.T) {
 	f := newFixture(t)
 	f.write(t, []byte("source"))
@@ -773,7 +830,7 @@ func TestMissingCommittedPartFailsRestoreWithoutPublishing(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := f.dir + "/missing"
-	if err := f.rep.Fetch(context.Background(), l.generation, time.Time{}, path); !errors.Is(err, ErrNotFound) {
+	if err := f.rep.Fetch(context.Background(), f.rep.Status().Generation, time.Time{}, path); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("fetch %v", err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -835,7 +892,7 @@ func TestCompactionPreservesShrinkThenGrow(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.clock.Add(2 * time.Hour)
-	if err := r.compact(ctx, gen); err != nil {
+	if err := r.compact(ctx, gen, r.now()); err != nil {
 		t.Fatal(err)
 	}
 	after := f.dir + "/after-compact"
@@ -907,7 +964,7 @@ func TestMissingBatchCannotBeHiddenByLaterCommits(t *testing.T) {
 	if err := f.objects.Delete(context.Background(), l.raw[0].key); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.rep.Fetch(context.Background(), l.generation, time.Time{}, f.dir+"/gap"); err == nil {
+	if err := f.rep.Fetch(context.Background(), f.rep.Status().Generation, time.Time{}, f.dir+"/gap"); err == nil {
 		t.Fatal("restore accepted missing batch")
 	}
 }

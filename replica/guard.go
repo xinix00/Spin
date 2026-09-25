@@ -77,7 +77,7 @@ func (r *Replica) checkSource(ctx context.Context, db Database) error {
 		if pageSize == 0 || last.pageSize != pageSize {
 			return nil
 		}
-		dirty := r.tracker.dirtyCount()
+		dirty := r.tracker.pendingPages()
 		seg, err := r.readPages(pageSize, []uint32{1})
 		if err != nil {
 			return err
@@ -89,7 +89,7 @@ func (r *Replica) checkSource(ctx context.Context, db Database) error {
 			mismatch = fmt.Sprintf("the change counter moved from %d to %d while no page was marked", counter, now)
 			return nil
 		}
-		if last.number == 0 || r.tracker.isDirty(last.number) {
+		if r.tracker.isDirty(last.number) {
 			return nil
 		}
 		seg, err = r.readPages(pageSize, []uint32{last.number})
@@ -109,20 +109,6 @@ func (r *Replica) checkSource(ctx context.Context, db Database) error {
 	}
 	if mismatch == "" {
 		return nil
-	}
-	r.markerMu.Lock()
-	r.marker.Complete = false
-	r.marker.Previous = nil // this lineage cannot be used as a renewal fallback
-	writeErr := r.writeMarker(r.marker)
-	// Say it once. The incomplete marker arms the remedy, a fresh generation
-	// with a full snapshot, and that capture sets a new witness. Holding on to
-	// the old one would make this guard refuse its own repair for ever.
-	r.witnessKnown = false
-	r.markerMu.Unlock()
-	r.logger.Warn("replica: a write bypassed this replica; the next sync starts a fresh generation",
-		"domain", r.domain, "generation", r.getMarker().Generation, "detail", mismatch)
-	if writeErr != nil {
-		return writeErr
 	}
 	return fmt.Errorf("%w: %s", errForeignWrite, mismatch)
 }
@@ -204,8 +190,8 @@ func (r *Replica) remoteTip(ctx context.Context) (bucketTip, error) {
 	}
 	for _, windows := range l.windows {
 		for _, w := range windows {
-			if w.end.After(tip.sealed) {
-				tip.sealed = w.end
+			if w.End.After(tip.sealed) {
+				tip.sealed = w.End
 			}
 		}
 	}
@@ -218,15 +204,16 @@ type adoption struct {
 	// database with nothing unshipped whose bucket moved to a generation it
 	// never made.
 	restoreFrom string
-	// continueAt is the marker to continue with: the bucket holds commits of
-	// this database's own generation past its marker, which a stop between a
-	// commit and the marker write leaves. The dirty log to continue with is
-	// the one of logGeneration at logSeq.
-	continueAt    *marker
-	logGeneration string
-	logSeq        int64
+	// continueAt is the marker to go on with and pages what the dirty log
+	// names since it: the normal path, a commit the bucket holds past the
+	// marker, or the generation an unfinished renewal renews.
+	continueAt *marker
+	pages      []uint32
 	// fresh says why a new generation starts from the database here.
 	fresh string
+	// repairFrom proves that a damaged remote generation belongs to this
+	// source; persist it while replacing that generation, never as a fallback.
+	repairFrom string
 }
 
 // adoptLocal decides what happens when a database file is already there. The
@@ -237,11 +224,17 @@ type adoption struct {
 // replica's and never writes the replica over the database.
 //
 //   - the marker names the bucket's generation and is at or past its tip: it
-//     continues (the normal path);
+//     continues (the normal path), with the pages the dirty log names since;
 //   - it names that generation but is behind its tip: the dirty log still
 //     names every page written since the marker, a superset of what those
 //     commits carried, so the generation continues at the tip with them.
 //     Without that log a new generation starts from the file;
+//   - it is an unfinished renewal: a new generation writes its name in the
+//     marker before its copy starts and in the dirty log after its first
+//     commit, so until then the log still follows the generation being
+//     renewed. When the bucket still ends where that one did, it simply
+//     continues, as Litestream continues after a restart; else the copy
+//     starts over;
 //   - the bucket's generation is one this marker never made: with nothing
 //     unshipped here the bucket wins (the file is a stale copy), with writes
 //     here that the bucket does not have, nothing orders the two and it
@@ -252,25 +245,72 @@ type adoption struct {
 //     the current generation, and a day of real data sat one pointer away.
 func (r *Replica) adoptLocal(ctx context.Context, stored marker, usable bool) (adoption, error) {
 	tip, err := r.remoteTip(ctx)
-	if err != nil || tip.generation == "" {
+	// A usable marker is one of this destination and format (Prepare checks
+	// that before asking); damage in the generation it names, or in the one
+	// it is replacing, is this database's own to repair.
+	if errors.Is(err, errReplicaCorrupt) && usable && (stored.Generation == tip.generation || stored.RepairFrom == tip.generation) {
+		return adoption{fresh: fmt.Sprintf("generation %s is damaged (%v)", tip.generation, err), repairFrom: tip.generation}, nil
+	}
+	if err != nil {
 		return adoption{}, err
 	}
-	r.remoteGeneration, r.remoteSeq = tip.generation, tip.seq
+	if !usable {
+		switch {
+		case tip.generation == "":
+			return adoption{}, nil
+		case r.config.AdoptLocalDatabase:
+			r.logger.Warn("replica: adopting a database without replica state over the generation in the bucket, as configured",
+				"domain", r.domain, "generation", tip.generation)
+			return adoption{}, nil
+		}
+		return adoption{}, fmt.Errorf("%w: generation %s holds %d commits; restore it, or set AdoptLocalDatabase to declare this file the new truth",
+			errUnprovenDatabase, tip.generation, tip.seq)
+	}
+	// continues is next going on with what the dirty log names since it; an
+	// unclean marker whose log cannot say costs a fresh generation.
+	continues := func(next marker) adoption {
+		pages, err := r.tracker.log.read(next.Generation, next.Seq)
+		if err != nil && !next.Clean {
+			return adoption{fresh: fmt.Sprintf("the dirty log of generation %s is unusable (%v)", next.Generation, err)}
+		}
+		return adoption{continueAt: &next, pages: pages}
+	}
+	// own is this file's own lineage, at or past the bucket: it goes on, or
+	// its unfinished renewal continues what it renews.
+	own := func() adoption {
+		if stored.Complete {
+			return continues(stored)
+		}
+		previous := stored.Previous
+		if previous == nil || previous.Generation != tip.generation || previous.Seq != tip.seq {
+			return adoption{fresh: "the copy of generation " + stored.Generation + " did not finish"}
+		}
+		r.logger.Warn("replica: the copy of generation "+stored.Generation+" did not finish; generation "+previous.Generation+" continues", "domain", r.domain, "seq", previous.Seq)
+		next := *previous
+		next.Clean = false
+		return continues(next)
+	}
 	switch {
-	case usable && stored.Generation == tip.generation && stored.Seq >= tip.seq:
-		return adoption{}, nil
-	case usable && stored.Generation == tip.generation:
-		logGeneration, logSeq := stored.Generation, stored.Seq
-		if _, err := r.tracker.log.read(logGeneration, logSeq); err != nil && stored.Previous != nil {
+	case tip.generation == "":
+		return own(), nil
+	case !stored.Complete && stored.RepairFrom == tip.generation:
+		// Missing/corrupt parts leave readable metadata. The explicit repair
+		// relationship must still win over clock-based generation ordering.
+		return adoption{fresh: "the replacement of damaged generation " + tip.generation + " did not finish", repairFrom: tip.generation}, nil
+	case stored.Generation == tip.generation && stored.Seq < tip.seq:
+		pages, logErr := r.tracker.log.read(stored.Generation, stored.Seq)
+		if logErr != nil && stored.Previous != nil {
 			// A renewal whose snapshot reached the bucket while its marker
 			// write did not: the dirty log still follows the generation it
 			// renewed, and names every page written since that one's last
 			// commit, a superset of what changed after the snapshot.
-			logGeneration, logSeq = stored.Previous.Generation, stored.Previous.Seq
+			pages, logErr = r.tracker.log.read(stored.Previous.Generation, stored.Previous.Seq)
 		}
-		if _, err := r.tracker.log.read(logGeneration, logSeq); err != nil {
+		if logErr != nil {
 			return adoption{fresh: fmt.Sprintf("the bucket holds commits of generation %s past this marker (%d of %d) and the dirty log cannot say what changed since", stored.Generation, stored.Seq, tip.seq)}, nil
 		}
+		r.logger.Warn("replica: the bucket holds commits past this marker; the generation continues at the bucket's tip",
+			"domain", r.domain, "generation", stored.Generation, "local_seq", stored.Seq, "bucket_seq", tip.seq)
 		next := stored
 		next.Seq, next.Complete, next.Clean = tip.seq, true, false
 		if next.PageSize == 0 && stored.Previous != nil {
@@ -287,21 +327,21 @@ func (r *Replica) adoptLocal(ctx context.Context, stored marker, usable bool) (a
 			next.SealedAt = tip.sealed
 		}
 		next.Previous = nil
-		return adoption{continueAt: &next, logGeneration: logGeneration, logSeq: logSeq}, nil
-	case usable && stored.Generation > tip.generation:
-		// Generation ids are time ordered: ours started later, so this file
-		// is the newer lineage (a renewal in progress, see Prepare).
-		return adoption{}, nil
-	case usable && stored.Complete && stored.Clean:
+		next.RepairFrom = ""
+		return adoption{continueAt: &next, pages: pages}, nil
+	case stored.RepairFrom != "":
+		return adoption{}, fmt.Errorf("%w: repair of generation %s cannot replace unrelated bucket generation %s", errUnprovenDatabase, stored.RepairFrom, tip.generation)
+	case stored.Generation >= tip.generation:
+		// Generation ids are time ordered: ours is the bucket's, at or past
+		// its tip, or started later and is the newer lineage.
+		return own(), nil
+	case !stored.Complete && stored.Previous != nil && stored.Previous.Generation == tip.generation:
+		// Explicit lineage survives clock rollback and random suffix ordering
+		// within one second.
+		return own(), nil
+	case stored.Complete && stored.Clean:
 		return adoption{restoreFrom: tip.generation}, nil
-	case usable:
-		return adoption{}, fmt.Errorf("%w: this database holds writes of generation %s that the bucket's generation %s (%d commits) does not; restore that one, or set AdoptLocalDatabase to declare this file the new truth",
-			errUnprovenDatabase, stored.Generation, tip.generation, tip.seq)
-	case r.config.AdoptLocalDatabase:
-		r.logger.Warn("replica: adopting a database without replica state over the generation in the bucket, as configured",
-			"domain", r.domain, "generation", tip.generation)
-		return adoption{}, nil
 	}
-	return adoption{}, fmt.Errorf("%w: generation %s holds %d commits; restore it, or set AdoptLocalDatabase to declare this file the new truth",
-		errUnprovenDatabase, tip.generation, tip.seq)
+	return adoption{}, fmt.Errorf("%w: this database holds writes of generation %s that the bucket's generation %s (%d commits) does not; restore that one, or set AdoptLocalDatabase to declare this file the new truth",
+		errUnprovenDatabase, stored.Generation, tip.generation, tip.seq)
 }

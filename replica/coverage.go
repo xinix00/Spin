@@ -1,14 +1,12 @@
 package replica
 
-import (
-	"errors"
-	"fmt"
-)
+import "errors"
 
 // errGenerationShort stops a commit that would record a size the generation
 // cannot fill. The sync returns it so the failure is visible in the log; the
 // marker is left incomplete, which makes the next sync begin a fresh
-// generation with a full snapshot.
+// generation with a full snapshot. A restore returns it too, with the
+// numbers, for a generation that never held every page below its size.
 var errGenerationShort = errors.New("replica: pages are missing for the size the database reports; a fresh generation is needed")
 
 // A restore truncates to the size a manifest records and hands the file to
@@ -76,8 +74,9 @@ func (s *pageSet) shortfall(size int64, pageSize int) (first uint32, missing int
 		return 0, 0, true
 	}
 	pages := size / int64(pageSize)
+	lockPage := int64(1<<30)/int64(pageSize) + 1
 	for page := int64(1); page <= pages; page++ {
-		if !s.has(uint32(page)) {
+		if page != lockPage && !s.has(uint32(page)) {
 			if missing == 0 {
 				first = uint32(page)
 			}
@@ -101,14 +100,22 @@ func growthGap(previous, size int64, pageSize int, pages []uint32) (first uint32
 	if pageSize <= 0 || size <= previous {
 		return 0, 0, false
 	}
-	have := pageSet{}
-	for _, page := range pages {
-		have.add(page)
-	}
 	from := previous/int64(pageSize) + 1
 	through := size / int64(pageSize)
+	// Index relative to the new tail: adding one page to a terabyte database
+	// must not allocate a bitmap for all pages that are already in the bucket.
+	have := pageSet{}
+	for _, page := range pages {
+		if int64(page) >= from && int64(page) <= through {
+			have.add(uint32(int64(page) - from + 1))
+		}
+	}
+	// SQLite never reads or writes its reserved lock-byte page. Growing past
+	// 1 GiB therefore legitimately leaves this page absent from dirty tracking.
+	// https://www.sqlite.org/fileformat.html#the_lock_byte_page
+	lockPage := int64(1<<30)/int64(pageSize) + 1
 	for page := from; page <= through; page++ {
-		if !have.has(uint32(page)) {
+		if page != lockPage && !have.has(uint32(page-from+1)) {
 			if missing == 0 {
 				first = uint32(page)
 			}
@@ -116,19 +123,4 @@ func growthGap(previous, size int64, pageSize int, pages []uint32) (first uint32
 		}
 	}
 	return first, missing, missing > 0
-}
-
-// errShortReplica is what a restore returns instead of letting SQLite call
-// the result malformed: the numbers that say which side is at fault.
-type errShortReplica struct {
-	Generation string
-	Size       int64
-	PageSize   int
-	First      uint32
-	Missing    int64
-}
-
-func (e *errShortReplica) Error() string {
-	return fmt.Sprintf("generation %s is short: %d of %d pages were never shipped (first %d), for a database of %d bytes",
-		e.Generation, e.Missing, e.Size/int64(e.PageSize), e.First, e.Size)
 }

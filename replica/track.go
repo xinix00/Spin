@@ -2,7 +2,7 @@ package replica
 
 import (
 	"encoding/binary"
-	"sort"
+	"slices"
 	"sync"
 
 	"github.com/ncruces/go-sqlite3/vfs"
@@ -23,7 +23,6 @@ type tracker struct {
 	dirty    map[uint32]struct{}
 	// pending holds byte ranges written before the page size was known.
 	pending [][2]int64
-	size    int64
 	clean   bool
 	// onUnclean runs under the lock when the first write after a sync
 	// arrives; it records the unclean state on storage before the write.
@@ -68,9 +67,6 @@ func (t *tracker) markLocked(offset, length int64) {
 		t.dirty[uint32(page+1)] = struct{}{}
 		t.log.note(uint32(page + 1))
 	}
-	if end := offset + length; end > t.size {
-		t.size = end
-	}
 }
 
 // write records a write; the first one after a sync reports unclean first.
@@ -103,13 +99,12 @@ func (t *tracker) uncleanLocked() error {
 	return nil
 }
 
-func (t *tracker) truncate(size int64) error {
+func (t *tracker) truncate() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if err := t.uncleanLocked(); err != nil {
 		return err
 	}
-	t.size = size
 	// A size-only change must be shipped too. Page 1 carries SQLite's size.
 	t.dirty[1] = struct{}{}
 	t.log.note(1)
@@ -125,7 +120,6 @@ func (t *tracker) rewriteLog(generation string, seq int64) error {
 	for page := range t.dirty {
 		pages = append(pages, page)
 	}
-	sort.Slice(pages, func(i, j int) bool { return pages[i] < pages[j] })
 	if len(t.pending) > 0 {
 		// Writes the tracker could not place yet stay unplaceable.
 		if err := t.log.rewrite(generation, seq, pages); err != nil {
@@ -159,30 +153,7 @@ func (t *tracker) resetToLog() bool {
 	return true
 }
 
-// markAll marks every page of a database of the given size: the start of a
-// generation, or a database whose replica cannot be trusted.
-func (t *tracker) markAll(size int64) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.pageSize == 0 {
-		return
-	}
-	t.size = size
-	pages := (size + int64(t.pageSize) - 1) / int64(t.pageSize)
-	for page := int64(1); page <= pages; page++ {
-		t.dirty[uint32(page)] = struct{}{}
-	}
-	t.clean = false
-}
-
-// dirtyCount and isDirty let the source guard tell a legitimate rewrite from
-// a write that went around this VFS (guard.go).
-func (t *tracker) dirtyCount() int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return len(t.dirty)
-}
-
+// isDirty lets the source guard ignore pages rewritten through this VFS.
 func (t *tracker) isDirty(page uint32) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -190,27 +161,17 @@ func (t *tracker) isDirty(page uint32) bool {
 	return ok
 }
 
-// take removes up to limit dirty pages, lowest first.
-func (t *tracker) take(limit int) []uint32 {
+// take removes the dirty set, lowest pages first. The old map is released so
+// a past burst of writes does not retain its capacity forever.
+func (t *tracker) take() []uint32 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	pages := make([]uint32, 0, min(limit, len(t.dirty)))
+	pages := make([]uint32, 0, len(t.dirty))
 	for page := range t.dirty {
 		pages = append(pages, page)
 	}
-	sort.Slice(pages, func(i, j int) bool { return pages[i] < pages[j] })
-	if len(pages) > limit {
-		pages = pages[:limit]
-	}
-	if len(pages) == len(t.dirty) {
-		// A Go map never gives its memory back, and a whole-database copy
-		// put every page of the database in it: millions of entries.
-		t.dirty = map[uint32]struct{}{}
-		return pages
-	}
-	for _, page := range pages {
-		delete(t.dirty, page)
-	}
+	slices.Sort(pages)
+	t.dirty = map[uint32]struct{}{}
 	return pages
 }
 
@@ -342,7 +303,7 @@ func (f *trackedFile) WriteAt(data []byte, offset int64) (int, error) {
 }
 
 func (f *trackedFile) Truncate(size int64) error {
-	if err := f.tracker.truncate(size); err != nil {
+	if err := f.tracker.truncate(); err != nil {
 		return err
 	}
 	return f.File.Truncate(size)

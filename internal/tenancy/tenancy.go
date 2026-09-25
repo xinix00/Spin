@@ -73,11 +73,21 @@ type Tenants struct {
 	logger  *slog.Logger
 	mu      sync.Mutex
 	tenants map[string]*Tenant
-	opening map[string]chan struct{}
+	opening map[string]*tenantOpening
 	// stages says where an opening Spin is, for the page that waits on it.
 	stages map[string]openingStage
 	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+// A lease belongs to one opening attempt, including the tenant it publishes.
+// Cancellation and publication share Tenants.mu so a lost lease cannot publish
+// a tenant, or remove the tenant of a later attempt.
+type tenantOpening struct {
+	done   chan struct{}
+	ctx    context.Context
+	cancel context.CancelCauseFunc
+	tenant *Tenant
 }
 
 // openingStage is where the open of a Spin stands; a page shows it.
@@ -104,7 +114,7 @@ func New(config Config) *Tenants {
 		config.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Tenants{config: config, logger: config.Logger, tenants: map[string]*Tenant{}, opening: map[string]chan struct{}{}, stages: map[string]openingStage{}, ctx: ctx, cancel: cancel}
+	return &Tenants{config: config, logger: config.Logger, tenants: map[string]*Tenant{}, opening: map[string]*tenantOpening{}, stages: map[string]openingStage{}, ctx: ctx, cancel: cancel}
 }
 
 // NormalizeHost turns a Host header into a tenant name: lower case, no
@@ -310,22 +320,49 @@ func (t *Tenants) Discover(ctx context.Context) ([]string, error) {
 func (t *Tenants) startOpen(domain string) chan struct{} {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if wait, opening := t.opening[domain]; opening {
-		return wait
+	if opening := t.opening[domain]; opening != nil {
+		return opening.done
 	}
-	wait := make(chan struct{})
-	t.opening[domain] = wait
-	go t.runOpen(domain, wait)
-	return wait
+	if err := t.ctx.Err(); err != nil {
+		t.stages[domain] = openingStage{Stage: "closed", Message: err.Error(), Error: err.Error()}
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	if t.tenants[domain] != nil {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	ctx, cancel := context.WithCancelCause(t.ctx)
+	opening := &tenantOpening{done: make(chan struct{}), ctx: ctx, cancel: cancel}
+	t.opening[domain] = opening
+	go t.runOpen(domain, opening)
+	return opening.done
 }
 
-func (t *Tenants) runOpen(domain string, wait chan struct{}) {
-	tenant, err := t.open(domain)
+func (t *Tenants) runOpen(domain string, opening *tenantOpening) {
+	tenant, err := t.open(domain, opening)
 	t.mu.Lock()
+	if cause := context.Cause(opening.ctx); cause != nil {
+		err = errors.Join(err, cause)
+	}
 	if err == nil {
+		opening.tenant = tenant
 		t.tenants[domain] = tenant
 		delete(t.stages, domain)
-	} else {
+	}
+	t.mu.Unlock()
+	if err != nil {
+		opening.cancel(err)
+		if tenant != nil {
+			_ = closeTenant(tenant)
+		}
+	}
+	// Keep this attempt registered until its files and lease are closed, so
+	// a retry cannot overlap cleanup of the failed attempt.
+	t.mu.Lock()
+	if err != nil {
 		stage := t.stages[domain]
 		stage.Error = err.Error()
 		stage.Message = "Openen mislukt: " + err.Error()
@@ -333,7 +370,7 @@ func (t *Tenants) runOpen(domain string, wait chan struct{}) {
 	}
 	delete(t.opening, domain)
 	t.mu.Unlock()
-	close(wait)
+	close(opening.done)
 }
 
 // Open returns the tenant of a domain, opening it once; concurrent callers
@@ -394,15 +431,15 @@ func (t *Tenants) databasePath(domain string) string {
 // open takes the database's lease first: SQLite and the replica both assume
 // one writer, and a rolling update runs the old and the new slot side by side
 // on the same volume. The new one waits until the old one lets go.
-func (t *Tenants) open(domain string) (*Tenant, error) {
+func (t *Tenants) open(domain string, opening *tenantOpening) (*Tenant, error) {
 	path := t.databasePath(domain)
 	logger := t.logger.With("tenant", domain)
 	t.setStage(domain, "lease", "Wachten tot een vorig proces deze database loslaat")
-	lease, err := replica.HoldLease(t.ctx, vfs.Find(t.config.StorageVFS), path, logger, func(err error) { t.leaseLost(domain, err) })
+	lease, err := replica.HoldLease(opening.ctx, vfs.Find(t.config.StorageVFS), path, logger, func(err error) { t.leaseLost(domain, opening, err) })
 	if err != nil {
 		return nil, fmt.Errorf("database lease: %w", err)
 	}
-	tenant, err := t.openHeld(domain, path, logger)
+	tenant, err := t.openHeld(opening.ctx, domain, path, logger)
 	if err != nil {
 		lease.Release()
 		return nil, err
@@ -414,22 +451,33 @@ func (t *Tenants) open(domain string) (*Tenant, error) {
 // leaseLost closes a tenant whose database another process has taken: it must
 // not write one more page. The next request opens it again, which waits for
 // the lease like any start.
-func (t *Tenants) leaseLost(domain string, err error) {
+func (t *Tenants) leaseLost(domain string, opening *tenantOpening, err error) {
 	t.logger.Error("tenant closed: another process holds its database", "tenant", domain, "error", err)
 	t.mu.Lock()
-	tenant := t.tenants[domain]
-	delete(t.tenants, domain)
+	opening.cancel(err)
+	tenant := opening.tenant
+	if tenant != nil && t.tenants[domain] == tenant {
+		delete(t.tenants, domain)
+		stage := t.stages[domain]
+		stage.Error = err.Error()
+		stage.Message = "Openen mislukt: " + err.Error()
+		t.stages[domain] = stage
+	}
 	t.mu.Unlock()
 	if tenant == nil {
 		return
 	}
+	// Release waits for this renewal callback, so do not call it here.
 	_ = tenant.Database.Close()
 	if tenant.Replica != nil {
 		tenant.Replica.Close()
 	}
 }
 
-func (t *Tenants) openHeld(domain, path string, logger *slog.Logger) (*Tenant, error) {
+func (t *Tenants) openHeld(ctx context.Context, domain, path string, logger *slog.Logger) (*Tenant, error) {
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
 	vfsName, fsPath := t.config.StorageVFS, ""
 	if vfsName == "" {
 		fsPath = path
@@ -450,11 +498,17 @@ func (t *Tenants) openHeld(domain, path string, logger *slog.Logger) (*Tenant, e
 		}
 		t.setStage(domain, "restore", "Database uit de replica halen als ze hier nog niet staat")
 		rep.Progress = func(message string) { t.setStage(domain, "restore", message) }
-		if err := rep.Prepare(t.ctx); err != nil {
+		if err := rep.Prepare(ctx); err != nil {
 			rep.Close()
 			return nil, fmt.Errorf("replica: %w", err)
 		}
 		vfsName = rep.VFSName()
+	}
+	if err := context.Cause(ctx); err != nil {
+		if rep != nil {
+			rep.Close()
+		}
+		return nil, err
 	}
 	t.setStage(domain, "database", "Database openen")
 	database, err := persistence.Open(path, persistence.OpenOptions{VFS: vfsName, FSPath: fsPath})
@@ -474,15 +528,24 @@ func (t *Tenants) openHeld(domain, path string, logger *slog.Logger) (*Tenant, e
 		}
 		return nil, err
 	}
+	if err := context.Cause(ctx); err != nil {
+		return fail(err)
+	}
 	t.setStage(domain, "store", "State laden en geheimen ontsleutelen")
 	st, err := store.OpenWithBackend("state", store.OpenOptions{MasterKey: t.config.MasterKey, MasterKeyFile: t.config.MasterKeyFile}, database)
 	if err != nil {
 		return fail(fmt.Errorf("open store: %w", err))
 	}
+	if err := context.Cause(ctx); err != nil {
+		return fail(err)
+	}
 	attachments := database.Files("attachment:", "job-attachment", 15<<20)
 	token, err := st.EnsureWorkerToken(t.config.WorkerTokenSeed)
 	if err != nil {
 		return fail(fmt.Errorf("worker token: %w", err))
+	}
+	if err := context.Cause(ctx); err != nil {
+		return fail(err)
 	}
 	var engine capsule.Engine
 	var broker *worker.Broker
@@ -498,6 +561,9 @@ func (t *Tenants) openHeld(domain, path string, logger *slog.Logger) (*Tenant, e
 	var options spinserver.ServerOptions
 	if t.config.Options != nil {
 		options = t.config.Options(domain)
+	}
+	if err := context.Cause(ctx); err != nil {
+		return fail(err)
 	}
 	options.WorkerToken = token
 	options.RunnerBroker = broker
@@ -520,30 +586,44 @@ func (t *Tenants) openHeld(domain, path string, logger *slog.Logger) (*Tenant, e
 		if reason := rep.SnapshotReason(); reason != "" {
 			logger.Info("replica: a new generation is copied in the background; the Spin serves meanwhile", "reason", reason)
 		}
-		rep.Start(t.ctx)
+		rep.Start(ctx)
 	}
 	logger.Info("tenant open", "database", path, "replicated", rep != nil)
 	return tenant, nil
 }
 
-// Close stops every tenant's replica and closes its database.
+// Close cancels pending openings and waits for their cleanup, stops every
+// tenant's replica, and closes its database and lease.
 func (t *Tenants) Close() error {
 	t.cancel()
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	var openings []chan struct{}
+	for _, opening := range t.opening {
+		openings = append(openings, opening.done)
+	}
+	tenants := t.tenants
+	t.tenants = map[string]*Tenant{}
+	t.mu.Unlock()
 	var errs []error
-	for domain, tenant := range t.tenants {
-		// The database closes through the replica's VFS: database first.
-		if err := tenant.Database.Close(); err != nil {
+	for domain, tenant := range tenants {
+		if err := closeTenant(tenant); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", domain, err))
 		}
-		if tenant.Replica != nil {
-			tenant.Replica.Close()
-		}
-		if tenant.Lease != nil {
-			tenant.Lease.Release()
-		}
-		delete(t.tenants, domain)
+	}
+	for _, done := range openings {
+		<-done
 	}
 	return errors.Join(errs...)
+}
+
+func closeTenant(tenant *Tenant) error {
+	// The database closes through the replica's VFS: database first.
+	err := tenant.Database.Close()
+	if tenant.Replica != nil {
+		tenant.Replica.Close()
+	}
+	if tenant.Lease != nil {
+		tenant.Lease.Release()
+	}
+	return err
 }

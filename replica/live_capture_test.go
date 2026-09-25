@@ -45,7 +45,7 @@ func TestLiveCaptureSizeChangesSurviveCompaction(t *testing.T) {
 			f.rep.Attach(f.db)
 			f.check(t, generation, time.Time{}, want)
 			f.clock.Add(3 * time.Hour)
-			if err := f.rep.compact(context.Background(), generation); err != nil {
+			if err := f.rep.compact(context.Background(), generation, f.clock.Now()); err != nil {
 				t.Fatalf("compact a live %s: %v", change, err)
 			}
 			f.check(t, generation, time.Time{}, want)
@@ -184,7 +184,7 @@ func TestCompactionIncludesFirstChildWindow(t *testing.T) {
 	f.sync(t)
 	generation := f.rep.getMarker().Generation
 	f.clock.Add(3 * time.Hour)
-	if err := f.rep.compact(context.Background(), generation); err != nil {
+	if err := f.rep.compact(context.Background(), generation, f.clock.Now()); err != nil {
 		t.Fatal(err)
 	}
 	l, err := f.rep.loadLayout(context.Background(), generation)

@@ -43,7 +43,6 @@ type osStorage struct{}
 
 type osFile struct{ *os.File }
 
-func (f osFile) Sync() error { return f.File.Sync() }
 func (f osFile) Size() (int64, error) {
 	info, err := f.File.Stat()
 	if err != nil {
@@ -96,9 +95,7 @@ func syncDirectory(name string) error {
 // OSStorage accesses ordinary filesystem files.
 func OSStorage() Storage { return osStorage{} }
 
-// VFSStorage accesses files through a VFS with synchronous create/delete semantics.
-func VFSStorage(inner vfs.VFS) Storage { return vfsStorage{inner: inner} }
-
+// vfsStorage accesses files through a VFS with synchronous create/delete semantics.
 type vfsStorage struct{ inner vfs.VFS }
 
 type vfsFile struct{ vfs.File }

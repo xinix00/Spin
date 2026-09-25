@@ -126,7 +126,7 @@ func TestNormalizeHost(t *testing.T) {
 func TestSlowOpenAnswersWithItsStage(t *testing.T) {
 	dir := t.TempDir()
 	release := make(chan struct{})
-	var once sync.Once
+	var once, releaseOnce sync.Once
 	tenants := New(Config{
 		DataDir: dir,
 		Options: func(string) spinserver.ServerOptions { return spinserver.ServerOptions{DisableAuthentication: true} },
@@ -136,7 +136,10 @@ func TestSlowOpenAnswersWithItsStage(t *testing.T) {
 			return worker.NewRemoteEngine(broker, database), broker, nil
 		},
 	})
-	defer tenants.Close()
+	defer func() {
+		releaseOnce.Do(func() { close(release) })
+		tenants.Close()
+	}()
 	get := func(path string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodGet, "http://slow.test"+path, nil)
 		request.Host = "slow.test"
@@ -158,7 +161,7 @@ func TestSlowOpenAnswersWithItsStage(t *testing.T) {
 	if page.Code != http.StatusServiceUnavailable || !strings.HasPrefix(page.Header().Get("Content-Type"), "text/html") || !strings.Contains(page.Body.String(), openingStatusPath) || !strings.Contains(page.Body.String(), "<html") {
 		t.Fatalf("splash page = %d %s %s", page.Code, page.Header().Get("Content-Type"), page.Body.String())
 	}
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if response := get("/healthz"); response.Code == http.StatusOK {

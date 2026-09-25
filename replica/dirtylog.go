@@ -33,6 +33,7 @@ const (
 	dirtyLogFixedHeader = len(dirtyLogMagic) + 16 + 2
 	dirtyLogRecord      = 8
 	dirtyLogSum         = 8
+	dirtyLogChunkBytes  = 64 << 10
 )
 
 // The header ends in a checksum over the rest of it, so a damaged
@@ -50,16 +51,13 @@ type dirtyLog struct {
 	files Storage
 	paths [2]string
 
-	mu         sync.Mutex
-	ready      bool
-	current    int
-	file       File
-	size       int64
-	seq        int64
-	generation string
-	noted      map[uint32]struct{}
-	pending    []uint32
-	broken     bool
+	mu      sync.Mutex
+	current int
+	file    File
+	size    int64
+	noted   map[uint32]struct{}
+	pending []uint32
+	broken  bool
 }
 
 func newDirtyLog(files Storage, path string) *dirtyLog {
@@ -89,15 +87,25 @@ func (l *dirtyLog) markBroken() {
 	}
 }
 
-func encodeDirtyRecords(pages []uint32) []byte {
-	data := make([]byte, 0, len(pages)*dirtyLogRecord)
-	var record [dirtyLogRecord]byte
-	for _, page := range pages {
-		binary.BigEndian.PutUint32(record[:4], page)
-		binary.BigEndian.PutUint32(record[4:], ^page)
-		data = append(data, record[:]...)
+// Records can name millions of pages; only their numbers need to be in
+// memory together, not a second, encoded copy of the entire log.
+func writeDirtyRecords(file File, pages []uint32, offset int64) error {
+	data := make([]byte, min(len(pages), dirtyLogChunkBytes/dirtyLogRecord)*dirtyLogRecord)
+	for len(pages) > 0 {
+		count := min(len(pages), len(data)/dirtyLogRecord)
+		chunk := data[:count*dirtyLogRecord]
+		for i, page := range pages[:count] {
+			record := chunk[i*dirtyLogRecord:]
+			binary.BigEndian.PutUint32(record[:4], page)
+			binary.BigEndian.PutUint32(record[4:], ^page)
+		}
+		if err := writeAt(file, chunk, offset); err != nil {
+			return err
+		}
+		offset += int64(len(chunk))
+		pages = pages[count:]
 	}
-	return data
+	return nil
 }
 
 // flush appends what was noted since the last flush and syncs the log.
@@ -108,23 +116,18 @@ func (l *dirtyLog) flush() error {
 	if len(l.pending) == 0 {
 		return nil
 	}
-	if !l.ready || l.file == nil {
+	if l.file == nil {
 		// A host that skipped Prepare: the log starts at sequence zero,
 		// which no marker continues from, and stays consistent.
-		pending := append([]uint32(nil), l.pending...)
-		if err := l.rewriteLocked("", 0, nil); err != nil {
-			return err
-		}
-		l.pending = pending
+		return l.rewriteLocked("", 0, l.pending)
 	}
-	data := encodeDirtyRecords(l.pending)
-	if err := writeAt(l.file, data, l.size); err != nil {
+	if err := writeDirtyRecords(l.file, l.pending, l.size); err != nil {
 		return fmt.Errorf("dirty log: %w", err)
 	}
 	if err := l.file.Sync(); err != nil {
 		return fmt.Errorf("dirty log: %w", err)
 	}
-	l.size += int64(len(data))
+	l.size += int64(len(l.pending)) * dirtyLogRecord
 	l.pending = l.pending[:0]
 	return nil
 }
@@ -143,14 +146,13 @@ func (l *dirtyLog) rewriteLocked(generation string, seq int64, pages []uint32) e
 		return errors.New("generation id is too long for the dirty log")
 	}
 	next := 1 - l.current
-	if !l.ready {
+	if l.file == nil {
 		next = 0
 	}
 	file, err := l.files.Open(l.paths[next], true)
 	if err != nil {
 		return err
 	}
-	records := encodeDirtyRecords(pages)
 	header := make([]byte, dirtyLogHeaderSize(generation))
 	copy(header, dirtyLogMagic)
 	binary.BigEndian.PutUint64(header[len(dirtyLogMagic):], uint64(seq))
@@ -158,7 +160,7 @@ func (l *dirtyLog) rewriteLocked(generation string, seq int64, pages []uint32) e
 	binary.BigEndian.PutUint16(header[len(dirtyLogMagic)+16:], uint16(len(generation)))
 	copy(header[dirtyLogFixedHeader:], generation)
 	copy(header[len(header)-dirtyLogSum:], dirtyLogChecksum(header))
-	size := int64(len(header) + len(records))
+	size := int64(len(header)) + int64(len(pages))*dirtyLogRecord
 	fail := func(err error) error {
 		file.Close()
 		return fmt.Errorf("dirty log: %w", err)
@@ -168,29 +170,45 @@ func (l *dirtyLog) rewriteLocked(generation string, seq int64, pages []uint32) e
 	if err := file.Truncate(0); err != nil {
 		return fail(err)
 	}
-	if len(records) > 0 {
-		if err := writeAt(file, records, int64(len(header))); err != nil {
+	if len(pages) > 0 {
+		if err := writeDirtyRecords(file, pages, int64(len(header))); err != nil {
 			return fail(err)
 		}
 		if err := file.Sync(); err != nil {
 			return fail(err)
 		}
 	}
-	if err := writeAt(file, header, 0); err != nil {
-		return fail(err)
-	}
-	if err := file.Sync(); err != nil {
-		return fail(err)
-	}
+	// Once a header write is attempted, it may be readable even when the
+	// write or sync reports failure. All later appends must use this file:
+	// otherwise a restart could choose its newer sequence and miss pages
+	// appended to the old log after that failure.
 	if l.file != nil {
 		l.file.Close()
 	}
-	l.file, l.current, l.size, l.seq, l.generation, l.ready, l.broken = file, next, size, seq, generation, true, false
+	l.file, l.current, l.size, l.broken = file, next, size, false
 	l.noted = make(map[uint32]struct{}, len(pages))
 	for _, page := range pages {
-		l.noted[page] = struct{}{}
+		if page == 0 {
+			l.broken = true
+		} else {
+			l.noted[page] = struct{}{}
+		}
 	}
 	l.pending = l.pending[:0]
+	failActive := func(err error) error {
+		// The next database sync must also persist the uncertainty. This
+		// includes unplaceable writes whose caller could not append its
+		// broken-log record after a failed rewrite.
+		l.broken = true
+		l.pending = append(l.pending, 0)
+		return fmt.Errorf("dirty log: %w", err)
+	}
+	if err := writeAt(file, header, 0); err != nil {
+		return failActive(err)
+	}
+	if err := file.Sync(); err != nil {
+		return failActive(err)
+	}
 	return nil
 }
 
@@ -201,7 +219,6 @@ func (l *dirtyLog) close() {
 		l.file.Close()
 		l.file = nil
 	}
-	l.ready = false
 }
 
 // read names the pages the log holds for a marker: the file of that
@@ -255,40 +272,68 @@ func (l *dirtyLog) readFile(path string) (string, int64, []uint32, error) {
 	if size < int64(dirtyLogFixedHeader) || size > 1<<30 {
 		return "", 0, nil, errors.New("dirty log has no complete header")
 	}
-	data := make([]byte, size)
-	if _, err := file.ReadAt(data, 0); err != nil && !errors.Is(err, io.EOF) {
+	var fixed [dirtyLogFixedHeader]byte
+	if err := readDirtyLogAt(file, fixed[:], 0); err != nil {
 		return "", 0, nil, err
 	}
-	if string(data[:len(dirtyLogMagic)]) != dirtyLogMagic {
+	if string(fixed[:len(dirtyLogMagic)]) != dirtyLogMagic {
 		return "", 0, nil, errors.New("not a dirty log")
 	}
-	seq := int64(binary.BigEndian.Uint64(data[len(dirtyLogMagic):]))
-	if seq < 0 || binary.BigEndian.Uint64(data[len(dirtyLogMagic)+8:]) != ^uint64(seq) {
+	seq := int64(binary.BigEndian.Uint64(fixed[len(dirtyLogMagic):]))
+	if seq < 0 || binary.BigEndian.Uint64(fixed[len(dirtyLogMagic)+8:]) != ^uint64(seq) {
 		return "", 0, nil, errors.New("dirty log header is damaged")
 	}
-	generationLength := int(binary.BigEndian.Uint16(data[len(dirtyLogMagic)+16:]))
+	generationLength := int(binary.BigEndian.Uint16(fixed[len(dirtyLogMagic)+16:]))
 	headerSize := dirtyLogFixedHeader + generationLength + dirtyLogSum
-	if len(data) < headerSize {
+	if size < int64(headerSize) {
 		return "", 0, nil, errors.New("dirty log has no complete header")
 	}
-	header := data[:headerSize]
+	header := make([]byte, headerSize)
+	copy(header, fixed[:])
+	if err := readDirtyLogAt(file, header[dirtyLogFixedHeader:], int64(dirtyLogFixedHeader)); err != nil {
+		return "", 0, nil, err
+	}
 	if !bytes.Equal(header[headerSize-dirtyLogSum:], dirtyLogChecksum(header)) {
 		return "", 0, nil, errors.New("dirty log header is damaged")
 	}
 	generation := string(header[dirtyLogFixedHeader : dirtyLogFixedHeader+generationLength])
-	body := data[headerSize:]
 	// A crash mid-append leaves a torn last record.
-	body = body[:len(body)/dirtyLogRecord*dirtyLogRecord]
-	pages := make([]uint32, 0, len(body)/dirtyLogRecord)
-	for offset := 0; offset < len(body); offset += dirtyLogRecord {
-		page := binary.BigEndian.Uint32(body[offset:])
-		if binary.BigEndian.Uint32(body[offset+4:]) != ^page {
-			return "", 0, nil, errors.New("dirty log record is damaged")
+	pages := make([]uint32, (size-int64(headerSize))/dirtyLogRecord)
+	data := make([]byte, min(len(pages), dirtyLogChunkBytes/dirtyLogRecord)*dirtyLogRecord)
+	for first := 0; first < len(pages); {
+		count := min(len(pages)-first, len(data)/dirtyLogRecord)
+		chunk := data[:count*dirtyLogRecord]
+		if err := readDirtyLogAt(file, chunk, int64(headerSize)+int64(first)*dirtyLogRecord); err != nil {
+			return "", 0, nil, err
 		}
-		if page == 0 {
-			return "", 0, nil, errors.New("dirty log names a write it could not place")
+		for i := 0; i < count; i++ {
+			record := chunk[i*dirtyLogRecord:]
+			page := binary.BigEndian.Uint32(record[:4])
+			if binary.BigEndian.Uint32(record[4:]) != ^page {
+				return "", 0, nil, errors.New("dirty log record is damaged")
+			}
+			if page == 0 {
+				return "", 0, nil, errors.New("dirty log names a write it could not place")
+			}
+			pages[first+i] = page
 		}
-		pages = append(pages, page)
+		first += count
 	}
 	return generation, seq, pages, nil
+}
+
+func readDirtyLogAt(file File, data []byte, offset int64) error {
+	for len(data) > 0 {
+		chunk := data[:min(len(data), dirtyLogChunkBytes)]
+		n, err := file.ReadAt(chunk, offset)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		if n != len(chunk) {
+			return io.ErrUnexpectedEOF
+		}
+		offset += int64(len(chunk))
+		data = data[len(chunk):]
+	}
+	return nil
 }

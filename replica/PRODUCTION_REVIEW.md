@@ -4,6 +4,10 @@ The review started from v1.29.34, including the source-guard race reproduced
 against v1.29.33. These are implementation tests on SQLite and local storage;
 they do not certify HopOS's volume durability or the deployment topology.
 
+A subsequent [max review and scale test](SCALE_REVIEW.md), starting from
+v1.29.35, found and corrected additional failure paths and removed unnecessary
+database-sized allocations. Its results supplement this earlier review.
+
 ## Reproduced and corrected
 
 | Failure | Correction and regression coverage |
@@ -73,7 +77,10 @@ observed failing before the marker/tracker fix and passing afterwards.
 - **Copies still delay incremental uploads.** A generation copy finishes and
   uploads before the next increment. The final reconciliation can pause local
   writers in proportion to the dirty set; segment-sized page buffers bound
-  memory, not that pause. Page-number metadata still scales with database size.
+  page-data buffers, not that pause. The later scale review avoids collecting
+  every database page number in memory at once; actual dirty-page metadata still
+  grows with the write set, and restore coverage and part metadata grow with
+  database size.
 - **Corrupt leases fail closed.** Investigate the storage problem and establish
   that there is no live writer before removing a damaged lease to restart.
 - **Existing bad backups are not retroactively certified.** These changes

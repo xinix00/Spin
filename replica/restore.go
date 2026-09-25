@@ -89,13 +89,14 @@ func (r *Replica) restoreInto(ctx context.Context, generation string, at time.Ti
 	// repair. A page that was shipped and later truncated away is fine: the
 	// source has the same zero there (coverage.go).
 	if first, missing, ok := shipped.shortfall(result.Size, pageSize); !ok {
-		return marker{}, &errShortReplica{Generation: generation, Size: result.Size, PageSize: pageSize, First: first, Missing: missing}
+		return marker{}, fmt.Errorf("%w: generation %s: %d of %d pages were never shipped (first %d), for a database of %d bytes",
+			errGenerationShort, generation, missing, result.Size/int64(pageSize), first, result.Size)
 	}
 	// Preserve the compaction frontier when continuing an idle generation.
 	for _, windows := range l.windows {
 		for _, w := range windows {
-			if w.end.After(result.SealedAt) {
-				result.SealedAt = w.end
+			if w.End.After(result.SealedAt) {
+				result.SealedAt = w.End
 			}
 		}
 	}
@@ -120,6 +121,16 @@ func (r *Replica) restoreInto(ctx context.Context, generation string, at time.Ti
 	intent := path + ".replica-restoring"
 	if err := r.writeLocal(intent, []byte(generation)); err != nil {
 		return marker{}, err
+	}
+	// A hot journal next to the destination belongs to the file being
+	// replaced; left there, SQLite rolls it back into the restored one.
+	journal := path + "-journal"
+	if stale, err := r.files.Exists(journal); err != nil {
+		return marker{}, err
+	} else if stale {
+		if err := r.files.Remove(journal); err != nil {
+			return marker{}, fmt.Errorf("remove the stale journal: %w", err)
+		}
 	}
 	destination, err := r.files.Open(path, true)
 	if err != nil {
@@ -171,7 +182,10 @@ func (r *Replica) prefetchParts(ctx context.Context, refs []partRef, ahead int) 
 		err error
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	results := make([]chan fetched, len(refs))
+	// Reuse a bounded ring: one channel per manifest part can itself consume
+	// hundreds of megabytes on a large archive before a byte is downloaded.
+	ahead = max(1, min(ahead, len(refs)))
+	results := make([]chan fetched, ahead)
 	for index := range results {
 		results[index] = make(chan fetched, 1)
 	}
@@ -185,17 +199,17 @@ func (r *Replica) prefetchParts(ctx context.Context, refs []partRef, ahead int) 
 			}
 			go func() {
 				seg, err := r.readPart(ctx, ref)
-				results[index] <- fetched{seg, err}
+				results[index%ahead] <- fetched{seg, err}
 			}()
 		}
 	}()
 	position := 0
 	next = func() (segment, error) {
-		if position >= len(results) {
+		if position >= len(refs) {
 			return segment{}, errors.New("restore asked for more parts than the plan has")
 		}
 		select {
-		case got := <-results[position]:
+		case got := <-results[position%ahead]:
 			position++
 			<-slots
 			return got.seg, got.err
