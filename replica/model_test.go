@@ -24,7 +24,7 @@ import (
 // fake clock. Random steps write, delete and revert values (a few bytes to
 // a mebibyte, so writes span many pages and the file grows and shrinks),
 // sync, jump the clock so windows merge and expire, restart the process
-// cleanly and uncleanly, remove or corrupt the page index, make the bucket
+// cleanly and uncleanly, remove or corrupt the dirty log, make the bucket
 // and the local storage fail, restore into a fresh directory and fetch
 // every advertised restore point. The invariants each check protects are
 // written next to the check.
@@ -174,9 +174,9 @@ type modelHarness struct {
 	committed  []modelState
 	current    map[string][]byte
 	candidates []map[string][]byte
-	// indexStale is set while an injected fault may have left the page
-	// index on disk behind the bucket; pending-page assertions then relax.
-	indexStale    bool
+	// logStale permits a fresh generation after an injected rewrite failure
+	// only when the actual log cannot continue the committed generation.
+	logStale      bool
 	generations   map[string]bool
 	pointsFetched int
 }
@@ -264,8 +264,17 @@ func (h *modelHarness) close() {
 }
 
 // reopen opens the same path again and checks what Prepare made of the
-// marker and the page index it found.
+// marker and the dirty log it found.
 func (h *modelHarness) reopen() {
+	// A committed manifest whose local marker/log update failed can leave
+	// a conservative log behind even after an idle sync marks the file clean.
+	// Record that log before Prepare rewrites it; replaying exactly those
+	// pages is safe and is part of the documented recovery protocol.
+	logged, logErr := newDirtyLog(OSStorage(), h.path).read(h.closedMarker.Generation, h.closedMarker.Seq)
+	replay := make(map[uint32]bool, len(logged))
+	for _, page := range logged {
+		replay[page] = true
+	}
 	h.open()
 	before, after := h.closedStatus, h.rep.Status()
 	if before.Generation == "" {
@@ -279,25 +288,35 @@ func (h *modelHarness) reopen() {
 		}
 		return
 	}
-	// A failed index write may have left no usable index: then a new
+	// A failed log rewrite may have left no usable log: then a new
 	// generation is the right answer, and nothing is pending yet.
-	if h.indexStale && after.Generation == "" && after.PendingPages == 0 {
-		h.stats["reopen-without-index"]++
+	if h.logStale && after.Generation == "" && after.PendingPages == 0 {
+		if logErr == nil {
+			h.fatalf("reopen abandoned a generation with a usable dirty log")
+		}
+		h.stats["reopen-without-log"]++
 		return
 	}
 	// A restart continues the generation: a full snapshot after every
-	// restart would be the failure this index exists to prevent.
+	// restart would be the failure this log exists to prevent.
 	if after.Generation != before.Generation {
 		h.fatalf("reopen did not continue generation %q: %+v (marker %+v)", before.Generation, after, h.closedMarker)
 	}
-	// Only what changed since the last commit is pending: page 1 carries
-	// SQLite's change counter, so any write transaction shows up, and a
-	// database that did not change ships nothing.
-	if h.writes > 0 && after.PendingPages == 0 && !h.indexStale {
+	// Writes must be pending. With no new writes, only pages named by the
+	// persisted dirty log may be replayed; an ordinary clean log names none.
+	if h.writes > 0 && after.PendingPages == 0 {
 		h.fatalf("%d write transactions since the last commit but nothing pending after reopen: %+v", h.writes, after)
 	}
 	if h.writes == 0 && after.PendingPages != 0 {
-		h.fatalf("nothing changed since the last commit but %d pages pending after reopen (marker %+v)", after.PendingPages, h.closedMarker)
+		if logErr != nil || after.PendingPages != len(replay) {
+			h.fatalf("without new writes reopen has %d pending pages, dirty log names %d (%v)", after.PendingPages, len(replay), logErr)
+		}
+		for page := range replay {
+			if !h.rep.tracker.isDirty(page) {
+				h.fatalf("reopen did not replay logged page %d", page)
+			}
+		}
+		h.stats["conservative-log-replay"]++
 	}
 }
 
@@ -506,7 +525,7 @@ func (h *modelHarness) sync(label string) (published bool, err error) {
 	}
 	if acknowledged {
 		h.writes = 0
-		h.indexStale = false
+		h.logStale = false
 	}
 	if generation := h.rep.Status().Generation; generation != "" {
 		h.generations[generation] = true
@@ -622,9 +641,15 @@ func (h *modelHarness) syncWithLocalFault() {
 		}
 	}
 	h.rep.files = fault
+	h.rep.tracker.log.mu.Lock()
+	h.rep.tracker.log.files = fault
+	h.rep.tracker.log.mu.Unlock()
 	label := "local fault " + kind
 	published, err := h.sync(label)
 	h.rep.files = OSStorage()
+	h.rep.tracker.log.mu.Lock()
+	h.rep.tracker.log.files = OSStorage()
+	h.rep.tracker.log.mu.Unlock()
 	if !fired {
 		if err != nil {
 			h.fatalf("%s: the fault never fired but the sync failed: %v", label, err)
@@ -633,8 +658,14 @@ func (h *modelHarness) syncWithLocalFault() {
 	}
 	h.stats["local-fault-fired"]++
 	switch kind {
-	case "index-open":
-		h.indexStale = true
+	case "dirty-log-open":
+		// The commit is already durable. A failed log rewrite is allowed
+		// to keep the older, conservative log and report success; recovery
+		// and every-point restore checks still have to prove its contents.
+		// After a generation change the old log has a different lineage;
+		// an unclean restart may need a fresh snapshot in that case.
+		h.logStale = true
+		h.stats["dirty-log-rewrite-failure"]++
 	default:
 		if err == nil {
 			h.fatalf("%s: the fault fired but the sync returned nil", label)
@@ -650,15 +681,12 @@ func (h *modelHarness) uncleanRestart() {
 	h.reopen()
 }
 
-// cleanRestart: a sync, then the stop; the reopen must continue with
-// nothing pending.
+// cleanRestart: a sync, then the stop. reopen checks that only pages from a
+// conservative dirty log can remain pending after earlier local failures.
 func (h *modelHarness) cleanRestart() {
 	h.mustSync("clean restart")
 	h.close()
 	h.reopen()
-	if status := h.rep.Status(); status.PendingPages != 0 {
-		h.fatalf("clean restart left %d pages pending: %+v", status.PendingPages, status)
-	}
 }
 
 // damagedDirtyLogRestart: writes, an unclean stop, and a dirty log the

@@ -17,6 +17,7 @@ type capture struct {
 	parts    []spoolPart
 	path     string
 	size     int64
+	minSize  int64
 	revision uint64
 	pageSize int
 	snapshot bool
@@ -29,20 +30,15 @@ func (c capture) close(files Storage) {
 	}
 }
 
-// capture spools the pages to ship. Two ways, one result.
-//
-// Blocking, while a Spin opens: the whole dirty set under one read
-// transaction. Nothing else touches the database yet, so holding it costs
-// nothing, and the copy is consistent by construction.
-//
-// Live, while a Spin serves: the pages go in segments, each read under its
+// capture spools the pages to ship. The pages go in segments, each read under its
 // own short read transaction so queries run in between, and the processor
 // is given up after every segment (on HopOS nothing preempts a goroutine
 // that never blocks). Pages written while the copy ran are read again at
-// the end, under one transaction with the check that finds them, until a
-// round finds none: the segments together then equal the database as it
-// was in that last transaction. This is how a generation renews itself in
-// the background without the database going away for minutes.
+// the end, in bounded segments under one final transaction with the check
+// that finds them. That transaction is the capture boundary: writes after it
+// stay pending for the next sync. Waiting for a later empty round would never
+// finish on a busy database. The final transaction may pause writers while it
+// reconciles pages changed during the copy, but memory stays segment-bounded.
 //
 // Network I/O starts only after the spool is complete. The scratch name is
 // reused, so a process crash cannot leak a spool per attempt.
@@ -73,6 +69,7 @@ func (r *Replica) captureBegin(all bool) (capture, bool, error) {
 	c.pages = r.tracker.take(int(^uint(0) >> 1))
 	c.revision = r.tracker.version()
 	c.size = size
+	c.minSize = size
 	return c, all, nil
 }
 
@@ -83,9 +80,8 @@ type spoolWriter struct {
 }
 
 func (w *spoolWriter) write(c *capture, seg segment) error {
-	if seg.DBSize < c.size {
-		c.size = seg.DBSize
-	}
+	c.size = seg.DBSize
+	c.minSize = min(c.minSize, seg.DBSize)
 	data := encodeSegment(seg)
 	if err := writeAt(w.file, data, w.position); err != nil {
 		return err
@@ -139,6 +135,9 @@ func (r *Replica) captureLive(ctx context.Context, db Database, all bool) (captu
 		readSegment := func(pages []uint32) (segment, error) {
 			var seg segment
 			err := db.WithReadTransaction(ctx, func() error {
+				if r.tracker.currentPageSize() != c.pageSize {
+					return errors.New("replica: page size changed during capture; retry with a fresh snapshot")
+				}
 				var err error
 				seg, err = r.readPages(c.pageSize, pages)
 				return err
@@ -168,45 +167,38 @@ func (r *Replica) captureLive(ctx context.Context, db Database, all bool) (captu
 				break
 			}
 		}
-		// Pages written while the copy ran were read too early: read them
-		// again, until a round finds none. The take and the read share one
-		// transaction, so nothing slips between them.
-		for {
-			if err := ctx.Err(); err != nil {
-				spool.file.Close()
-				return err
+		// Reconcile every page changed during the copy at one consistent
+		// point, without materializing the entire dirty database in memory.
+		if err := db.WithReadTransaction(ctx, func() error {
+			if r.tracker.currentPageSize() != c.pageSize {
+				return errors.New("replica: page size changed during capture; retry with a fresh snapshot")
 			}
-			var again []uint32
-			var seg segment
-			if err := db.WithReadTransaction(ctx, func() error {
-				again = r.tracker.take(int(^uint(0) >> 1))
-				c.revision = r.tracker.version()
-				if len(again) == 0 {
-					return nil
-				}
-				var err error
-				seg, err = r.readPages(c.pageSize, again)
-				return err
-			}); err != nil {
-				r.tracker.putBack(again)
-				spool.file.Close()
-				return err
-			}
-			if len(again) == 0 {
-				break
-			}
+			again := r.tracker.take(int(^uint(0) >> 1))
+			c.revision = r.tracker.version()
+			// Include even unread pages so an I/O error retries the whole set.
 			c.pages = append(c.pages, again...)
-			r.rememberSource(seg) // the witness the next sync checks (guard.go)
-			if err := spool.write(&c, seg); err != nil {
-				spool.file.Close()
-				return err
+			for offset := 0; offset < len(again); offset += limit {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				seg, err := r.readPages(c.pageSize, again[offset:min(offset+limit, len(again))])
+				if err != nil {
+					return err
+				}
+				r.rememberSource(seg)
+				if err := spool.write(&c, seg); err != nil {
+					return err
+				}
 			}
-			runtime.Gosched()
+			c.at = r.now().UTC()
+			return nil
+		}); err != nil {
+			spool.file.Close()
+			return err
 		}
 		if err := spool.finish(); err != nil {
 			return err
 		}
-		c.at = r.now().UTC()
 		return nil
 	}()
 	if err != nil {

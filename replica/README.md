@@ -31,13 +31,23 @@ Storage. WAL, direct writes that bypass the tracking VFS, and concurrent writers
 in another process are unsupported. A lockless VFS is usable only when the host
 serializes all writers through the supplied Database adapter.
 
+`HoldLease` detects a live predecessor and stops its holder on an uncertain
+renewal, but its read/write protocol is **not an atomic process lock**. The
+host must serialize starts and enforce one instance per database and bucket
+namespace (on HopOS, use `update_policy: recreate`). A damaged lease fails
+closed; recovery requires confirming that no writer remains before removing
+that file. See [the production review](PRODUCTION_REVIEW.md) for tested failure
+paths and remaining operational limits.
+
 ## Commit and recovery protocol
 
-- A sync takes the entire dirty set **inside one read transaction**, including
-  database size, and spools its segments locally. SQLite's writer is released
+- A sync takes the dirty set inside a read transaction and copies it in short
+  read transactions. One final transaction reconciles pages written during
+  the copy, in bounded segments; later writes remain pending. Database size
+  and page size are checked under the same locks. SQLite's writer is released
   before any network transfer. A generation starts with all pages; a page-size
-  change starts a new generation. The host runs that first, whole copy before
-  it serves (`SnapshotDue`).
+  change during copying aborts that attempt and the next sync starts a fresh
+  snapshot. Captures retain both the minimum size and the final size.
 - A **dirty log** next to the database (`<db>.replica-dirty-a` and `-b`) names
   the pages written since the last sync: before the database file is synced,
   the tracking VFS appends their numbers and syncs the log first, the way a
@@ -59,8 +69,10 @@ serializes all writers through the supplied Database adapter.
   orphaned data, never an advertised point that cannot be fetched.
 - Parts use fresh random object names. Only a final manifest PUT publishes a
   batch. An upload failure exposes either the previous complete state or the
-  new complete state, never a subset. An uncertain manifest acknowledgment
-  abandons the local generation so its sequence cannot be reused with new data.
+  new complete state, never a subset. An uncertain increment acknowledgment is
+  resolved against the bucket before reusing its sequence. A failed `current`
+  PUT is read back: a published renewal is completed locally, and an unknown
+  outcome retains its recovery marker instead of resuming the old generation.
 - The tracker revision identifies writes since capture. It holds its lock while
   persisting a clean marker. A subsequent write durably invalidates the marker
   before touching the database; invalidation failure rejects the SQLite write.
@@ -81,8 +93,9 @@ serializes all writers through the supplied Database adapter.
   intent durably. `Prepare` retries interrupted publication even if the database
   already exists. `Fetch` must target an offline file and refuses the live DB.
 - In-process restore readers are protected from concurrent compaction/pruning.
-  A process restart with an unclean marker starts a fresh snapshot. An idle
-  restored generation retains its sequence number and compaction frontier.
+  A process restart with an unclean marker resumes from the dirty log when
+  usable, otherwise starts a fresh snapshot. An idle restored generation
+  retains its sequence number and compaction frontier.
 
 Layout (manifest format version 2):
 

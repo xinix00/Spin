@@ -196,7 +196,7 @@ func (r *Replica) elapsedWindows(l *layout, level int, now time.Time) [][2]time.
 		}
 	} else {
 		for _, w := range l.windows[level-1] {
-			note(w.start)
+			note(w.end)
 		}
 	}
 	var spans [][2]time.Time
@@ -256,7 +256,6 @@ func (r *Replica) mergeWindow(ctx context.Context, generation string, level int,
 				}
 			}
 		}
-		var inputSize int64 = -1
 		for _, ref := range input.Parts {
 			seg, err := r.readPart(ctx, ref)
 			if err != nil {
@@ -265,14 +264,22 @@ func (r *Replica) mergeWindow(ctx context.Context, generation string, level int,
 			if pageSize != 0 && pageSize != seg.PageSize {
 				return errors.New("page size changed within generation")
 			}
-			if input.MinSize > seg.DBSize || input.MinSize%int64(seg.PageSize) != 0 || (inputSize >= 0 && inputSize != seg.DBSize) {
+			if input.MinSize > seg.DBSize || input.MinSize%int64(seg.PageSize) != 0 {
 				return errors.New("inconsistent database size in manifest")
+			}
+			// Live captures can change size between parts. Honor every
+			// truncation in order, just as restoreInto does.
+			if seg.DBSize < dbSize {
+				for page := range winner {
+					if int64(page)*int64(seg.PageSize) > seg.DBSize {
+						delete(winner, page)
+					}
+				}
 			}
 			for _, page := range seg.Pages {
 				winner[page] = index
 			}
 			pageSize, dbSize = seg.PageSize, seg.DBSize
-			inputSize = seg.DBSize
 			index++
 		}
 	}

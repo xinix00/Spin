@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -14,8 +15,11 @@ import (
 	"github.com/ncruces/go-sqlite3/vfs"
 )
 
-// A lease makes one process the only writer of a database. SQLite and this
-// replica both assume that; on HopOS a rolling update breaks it, because the
+// The lease detects an existing writer and loss of ownership. It is advisory:
+// Storage has no atomic compare-and-swap, so two simultaneous acquisitions
+// cannot be excluded by this file alone. The host must serialize starts and
+// use recreate updates on a shared volume. SQLite and this replica both assume
+// one writer; on HopOS a rolling update breaks it, because the
 // new slot starts while the old one still runs, on the same volume. For a
 // while two processes then wrote the same SQLite file, the same dirty log,
 // and commits into the same generation: the gaps in the commit sequence and
@@ -64,8 +68,9 @@ type Lease struct {
 }
 
 // HoldLease waits until no other live process holds the database at path,
-// takes it, and keeps renewing it until Release. lost runs, once, when a
-// renewal finds another owner; the caller must then stop writing.
+// takes it, and keeps renewing it until Release. The host must serialize
+// acquisitions; this is not an atomic process lock. lost runs once when a
+// renewal cannot confirm ownership; the caller must then stop writing.
 func HoldLease(ctx context.Context, inner vfs.VFS, path string, logger *slog.Logger, lost func(error)) (*Lease, error) {
 	if inner == nil {
 		return nil, errors.New("lease needs a storage VFS")
@@ -87,6 +92,9 @@ func holdLease(ctx context.Context, l *Lease) (*Lease, error) {
 	var logged time.Time
 	for {
 		record, readErr := l.read()
+		if readErr != nil {
+			return nil, fmt.Errorf("read database lease: %w", readErr)
+		}
 		now := l.now()
 		held := readErr == nil && record.Owner != "" && record.Owner != l.owner && now.Before(record.ExpiresAt)
 		if held {
@@ -140,16 +148,28 @@ func (l *Lease) read() (leaseRecord, error) {
 	}
 	defer file.Close()
 	size, err := file.Size()
-	if err != nil || size <= 0 || size > 4096 {
+	if err != nil {
 		return leaseRecord{}, err
 	}
+	if size <= 0 || size > 4096 {
+		return leaseRecord{}, errors.New("invalid database lease size")
+	}
 	data := make([]byte, size)
-	if _, err := file.ReadAt(data, 0); err != nil && !errors.Is(err, io.EOF) {
+	if n, err := file.ReadAt(data, 0); err != nil || n != len(data) {
+		if err == nil {
+			err = io.ErrUnexpectedEOF
+		}
 		return leaseRecord{}, err
 	}
 	var record leaseRecord
-	// A torn or foreign file holds nothing.
-	_ = json.Unmarshal(data, &record)
+	// A torn file may be a live owner's interrupted renewal. It is not
+	// evidence that the database is free.
+	if err := json.Unmarshal(data, &record); err != nil {
+		return leaseRecord{}, fmt.Errorf("invalid database lease: %w", err)
+	}
+	if record.Owner == "" || record.ExpiresAt.IsZero() {
+		return leaseRecord{}, errors.New("database lease has no owner or expiry")
+	}
 	return record, nil
 }
 
@@ -171,15 +191,20 @@ func (l *Lease) keep() {
 		case <-ticker.C:
 		}
 		record, err := l.read()
-		if err == nil && record.Owner != "" && record.Owner != l.owner {
-			l.logger.Error("another process took over the database", "path", l.path, "owner", record.Owner)
+		if err == nil && (record.Owner != l.owner || !l.now().Before(record.ExpiresAt)) {
+			err = ErrLeaseLost
+		}
+		if err == nil {
+			err = l.write()
+		}
+		if err != nil {
+			// An unreadable, expired or unrenewable lease is no proof of
+			// ownership. Never recreate it and let the old writer carry on.
+			l.logger.Error("database lease is no longer confirmed", "path", l.path, "error", err)
 			if l.lost != nil {
-				l.lost(ErrLeaseLost)
+				l.lost(errors.Join(ErrLeaseLost, err))
 			}
 			return
-		}
-		if err := l.write(); err != nil {
-			l.logger.Warn("renew the database lease", "path", l.path, "error", err)
 		}
 	}
 }

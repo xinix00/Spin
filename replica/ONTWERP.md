@@ -46,7 +46,7 @@ seeing every write, and that price is what the guards below pay.
 | An interrupted prune | Visibility is removed before data, so what remains is orphaned data, never an advertised point that cannot be fetched |
 | The page size changes | A new generation with a full snapshot; old page numbers mean nothing |
 | A gap in the commit sequence | Compaction refuses to merge across it, and the generation ends: the next sync starts a fresh one |
-| **Two processes on one database** (a rolling update on a shared volume) | **The lease next to the database, `lease.go`: the new process waits until the old one lets go** |
+| **Two processes on one database** (a rolling update on a shared volume) | **The host must serialize starts and use recreate updates; `lease.go` detects existing holders but is not an atomic lock** |
 | **A commit PUT whose outcome is unknown** (a 503, a lost reply) | **`Uncertain` in the marker: the next sync looks in the bucket, counts the commit or retries its sequence** |
 | **A stop between a commit and its marker write** | **`adoptLocal` continues at the bucket's tip with the pages the dirty log names since the marker** |
 | **A renewal that fails, or a stop in the middle of one** | **`Previous` in the marker and `resetToLog`: the renewed generation goes on, the renewal waits ten minutes** |
@@ -80,7 +80,11 @@ a generation it never made (a stale copy).
   Litestream's `lock.json`) sits next to the database because both slots share
   the volume; a holder renews it every five seconds, a start waits until it is
   released or has not been renewed for thirty. The Spin job also runs with
-  `update_policy: recreate`.
+  `update_policy: recreate`. The file lease is advisory: without an atomic
+  create/compare-and-swap or fencing operation it cannot exclude two starts
+  that both observe a free file. Host serialization is a requirement, not a
+  guarantee supplied by this lease. Failed reads/renewals or an expired own
+  lease stop the holder; damaged records cannot be treated as a free database.
 - **An outcome nobody knows is looked up, not assumed.** A commit PUT that
   failed or lost its reply used to end the generation, so one 503 from the
   object store cost a copy of the whole database. The marker now says which
@@ -144,6 +148,19 @@ once, marks the marker incomplete, and clears its own witness, because the
 fresh generation is the remedy and a guard that refuses its own repair is
 worse than no guard.
 
+The tracker's page size and dirty set must also be read **inside** that read
+transaction. Through v1.29.34 the dirty count was taken before acquiring it.
+A tracked write finishing while the guard waited for the connection therefore
+paired an old empty dirty set with a new file change counter, falsely reporting
+an outside write and forcing a full generation copy. The same race could use
+an old page size after `VACUUM`. `TestSourceGuardTrackedWritesAtReadBoundaries`
+reproduces the ordering without timing assumptions, with both 4 KiB and 64 KiB
+pages, and checks writes around capture and upload plus an integrity-checked
+restore. `TestSourceGuardWaitsForWriter` also holds the actual SQLite connection
+until the guard is waiting, then commits, rolls back spilled pages, or cancels
+the wait. The adjacent tests cover a page size change and a real untracked
+commit in that same window; the latter must still invalidate the generation.
+
 **Provenance at open** (`adoptLocal`, in `Prepare`). The local marker names the
 bucket's generation and is at or past its tip: it continues. It is behind that
 tip: those commits were this process's own (the lease makes it the only
@@ -196,6 +213,16 @@ missed, not which pages it touched, so the remedy is always a fresh snapshot.
 Stronger: every byte in the bucket is checksummed and every commit is atomic.
 
 ## What is still open
+
+- The host must enforce one writer per local file **and** bucket namespace.
+  The lease is not a distributed lock: two simultaneous starts can both see
+  it free, and no storage primitive fences an old process after a long pause.
+  Stronger protection requires an atomic lock/fencing primitive from the host.
+
+- The final live-copy reconciliation excludes writers while it reads and
+  spools the remaining dirty pages. Its page buffers are segment-bounded, but
+  its duration depends on how much changed during the copy. This is the
+  consistency boundary; writes after it belong to the next sync.
 
 - While a renewal copies the whole database (for 8 GiB, tens of minutes) no
   increments ship; Litestream streams its snapshot beside them. A crash in that

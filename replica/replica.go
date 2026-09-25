@@ -369,6 +369,12 @@ func (r *Replica) Prepare(ctx context.Context) error {
 // continueGeneration makes stored the marker and pages the pages to ship
 // next: a start that goes on where the last one stopped.
 func (r *Replica) continueGeneration(stored marker, pages []uint32) error {
+	if len(pages) > 0 {
+		// markPages makes the tracker unclean. Its marker must agree even
+		// when these are conservative replays of committed pages; otherwise
+		// the next real write skips onUnclean and leaves Clean=true on disk.
+		stored.Clean = false
+	}
 	if err := r.setMarker(stored); err != nil {
 		return err
 	}
@@ -621,6 +627,31 @@ func (r *Replica) endCopy() {
 
 func (r *Replica) sync(ctx context.Context, db Database) error {
 	defer r.endCopy()
+	// A snapshot/current PUT may have succeeded even when both its reply
+	// and the immediate read-back failed. Keep that attempt's marker until
+	// the bucket can settle it; never fall back to an older generation while
+	// current may already name the new snapshot.
+	if current := r.getMarker(); !current.Complete && current.Seq == 0 && current.Generation != "" {
+		remote, err := r.s3.Get(ctx, r.currentKey())
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		if err == nil && strings.TrimSpace(string(remote)) == current.Generation {
+			decision, err := r.adoptLocal(ctx, current, true)
+			if err != nil {
+				return err
+			}
+			if decision.continueAt != nil {
+				pages, err := r.tracker.log.read(decision.logGeneration, decision.logSeq)
+				if err != nil {
+					return err
+				}
+				if err := r.continueGeneration(*decision.continueAt, pages); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	// Is the source still the database this replica has been following? A
 	// write that went around the tracking VFS leaves pages nobody will ever
 	// ship, so it has to end this generation rather than poison it (guard.go).
@@ -628,6 +659,7 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		return err
 	}
 	current := r.getMarker()
+	var publicationErr error
 	if current.Complete && current.Uncertain != 0 {
 		resolved, err := r.resolveUncertain(ctx, current)
 		if err != nil {
@@ -697,6 +729,7 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 			r.tracker.putBack(captured.pages)
 			r.markerMu.Lock()
 			r.marker.Complete = false
+			r.marker.Previous = nil
 			err := r.writeMarker(r.marker)
 			r.markerMu.Unlock()
 			r.logger.Warn("replica: the database grew by pages this replica never saw; the next sync starts a fresh generation",
@@ -719,7 +752,7 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		if !at.After(current.SealedAt) {
 			at = current.SealedAt.Add(time.Nanosecond)
 		}
-		m := manifest{MinSize: captured.size, Version: formatVersion, FirstSeq: current.Seq + 1, Seq: current.Seq + 1, At: at}
+		m := manifest{MinSize: captured.minSize, Version: formatVersion, FirstSeq: current.Seq + 1, Seq: current.Seq + 1, At: at}
 		prefix := r.generationPrefix(current.Generation) + "data/" + newGenerationID(r.now()) + "/"
 		committed, publishing := false, false
 		defer func() {
@@ -764,7 +797,20 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		}
 		if fresh {
 			if err := r.s3.Put(ctx, r.currentKey(), []byte(current.Generation)); err != nil {
-				return err
+				remote, readErr := r.s3.Get(ctx, r.currentKey())
+				switch {
+				case readErr == nil && strings.TrimSpace(string(remote)) == current.Generation:
+					// The pointer did move: finish this generation's local
+					// bookkeeping, reporting the failed request afterwards.
+					publicationErr = err
+				case readErr != nil && !errors.Is(readErr, ErrNotFound):
+					// Unknown outcome: do not run the fallback to Previous.
+					// The incomplete marker can be resolved here or at restart.
+					renewed = true
+					return errors.Join(err, readErr)
+				default:
+					return err
+				}
 			}
 			renewed = true
 		}
@@ -774,6 +820,7 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 		current.PageSize = captured.pageSize
 		current.Complete = true
 		current.Clean = false
+		current.Previous = nil
 		for _, part := range m.Parts {
 			current.Bytes += part.Size
 		}
@@ -844,6 +891,7 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 				// never saw, and the next sync starts a fresh one.
 				r.markerMu.Lock()
 				r.marker.Complete = false
+				r.marker.Previous = nil
 				writeErr := r.writeMarker(r.marker)
 				r.markerMu.Unlock()
 				r.logger.Warn("replica: the generation has a gap in its commit sequence; the next sync starts a fresh generation", "domain", r.domain, "generation", current.Generation)
@@ -854,7 +902,7 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 			return fmt.Errorf("compact: %w", err)
 		}
 	}
-	return nil
+	return publicationErr
 }
 
 // compactionDue: the changes outweigh the database, or the generation is a

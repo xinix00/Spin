@@ -62,17 +62,22 @@ func changeCounter(page1 []byte) (uint32, bool) {
 // dirty set and no later increment brings them. Saying so and starting a
 // fresh generation is the whole remedy.
 func (r *Replica) checkSource(ctx context.Context, db Database) error {
-	pageSize := r.tracker.currentPageSize()
-	if pageSize == 0 {
-		return nil
-	}
 	last, counter, known := r.sourceWitness()
-	if !known || last.pageSize != pageSize {
+	if !known {
 		return nil
 	}
-	dirty := r.tracker.dirtyCount()
 	var mismatch string
 	err := db.WithReadTransaction(ctx, func() error {
+		// A writer can finish while we wait for the database connection.
+		// Observe the tracker only after acquiring the read transaction, so
+		// its page size and dirty set describe the same state as these reads.
+		// An earlier empty dirty set plus a later change counter would accuse
+		// that legitimate writer of bypassing the VFS and force a full copy.
+		pageSize := r.tracker.currentPageSize()
+		if pageSize == 0 || last.pageSize != pageSize {
+			return nil
+		}
+		dirty := r.tracker.dirtyCount()
 		seg, err := r.readPages(pageSize, []uint32{1})
 		if err != nil {
 			return err
@@ -107,6 +112,7 @@ func (r *Replica) checkSource(ctx context.Context, db Database) error {
 	}
 	r.markerMu.Lock()
 	r.marker.Complete = false
+	r.marker.Previous = nil // this lineage cannot be used as a renewal fallback
 	writeErr := r.writeMarker(r.marker)
 	// Say it once. The incomplete marker arms the remedy, a fresh generation
 	// with a full snapshot, and that capture sets a new witness. Holding on to
@@ -118,7 +124,7 @@ func (r *Replica) checkSource(ctx context.Context, db Database) error {
 	if writeErr != nil {
 		return writeErr
 	}
-	return errForeignWrite
+	return fmt.Errorf("%w: %s", errForeignWrite, mismatch)
 }
 
 // witness is the page whose bytes the next sync checks against the source,

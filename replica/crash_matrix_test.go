@@ -80,6 +80,7 @@ var crashPoints = []crashPoint{
 	{name: "renewal snapshot PUT fails", renewal: true, after: "same", arm: failPut(func(k string) bool { return strings.HasSuffix(k, "/snapshot") }, false)},
 	{name: "renewal snapshot PUT reply lost", renewal: true, after: "same", arm: failPut(func(k string) bool { return strings.HasSuffix(k, "/snapshot") }, true)},
 	{name: "renewal current PUT fails", renewal: true, after: "same", arm: failPut(func(k string) bool { return strings.HasSuffix(k, "/current") }, false)},
+	{name: "renewal current PUT reply lost", renewal: true, after: "renewed", arm: failPut(func(k string) bool { return strings.HasSuffix(k, "/current") }, true)},
 	{name: "renewal marker write after the commit fails", renewal: true, after: "renewed", arm: failLocal(func(p string) bool { return strings.HasSuffix(p, ".replica") }, 2)},
 }
 
@@ -157,6 +158,10 @@ func TestCrashMatrix(t *testing.T) {
 				}
 				if after.Generation != want {
 					t.Fatalf("generation after = %s, want %s (%s)", after.Generation, want, describeGenerations(before, failed, after))
+				}
+				current, err := f.objects.Get(context.Background(), f.rep.currentKey())
+				if err != nil || string(current) != after.Generation {
+					t.Fatalf("bucket current=%q, local generation=%q: %v", current, after.Generation, err)
 				}
 				f.check(t, after.Generation, time.Time{}, []byte("four"))
 			})
