@@ -52,3 +52,29 @@ func TestHealthJudgesTheReplicaInWords(t *testing.T) {
 		t.Fatalf("a young process is not said: %+v", report)
 	}
 }
+
+// On HopOS the clock reads 1970 when the process starts. The start is taken
+// once the clock is set, and a first copy that makes progress is said as a
+// copy, with its reason, not as a replica that never synced.
+func TestHealthTakesTheStartOnceTheClockIsSet(t *testing.T) {
+	started := processStarted
+	defer func() { processStarted = started }()
+	processStarted = time.Unix(0, 0)
+	s := &Server{}
+	copying := &replica.Status{Copy: &replica.CopyProgress{Stage: "upload", Done: 39, Total: 100, Reason: "generation g is 169h old, the limit is 168h0m0s"}}
+	report := s.health(storageInfo{Replication: copying})
+	var said []string
+	for _, finding := range report.Findings {
+		said = append(said, finding.Message)
+	}
+	text := strings.Join(said, " | ")
+	if strings.Contains(text, "497") || strings.Contains(text, "nog geen enkele keer") {
+		t.Fatalf("findings %q", said)
+	}
+	if !strings.Contains(text, "Reden: generation g is 169h old") || !strings.Contains(text, "39%") {
+		t.Fatalf("the copy is not said with its reason: %q", said)
+	}
+	if processStarted.Year() < 2020 {
+		t.Fatal("the start stayed at 1970")
+	}
+}

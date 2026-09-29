@@ -116,6 +116,13 @@ func NewWithOptions(st *store.Store, logger *slog.Logger, engine capsule.Engine,
 		s.runnerBroker.OnTrackedFilesChanged(s.trackedFilesChanged)
 		s.runnerBroker.OnRunnerAttached(s.runnerAttached)
 	}
+	// A fresh process builds nothing yet: a composition without a capsule is
+	// one an earlier process was building, and its logins are free again.
+	if discarded, err := s.store.DiscardUnbuiltCompositions(); err != nil {
+		s.logger.Warn("discard compositions an earlier process was building", "error", err)
+	} else if discarded > 0 {
+		s.logger.Warn("compositions an earlier process was building are discarded; their logins are free", "compositions", discarded)
+	}
 	s.adoptAgents()
 	s.requeueUnattendedSteps()
 	go s.resumeQueuedWorkflowActions()

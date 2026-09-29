@@ -1192,3 +1192,27 @@ func TestARestoreReportsItsProgressAndKeepsOrder(t *testing.T) {
 		t.Fatalf("restored %d bytes, %v", len(got), err)
 	}
 }
+
+// While the wall clock still reads 1970 (a HopOS start), a sync writes
+// nothing that carries a time: no marker, no generation.
+func TestASyncWaitsForTheClock(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, []byte("one"))
+	f.clock.mu.Lock()
+	real := f.clock.at
+	f.clock.at = time.Unix(0, 0).UTC()
+	f.clock.mu.Unlock()
+	if err := f.rep.Sync(context.Background()); !errors.Is(err, errClockUnset) {
+		t.Fatalf("sync with a 1970 clock = %v", err)
+	}
+	if generation := f.rep.getMarker().Generation; generation != "" {
+		t.Fatalf("a 1970 clock started generation %s", generation)
+	}
+	f.clock.mu.Lock()
+	f.clock.at = real
+	f.clock.mu.Unlock()
+	f.sync(t)
+	if started := f.rep.getMarker().StartedAt; started.Year() < 2020 {
+		t.Fatalf("the generation started in %d", started.Year())
+	}
+}

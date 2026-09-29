@@ -49,7 +49,9 @@ type Status struct {
 // spool to the bucket. StartedAt is the start of the stage, on the wall
 // clock, so a page can tell the rate and what is left.
 type CopyProgress struct {
-	Stage     string    `json:"stage"`
+	Stage string `json:"stage"`
+	// Reason is why the whole database is copied.
+	Reason    string    `json:"reason,omitempty"`
 	Done      int64     `json:"done"`
 	Total     int64     `json:"total"`
 	StartedAt time.Time `json:"started_at"`
@@ -109,6 +111,9 @@ type Replica struct {
 	// OnCopy, when set, hears how far a whole-database copy has come: the
 	// one before a Spin opens and a renewal while it serves alike.
 	OnCopy func(CopyProgress)
+	// copyReason is why the copy that runs now copies the whole database;
+	// under mu, with status.
+	copyReason string
 	// freshReason says why Prepare started a new generation, for the page
 	// that waits on the copy it makes.
 	freshReason string
@@ -396,9 +401,12 @@ func (r *Replica) snapshotReason(current marker) string {
 		return ""
 	case now.Sub(current.StartedAt) > r.config.Generation:
 		return fmt.Sprintf("generation %s is %s old, the limit is %s", current.Generation, now.Sub(current.StartedAt).Round(time.Hour), r.config.Generation)
-	case current.Bytes > 2*current.Size+64<<20:
-		return fmt.Sprintf("generation %s shipped %d MiB against a database of %d MiB", current.Generation, current.Bytes>>20, current.Size>>20)
 	}
+	// No renewal for what a generation shipped: a restore reads the snapshot
+	// and the merged windows, which keep only the last version of each page,
+	// so shipped bytes say nothing about its cost. Rewriting a state of a few
+	// MB on every save tripped such a rule within hours and copied the whole
+	// database, during which no change shipped. Litestream renews by age only.
 	return ""
 }
 
@@ -478,7 +486,15 @@ func (r *Replica) Sync(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	stopCancel := context.AfterFunc(r.lifetime, cancel)
 	defer func() { stopCancel(); cancel() }()
-	err := r.sync(ctx, db)
+	var err error
+	if r.now().Year() < 2020 {
+		// On HopOS the wall clock is set after the start. A time from 1970
+		// in a marker or a generation id makes that generation look 56
+		// years old, and its renewal follows; wait for the clock instead.
+		err = errClockUnset
+	} else {
+		err = r.sync(ctx, db)
+	}
 	archiveDamaged := errors.Is(err, errReplicaCorrupt) || errors.Is(err, errCommitGap)
 	if archiveDamaged || errors.Is(err, errForeignWrite) || errors.Is(err, errGenerationShort) {
 		// All detectors report their cause here; one transition schedules
@@ -503,6 +519,10 @@ func (r *Replica) Sync(ctx context.Context) error {
 	r.mu.Unlock()
 	return err
 }
+
+// errClockUnset: the wall clock still reads before 2020, so nothing is
+// written that carries a time.
+var errClockUnset = errors.New("replica: the wall clock is not set yet")
 
 // renewalBackoff is how long a failed renewal waits before it is tried again.
 const renewalBackoff = 10 * time.Minute
@@ -611,7 +631,7 @@ func each(ctx context.Context, workers, count int, fn func(ctx context.Context, 
 func (r *Replica) reportCopy(stage string, done, total int64) {
 	r.mu.Lock()
 	if r.status.Copy == nil || r.status.Copy.Stage != stage {
-		r.status.Copy = &CopyProgress{Stage: stage, StartedAt: time.Now().UTC()}
+		r.status.Copy = &CopyProgress{Stage: stage, Reason: r.copyReason, StartedAt: time.Now().UTC()}
 	}
 	r.status.Copy.Done, r.status.Copy.Total = done, total
 	progress := *r.status.Copy
@@ -673,6 +693,9 @@ func (r *Replica) sync(ctx context.Context, db Database) error {
 	// also make a timeout after a successful PUT safe to retry.
 	reason := r.snapshotReason(current)
 	fresh := reason != ""
+	r.mu.Lock()
+	r.copyReason = reason
+	r.mu.Unlock()
 	renewed := false
 	if fresh {
 		current = r.renewal(current)

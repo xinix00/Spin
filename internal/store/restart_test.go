@@ -116,3 +116,45 @@ func TestACapsuleGoneFromItsRunnerFreesItsLogin(t *testing.T) {
 		t.Fatalf("a report of another runner stopped %d capsules", stopped)
 	}
 }
+
+// A composition that never got a capsule was being built by a process that is
+// gone. It is discarded at the next start, and the login it held goes to the
+// Job's next attempt instead of being held by its own earlier one.
+func TestAnUnbuiltCompositionLetsGoOfItsLoginAtStart(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "global/credential:claude"
+	if _, err := st.CreateLogin("", key, map[string][]byte{"/root/.claude/.credentials.json": []byte(`{"token":"t"}`)}, ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, composition := range []domain.Composition{
+		{ID: "cmp_attempt_1", Operator: "derek"},
+		{ID: "cmp_attempt_2", Operator: "derek"},
+		{ID: "cmp_built", Operator: "derek", Runtime: &domain.CapsuleRuntime{ClientID: "cli_laptop", Status: "ready"}},
+	} {
+		if err := st.PutCompositionForTest(composition); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.HandOutLogin("cmp_attempt_1", key, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.HandOutLogin("cmp_attempt_2", key, true); !errors.Is(err, ErrLoginsBusy) {
+		t.Fatalf("the next attempt got a login held by the one before: %v", err)
+	}
+	discarded, err := st.DiscardUnbuiltCompositions()
+	if err != nil || discarded != 2 {
+		t.Fatalf("discarded %d, %v", discarded, err)
+	}
+	if _, err := st.Composition("cmp_built"); err != nil {
+		t.Fatal("a composition with a capsule was discarded")
+	}
+	if err := st.PutCompositionForTest(domain.Composition{ID: "cmp_attempt_3", Operator: "derek"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.HandOutLogin("cmp_attempt_3", key, true); err != nil {
+		t.Fatalf("after the start the login is still held: %v", err)
+	}
+}

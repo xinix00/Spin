@@ -873,6 +873,33 @@ func (s *Store) Composition(compositionID string) (domain.Composition, error) {
 
 // DiscardComposition removes a composition that could not be materialized.
 // A runtime-bearing composition must be stopped through the capsule engine.
+// DiscardUnbuiltCompositions removes every composition that never got a
+// capsule. Only useCapsule makes one, and it builds it at once or discards it;
+// one that is left was being built when the server stopped, and nothing
+// builds it any more. It held its logins for good: each Job's next attempt
+// found every login taken, by its own earlier attempt. It reports how many.
+func (s *Store) DiscardUnbuiltCompositions() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	discarded := 0
+	for id, composition := range s.state.Compositions {
+		if composition.Runtime != nil {
+			continue
+		}
+		delete(s.state.Compositions, id)
+		if session, ok := s.state.Sessions[composition.SessionID]; ok && session.PreparedCompositionID == id {
+			session.PreparedCompositionID = ""
+			session.UpdatedAt = time.Now().UTC()
+			s.state.Sessions[session.ID] = session
+		}
+		discarded++
+	}
+	if discarded == 0 {
+		return 0, nil
+	}
+	return discarded, s.saveLocked()
+}
+
 func (s *Store) DiscardComposition(compositionID, operator string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

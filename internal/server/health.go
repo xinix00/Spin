@@ -30,8 +30,14 @@ type healthReport struct {
 }
 
 // processStarted is when this process began: a young process after a crash
-// is worth saying.
-var processStarted = time.Now()
+// is worth saying. On HopOS the wall clock is not set yet when the package
+// initializes (it read 1970, so "since the start" was 497238 hours), so the
+// start is taken at the first look with a clock that is set.
+var processStarted time.Time
+
+// clockSet says whether a wall clock can be believed: one that reads before
+// 2020 has not been set yet.
+func clockSet(t time.Time) bool { return t.Year() >= 2020 }
 
 // replicaSyncOverdue is how long without a successful sync the replica is
 // considered to have stopped; it syncs every 15 seconds.
@@ -46,6 +52,9 @@ func (s *Server) health(storage storageInfo) healthReport {
 		}
 	}
 	now := time.Now()
+	if !clockSet(processStarted) && clockSet(now) {
+		processStarted = now
+	}
 	uptime := now.Sub(processStarted)
 	if replication := storage.Replication; replication == nil {
 		add(healthWarning, "Geen replica: deze Spin staat alleen op zijn eigen volume.")
@@ -53,7 +62,7 @@ func (s *Server) health(storage storageInfo) healthReport {
 		switch {
 		case !replication.LastSyncAt.IsZero() && now.Sub(replication.LastSyncAt) > replicaSyncOverdue:
 			add(healthError, "De replica heeft sinds %s niet meer gesynchroniseerd: wijzigingen komen niet in de bucket.", replication.LastSyncAt.Local().Format("15:04"))
-		case replication.LastSyncAt.IsZero() && uptime > replicaSyncOverdue:
+		case replication.LastSyncAt.IsZero() && uptime > replicaSyncOverdue && replication.Copy == nil:
 			add(healthError, "De replica heeft sinds de start (%s geleden) nog geen enkele keer gesynchroniseerd.", roundDuration(uptime))
 		}
 		if replication.LastError != "" {
@@ -64,7 +73,11 @@ func (s *Server) health(storage storageInfo) healthReport {
 			if copy.Total > 0 {
 				percent = float64(copy.Done) / float64(copy.Total) * 100
 			}
-			add(healthInfo, "Een nieuwe generatie wordt gekopieerd (%s, %.0f%%); wijzigingen wachten zolang.", map[string]string{"read": "lezen", "upload": "naar de bucket"}[copy.Stage], percent)
+			why := ""
+			if copy.Reason != "" {
+				why = " Reden: " + copy.Reason + "."
+			}
+			add(healthInfo, "Een nieuwe generatie wordt gekopieerd (%s, %.0f%%); wijzigingen wachten zolang.%s", map[string]string{"read": "lezen", "upload": "naar de bucket"}[copy.Stage], percent, why)
 		} else if !replication.Complete {
 			add(healthError, "Er is geen complete generatie in de bucket: een restore kan nu niet.")
 		}
