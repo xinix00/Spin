@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -78,7 +79,40 @@ func TestPendingStopsKeepTheirRunnerAfterADay(t *testing.T) {
 	if running := st.RunningCompositions(); len(running) != 3 {
 		t.Fatalf("running after pruning = %d, want 3", len(running))
 	}
-	if st.ClientWorkloads("cli_away") != 2 || st.ClientWorkloads("cli_brief") != 1 {
-		t.Fatalf("workloads away=%d brief=%d", st.ClientWorkloads("cli_away"), st.ClientWorkloads("cli_brief"))
+}
+
+// A capsule that is gone from its runner holds no login: once the runner says
+// what really runs there, the login goes to the next capsule that asks.
+func TestACapsuleGoneFromItsRunnerFreesItsLogin(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "global/credential:claude"
+	login, err := st.CreateLogin("", key, map[string][]byte{"/root/.claude/.credentials.json": []byte(`{"token":"t"}`)}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"cmp_gone", "cmp_next"} {
+		if err := st.PutCompositionForTest(domain.Composition{ID: id, Operator: "derek", Runtime: &domain.CapsuleRuntime{ClientID: "cli_laptop", Status: "ready"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.HandOutLogin("cmp_gone", key, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.HandOutLogin("cmp_next", key, true); !errors.Is(err, ErrLoginsBusy) {
+		t.Fatalf("the only login went out twice: %v", err)
+	}
+	stopped, err := st.ReconcileClientCapsules("cli_laptop", []string{"cmp_next"}, nil)
+	if err != nil || stopped != 1 {
+		t.Fatalf("reconcile stopped %d, %v", stopped, err)
+	}
+	if got, err := st.HandOutLogin("cmp_next", key, true); err != nil || got.ID != login.ID {
+		t.Fatalf("after the gone capsule stopped the login is %+v, %v", got, err)
+	}
+	// Another runner's capsules are not this report's business.
+	if stopped, _ := st.ReconcileClientCapsules("cli_other", nil, nil); stopped != 0 {
+		t.Fatalf("a report of another runner stopped %d capsules", stopped)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -516,5 +517,49 @@ func TestDockerRecordingRunsOnTheParentsCurrentStackLive(t *testing.T) {
 	output, code, err := engine.run(ctx, "exec", use.ContainerID, "sh", "-lc", "cat /tool/version /root/credential")
 	if err != nil || code != 0 || strings.Fields(output)[0] != "2.280" || strings.Fields(output)[1] != "renewed" {
 		t.Fatalf("composed stack reads %q (code %d, err %v)", output, code, err)
+	}
+}
+
+// A runner names the capsules that run by their labels: a stopped container
+// and one that is no capsule are not among them.
+func TestDockerLiveCapsulesLive(t *testing.T) {
+	if os.Getenv("SPIN_DOCKER_LIVE") != "1" {
+		t.Skip("set SPIN_DOCKER_LIVE=1 to run the Docker integration")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	engine, err := NewDocker(ctx, DockerConfig{BaseImage: "alpine:3.24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	suffix := strings.ReplaceAll(time.Now().UTC().Format("150405.000000000"), ".", "")
+	start := func(name string, labels ...string) {
+		t.Helper()
+		args := []string{"run", "-d", "--pull=missing", "--name", name}
+		for _, label := range labels {
+			args = append(args, "--label", label)
+		}
+		args = append(args, "alpine:3.24", "sleep", "120")
+		if _, err := engine.control(ctx, args...); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = engine.removeContainer(context.Background(), name) })
+	}
+	start("spin-live-cmp-"+suffix, "spin.managed=true", "spin.kind=composition", "spin.composition_id=cmp_"+suffix)
+	start("spin-live-rec-"+suffix, "spin.managed=true", "spin.kind=recording", "spin.recording_id=rec_"+suffix)
+	start("spin-live-app-"+suffix, "spin.managed=true", "spin.kind=app")
+	start("spin-live-stopped-"+suffix, "spin.managed=true", "spin.kind=composition", "spin.composition_id=cmp_stopped_"+suffix)
+	if _, err := engine.control(ctx, "stop", "-t", "0", "spin-live-stopped-"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	live, err := engine.LiveCapsules(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(live.Compositions, "cmp_"+suffix) || !slices.Contains(live.Recordings, "rec_"+suffix) {
+		t.Fatalf("running capsules missing: %+v", live)
+	}
+	if slices.Contains(live.Compositions, "cmp_stopped_"+suffix) {
+		t.Fatalf("a stopped capsule counts as running: %+v", live)
 	}
 }

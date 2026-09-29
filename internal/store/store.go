@@ -785,24 +785,38 @@ func (s *Store) SetCompositionAgent(compositionID, streamID string, agent *domai
 	return s.saveLocked()
 }
 
-// ClientWorkloads counts what runs on a runner according to the state: its
-// capsules and open recordings. A server that starts again learns from it
-// how full a runner that reconnects already is.
-func (s *Store) ClientWorkloads(clientID string) int {
+// ReconcileClientCapsules marks every composition and recording the state
+// counts on the runner, but that the runner does not run, as stopped. A
+// capsule gets its runtime only once it runs, so one being started is not
+// touched. It reports how many it stopped.
+func (s *Store) ReconcileClientCapsules(clientID string, compositions, recordings []string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	count := 0
-	for _, composition := range s.state.Compositions {
-		if composition.Runtime != nil && composition.Runtime.ClientID == clientID && composition.Runtime.Status != "stopped" {
-			count++
+	stopped := 0
+	for id, composition := range s.state.Compositions {
+		if composition.Runtime == nil || composition.Runtime.ClientID != clientID || composition.Runtime.Status == "stopped" || slices.Contains(compositions, id) {
+			continue
 		}
+		runtime := *composition.Runtime
+		runtime.Status, runtime.StopPending = "stopped", false
+		composition.Runtime = &runtime
+		s.state.Compositions[id] = composition
+		stopped++
 	}
-	for _, recording := range s.state.Recordings {
-		if recording.Runtime != nil && recording.Runtime.ClientID == clientID && recording.Runtime.Status != "stopped" {
-			count++
+	for id, recording := range s.state.Recordings {
+		if recording.Runtime == nil || recording.Runtime.ClientID != clientID || recording.Runtime.Status == "stopped" || slices.Contains(recordings, id) {
+			continue
 		}
+		runtime := *recording.Runtime
+		runtime.Status, runtime.StopPending = "stopped", false
+		recording.Runtime = &runtime
+		s.state.Recordings[id] = recording
+		stopped++
 	}
-	return count
+	if stopped == 0 {
+		return 0, nil
+	}
+	return stopped, s.saveLocked()
 }
 
 // SetArtifactContents records the manifest of a layer sealed before
@@ -4473,6 +4487,15 @@ func (s *Store) SetSnapshotDigestForTest(artifactID, digest string) (domain.Arti
 	artifact.SnapshotDigest = digest
 	s.state.Artifacts[artifact.ID] = artifact
 	return artifact, s.saveLocked()
+}
+
+// PutCompositionForTest stores a composition as given; tests of other packages
+// use it to set up a runner's capsules.
+func (s *Store) PutCompositionForTest(composition domain.Composition) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Compositions[composition.ID] = composition
+	return s.saveLocked()
 }
 
 // SetSessionSync records the work-in-progress commit pushed for a Session.

@@ -65,11 +65,13 @@ type runnerPeer struct {
 	process    string
 	lastSeen   time.Time
 	draining   bool
-	workloads  int
-	outbox     []wireMessage
-	wake       chan struct{}
-	pending    map[string]pendingCall
-	streams    map[string]*remoteProcess
+	// refusedUntil: the runner said it takes no more capsules; it is not
+	// asked again before this, unless a capsule stops there first.
+	refusedUntil time.Time
+	outbox       []wireMessage
+	wake         chan struct{}
+	pending      map[string]pendingCall
+	streams      map[string]*remoteProcess
 }
 
 func newRunnerPeer(client domain.Client) *runnerPeer {
@@ -216,10 +218,21 @@ func (p *runnerPeer) acknowledge(message wireMessage, generation uint64) {
 func (p *runnerPeer) available() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.connected || p.draining || !p.capabilities.Engine.Available {
-		return false
-	}
-	return p.capabilities.MaxWorkloads <= 0 || p.workloads < p.capabilities.MaxWorkloads
+	return p.connected && !p.draining && p.capabilities.Engine.Available && time.Now().After(p.refusedUntil)
+}
+
+// refuse remembers that the runner takes nothing now.
+func (p *runnerPeer) refuse() {
+	p.mu.Lock()
+	p.refusedUntil = time.Now().Add(runnerRefusalPause)
+	p.mu.Unlock()
+}
+
+// freed says a capsule stopped there: the runner may take one again.
+func (p *runnerPeer) freed() {
+	p.mu.Lock()
+	p.refusedUntil = time.Time{}
+	p.mu.Unlock()
 }
 
 func (p *runnerPeer) connectedForAffinity() bool {
@@ -232,21 +245,6 @@ func (p *runnerPeer) engineInfo() (domain.CapsuleEngineInfo, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.capabilities.Engine, p.connected && !p.draining
-}
-
-func (p *runnerPeer) setWorkloads(count int) {
-	p.mu.Lock()
-	p.workloads = max(count, 0)
-	p.mu.Unlock()
-}
-
-func (p *runnerPeer) addWorkload(delta int) {
-	p.mu.Lock()
-	p.workloads += delta
-	if p.workloads < 0 {
-		p.workloads = 0
-	}
-	p.mu.Unlock()
 }
 
 func containsMessageID(messages []wireMessage, id string) bool {
@@ -363,9 +361,18 @@ func (b *Broker) Handler(w http.ResponseWriter, r *http.Request) {
 		running = append([]string{}, hello.Streams...)
 	}
 	generation := peer.attach(connection, client, hello.Process, running)
-	// What runs there is what the state says runs there; a server that
-	// just started would otherwise count the runner as empty.
-	peer.setWorkloads(b.store.ClientWorkloads(client.ID))
+	if hello.Capsules != nil {
+		// The runner says which capsules run there. One the state still has
+		// running that is not among them went away without the server
+		// hearing it (a crash, a restore, a removed container): it is
+		// stopped, and the logins it held are free again.
+		stopped, err := b.store.ReconcileClientCapsules(client.ID, hello.Capsules.Compositions, hello.Capsules.Recordings)
+		if err != nil {
+			b.logger.Warn("reconcile the runner's capsules", "client_id", client.ID, "error", err)
+		} else if stopped > 0 {
+			b.logger.Warn("capsules the state had running no longer run on the runner; marked stopped", "client_id", client.ID, "name", client.Name, "stopped", stopped)
+		}
+	}
 	b.notifyAvailable()
 	b.logger.Info("runner connected", "client_id", client.ID, "instance_id", client.InstanceID, "name", client.Name)
 	b.announceAttached(client.ID)
@@ -687,6 +694,71 @@ func (b *Broker) choosePreferring(ctx context.Context, affinity string, preferre
 		case <-time.After(5 * time.Second):
 		}
 	}
+}
+
+// runnerRefusalPause is how long a runner that said it takes nothing is left
+// alone, unless a capsule stops there first.
+const runnerRefusalPause = 15 * time.Second
+
+// chooseAccepting finds a runner that takes one more capsule. Whether it fits
+// is the runner's to say, not the server's to count: every available runner
+// is asked in turn, the preferred ones (those that hold the images already)
+// first. A runner that says no is left alone for a moment. When none accepts,
+// it waits for one until ctx ends.
+func (b *Broker) chooseAccepting(ctx context.Context, preferred func(clientID string) bool) (*runnerPeer, error) {
+	for {
+		for _, peer := range b.candidates(preferred) {
+			if b.accepts(ctx, peer) {
+				return peer, nil
+			}
+			if ctx.Err() != nil {
+				break
+			}
+			peer.refuse()
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("%w: no runner accepts another capsule now: %v", errNoRunner, ctx.Err())
+		case <-b.available:
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+// candidates are the available runners, preferred ones first, each group in
+// round-robin order from the cursor.
+func (b *Broker) candidates(preferred func(clientID string) bool) []*runnerPeer {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var first, rest []*runnerPeer
+	count := len(b.order)
+	for offset := 0; offset < count; offset++ {
+		peer := b.peers[b.order[(b.cursor+offset)%count]]
+		if peer == nil || !peer.available() {
+			continue
+		}
+		if preferred != nil && preferred(peer.id) {
+			first = append(first, peer)
+		} else {
+			rest = append(rest, peer)
+		}
+	}
+	if count > 0 {
+		b.cursor = (b.cursor + 1) % count
+	}
+	return append(first, rest...)
+}
+
+// accepts asks the runner. A runner from before the question decides at the
+// start itself, so it counts as a yes.
+func (b *Broker) accepts(ctx context.Context, peer *runnerPeer) bool {
+	askCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	var reply acceptsReply
+	if _, err := b.call(askCtx, peer.id, methodAccepts, struct{}{}, &reply); err != nil {
+		return strings.Contains(err.Error(), "unsupported runner method")
+	}
+	return reply.Accepts
 }
 
 func (b *Broker) call(ctx context.Context, affinity, method string, request, response any) (*runnerPeer, error) {

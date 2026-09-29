@@ -57,6 +57,18 @@ type RecordingStack struct {
 	Artifacts []domain.Artifact `json:"artifacts"`
 }
 
+// LiveCapsules names the capsules an engine runs right now.
+type LiveCapsules struct {
+	Compositions []string `json:"compositions"`
+	Recordings   []string `json:"recordings"`
+}
+
+// CapsuleLister is an optional engine extension: it names the capsules that
+// really run, so a server can tell them from the ones it only remembers.
+type CapsuleLister interface {
+	LiveCapsules(context.Context) (LiveCapsules, error)
+}
+
 // GitAuthentication is resolved by the control plane immediately before a
 // checkout. It is never part of a Composition, Artifact or CapsuleRuntime.
 type GitAuthentication struct {

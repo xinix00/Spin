@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -64,7 +65,9 @@ type Worker struct {
 	inFlight      map[string]context.CancelFunc
 	streams       map[string]localStream
 	liveWorkloads int
-	connections   uint64
+	// starting counts capsules admitted and not yet running (admit).
+	starting    int
+	connections uint64
 	// watchers holds the tracked-file watcher per capsule.
 	watchers map[string]context.CancelFunc
 	// agentStarts serializes replacement within a capsule, including the
@@ -171,6 +174,19 @@ func (w *Worker) runConnection(ctx context.Context) error {
 			Engine: w.engine.Info(), MaxWorkloads: w.config.MaxWorkloads,
 		},
 		Streams: w.streamIDs(), StreamsReported: true,
+	}
+	if lister, ok := w.engine.(capsule.CapsuleLister); ok {
+		listCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		live, err := lister.LiveCapsules(listCtx)
+		cancel()
+		if err == nil {
+			hello.Capsules = &live
+			w.mu.Lock()
+			w.liveWorkloads = len(live.Compositions) + len(live.Recordings)
+			w.mu.Unlock()
+		} else {
+			w.logger.Warn("list the capsules that run here", "error", err)
+		}
 	}
 	if err := connection.WriteJSON(hello); err != nil {
 		return err
@@ -347,11 +363,18 @@ func (w *Worker) executeRequest(ctx context.Context, request wireMessage) (wireM
 
 func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, error) {
 	switch request.Method {
+	case methodAccepts:
+		return acceptsReply{Accepts: w.hasRoom(ctx, "", "", 1)}, false, nil
 	case methodStartRecording:
 		var payload startRecordingPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {
 			return nil, false, err
 		}
+		release, ok := w.admit(ctx, "", payload.Recording.ID)
+		if !ok {
+			return nil, false, errors.New(runnerFull)
+		}
+		defer release()
 		var runtime domain.CapsuleRuntime
 		var err error
 		if stacker, ok := w.engine.(capsule.StackRecorder); ok && payload.Stack != nil {
@@ -395,6 +418,11 @@ func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, er
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {
 			return nil, false, err
 		}
+		release, ok := w.admit(ctx, payload.Composition.ID, "")
+		if !ok {
+			return nil, false, errors.New(runnerFull)
+		}
+		defer release()
 		var result domain.CapsuleRuntime
 		var err error
 		if payload.Authentication != nil {
@@ -880,6 +908,54 @@ func (w *Worker) stream(id string) (localStream, bool) {
 	defer w.mu.Unlock()
 	stream, ok := w.streams[id]
 	return stream, ok
+}
+
+// admit takes a place for a capsule about to start here, or says there is
+// none. Whether a capsule fits is this runner's call alone: what runs here
+// (Docker says, when it can), what is being started now, and its own
+// maximum. A capsule that already runs here (a start asked again after a
+// restart) is always let through: it takes no new place.
+func (w *Worker) admit(ctx context.Context, compositionID, recordingID string) (release func(), ok bool) {
+	w.mu.Lock()
+	w.starting++
+	w.mu.Unlock()
+	release = func() {
+		w.mu.Lock()
+		w.starting--
+		w.mu.Unlock()
+	}
+	if !w.hasRoom(ctx, compositionID, recordingID, 0) {
+		release()
+		return nil, false
+	}
+	return release, true
+}
+
+// hasRoom says whether extra more capsules fit next to the ones that run and
+// the ones being started.
+func (w *Worker) hasRoom(ctx context.Context, compositionID, recordingID string, extra int) bool {
+	limit := w.config.MaxWorkloads
+	if limit <= 0 {
+		return true
+	}
+	running := -1
+	if lister, ok := w.engine.(capsule.CapsuleLister); ok {
+		listCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		live, err := lister.LiveCapsules(listCtx)
+		cancel()
+		if err == nil {
+			if (compositionID != "" && slices.Contains(live.Compositions, compositionID)) || (recordingID != "" && slices.Contains(live.Recordings, recordingID)) {
+				return true
+			}
+			running = len(live.Compositions) + len(live.Recordings)
+		}
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if running < 0 {
+		running = w.liveWorkloads
+	}
+	return running+w.starting+extra <= limit
 }
 
 func (w *Worker) adjustLiveWorkloads(delta int) {

@@ -76,10 +76,22 @@ func (e *RemoteEngine) StartRecordingOnStack(ctx context.Context, recording doma
 }
 
 func (e *RemoteEngine) startRecording(ctx context.Context, recording domain.Recording, parents []domain.Artifact, stack *capsule.RecordingStack) (domain.CapsuleRuntime, error) {
-	target, err := e.broker.choose(ctx, "")
-	if err != nil {
-		return domain.CapsuleRuntime{}, err
+	for {
+		target, err := e.broker.chooseAccepting(ctx, nil)
+		if err != nil {
+			return domain.CapsuleRuntime{}, err
+		}
+		runtime, err := e.startRecordingOn(ctx, target, recording, parents, stack)
+		if isRunnerFull(err) {
+			// It filled up between the question and the start: another one.
+			target.refuse()
+			continue
+		}
+		return runtime, err
 	}
+}
+
+func (e *RemoteEngine) startRecordingOn(ctx context.Context, target *runnerPeer, recording domain.Recording, parents []domain.Artifact, stack *capsule.RecordingStack) (domain.CapsuleRuntime, error) {
 	if stack != nil {
 		needed := stack.Artifacts
 		if plan, err := capsule.PlanLayers(domain.Composition{Layers: stack.Layers}, stack.Artifacts); err == nil {
@@ -125,7 +137,6 @@ func (e *RemoteEngine) startRecording(ctx context.Context, recording domain.Reco
 		return domain.CapsuleRuntime{}, err
 	}
 	runtime.ClientID = peer.id
-	peer.addWorkload(1)
 	return runtime, nil
 }
 
@@ -143,7 +154,7 @@ func (e *RemoteEngine) Seal(ctx context.Context, recording domain.Recording) (do
 		return domain.CapsuleSnapshot{}, err
 	}
 	snapshot.ClientID = peer.id
-	peer.addWorkload(-1)
+	peer.freed()
 	e.broker.notifyAvailable()
 	return snapshot, nil
 }
@@ -158,7 +169,7 @@ func (e *RemoteEngine) Cancel(ctx context.Context, recording domain.Recording) e
 	}
 	peer, err := e.broker.call(ctx, affinity, methodCancelRecording, recordingPayload{Recording: recording}, nil)
 	if err == nil {
-		peer.addWorkload(-1)
+		peer.freed()
 		e.broker.notifyAvailable()
 	}
 	return err
@@ -257,12 +268,24 @@ func (e *RemoteEngine) materialize(ctx context.Context, composition domain.Compo
 	if plan, err := capsule.PlanLayers(composition, artifacts); err == nil {
 		needed = plan.Needed()
 	}
-	target, err := e.broker.choosePreferring(ctx, "", func(clientID string) bool {
-		return snapshotsAvailableOn(needed, clientID)
-	})
-	if err != nil {
-		return domain.CapsuleRuntime{}, err
+	for {
+		target, err := e.broker.chooseAccepting(ctx, func(clientID string) bool {
+			return snapshotsAvailableOn(needed, clientID)
+		})
+		if err != nil {
+			return domain.CapsuleRuntime{}, err
+		}
+		runtime, err := e.materializeOn(ctx, target, composition, artifacts, needed, authentication)
+		if isRunnerFull(err) {
+			// It filled up between the question and the start: another one.
+			target.refuse()
+			continue
+		}
+		return runtime, err
 	}
+}
+
+func (e *RemoteEngine) materializeOn(ctx context.Context, target *runnerPeer, composition domain.Composition, artifacts, needed []domain.Artifact, authentication *capsule.GitAuthentication) (domain.CapsuleRuntime, error) {
 	e.reportPlacement(composition.SessionID, target.id)
 	for index := range artifacts {
 		artifact := &artifacts[index]
@@ -287,7 +310,6 @@ func (e *RemoteEngine) materialize(ctx context.Context, composition domain.Compo
 		return domain.CapsuleRuntime{}, err
 	}
 	runtime.ClientID = peer.id
-	peer.addWorkload(1)
 	return runtime, nil
 }
 
@@ -316,7 +338,7 @@ func (e *RemoteEngine) Stop(ctx context.Context, runtime domain.CapsuleRuntime) 
 	}
 	peer, err := e.broker.call(ctx, runtime.ClientID, methodStop, runtimePayload{Runtime: runtime}, nil)
 	if err == nil {
-		peer.addWorkload(-1)
+		peer.freed()
 		e.broker.notifyAvailable()
 	}
 	return err

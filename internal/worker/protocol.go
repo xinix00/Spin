@@ -5,6 +5,7 @@ import (
 
 	"easyacp/internal/capsule"
 	"easyacp/internal/domain"
+	"strings"
 )
 
 const (
@@ -27,7 +28,10 @@ const (
 )
 
 const (
-	methodStartRecording     = "capsule.start_recording"
+	methodStartRecording = "capsule.start_recording"
+	// methodAccepts asks a runner whether it takes one more capsule now.
+	// Only the runner knows: what runs there and what it allows itself.
+	methodAccepts            = "capsule.accepts"
 	methodExecute            = "capsule.execute"
 	methodSeal               = "capsule.seal"
 	methodCancelRecording    = "capsule.cancel_recording"
@@ -94,6 +98,23 @@ type wireMessage struct {
 	// restarted) learns which of the processes it waits on are still there.
 	Streams         []string `json:"streams,omitempty"`
 	StreamsReported bool     `json:"streams_reported,omitempty"`
+	// Capsules are the capsules the runner really runs, with its hello: what
+	// the server counts against the runner's workloads, instead of what its
+	// state remembers.
+	Capsules *capsule.LiveCapsules `json:"capsules,omitempty"`
+}
+
+// acceptsReply is a runner's answer to methodAccepts.
+type acceptsReply struct {
+	Accepts bool `json:"accepts"`
+}
+
+// runnerFull is how a runner refuses a capsule that does not fit: the server
+// then asks another runner.
+const runnerFull = "runner full: no room for another capsule"
+
+func isRunnerFull(err error) bool {
+	return err != nil && strings.Contains(err.Error(), runnerFull)
 }
 
 type startRecordingPayload struct {

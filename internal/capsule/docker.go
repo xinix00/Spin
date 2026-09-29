@@ -177,6 +177,32 @@ func (d *Docker) StartRecordingOnStack(ctx context.Context, recording domain.Rec
 	return onStack(d.StartRecording(ctx, recording, []domain.Artifact{base}))
 }
 
+// LiveCapsules names the composition and recording capsules that run on this
+// daemon, by the labels they were started with.
+func (d *Docker) LiveCapsules(ctx context.Context) (LiveCapsules, error) {
+	output, err := d.control(ctx, "ps", "--filter", "label=spin.managed=true", "--filter", "status=running",
+		"--format", `{{.Label "spin.kind"}}	{{.Label "spin.composition_id"}}	{{.Label "spin.recording_id"}}`)
+	if err != nil {
+		return LiveCapsules{}, err
+	}
+	live := LiveCapsules{Compositions: []string{}, Recordings: []string{}}
+	for _, line := range strings.Split(output, "\n") {
+		// Only the line end goes: an empty last label is an empty last
+		// field, and trimming its tab away lost every composition.
+		fields := append(strings.Split(strings.TrimRight(line, "\r"), "\t"), "", "", "")
+		for index := range fields {
+			fields[index] = strings.TrimSpace(fields[index])
+		}
+		switch {
+		case fields[0] == "composition" && fields[1] != "":
+			live.Compositions = append(live.Compositions, fields[1])
+		case fields[0] == "recording" && fields[2] != "":
+			live.Recordings = append(live.Recordings, fields[2])
+		}
+	}
+	return live, nil
+}
+
 func (d *Docker) Execute(ctx context.Context, recording domain.Recording, input string) (Execution, error) {
 	if recording.Runtime == nil || recording.Runtime.Driver != "docker" || recording.Runtime.ContainerID == "" {
 		return Execution{}, errors.New("recording has no live Docker capsule")
