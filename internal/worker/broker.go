@@ -68,10 +68,12 @@ type runnerPeer struct {
 	// refusedUntil: the runner said it takes no more capsules; it is not
 	// asked again before this, unless a capsule stops there first.
 	refusedUntil time.Time
-	outbox       []wireMessage
-	wake         chan struct{}
-	pending      map[string]pendingCall
-	streams      map[string]*remoteProcess
+	// refusal is why it said no, for the error when nobody says yes.
+	refusal string
+	outbox  []wireMessage
+	wake    chan struct{}
+	pending map[string]pendingCall
+	streams map[string]*remoteProcess
 }
 
 func newRunnerPeer(client domain.Client) *runnerPeer {
@@ -222,9 +224,10 @@ func (p *runnerPeer) available() bool {
 }
 
 // refuse remembers that the runner takes nothing now.
-func (p *runnerPeer) refuse() {
+func (p *runnerPeer) refuse(reason string) {
 	p.mu.Lock()
 	p.refusedUntil = time.Now().Add(runnerRefusalPause)
+	p.refusal = reason
 	p.mu.Unlock()
 }
 
@@ -371,6 +374,12 @@ func (b *Broker) Handler(w http.ResponseWriter, r *http.Request) {
 			b.logger.Warn("reconcile the runner's capsules", "client_id", client.ID, "error", err)
 		} else if stopped > 0 {
 			b.logger.Warn("capsules the state had running no longer run on the runner; marked stopped", "client_id", client.ID, "name", client.Name, "stopped", stopped)
+		}
+		// And the other way: capsules the runner runs that the state does
+		// not have there are orphans taking its places. Everything that
+		// counts is kept by the server, so they go.
+		if compositions, recordings := b.store.OrphanCapsules(client.ID, hello.Capsules.Compositions, hello.Capsules.Recordings); len(compositions)+len(recordings) > 0 {
+			go b.removeOrphans(client, compositions, recordings)
 		}
 	}
 	b.notifyAvailable()
@@ -696,6 +705,20 @@ func (b *Broker) choosePreferring(ctx context.Context, affinity string, preferre
 	}
 }
 
+// removeOrphans has a runner remove capsules the server does not have there.
+func (b *Broker) removeOrphans(client domain.Client, compositions, recordings []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	b.logger.Warn("runner runs capsules the server does not have there; removing them", "client_id", client.ID, "name", client.Name, "compositions", compositions, "recordings", recordings)
+	peer, err := b.call(ctx, client.ID, methodRemoveCapsules, removeCapsulesPayload{Compositions: compositions, Recordings: recordings}, nil)
+	if err != nil {
+		b.logger.Warn("remove orphan capsules", "client_id", client.ID, "error", err)
+		return
+	}
+	peer.freed()
+	b.notifyAvailable()
+}
+
 // runnerRefusalPause is how long a runner that said it takes nothing is left
 // alone, unless a capsule stops there first.
 const runnerRefusalPause = 15 * time.Second
@@ -708,17 +731,18 @@ const runnerRefusalPause = 15 * time.Second
 func (b *Broker) chooseAccepting(ctx context.Context, preferred func(clientID string) bool) (*runnerPeer, error) {
 	for {
 		for _, peer := range b.candidates(preferred) {
-			if b.accepts(ctx, peer) {
+			accepts, reason := b.accepts(ctx, peer)
+			if accepts {
 				return peer, nil
 			}
 			if ctx.Err() != nil {
 				break
 			}
-			peer.refuse()
+			peer.refuse(reason)
 		}
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("%w: no runner accepts another capsule now: %v", errNoRunner, ctx.Err())
+			return nil, fmt.Errorf("%w: no runner accepts another capsule now (%s): %v", errNoRunner, b.refusals(), ctx.Err())
 		case <-b.available:
 		case <-time.After(5 * time.Second):
 		}
@@ -749,16 +773,46 @@ func (b *Broker) candidates(preferred func(clientID string) bool) []*runnerPeer 
 	return append(first, rest...)
 }
 
-// accepts asks the runner. A runner from before the question decides at the
-// start itself, so it counts as a yes.
-func (b *Broker) accepts(ctx context.Context, peer *runnerPeer) bool {
+// accepts asks the runner, and says why when it says no. A runner from
+// before the question decides at the start itself, so it counts as a yes.
+func (b *Broker) accepts(ctx context.Context, peer *runnerPeer) (bool, string) {
 	askCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var reply acceptsReply
 	if _, err := b.call(askCtx, peer.id, methodAccepts, struct{}{}, &reply); err != nil {
-		return strings.Contains(err.Error(), "unsupported runner method")
+		if strings.Contains(err.Error(), "unsupported runner method") {
+			return true, ""
+		}
+		return false, fmt.Sprintf("%s: %v", peer.name, err)
 	}
-	return reply.Accepts
+	if reply.Accepts {
+		return true, ""
+	}
+	return false, fmt.Sprintf("%s: %d of %d capsules run", peer.name, reply.Running, reply.Limit)
+}
+
+// refusals are the reasons connected runners gave for their last no.
+func (b *Broker) refusals() string {
+	b.mu.Lock()
+	peers := make([]*runnerPeer, 0, len(b.order))
+	for _, id := range b.order {
+		if peer := b.peers[id]; peer != nil {
+			peers = append(peers, peer)
+		}
+	}
+	b.mu.Unlock()
+	var reasons []string
+	for _, peer := range peers {
+		peer.mu.Lock()
+		if peer.connected && peer.refusal != "" && time.Now().Before(peer.refusedUntil) {
+			reasons = append(reasons, peer.refusal)
+		}
+		peer.mu.Unlock()
+	}
+	if len(reasons) == 0 {
+		return "no runner is connected"
+	}
+	return strings.Join(reasons, "; ")
 }
 
 func (b *Broker) call(ctx context.Context, affinity, method string, request, response any) (*runnerPeer, error) {

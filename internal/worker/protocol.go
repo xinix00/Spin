@@ -31,7 +31,9 @@ const (
 	methodStartRecording = "capsule.start_recording"
 	// methodAccepts asks a runner whether it takes one more capsule now.
 	// Only the runner knows: what runs there and what it allows itself.
-	methodAccepts            = "capsule.accepts"
+	methodAccepts = "capsule.accepts"
+	// methodRemoveCapsules removes capsules the server no longer has.
+	methodRemoveCapsules     = "capsule.remove_capsules"
 	methodExecute            = "capsule.execute"
 	methodSeal               = "capsule.seal"
 	methodCancelRecording    = "capsule.cancel_recording"
@@ -107,6 +109,14 @@ type wireMessage struct {
 // acceptsReply is a runner's answer to methodAccepts.
 type acceptsReply struct {
 	Accepts bool `json:"accepts"`
+	// Running and Limit say why: what runs there and what it allows.
+	Running int `json:"running"`
+	Limit   int `json:"limit"`
+}
+
+type removeCapsulesPayload struct {
+	Compositions []string `json:"compositions"`
+	Recordings   []string `json:"recordings"`
 }
 
 // runnerFull is how a runner refuses a capsule that does not fit: the server

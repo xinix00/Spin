@@ -364,7 +364,23 @@ func (w *Worker) executeRequest(ctx context.Context, request wireMessage) (wireM
 func (w *Worker) invoke(ctx context.Context, request wireMessage) (any, bool, error) {
 	switch request.Method {
 	case methodAccepts:
-		return acceptsReply{Accepts: w.hasRoom(ctx, "", "", 1)}, false, nil
+		accepts, running, limit := w.room(ctx, "", "", 1)
+		return acceptsReply{Accepts: accepts, Running: running, Limit: limit}, false, nil
+	case methodRemoveCapsules:
+		var payload removeCapsulesPayload
+		if err := json.Unmarshal(request.Payload, &payload); err != nil {
+			return nil, false, err
+		}
+		remover, ok := w.engine.(capsule.CapsuleRemover)
+		if !ok {
+			return nil, false, errors.New("runner engine cannot remove capsules")
+		}
+		removed, err := remover.RemoveCapsules(ctx, payload.Compositions, payload.Recordings)
+		w.adjustLiveWorkloads(-removed)
+		if removed > 0 {
+			w.logger.Info("removed capsules the server no longer has", "containers", removed)
+		}
+		return nil, false, err
 	case methodStartRecording:
 		var payload startRecordingPayload
 		if err := json.Unmarshal(request.Payload, &payload); err != nil {
@@ -934,18 +950,24 @@ func (w *Worker) admit(ctx context.Context, compositionID, recordingID string) (
 // hasRoom says whether extra more capsules fit next to the ones that run and
 // the ones being started.
 func (w *Worker) hasRoom(ctx context.Context, compositionID, recordingID string, extra int) bool {
-	limit := w.config.MaxWorkloads
+	ok, _, _ := w.room(ctx, compositionID, recordingID, extra)
+	return ok
+}
+
+// room is hasRoom with its numbers: what runs (and starts) and the limit.
+func (w *Worker) room(ctx context.Context, compositionID, recordingID string, extra int) (ok bool, running, limit int) {
+	limit = w.config.MaxWorkloads
 	if limit <= 0 {
-		return true
+		return true, 0, 0
 	}
-	running := -1
+	running = -1
 	if lister, ok := w.engine.(capsule.CapsuleLister); ok {
 		listCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		live, err := lister.LiveCapsules(listCtx)
 		cancel()
 		if err == nil {
 			if (compositionID != "" && slices.Contains(live.Compositions, compositionID)) || (recordingID != "" && slices.Contains(live.Recordings, recordingID)) {
-				return true
+				return true, len(live.Compositions) + len(live.Recordings), limit
 			}
 			running = len(live.Compositions) + len(live.Recordings)
 		}
@@ -955,7 +977,8 @@ func (w *Worker) hasRoom(ctx context.Context, compositionID, recordingID string,
 	if running < 0 {
 		running = w.liveWorkloads
 	}
-	return running+w.starting+extra <= limit
+	running += w.starting
+	return running+extra <= limit, running, limit
 }
 
 func (w *Worker) adjustLiveWorkloads(delta int) {

@@ -84,7 +84,7 @@ func (e *RemoteEngine) startRecording(ctx context.Context, recording domain.Reco
 		runtime, err := e.startRecordingOn(ctx, target, recording, parents, stack)
 		if isRunnerFull(err) {
 			// It filled up between the question and the start: another one.
-			target.refuse()
+			target.refuse(target.name + ": full at the start")
 			continue
 		}
 		return runtime, err
@@ -278,7 +278,7 @@ func (e *RemoteEngine) materialize(ctx context.Context, composition domain.Compo
 		runtime, err := e.materializeOn(ctx, target, composition, artifacts, needed, authentication)
 		if isRunnerFull(err) {
 			// It filled up between the question and the start: another one.
-			target.refuse()
+			target.refuse(target.name + ": full at the start")
 			continue
 		}
 		return runtime, err

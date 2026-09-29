@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -156,5 +157,29 @@ func TestAnUnbuiltCompositionLetsGoOfItsLoginAtStart(t *testing.T) {
 	}
 	if _, err := st.HandOutLogin("cmp_attempt_3", key, true); err != nil {
 		t.Fatalf("after the start the login is still held: %v", err)
+	}
+}
+
+// A runner's orphans are the capsules it runs that the state does not have
+// running there: unknown, stopped, finished, or placed elsewhere. What runs
+// there, and what exists without a runtime (being built), is no orphan.
+func TestOrphanCapsulesAreWhatTheStateDoesNotHaveThere(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, composition := range []domain.Composition{
+		{ID: "cmp_live", Runtime: &domain.CapsuleRuntime{ClientID: "cli_a", Status: "ready"}},
+		{ID: "cmp_stopped", Runtime: &domain.CapsuleRuntime{ClientID: "cli_a", Status: "stopped"}},
+		{ID: "cmp_elsewhere", Runtime: &domain.CapsuleRuntime{ClientID: "cli_b", Status: "ready"}},
+		{ID: "cmp_building"},
+	} {
+		if err := st.PutCompositionForTest(composition); err != nil {
+			t.Fatal(err)
+		}
+	}
+	compositions, recordings := st.OrphanCapsules("cli_a", []string{"cmp_live", "cmp_stopped", "cmp_elsewhere", "cmp_building", "cmp_unknown"}, []string{"rec_unknown"})
+	if strings.Join(compositions, ",") != "cmp_stopped,cmp_elsewhere,cmp_unknown" || strings.Join(recordings, ",") != "rec_unknown" {
+		t.Fatalf("orphans %v %v", compositions, recordings)
 	}
 }

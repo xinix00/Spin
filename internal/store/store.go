@@ -785,6 +785,36 @@ func (s *Store) SetCompositionAgent(compositionID, streamID string, agent *domai
 	return s.saveLocked()
 }
 
+// OrphanCapsules names the capsules a runner runs that the state does not have
+// running there: unknown, stopped, finished, or placed on another runner. A
+// start the server gave up on while the runner still made the container
+// leaves one, and so does a stop that never reached the runner. They take a
+// runner's places while nothing uses them. A composition or recording that
+// exists without a runtime is being built and is left alone.
+func (s *Store) OrphanCapsules(clientID string, compositions, recordings []string) (orphanCompositions, orphanRecordings []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range compositions {
+		composition, ok := s.state.Compositions[id]
+		if ok && composition.Runtime == nil {
+			continue
+		}
+		if !ok || composition.Runtime.Status == "stopped" || composition.Runtime.ClientID != clientID {
+			orphanCompositions = append(orphanCompositions, id)
+		}
+	}
+	for _, id := range recordings {
+		recording, ok := s.state.Recordings[id]
+		if ok && recording.Status == domain.RecordingOpen && recording.Runtime == nil {
+			continue
+		}
+		if !ok || recording.Status != domain.RecordingOpen || recording.Runtime.Status == "stopped" || recording.Runtime.ClientID != clientID {
+			orphanRecordings = append(orphanRecordings, id)
+		}
+	}
+	return orphanCompositions, orphanRecordings
+}
+
 // ReconcileClientCapsules marks every composition and recording the state
 // counts on the runner, but that the runner does not run, as stopped. A
 // capsule gets its runtime only once it runs, so one being started is not

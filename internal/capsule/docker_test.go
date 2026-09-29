@@ -563,3 +563,47 @@ func TestDockerLiveCapsulesLive(t *testing.T) {
 		t.Fatalf("a stopped capsule counts as running: %+v", live)
 	}
 }
+
+// Removing orphans takes exactly their containers: by kind and id, so a
+// composition that inherited a recording label from its layer image stays
+// when only that recording goes.
+func TestDockerRemoveCapsulesLive(t *testing.T) {
+	if os.Getenv("SPIN_DOCKER_LIVE") != "1" {
+		t.Skip("set SPIN_DOCKER_LIVE=1 to run the Docker integration")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	engine, err := NewDocker(ctx, DockerConfig{BaseImage: "alpine:3.24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	suffix := strings.ReplaceAll(time.Now().UTC().Format("150405.000000000"), ".", "")
+	start := func(name string, labels ...string) {
+		t.Helper()
+		args := []string{"run", "-d", "--pull=missing", "--name", name}
+		for _, label := range labels {
+			args = append(args, "--label", label)
+		}
+		if _, err := engine.control(ctx, append(args, "alpine:3.24", "sleep", "120")...); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = engine.removeContainer(context.Background(), name) })
+	}
+	start("spin-orphan-cmp-"+suffix, "spin.managed=true", "spin.kind=composition", "spin.composition_id=cmp_orphan_"+suffix)
+	start("spin-keep-cmp-"+suffix, "spin.managed=true", "spin.kind=composition", "spin.composition_id=cmp_keep_"+suffix, "spin.recording_id=rec_orphan_"+suffix)
+	start("spin-orphan-rec-"+suffix, "spin.managed=true", "spin.kind=recording", "spin.recording_id=rec_orphan_"+suffix)
+	removed, err := engine.RemoveCapsules(ctx, []string{"cmp_orphan_" + suffix}, []string{"rec_orphan_" + suffix})
+	if err != nil || removed != 2 {
+		t.Fatalf("removed %d, %v", removed, err)
+	}
+	live, err := engine.LiveCapsules(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(live.Compositions, "cmp_orphan_"+suffix) || slices.Contains(live.Recordings, "rec_orphan_"+suffix) {
+		t.Fatalf("an orphan is still there: %+v", live)
+	}
+	if !slices.Contains(live.Compositions, "cmp_keep_"+suffix) {
+		t.Fatal("a composition with the recording's label was removed with the recording")
+	}
+}

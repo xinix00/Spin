@@ -69,6 +69,12 @@ type CapsuleLister interface {
 	LiveCapsules(context.Context) (LiveCapsules, error)
 }
 
+// CapsuleRemover is an optional engine extension: it removes capsules the
+// server no longer has, which would otherwise take the runner's places.
+type CapsuleRemover interface {
+	RemoveCapsules(ctx context.Context, compositions, recordings []string) (int, error)
+}
+
 // GitAuthentication is resolved by the control plane immediately before a
 // checkout. It is never part of a Composition, Artifact or CapsuleRuntime.
 type GitAuthentication struct {

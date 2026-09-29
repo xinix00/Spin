@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,6 +26,8 @@ type fakeRunner struct {
 	client  domain.Client
 	accepts atomic.Bool
 	asked   atomic.Int32
+	// removed receives what the server asks it to remove.
+	removed chan removeCapsulesPayload
 }
 
 func connectFakeRunner(t *testing.T, address, instance string, capsules *capsule.LiveCapsules) *fakeRunner {
@@ -44,18 +47,26 @@ func connectFakeRunner(t *testing.T, address, instance string, capsules *capsule
 	if err := connection.ReadJSON(&welcome); err != nil || welcome.Client == nil {
 		t.Fatalf("welcome = %+v, %v", welcome, err)
 	}
-	runner := &fakeRunner{client: *welcome.Client}
+	runner := &fakeRunner{client: *welcome.Client, removed: make(chan removeCapsulesPayload, 4)}
 	go func() {
 		for {
 			var message wireMessage
 			if err := connection.ReadJSON(&message); err != nil {
 				return
 			}
-			if message.Type != messageRequest || message.Method != methodAccepts {
+			if message.Type != messageRequest {
 				continue
 			}
-			runner.asked.Add(1)
-			payload, _ := json.Marshal(acceptsReply{Accepts: runner.accepts.Load()})
+			var payload []byte
+			switch message.Method {
+			case methodAccepts:
+				runner.asked.Add(1)
+				payload, _ = json.Marshal(acceptsReply{Accepts: runner.accepts.Load(), Running: 6, Limit: 6})
+			case methodRemoveCapsules:
+				var remove removeCapsulesPayload
+				_ = json.Unmarshal(message.Payload, &remove)
+				runner.removed <- remove
+			}
 			_ = connection.WriteJSON(wireMessage{Version: ProtocolVersion, Type: messageResponse, ID: message.ID, Payload: payload})
 		}
 	}()
@@ -134,8 +145,8 @@ func TestAChoiceWaitsUntilARunnerHasRoom(t *testing.T) {
 	defer cancel()
 	runner.accepts.Store(false)
 	peer.freed()
-	if _, err := broker.chooseAccepting(ctx, nil); !errors.Is(err, errNoRunner) || !strings.Contains(err.Error(), "accepts") {
-		t.Fatalf("no runner with room: %v", err)
+	if _, err := broker.chooseAccepting(ctx, nil); !errors.Is(err, errNoRunner) || !strings.Contains(err.Error(), "busy: 6 of 6 capsules run") {
+		t.Fatalf("no runner with room does not say why: %v", err)
 	}
 }
 
@@ -219,5 +230,34 @@ func TestTheRunnerAdmitsByWhatRunsThere(t *testing.T) {
 	first()
 	if !w.hasRoom(ctx, "", "", 1) {
 		t.Fatal("a start that ended still holds its place")
+	}
+}
+
+// And the other way: a capsule a runner runs that the server does not have
+// there is an orphan taking a place. When the runner connects, it is told to
+// remove it; what the server has running there, and what is being built,
+// stays.
+func TestARunnerIsToldToRemoveItsOrphans(t *testing.T) {
+	broker, st, address := newAcceptsBroker(t)
+	first := connectFakeRunner(t, address, "laptop", nil)
+	if err := st.PutCompositionForTest(domain.Composition{ID: "cmp_live", Operator: "derek", Runtime: &domain.CapsuleRuntime{ClientID: first.client.ID, Status: "ready"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutCompositionForTest(domain.Composition{ID: "cmp_stopped", Operator: "derek", Runtime: &domain.CapsuleRuntime{ClientID: first.client.ID, Status: "stopped"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutCompositionForTest(domain.Composition{ID: "cmp_building", Operator: "derek"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = broker
+	again := connectFakeRunner(t, address, "laptop", &capsule.LiveCapsules{Compositions: []string{"cmp_live", "cmp_stopped", "cmp_building", "cmp_unknown"}, Recordings: []string{"rec_unknown"}})
+	select {
+	case removed := <-again.removed:
+		sort.Strings(removed.Compositions)
+		if strings.Join(removed.Compositions, ",") != "cmp_stopped,cmp_unknown" || strings.Join(removed.Recordings, ",") != "rec_unknown" {
+			t.Fatalf("asked to remove %+v", removed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the runner was never told to remove its orphans")
 	}
 }

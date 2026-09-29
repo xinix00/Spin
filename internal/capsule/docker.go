@@ -203,6 +203,36 @@ func (d *Docker) LiveCapsules(ctx context.Context) (LiveCapsules, error) {
 	return live, nil
 }
 
+// RemoveCapsules removes the containers of these compositions and recordings,
+// found by their labels (a composition started from a layer image carries
+// that image's recording label too, so the kind decides). It reports how many
+// containers went.
+func (d *Docker) RemoveCapsules(ctx context.Context, compositions, recordings []string) (int, error) {
+	removed := 0
+	var errs []error
+	remove := func(kind, label, id string) {
+		output, err := d.control(ctx, "ps", "-aq", "--filter", "label=spin.managed=true", "--filter", "label=spin.kind="+kind, "--filter", "label="+label+"="+id)
+		if err != nil {
+			errs = append(errs, err)
+			return
+		}
+		for _, container := range strings.Fields(output) {
+			if err := d.removeContainer(ctx, container); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			removed++
+		}
+	}
+	for _, id := range compositions {
+		remove("composition", "spin.composition_id", id)
+	}
+	for _, id := range recordings {
+		remove("recording", "spin.recording_id", id)
+	}
+	return removed, errors.Join(errs...)
+}
+
 func (d *Docker) Execute(ctx context.Context, recording domain.Recording, input string) (Execution, error) {
 	if recording.Runtime == nil || recording.Runtime.Driver != "docker" || recording.Runtime.ContainerID == "" {
 		return Execution{}, errors.New("recording has no live Docker capsule")
