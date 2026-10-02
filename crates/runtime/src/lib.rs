@@ -537,29 +537,6 @@ fn serve_inner<P: Persistence, H: Platform>(
             if let Err(error) = server.maintain_uploads(&now) {
                 H::log(format_args!("SPIN_UPLOAD_MAINTENANCE_FAILED error={error}"));
             }
-            if clock.millis().saturating_sub(maintained) >= 1000 {
-                if let Err(error) = server.maintain_storage(&now) {
-                    H::log(format_args!(
-                        "SPIN_STORAGE_MAINTENANCE_FAILED error={error}"
-                    ));
-                }
-                if let Err(error) = server.maintain_capsules(&now, runtime) {
-                    H::log(format_args!(
-                        "SPIN_CAPSULE_MAINTENANCE_FAILED error={error}"
-                    ));
-                    if capsule_diagnosed
-                        .is_none_or(|last| clock.millis().saturating_sub(last) >= 30_000)
-                    {
-                        server.capsule_diagnostics(
-                            now.time().map_or(0, |time| time.0 / 1_000_000),
-                            H::log,
-                        );
-                        capsule_diagnosed = Some(clock.millis());
-                    }
-                }
-                // A slow maintenance round must leave an interval for queued requests.
-                maintained = clock.millis();
-            }
         }
         let now_ms = clock.millis().saturating_sub(started);
         pump(&mut platform, &mut context)?;
@@ -1023,6 +1000,32 @@ fn serve_inner<P: Persistence, H: Platform>(
                     }
                 }
             }
+        }
+        // Het onderhoud van elke seconde komt ná de verzoeken van deze ronde: een
+        // verzoek dat de eigenaar uit zijn rust belt, wacht niet op de opslagtelling
+        // of de Replica-capture.
+        if !server.backup_active() && clock.millis().saturating_sub(maintained) >= 1000 {
+            if let Err(error) = server.maintain_storage(&now) {
+                H::log(format_args!(
+                    "SPIN_STORAGE_MAINTENANCE_FAILED error={error}"
+                ));
+            }
+            if let Err(error) = server.maintain_capsules(&now, runtime) {
+                H::log(format_args!(
+                    "SPIN_CAPSULE_MAINTENANCE_FAILED error={error}"
+                ));
+                if capsule_diagnosed
+                    .is_none_or(|last| clock.millis().saturating_sub(last) >= 30_000)
+                {
+                    server.capsule_diagnostics(
+                        now.time().map_or(0, |time| time.0 / 1_000_000),
+                        H::log,
+                    );
+                    capsule_diagnosed = Some(clock.millis());
+                }
+            }
+            // A slow maintenance round must leave an interval for queued requests.
+            maintained = clock.millis();
         }
         // Alleen werk dat door pollen vordert houdt de eigenaar wakker; de rest
         // komt met de deurbel of de vloertimer van het platform.
