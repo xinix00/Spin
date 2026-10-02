@@ -51,6 +51,7 @@ large_stack_arrays = "deny"
 [profile.release]
 panic = "abort"
 overflow-checks = true
-lto = true
-codegen-units = 1
+# Thin LTO en parallelle codegen-units: fat LTO met één unit liet dertien van de
+# veertien kernen stilstaan (02-10, een schone release duurde drie minuten per doel).
+lto = "thin"
 debug = true
