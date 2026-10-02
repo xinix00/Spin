@@ -45,11 +45,10 @@ cd "$ROOTDIR"
 
 # A release is a clean build: cargo does not notice a changed vendored crate
 # (third-party/rust, same version) and would ship the previously compiled one.
+# cargo clean --target leaves non-member artifacts behind (measured 1.93: the
+# vendored leanhttp survived it), so the release directories go as a whole.
 echo ">> clean release profile"
-cargo clean --offline --release
-for target in aarch64-unknown-none-softfloat riscv64gc-unknown-none-elf; do
-	cargo clean --offline --release --target "$target"
-done
+rm -rf target/release target/aarch64-unknown-none-softfloat/release target/riscv64gc-unknown-none-elf/release
 
 ASSETS=()
 echo ">> darwin/arm64 (client)"
