@@ -3752,3 +3752,36 @@ fn restart_fences_interrupted_login_writes_and_temporary_agent_probes() {
         Some(b"new".as_slice())
     );
 }
+
+#[test]
+fn accepted_step_releases_its_capsule_while_the_current_step_keeps_its_own() {
+    let state = PersistedState::from_json(br#"{
+      "jobs":{"job":{"id":"job","owner":"derek","status":"active","workflow_status":"busy","current_phase_run_id":"run2","branch":"jobs/#1/main","template_snapshot":{"id":"tpl","phases":[{"id":"develop","name":"Bouw","allow_changes":true,"accept":{"target":"review"},"reject":{"target":"SELF"}},{"id":"review","name":"Review","accept":{"target":"DONE"},"reject":{"target":"develop"}}]}}},
+      "sessions":{
+        "ses":{"id":"ses","job_id":"job","phase_run_id":"run","operator":"derek","status":"completed","prepared_composition_id":"cmp","git_ref":"jobs/#1/sessions/one"},
+        "ses2":{"id":"ses2","job_id":"job","phase_run_id":"run2","operator":"derek","status":"running","prepared_composition_id":"cmp2","git_ref":"jobs/#1/sessions/two"}},
+      "phase_runs":{
+        "run":{"id":"run","session_id":"ses","job_id":"job","phase_id":"develop","phase_name":"Bouw","status":"accepted","attempt":1},
+        "run2":{"id":"run2","session_id":"ses2","job_id":"job","phase_id":"review","phase_name":"Review","status":"running","attempt":1}},
+      "compositions":{
+        "cmp":{"id":"cmp","operator":"derek","session_id":"ses","runtime":{"driver":"docker","client_id":"client","container_id":"old","status":"ready"}},
+        "cmp2":{"id":"cmp2","operator":"derek","session_id":"ses2","runtime":{"driver":"docker","client_id":"client","container_id":"new","status":"ready"}}}
+    }"#).unwrap();
+    let fail = Cell::new(false);
+    let mut server = Server::new(Store::new(state, Memory(&fail)));
+    let now = time();
+    let mut random = Random(60000);
+    server.sweep_idle_capsules(&now, &mut random).unwrap();
+    let stopping = |id: &str| {
+        server
+            .store
+            .composition(id)
+            .unwrap()
+            .runtime
+            .as_ref()
+            .unwrap()
+            .stop_pending
+    };
+    assert!(stopping("cmp"), "the accepted step's capsule holds a login; it must stop");
+    assert!(!stopping("cmp2"), "the current step keeps its capsule");
+}

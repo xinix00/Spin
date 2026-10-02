@@ -264,6 +264,11 @@ impl<P: Persistence> Server<P> {
                 .sessions
                 .iter()
                 .find(|s| s.id == composition.session_id);
+            // Een geaccepteerde of afgewezen stap sluit zijn capsule: hij houdt
+            // anders zijn login en runnerplek vast terwijl de volgende stap erop
+            // wacht (02-10: de enige actieve claude-login zat in de capsule van
+            // de geaccepteerde Ontwikkel-stap, de Review bleef voor altijd in de
+            // wachtrij). Een stap die nog loopt, of op een mens wacht, blijft.
             let obsolete = match session {
                 None => true,
                 Some(session) if session.phase_run_id.is_empty() => false,
@@ -272,7 +277,22 @@ impl<P: Persistence> Server<P> {
                     .jobs
                     .iter()
                     .find(|j| j.id == session.job_id)
-                    .is_none_or(|j| matches!(j.status.as_str(), d::JOB_DONE | d::JOB_CANCELLED)),
+                    .is_none_or(|j| {
+                        matches!(j.status.as_str(), d::JOB_DONE | d::JOB_CANCELLED)
+                            || (j.current_phase_run_id != session.phase_run_id
+                                && snapshot
+                                    .phase_runs
+                                    .iter()
+                                    .find(|r| r.id == session.phase_run_id)
+                                    .is_none_or(|r| {
+                                        !matches!(
+                                            r.status.as_str(),
+                                            d::PHASE_RUN_QUEUED
+                                                | d::PHASE_RUN_RUNNING
+                                                | d::PHASE_RUN_PENDING
+                                        )
+                                    }))
+                    }),
             };
             if obsolete && let Some(wait) = self.begin_stop(&composition.id, now, random)? {
                 self.detach_capsule(wait);
