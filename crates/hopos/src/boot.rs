@@ -188,7 +188,19 @@ async fn serve(
         env!("CARGO_PKG_VERSION")
     );
     loop {
-        let mut tick = pin!(EXEC.get().after(Duration::from_millis(10)));
+        // Een ronde komt op werk (sockets, eigenaren, de uploader) of op een
+        // deadline van de domeinontdekking; de 10 ms is een uitstelbare
+        // vangrail die een slapende core niet wekt.
+        let deadline = retry
+            .iter()
+            .copied()
+            .filter(|at| *at != 0)
+            .chain((!discovered && discovery_retry != 0).then_some(discovery_retry))
+            .min();
+        let mut tick = pin!(match deadline {
+            Some(at) => EXEC.get().until(at),
+            None => EXEC.get().after_deferrable(Duration::from_millis(10)),
+        });
         poll_fn(|cx| -> Poll<Result> {
             if let Err(error) = transport.poll(&mut network, cx) {
                 return Poll::Ready(Err(error));

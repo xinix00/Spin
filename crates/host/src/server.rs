@@ -72,7 +72,7 @@ impl Platform for Host<'_> {
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
-    fn idle(&mut self) -> Result {
+    fn idle(&mut self, _: &spin_runtime::Mailbox, _: bool) -> Result {
         executor::idle();
         Ok(())
     }

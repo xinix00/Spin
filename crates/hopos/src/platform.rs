@@ -73,11 +73,27 @@ impl Platform for Native<'_> {
     fn stopped(&self) -> bool {
         self.app.ctrl().kill_requested()
     }
-    fn idle(&mut self) -> Result {
-        self.wait
-            .ok_or(Error::Http(503, "transport has no application stack"))?
-            .wait(EXEC.get().after(Duration::from_millis(10)))
-            .map_err(|_| Error::Http(503, "server cancelled"))
+    /// De eigenaar slaapt tot de deurbel of de vloer: 10 ms zolang er werk is
+    /// dat alleen door pollen vordert, anders één seconde (de cadans van zijn
+    /// onderhoud). Zo wekt een stille tenant de core niet honderd keer per
+    /// seconde (handboek §4: de meetlat is wekken per seconde).
+    fn idle(&mut self, mail: &spin_runtime::Mailbox, busy: bool) -> Result {
+        let wait = self
+            .wait
+            .ok_or(Error::Http(503, "transport has no application stack"))?;
+        let mut floor = pin!(
+            EXEC.get()
+                .after(Duration::from_millis(if busy { 10 } else { 1000 }))
+        );
+        let mut bell = pin!(mail.nudged());
+        wait.wait(core::future::poll_fn(|cx| {
+            if bell.as_mut().poll(cx).is_ready() || floor.as_mut().poll(cx).is_ready() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }))
+        .map_err(|_| Error::Http(503, "server cancelled"))
     }
     fn log(message: core::fmt::Arguments<'_>) {
         applib::log!("{message}");

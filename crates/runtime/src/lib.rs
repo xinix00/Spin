@@ -46,8 +46,11 @@ pub trait Platform {
     fn timestamp(&self) -> Result<Timestamp>;
     /// Vraagt de eigenaar te stoppen en alle sockettaken te droppen.
     fn stopped(&self) -> bool;
-    /// Geeft netwerkpompen en andere platformtaken een ronde.
-    fn idle(&mut self) -> Result;
+    /// Geeft netwerkpompen en andere platformtaken een ronde en laat de eigenaar
+    /// rusten tot [`Mailbox::nudge`] of een vloertimer; `busy` zegt dat er werk
+    /// ligt dat alleen door pollen vordert (wachtwoorden, uitgaande HTTP, een
+    /// staat-push), zodat het platform dan kort slaapt.
+    fn idle(&mut self, mail: &Mailbox, busy: bool) -> Result;
     /// Schrijft één diagnostische regel zonder verzoekinhoud.
     fn log(message: core::fmt::Arguments<'_>);
 }
@@ -99,6 +102,10 @@ pub struct Mailbox {
     slots: Local<RefCell<[Slot; CONNECTIONS]>>,
     health: Local<RefCell<Option<Response>>>,
     active: Cell<bool>,
+    /// De deurbel van de eigenaar: level-triggered en samengevoegd, tien
+    /// bellen in één idle zijn er één.
+    nudged: Cell<bool>,
+    bell: Local<RefCell<Option<core::task::Waker>>>,
 }
 impl Default for Mailbox {
     fn default() -> Self {
@@ -106,7 +113,32 @@ impl Default for Mailbox {
             slots: Local(RefCell::new(core::array::from_fn(|_| Slot::default()))),
             health: Local(RefCell::new(None)),
             active: Cell::new(false),
+            nudged: Cell::new(false),
+            bell: Local(RefCell::new(None)),
         }
+    }
+}
+impl Mailbox {
+    /// Belt de eigenaar: een sockettaak legde iets in een slot, of een
+    /// platformtaak rondde werk af. De eigenaar verlaat zijn idle in de
+    /// volgende ronde.
+    pub fn nudge(&self) {
+        self.nudged.set(true);
+        if let Some(waker) = self.bell.0.borrow_mut().take() {
+            waker.wake();
+        }
+    }
+    /// Wacht tot er gebeld is; een bel die tijdens het werk viel, wordt bij
+    /// de volgende idle meteen gezien.
+    pub fn nudged(&self) -> impl Future<Output = ()> + '_ {
+        core::future::poll_fn(move |cx| {
+            if self.nudged.replace(false) {
+                Poll::Ready(())
+            } else {
+                *self.bell.0.borrow_mut() = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        })
     }
 }
 pub(crate) type Mail = Mailbox;
@@ -169,6 +201,9 @@ impl<'a> Transport<'a> {
                 .is_some_and(|task| task.as_mut().poll(context).is_ready())
             {
                 self.tasks[index] = None;
+                // Een vrijgekomen slot kan een wachtende verbinding aannemen:
+                // nog een ronde, ook zonder tik.
+                context.waker().wake_by_ref();
             }
         }
         Ok(())
@@ -330,6 +365,7 @@ async fn connection<H: Platform>(
                 slots[index].routed = true;
                 slots[index].request = Some(input);
             }
+            mail.nudge();
             let response = core::future::poll_fn(|_| {
                 let mut slots = mail.slots.0.borrow_mut();
                 if slots[index].abort {
@@ -371,6 +407,7 @@ async fn connection<H: Platform>(
                 if streaming {
                     loop {
                         mail.slots.0.borrow_mut()[index].next_chunk = true;
+                        mail.nudge();
                         let chunk = core::future::poll_fn(|_| {
                             let mut slots = mail.slots.0.borrow_mut();
                             if slots[index].abort {
@@ -736,7 +773,8 @@ fn serve_inner<P: Persistence, H: Platform>(
             }
         }
         if server.backup_active() {
-            platform.idle()?;
+            // De export stroomt per chunk op de deurbel van zijn socket; kort slapen.
+            platform.idle(mail, true)?;
             continue;
         }
         for (index, link) in terminals.iter().enumerate() {
@@ -986,7 +1024,15 @@ fn serve_inner<P: Persistence, H: Platform>(
                 }
             }
         }
-        platform.idle()?;
+        // Alleen werk dat door pollen vordert houdt de eigenaar wakker; de rest
+        // komt met de deurbel of de vloertimer van het platform.
+        let busy = passwords.iter().any(Option::is_some)
+            || outgoing.active()
+            || watches
+                .iter()
+                .flatten()
+                .any(|watch| watch.version != server.version());
+        platform.idle(mail, busy)?;
     }
     Ok(())
 }

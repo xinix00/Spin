@@ -193,6 +193,7 @@ async fn request(
         slots[index].routed = true;
         slots[index].request = Some(input);
     }
+    mail.nudge();
     core::future::poll_fn(|_| {
         let mut slots = mail.slots.0.borrow_mut();
         if slots[index].abort {

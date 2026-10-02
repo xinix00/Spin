@@ -86,6 +86,12 @@ uploadtaak per tenant zet de delen naar S3 terwijl de eigenaar verzoeken blijft
 bedienen, en de eigenaar rondt af met manifest en marker. Vóór die splitsing
 parkeerde de eigenaar 13 tot 17 s per beurt van 15 s op de Bunny-PUT's
 (gemeten 02-10-2026 op bollenloods).
+De eigenaar en de boot-lus tikken niet meer elke 10 ms: een sockettaak of de
+uploader belt de eigenaar (`Mailbox::nudge`) zodra er iets in een slot ligt, en
+de eigenaar slaapt anders tot een vloer van één seconde (10 ms zolang er werk is
+dat alleen door pollen vordert: wachtwoorden, uitgaande HTTP, een staat-push).
+De boot-lus wacht op werk of een deadline van de domeinontdekking, met een
+uitstelbare vangrail van 10 ms die een slapende core niet wekt (HopOS-handboek §4).
 
 | Variabele | Betekenis |
 | --- | --- |

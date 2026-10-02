@@ -116,6 +116,7 @@ pub(super) fn owner<'a>(
                         applib::clock::now_ns().saturating_sub(started) / 1_000_000
                     );
                     uploads.done(pending, result);
+                    mail.nudge();
                 }
             })
         }

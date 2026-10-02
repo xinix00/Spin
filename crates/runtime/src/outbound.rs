@@ -20,6 +20,10 @@ impl Pool {
             pending: core::array::from_fn(|_| None),
         }
     }
+    /// Of er een providerverzoek loopt; die vorderen alleen door pollen.
+    pub(crate) fn active(&self) -> bool {
+        self.pending.iter().any(Option::is_some)
+    }
     pub(crate) fn poll<H: Platform, P: Persistence>(
         &mut self,
         platform: &H,

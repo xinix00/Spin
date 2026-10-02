@@ -73,6 +73,8 @@ impl Drop for Claim<'_> {
             } else {
                 slots[self.index] = Slot::default();
             }
+            drop(slots);
+            mail.nudge();
         }
     }
 }

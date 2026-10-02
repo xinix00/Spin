@@ -106,9 +106,11 @@ pub(crate) async fn serve<C: leanhttp::Conn>(
                             Event::Pong(_) => {
                                 pong_at = clock.millis();
                                 mail.slots.0.borrow_mut()[index].touched = true;
+                                mail.nudge();
                             }
                             Event::Ping(payload) => {
                                 mail.slots.0.borrow_mut()[index].touched = true;
+                                mail.nudge();
                                 if runner {
                                     pong_at = clock.millis();
                                 }
@@ -153,6 +155,8 @@ pub(crate) async fn serve<C: leanhttp::Conn>(
                 let mut slots = mail.slots.0.borrow_mut();
                 slots[index].frame_bytes = 0;
                 slots[index].acknowledged = frame.ticket;
+                drop(slots);
+                mail.nudge();
             }
             Wake::Ping => {
                 raw.set_write_timeout(Some(Duration::from_secs(20)))?;
@@ -189,6 +193,7 @@ async fn deliver_browser(mail: &Mail, index: usize, data: &[u8]) -> leanhttp::Re
     })
     .await?;
     mail.slots.0.borrow_mut()[index].browser = Some(message);
+    mail.nudge();
     Ok(())
 }
 
@@ -210,5 +215,6 @@ async fn deliver(mail: &Mail, index: usize, data: &[u8]) -> leanhttp::Result {
     })
     .await?;
     mail.slots.0.borrow_mut()[index].incoming = Some(message);
+    mail.nudge();
     Ok(())
 }
