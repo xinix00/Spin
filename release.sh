@@ -43,6 +43,14 @@ mkdir -p "$OUTDIR"
 export CARGO_INCREMENTAL=0 SQLITE_CC="$LLVM/clang" SQLITE_AR="$LLVM/llvm-ar"
 cd "$ROOTDIR"
 
+# A release is a clean build: cargo does not notice a changed vendored crate
+# (third-party/rust, same version) and would ship the previously compiled one.
+echo ">> clean release profile"
+cargo clean --offline --release
+for target in aarch64-unknown-none-softfloat riscv64gc-unknown-none-elf; do
+	cargo clean --offline --release --target "$target"
+done
+
 ASSETS=()
 echo ">> darwin/arm64 (client)"
 cargo build --offline --release -p spin-host --bin spin-client
