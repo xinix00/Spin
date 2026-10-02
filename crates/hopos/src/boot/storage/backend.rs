@@ -174,6 +174,10 @@ impl<'a> Backend<'a> {
             written: 0,
         }
     }
+    /// De databasenaam waaronder ook de Replica-spool en -markers staan.
+    pub(in crate::boot) fn database(&self) -> &str {
+        &self.database
+    }
     fn name(&self, name: &CStr) -> replica_sqlite::Result<Name> {
         let name = name.to_str().map_err(|_| replica_sqlite::Error::TEXT)?;
         let suffix = if let Some(suffix) = name.strip_prefix("spin.sqlite") {

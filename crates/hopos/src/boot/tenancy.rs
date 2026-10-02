@@ -1,6 +1,8 @@
 //! Domain discovery and one parked application stack per isolated database.
 use super::*;
+use crate::{outbound::Dial, s3::Network};
 use alloc::string::String;
+use core::{future::poll_fn, pin::Pin, task::Poll};
 use spin_runtime::tenancy::{Tenants, normalize_host};
 
 pub(super) fn database(app: &App, domain: &str) -> Result<String> {
@@ -87,10 +89,44 @@ pub(super) fn owner<'a>(
     cipher: &'a Cipher,
     domain: String,
     mail: &'a spin_runtime::Mailbox,
+    uploads: &'a storage::Uploads,
 ) -> Result<impl Future<Output = Result> + Unpin + 'a> {
+    uploads.reset();
+    let mut uploader = if storage::replicating(app) {
+        let client = storage::s3_client(app).map_err(failure)?;
+        let tag = spin_domain::try_string(&domain)?;
+        // SAFETY: A separate stack and backend own only Replica's spool reads and one S3
+        // connection. They never enter SQLite; the owner keeps marker and tracking.
+        let task = unsafe {
+            Task::new(2 << 20, move |s| -> Result {
+                let wait = Wait(s);
+                let mut remote =
+                    storage::Bucket::new(client, Network::new(Dial { app, net }), Wait(s))
+                        .map_err(|_| Error::Http(503, "invalid Replica S3 configuration"))?;
+                loop {
+                    let (pending, database) = s
+                        .wait(uploads.next())
+                        .map_err(|_| Error::Http(503, "replica upload cancelled"))?;
+                    let mut backend = storage::Backend::new(files, &wait, database);
+                    let started = applib::clock::now_ns();
+                    let result = pending.upload(&mut backend, &mut remote);
+                    applib::log!(
+                        "SPIN_REPLICA_UPLOADED domain={tag} ok={} ms={}",
+                        result.is_ok(),
+                        applib::clock::now_ns().saturating_sub(started) / 1_000_000
+                    );
+                    uploads.done(pending, result);
+                }
+            })
+        }
+        .map_err(|_| Error::Http(503, "replica upload stack allocation failed"))?;
+        Some(task)
+    } else {
+        None
+    };
     // SAFETY: This bounded stack owns one Store and all its SQLite calls. Arena loans
     // exclude every other SQLite engine and are returned only after Engine::drop.
-    unsafe {
+    let mut owner = unsafe {
         Task::new(8 << 20, move |s| -> Result {
             let wait = Wait(s);
             if app.env("SPIN_DATABASE").is_none_or(|s| s.is_empty()) {
@@ -115,9 +151,17 @@ pub(super) fn owner<'a>(
             let bridge = storage::Backend::new(files, &wait, path);
             let cipher = Cipher::from_encoded(&cipher.portable_key()?)?;
             let mut random = Random::open(app)?;
-            let mut persistence =
-                storage::Owner::new(arena, bridge, cipher, Random::open(app)?, app, net, &domain)
-                    .map_err(failure)?;
+            let mut persistence = storage::Owner::new(
+                arena,
+                bridge,
+                cipher,
+                Random::open(app)?,
+                app,
+                net,
+                &domain,
+                uploads,
+            )
+            .map_err(failure)?;
             let state = persistence
                 .load(|| {
                     random
@@ -178,5 +222,15 @@ pub(super) fn owner<'a>(
             )
         })
     }
-    .map_err(|_| Error::Http(503, "SQLite stack allocation failed"))
+    .map_err(|_| Error::Http(503, "SQLite stack allocation failed"))?;
+    // The uploader only ends by failing; the owner then stops with it, like a lost lease.
+    Ok(poll_fn(move |cx| {
+        if let Some(task) = &mut uploader
+            && let Poll::Ready(result) = Pin::new(task).poll(cx)
+        {
+            applib::log!("SPIN_REPLICA_UPLOADER_STOPPED");
+            return Poll::Ready(result.and(Err(Error::Http(503, "replica uploader stopped"))));
+        }
+        Pin::new(&mut owner).poll(cx)
+    }))
 }

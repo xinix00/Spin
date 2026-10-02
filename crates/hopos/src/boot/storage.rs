@@ -16,9 +16,11 @@ use spin_security::Cipher;
 use spin_store::{BlobReply, BlobRequest, Persistence};
 mod backend;
 mod restore;
+mod upload;
 pub(super) use backend::{Arena, Backend, FilesPool};
+pub(super) use upload::Uploads;
 
-type Bucket<'a> = replica_s3::S3<Network, Wait<'a>>;
+pub(super) type Bucket<'a> = replica_s3::S3<Network, Wait<'a>>;
 pub(super) struct Owner<'a> {
     heap: &'a Arena,
     backend: Backend<'a>,
@@ -34,6 +36,7 @@ pub(super) struct Owner<'a> {
     namespace: String,
     replica: Option<Replica>,
     bucket: Option<Bucket<'a>>,
+    uploads: &'a Uploads,
 }
 enum Op<'a> {
     Usage,
@@ -67,6 +70,43 @@ fn time(now: &Timestamp) -> spin_store::Result<Time> {
 }
 fn wall() -> u64 {
     applib::app().and_then(|a| a.wall_ns()).unwrap_or(0) / 1_000_000_000
+}
+/// Alleen `SPIN_REPLICATION=off` laat een database zonder Replica draaien.
+pub(super) fn replicating(app: &App) -> bool {
+    !app.env("SPIN_REPLICATION")
+        .unwrap_or("")
+        .eq_ignore_ascii_case("off")
+}
+/// De S3-configuratie uit de omgeving; de eigenaar en zijn uploader delen haar,
+/// ieder met een eigen verbinding.
+pub(super) fn s3_client(app: &App) -> spin_store::Result<leans3::Client> {
+    let env = |key| app.env(key).unwrap_or("").trim();
+    for key in [
+        "SPIN_S3_ENDPOINT",
+        "SPIN_S3_BUCKET",
+        "SPIN_S3_ACCESS_KEY",
+        "SPIN_S3_SECRET_KEY",
+    ] {
+        if env(key).is_empty() {
+            return Err(spin_store::Error::Conflict(
+                "Replica needs SPIN_S3_* configuration; use SPIN_REPLICATION=off for development",
+            ));
+        }
+    }
+    Ok(leans3::Client {
+        endpoint: spin_domain::try_string(env("SPIN_S3_ENDPOINT"))?,
+        bucket: spin_domain::try_string(env("SPIN_S3_BUCKET"))?,
+        region: spin_domain::try_string(if env("SPIN_S3_REGION").is_empty() {
+            "us-east-1"
+        } else {
+            env("SPIN_S3_REGION")
+        })?,
+        access_key_id: spin_domain::try_string(env("SPIN_S3_ACCESS_KEY"))?,
+        secret_access_key: spin_domain::try_string(env("SPIN_S3_SECRET_KEY"))?,
+        session_token: String::new(),
+        path_style: true,
+        now: Some(wall),
+    })
 }
 fn duration(value: &str, default: u64) -> spin_store::Result<u64> {
     if value.is_empty() {
@@ -115,6 +155,7 @@ fn sql<B: Storage>(
     }
 }
 impl<'a> Owner<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         heap: &'a Arena,
         mut backend: Backend<'a>,
@@ -123,29 +164,15 @@ impl<'a> Owner<'a> {
         app: &'static App,
         net: &'static Net,
         domain: &str,
+        uploads: &'a Uploads,
     ) -> spin_store::Result<Self> {
         let wait = backend.wait;
         let mut replica = None;
         let mut bucket = None;
         let mut saved_namespace = String::new();
-        if !app
-            .env("SPIN_REPLICATION")
-            .unwrap_or("")
-            .eq_ignore_ascii_case("off")
-        {
+        if replicating(app) {
+            let client = s3_client(app)?;
             let env = |key| app.env(key).unwrap_or("").trim();
-            for key in [
-                "SPIN_S3_ENDPOINT",
-                "SPIN_S3_BUCKET",
-                "SPIN_S3_ACCESS_KEY",
-                "SPIN_S3_SECRET_KEY",
-            ] {
-                if env(key).is_empty() {
-                    return Err(spin_store::Error::Conflict(
-                        "Replica needs SPIN_S3_* configuration; use SPIN_REPLICATION=off for development",
-                    ));
-                }
-            }
             let prefix = env("SPIN_S3_PREFIX").trim_matches('/');
             let prefix = if prefix.is_empty() { "spin" } else { prefix };
             let domain = if domain.is_empty() { "spin" } else { domain };
@@ -171,20 +198,6 @@ impl<'a> Owner<'a> {
             config.generation = duration(env("SPIN_REPLICA_GENERATION"), 7 * 86400)?;
             config.retention = duration(env("SPIN_REPLICA_RETENTION"), 28 * 86400)?;
             config.adopt_local = env("SPIN_REPLICA_ADOPT_LOCAL") == "1";
-            let client = leans3::Client {
-                endpoint: spin_domain::try_string(env("SPIN_S3_ENDPOINT"))?,
-                bucket: spin_domain::try_string(env("SPIN_S3_BUCKET"))?,
-                region: spin_domain::try_string(if env("SPIN_S3_REGION").is_empty() {
-                    "us-east-1"
-                } else {
-                    env("SPIN_S3_REGION")
-                })?,
-                access_key_id: spin_domain::try_string(env("SPIN_S3_ACCESS_KEY"))?,
-                secret_access_key: spin_domain::try_string(env("SPIN_S3_SECRET_KEY"))?,
-                session_token: String::new(),
-                path_style: true,
-                now: Some(wall),
-            };
             let mut remote = Bucket::new(client, Network::new(Dial { app, net }), Wait(wait.0))
                 .map_err(|_| spin_store::Error::Conflict("invalid Replica S3 configuration"))?;
             let now =
@@ -227,6 +240,7 @@ impl<'a> Owner<'a> {
             namespace: saved_namespace,
             replica,
             bucket,
+            uploads,
         })
     }
     fn execute(&mut self, op: Op<'_>) -> spin_store::Result<Reply> {
@@ -441,17 +455,36 @@ impl Persistence for Owner<'_> {
             _ => Err(spin_store::Error::Storage(21)),
         }
     }
+    /// De Replica-beurt in drie stappen: de capture hier, de upload van de delen
+    /// op de stack van de uploader, de afronding weer hier. Zo bedient deze
+    /// eigenaar verzoeken terwijl de delen naar S3 gaan.
     fn maintain(&mut self, now: &Timestamp) -> spin_store::Result {
         if self.poisoned {
             return Err(spin_store::Error::StorageUncertain(10));
         }
-        if let (Some(replica), Some(bucket)) = (&mut self.replica, &mut self.bucket)
-            && let Some(done) = replica
-                .tick(&mut self.backend, bucket, time(now)?)
+        let (Some(replica), Some(bucket)) = (&mut self.replica, &mut self.bucket) else {
+            return Ok(());
+        };
+        let now = time(now)?;
+        if let Some((pending, uploaded)) = self.uploads.take_done() {
+            if replica
+                .finish(&mut self.backend, bucket, pending, uploaded, now)
                 .map_err(replica_error)?
-            && done.published
+                .published
+            {
+                applib::log!("SPIN_REPLICA_SYNCED");
+            }
+            return Ok(());
+        }
+        if self.uploads.busy() {
+            return Ok(());
+        }
+        if let Some(pending) = replica
+            .begin(&mut self.backend, bucket, now)
+            .map_err(replica_error)?
         {
-            applib::log!("SPIN_REPLICA_SYNCED");
+            let database = spin_domain::try_string(self.backend.database())?;
+            self.uploads.start(pending, database);
         }
         Ok(())
     }

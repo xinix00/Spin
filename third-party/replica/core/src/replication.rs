@@ -3,14 +3,14 @@ use crate::{
     Error, Result,
     capture::Capture,
     local::Name,
-    manifest::Manifest,
+    manifest::{Manifest, Part},
     marker::{self, LocalMarker, Marker},
     object::{self, Store, StoreError},
     reserve, string,
     time::Time,
     tracking::Tracking,
 };
-use alloc::string::String;
+use alloc::{string::String, vec::Vec};
 use core::fmt::Write;
 use replica_sqlite::Storage;
 /// Een capture blijft aan precies één generatie en voorganger gekoppeld.
@@ -85,31 +85,68 @@ impl Batch {
             previous_sequence: local.value.sequence,
         }))
     }
-    /// Onderdelen eerst, manifest laatst. Na een nieuwe snapshot volgt current;
-    /// de vorige generatie blijft bruikbaar als een eerdere stap faalt.
-    /// SQL mag tussen capture en deze call schrijven; die pagina's blijven dirty.
-    pub fn publish<B: Storage, S: Store>(
-        self,
-        b: &mut B,
-        store: &mut S,
-        namespace: &str,
-        local: &mut LocalMarker,
-        tracking: &mut Tracking,
-        now: Time,
-    ) -> Result {
+    fn check(&self, local: &LocalMarker) -> Result {
         if local.value.generation != self.generation
             || local.value.sequence != self.previous_sequence
             || local.value.uncertain != 0
         {
             return Err(Error::State);
         }
+        Ok(())
+    }
+    /// Kiest de generatieprefix en een verse attempt-prefix voor de delen; geen netwerk.
+    pub fn stage<B: Storage>(
+        &self,
+        b: &mut B,
+        namespace: &str,
+        local: &LocalMarker,
+        now: Time,
+    ) -> Result<Staged> {
+        self.check(local)?;
         let prefix = generation_prefix(namespace, &self.generation)?;
         let attempt = marker::new_generation(b, now)?;
         let data_prefix = object::key(
             &object::key(&prefix, "data/")?,
             &object::key(&attempt, "/")?,
         )?;
-        let parts = self.capture.upload(b, store, &data_prefix)?;
+        Ok(Staged {
+            namespace: string(namespace)?,
+            prefix,
+            data_prefix,
+        })
+    }
+    /// Uploadt de delen. Dit raakt alleen de spool en de store, dus het mag
+    /// buiten de eigenaar lopen terwijl SQL via de VFS doorschrijft: die
+    /// pagina's blijven dirty tot een volgende capture.
+    pub fn upload<B: Storage, S: Store>(
+        &self,
+        b: &mut B,
+        store: &mut S,
+        staged: &Staged,
+    ) -> Result<Uploaded> {
+        Ok(Uploaded {
+            namespace: string(&staged.namespace)?,
+            prefix: string(&staged.prefix)?,
+            parts: self.capture.upload(b, store, &staged.data_prefix)?,
+        })
+    }
+    /// Manifest laatst, met de marker duurzaam vóór die onbekende PUT, en
+    /// daarna de bevestiging van de tracking. Kort, en op de eigenaar.
+    pub fn finish<B: Storage, S: Store>(
+        self,
+        b: &mut B,
+        store: &mut S,
+        uploaded: Uploaded,
+        local: &mut LocalMarker,
+        tracking: &mut Tracking,
+        now: Time,
+    ) -> Result {
+        self.check(local)?;
+        let Uploaded {
+            namespace,
+            prefix,
+            parts,
+        } = uploaded;
         let seq = self
             .previous_sequence
             .checked_add(1)
@@ -149,7 +186,7 @@ impl Batch {
         local.save(b)?;
         object::publish(store, &key, &manifest, &prefix)?;
         if self.capture.snapshot {
-            let current = object::key(namespace, "/current")?;
+            let current = object::key(&namespace, "/current")?;
             if let Err(original) = store.put(&current, self.generation.as_bytes()) {
                 match store.get(&current, 255) {
                     Ok(found) if found == self.generation.as_bytes() => {}
@@ -181,6 +218,34 @@ impl Batch {
         local.value.clean = clean;
         local.save(b)
     }
+    /// Onderdelen eerst, manifest laatst, in één beurt op de eigenaar: stage,
+    /// upload en finish. SQL mag tussen capture en deze call schrijven; die
+    /// pagina's blijven dirty.
+    pub fn publish<B: Storage, S: Store>(
+        self,
+        b: &mut B,
+        store: &mut S,
+        namespace: &str,
+        local: &mut LocalMarker,
+        tracking: &mut Tracking,
+        now: Time,
+    ) -> Result {
+        let staged = self.stage(b, namespace, local, now)?;
+        let uploaded = self.upload(b, store, &staged)?;
+        self.finish(b, store, uploaded, local, tracking, now)
+    }
+}
+/// De objectsleutels van één publicatiepoging, gekozen vóór de upload van de delen.
+pub struct Staged {
+    namespace: String,
+    prefix: String,
+    data_prefix: String,
+}
+/// De geüploade delen van één capture; het manifest volgt in [`Batch::finish`].
+pub struct Uploaded {
+    namespace: String,
+    prefix: String,
+    parts: Vec<Part>,
 }
 /// Bestaande raw-keyvorm; tijden buiten Go's veilige UnixNano-bereik worden niet gepubliceerd.
 pub fn raw_key(prefix: &str, sequence: u64, at: Time) -> Result<String> {

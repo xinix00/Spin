@@ -171,6 +171,11 @@ async fn serve(
         listener: Some(net.tcp_listen(port).map_err(failure)?),
         wait: None,
     };
+    let mut uploads = alloc::vec::Vec::new();
+    uploads
+        .try_reserve_exact(spin_runtime::tenancy::TENANTS)
+        .map_err(failure)?;
+    uploads.resize_with(spin_runtime::tenancy::TENANTS, storage::Uploads::new);
     let mut owners = alloc::vec::Vec::new();
     owners
         .try_reserve_exact(spin_runtime::tenancy::TENANTS)
@@ -218,6 +223,7 @@ async fn serve(
                             &cipher,
                             domain,
                             tenants.mailbox(index),
+                            &uploads[index],
                         ) {
                             Ok(owner) => owners[index] = Some(owner),
                             Err(error) => {

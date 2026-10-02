@@ -7,7 +7,8 @@
     "HopOS SDK dependency advanced from alpha.16 to alpha.18 for the platform RNG; Lean S3 tag aligned to v3.1.2.",
     "Production snapshot compatibility: bounded manifests up to 16 MiB and 32768 parts; original upstream SHA-256 entries retained, local patch hashes recorded separately.",
     "Restore preserves segment/page order while coalescing contiguous page writes into bounded 64 KiB RPC batches.",
-    "Generation retention uses delimiter listings and bounded deletion batches; preserve current and metadata-before-data deletion. Native S3 uses the pinned Lean keep-alive client."
+    "Generation retention uses delimiter listings and bounded deletion batches; preserve current and metadata-before-data deletion. Native S3 uses the pinned Lean keep-alive client.",
+    "Replica publish split into Batch::stage/upload/finish and Replica::begin/finish so the parts upload runs on its own stack while SQL continues; identical to upstream ../replica (2026-10-02)."
   ],
   "sha256": {
     "Cargo.toml": "610cafcdc983873c636e64fea60ba96ab7b88bb90ded6f8e5c2f4523d1950688",
@@ -25,9 +26,9 @@
     "core/src/manifest.rs": "85f02ac58a7182566e3c0042cb3df5dbb2ee198730085281bdb2cc59bbc68e58",
     "core/src/marker.rs": "509cb05fc0e8b50339e8748791b2f2f24838bbedd13976eec1054db277bb1794",
     "core/src/object.rs": "38bac16d9a20090468cc5d444ebdc6df38eba456bff39dc071fdb3574915a921",
-    "core/src/owner.rs": "b5cf98ef00882fc990af0b348d196b2b09c36d5a62faf2266976ed70c0c0f365",
+    "core/src/owner.rs": "68d0bcefebd9b67d38eb7a8a1d5c66424f6d44274110e68f8230d31df4876106",
     "core/src/prepare.rs": "a5bd19e116c2fc76798fb9d3ceb9e581a6aeb50533181fb42ff500826a94f144",
-    "core/src/replication.rs": "7933b5f4c8c8056bec39be2e9b47baf1602131ac082cf5bcb7632eb6f0296942",
+    "core/src/replication.rs": "1e1b8495d85323981d14d44ddb2be51b3e27ca2c50364d6ac0b369fd7b817631",
     "core/src/restore.rs": "8321c4f6e420d7a7627941852917aff3c8abfb0d1f22b03575360fd394b610e9",
     "core/src/segment.rs": "454a025928b908a2b9c0cde3869ff5fae5d3e7173326f98ba032bac6b8d43f76",
     "core/src/time.rs": "ae6db809027893629ad8826016cc3e28b00fed5b8d8f30cac4ce3c9f12e97d57",
@@ -78,7 +79,8 @@
     "sqlite/tests/native.rs": "e6cad9bf541ab658e04083ec22e4deb1ad86acf85f25f5628c8b9f7c7ed2d222",
     "vendor/sqlite/SOURCE.json": "c8870a2bba4059ff83499f006434268974b95daa3eacfb4ca46b9bad4e86bf81",
     "vendor/sqlite/sqlite3.c": "b1dd5d74ec7f29055a6684fa06fb3c2f6821c87dd38f9a458dfd2e8a1db28189",
-    "vendor/sqlite/sqlite3.h": "919e7f2e8ed1d8f56ac17b412b8971c76aa5d1a879752cc6058f75e7d5910e1d"
+    "vendor/sqlite/sqlite3.h": "919e7f2e8ed1d8f56ac17b412b8971c76aa5d1a879752cc6058f75e7d5910e1d",
+    "core/tests/owner_upload.rs": "0422622bfec1c8d491e2c9f6caa8f1e247ce3a330a5f4e81b20535b12a8f0df5"
   },
   "local_patch_sha256": {
     "core/src/manifest.rs": "f0fb2ab3bfc563ae3b46507044a6c9bfee988110fe905d89a490bbd604707499",

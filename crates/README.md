@@ -81,6 +81,11 @@ Gebruik één server per datavolume met Hop `count: 1` en
 volume. Zijn heartbeat heeft een eigen systeemverbinding. Alle domeinen
 delen de tweede HopOS-systeemverbinding en één exclusief geleende SQLite-arena.
 Netwerktaken blijven buiten de parkeerbare opslagstacks doorlopen.
+De Replica-beurt loopt in drie stappen: de eigenaar doet de capture, een eigen
+uploadtaak per tenant zet de delen naar S3 terwijl de eigenaar verzoeken blijft
+bedienen, en de eigenaar rondt af met manifest en marker. Vóór die splitsing
+parkeerde de eigenaar 13 tot 17 s per beurt van 15 s op de Bunny-PUT's
+(gemeten 02-10-2026 op bollenloods).
 
 | Variabele | Betekenis |
 | --- | --- |

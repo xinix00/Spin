@@ -4,7 +4,7 @@ members = ["crates/domain", "crates/core", "crates/store", "crates/security", "c
 exclude = ["third-party/replica"]
 
 [workspace.package]
-version = "3.0.1"
+version = "3.0.2"
 edition = "2024"
 rust-version = "1.93"
 publish = false

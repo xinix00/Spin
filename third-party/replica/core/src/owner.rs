@@ -6,7 +6,7 @@ use crate::{
     marker::{LocalMarker, Marker},
     object::Store,
     prepare::{self, Prepared, Reason},
-    replication::{self, Batch},
+    replication::{self, Batch, Staged, Uploaded},
     string,
     time::Time,
     tracking::{Tracked, Tracking},
@@ -109,6 +109,20 @@ pub struct Replica {
     status: Status,
     maintenance_at: Option<Time>,
     closed: bool,
+    pending: bool,
+}
+/// Een capture waarvan de delen buiten de eigenaar worden geüpload, tussen
+/// [`Replica::begin`] en [`Replica::finish`].
+pub struct Pending {
+    batch: Batch,
+    staged: Staged,
+}
+impl Pending {
+    /// Uploadt de delen; raakt alleen de spool en de store, nooit SQLite,
+    /// marker of tracking, dus dit mag op een eigen stack naast de eigenaar.
+    pub fn upload<B: Storage, S: Store>(&self, b: &mut B, store: &mut S) -> Result<Uploaded> {
+        self.batch.upload(b, store, &self.staged)
+    }
 }
 impl Replica {
     /// Prepare vóór SQLite openen, inclusief geverifieerde restore waar nodig.
@@ -145,6 +159,7 @@ impl Replica {
             status,
             maintenance_at: None,
             closed: false,
+            pending: false,
         })
     }
     /// De getrackte VFS. De lening sluit gelijktijdig synchroniseren of sluiten uit.
@@ -176,14 +191,15 @@ impl Replica {
         now: Time,
     ) -> Result<Option<Synced>> {
         self.clock(now)?;
-        if self
-            .status
-            .attempted
-            .is_some_and(|last| now.seconds() - last.seconds() < i64::from(self.config.interval))
-        {
+        if !self.due(now) {
             return Ok(None);
         }
         self.sync(b, store, now).map(Some)
+    }
+    fn due(&self, now: Time) -> bool {
+        self.status
+            .attempted
+            .is_none_or(|last| now.seconds() - last.seconds() >= i64::from(self.config.interval))
     }
     fn clock(&self, now: Time) -> Result {
         if self.closed
@@ -194,8 +210,9 @@ impl Replica {
         }
         Ok(())
     }
-    /// Eén expliciete synchronisatie. Onzekere commits eerst oplossen; generatie
-    /// alleen op leeftijd vernieuwen; onderhoud hoogstens eens per minuut.
+    /// Eén expliciete synchronisatie op de eigenaar: capture, upload en afronding
+    /// in één beurt. Wie SQL wil laten doorlopen tijdens de upload van de delen
+    /// gebruikt [`Replica::begin`] en [`Replica::finish`].
     pub fn sync<B: Storage, S: Store>(
         &mut self,
         b: &mut B,
@@ -203,8 +220,67 @@ impl Replica {
         now: Time,
     ) -> Result<Synced> {
         self.clock(now)?;
+        if self.pending {
+            return Err(Error::State);
+        }
         self.status.attempted = Some(now);
-        let result = self.run(b, store, now);
+        let result = match self.capture(b, store, now) {
+            Ok(Some(pending)) => pending
+                .upload(b, store)
+                .and_then(|uploaded| self.complete(b, store, pending, uploaded, now)),
+            Ok(None) => self.maintain(b, store, now),
+            Err(e) => Err(e),
+        };
+        self.settle(result, now)
+    }
+    /// Alles vóór de upload van de delen: interval, onzekere commits, generatie
+    /// en de capture. `None` als het interval nog loopt of als niets veranderde;
+    /// in dat laatste geval is het onderhoud al gedaan. Tot [`Replica::finish`]
+    /// schrijft SQL via [`Replica::vfs`] gewoon door, en is een tweede `begin`
+    /// een fout.
+    pub fn begin<B: Storage, S: Store>(
+        &mut self,
+        b: &mut B,
+        store: &mut S,
+        now: Time,
+    ) -> Result<Option<Pending>> {
+        self.clock(now)?;
+        if self.pending {
+            return Err(Error::State);
+        }
+        if !self.due(now) {
+            return Ok(None);
+        }
+        self.status.attempted = Some(now);
+        match self.capture(b, store, now) {
+            Ok(Some(pending)) => {
+                self.pending = true;
+                Ok(Some(pending))
+            }
+            Ok(None) => {
+                let result = self.maintain(b, store, now);
+                self.settle(result, now).map(|_| None)
+            }
+            Err(e) => self.settle(Err(e), now).map(|_| None),
+        }
+    }
+    /// Rondt een [`Replica::begin`] af met het resultaat van [`Pending::upload`]:
+    /// manifest, marker, bevestiging en onderhoud. Een mislukte upload is de
+    /// fout van deze beurt; de volgende capture neemt dezelfde pagina's mee.
+    pub fn finish<B: Storage, S: Store>(
+        &mut self,
+        b: &mut B,
+        store: &mut S,
+        pending: Pending,
+        uploaded: Result<Uploaded>,
+        now: Time,
+    ) -> Result<Synced> {
+        self.pending = false;
+        self.clock(now)?;
+        let result = uploaded.and_then(|uploaded| self.complete(b, store, pending, uploaded, now));
+        self.settle(result, now)
+    }
+    fn settle(&mut self, result: Result<Synced>, now: Time) -> Result<Synced> {
         self.status.error = result.as_ref().err().copied();
         if result.is_ok() {
             self.status.synced = Some(now);
@@ -246,7 +322,14 @@ impl Replica {
         }
         error
     }
-    fn run<B: Storage, S: Store>(&mut self, b: &mut B, store: &mut S, now: Time) -> Result<Synced> {
+    /// Onzekere commits oplossen, de generatie alleen op leeftijd vernieuwen,
+    /// en de capture met zijn objectsleutels; nog geen upload.
+    fn capture<B: Storage, S: Store>(
+        &mut self,
+        b: &mut B,
+        store: &mut S,
+        now: Time,
+    ) -> Result<Option<Pending>> {
         if self.prepared.marker.value.uncertain != 0
             && let Err(e) =
                 replication::resolve(b, store, &self.config.namespace, &mut self.prepared.marker)
@@ -274,33 +357,54 @@ impl Replica {
             &self.prepared.marker,
             self.config.segment_bytes,
         ) {
-            Ok(batch) => batch,
+            Ok(Some(batch)) => batch,
+            Ok(None) => return Ok(None),
             Err(e @ (Error::ForeignWrite | Error::Gap | Error::State)) => {
                 self.invalidate(b, false)?;
                 return Err(e);
             }
             Err(e) => return Err(e),
         };
-        let mut result = Synced::default();
-        if let Some(batch) = batch {
-            if let Err(e) = batch.publish(
-                b,
-                store,
-                &self.config.namespace,
-                &mut self.prepared.marker,
-                &mut self.prepared.tracking,
-                now,
-            ) {
-                return Err(self.archive_error(b, e));
-            }
-            result.published = true;
+        let staged = batch.stage(b, &self.config.namespace, &self.prepared.marker, now)?;
+        Ok(Some(Pending { batch, staged }))
+    }
+    /// Manifest en marker na de upload, daarna het onderhoud.
+    fn complete<B: Storage, S: Store>(
+        &mut self,
+        b: &mut B,
+        store: &mut S,
+        pending: Pending,
+        uploaded: Uploaded,
+        now: Time,
+    ) -> Result<Synced> {
+        if let Err(e) = pending.batch.finish(
+            b,
+            store,
+            uploaded,
+            &mut self.prepared.marker,
+            &mut self.prepared.tracking,
+            now,
+        ) {
+            return Err(self.archive_error(b, e));
         }
+        let mut result = self.maintain(b, store, now)?;
+        result.published = true;
+        Ok(result)
+    }
+    /// Onderhoud hoogstens eens per minuut; ook na een fout geen hotloop bij
+    /// iedere SQL-wijziging.
+    fn maintain<B: Storage, S: Store>(
+        &mut self,
+        b: &mut B,
+        store: &mut S,
+        now: Time,
+    ) -> Result<Synced> {
+        let mut result = Synced::default();
         if self.prepared.marker.value.complete
             && self
                 .maintenance_at
                 .is_none_or(|last| now.seconds() - last.seconds() >= 60)
         {
-            // Ook na een fout geen onderhoudshotloop bij iedere SQL-wijziging.
             self.maintenance_at = Some(now);
             result.maintenance = match maintenance::run(
                 b,
