@@ -1,0 +1,1 @@
+{"min_size":0,"version":2,"first_seq":2,"seq":10,"at":"2026-09-30T12:34:56.123456789Z","level":1,"start":"2026-09-30T11:34:56.123456789Z","end":"2026-09-30T12:34:56.123456789Z","parts":[{"key":"replica/test/gen/data/one","size":1604,"sha256":"50dcaeaffc6a85229b9c388ad045efa9fae1d24e1c6b3e1b2c6ce655235c7f5b"}]}

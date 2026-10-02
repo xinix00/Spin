@@ -8,10 +8,10 @@ Tool-onafhankelijke Docker-snapshots voor overdraagbare agentomgevingen. Spin ke
 
 ## Snel starten
 
-Vereist: Go 1.26 en een bereikbare Docker-daemon.
+Vereist: Rust (`rust-toolchain.toml` kiest de versie) en een bereikbare Docker Desktop.
 
 ```sh
-go run ./cmd/spin-server
+cargo run --offline --release -p spin-host --bin spin-server -- --addr 127.0.0.1:8080 --data-dir var
 ```
 
 Open `http://127.0.0.1:8080`. De eerste browser maakt de lokale owner (username, naam en wachtwoord); daarna is iedere API-actie aan de ingelogde serveridentiteit gebonden. De Docker-engine gebruikt standaard `alpine:3.24` als onzichtbaar substraat.
@@ -67,7 +67,7 @@ Een Job ligt bij iemand: bij aanmaken bij de eigenaar, daarna bij wie hem toegew
 
 Het kruisje op een Job annuleert een eventuele achtergrondstart, stopt zijn lokale Session-capsules en verwijdert alle bijbehorende lokale workflowstate. De Git-repository en remote Job/Session-branches blijven bewust bestaan. Als een runner offline is, blijft de stop wachten en kan verwijderen pas zodra de capsule daadwerkelijk is gestopt. De capsule houdt zolang haar logins; een timeout geeft die niet vrij.
 
-Capsules van open Jobs blijven beschikbaar, ook van eerdere stappen en tijdens een vraag aan de gebruiker. Daarmee blijven ook hun logins en runnercapaciteit bezet. Sluit een eerdere capsule of voeg logins/capaciteit toe wanneer de volgende stap daarop wacht. Een serverherstart neemt opgeslagen agents op nog draaiende runners weer over, inclusief hun lopende beurt en toestemmingvragen. Update hiervoor ook de runners. De grenzen van dit herstel staan in de [restartreview](docs/RESTART_REVIEW.md).
+Capsules van open Jobs blijven beschikbaar, ook van eerdere stappen en tijdens een vraag aan de gebruiker. Daarmee blijven ook hun logins en runnercapaciteit bezet. Sluit een eerdere capsule of voeg logins/capaciteit toe wanneer de volgende stap daarop wacht. Een serverherstart neemt opgeslagen agents op nog draaiende runners weer over, inclusief hun lopende beurt en toestemmingvragen. Update hiervoor ook de runners.
 
 **Retry** op een actieve stap (op de kaart en in de chat) is een fork op het punt waar het misging: het werk in de workspace wordt eerst naar de Session-branch gesynct en komt terug in de nieuwe capsule, alleen het gesprek met de agent begint opnieuw, desnoods met een aanwijzing wat er anders moet; de prompt van de nieuwe poging noemt de herstart en die aanwijzing. Handig als een agent vastloopt op een API-fout of een geblokkeerd bericht. In de chat heeft elk eigen bericht een potloodje: bewerk het en ga vanaf daar verder; het gesprek tot dat bericht gaat als context mee naar de verse agent, wat erna kwam vervalt. Een gesloten Job kan door iedere ingelogde collega als vervolg worden geforkt. De nieuwe Job wordt van die user, krijgt een eigen branch en workflow, en gebruikt diens laat gebonden Git-identity, en begint op dezelfde basisbranch als de bron-Job (bijvoorbeeld `develop`), zodat het vervolg dáár landt en niet op de al gesloten branch van de bron. De resultaatbranch van de bron komt als `origin/jobs/<naam-id>/main` read-only mee in de workspace en staat in de prompt genoemd, zodat de agent kan zien wat er toen gemaakt is. De oorspronkelijke goal, laatste revisie van ieder deliverable en alle oorspronkelijke PDF-/afbeeldingsbijlagen gaan als immutable ACP-context mee. Daardoor kan feedback of een nagekomen bug worden opgepakt zonder de oude Job opnieuw te openen. Zolang een vervolg ernaar verwijst, kan de bron-Job niet worden verwijderd. De laatste documenten van de bron-Job komen niet als tekst in de prompt maar als bestanden onder `/root/deliverables/vorige-job/`; de prompt noemt de paden en de agent leest wat hij nodig heeft. De bijlagen van de bron gaan als read-only bestanden mee.
 
@@ -221,15 +221,13 @@ End & save maakt het resultaat de nieuwe versie en zet de oude opzij: die versch
 
 ## Runner als HOP-job
 
-`hop-spin-client.example.json` in de root is een kant-en-klare exec-job (kopieer hem naar `hop-spin-client.json`, dat bestand staat in `.gitignore`) voor een HOP-cluster: hij haalt de runner uit de `rolling` release voor macOS arm64, Linux amd64 en Linux arm64 (een redeploy is dus een upgrade), en stelt de runner volledig in via `env`: `SPIN_SERVER`, `SPIN_WORKER_TOKEN`, `SPIN_CLIENT_ID_FILE` (een vaste client-id in de jobmap, zodat een herstart dezelfde runner blijft), `SPIN_ENV_DIR`, `SPIN_MAX_WORKLOADS`; ook `SPIN_CLIENT_NAME` en `SPIN_ADVERTISE_HOST` kunnen daar. Het command is dan alleen `exec ./spin-client`. Een supervisor geeft een kale `PATH` mee; de runner zoekt de Docker CLI daarom zelf op de gebruikelijke plekken (Docker Desktop, Homebrew, `~/.docker/bin`), en met `SPIN_DOCKER` wijs je hem expliciet aan. De job zet daarnaast een `PATH` die Docker Desktop op macOS dekt. Vul `REPLACE_WITH_WORKER_TOKEN` in het cluster in, nooit in git. De node heeft de Docker CLI en socket nodig; app-services lezen hun env-bestanden uit `var/env` in de jobmap.
+`hop-spin-client.example.json` in de root is een kant-en-klare exec-job (kopieer hem naar `hop-spin-client.json`, dat bestand staat in `.gitignore`) voor een HOP-cluster: hij haalt de runner uit de `rolling` release voor macOS arm64 (een redeploy is dus een upgrade), en stelt de runner volledig in via `env`: `SPIN_SERVER`, `SPIN_WORKER_TOKEN`, `SPIN_CLIENT_ID_FILE` (een vaste client-id in de jobmap, zodat een herstart dezelfde runner blijft), `SPIN_ENV_DIR`, `SPIN_MAX_WORKLOADS`; ook `SPIN_CLIENT_NAME` en `SPIN_ADVERTISE_HOST` kunnen daar. Het command is dan alleen `exec ./spin-client`. Een supervisor geeft een kale `PATH` mee; de runner zoekt de Docker CLI daarom zelf op de gebruikelijke plekken (Docker Desktop, Homebrew, `~/.docker/bin`), en met `SPIN_DOCKER` wijs je hem expliciet aan. De job zet daarnaast een `PATH` die Docker Desktop op macOS dekt. Vul `REPLACE_WITH_WORKER_TOKEN` in het cluster in, nooit in git. De node heeft de Docker CLI en socket nodig; app-services lezen hun env-bestanden uit `var/env` in de jobmap.
 
 ## Server, client en opslag
 
-- `cmd/spin-server`: HTTP-server, web-GUI, state, Git/OAuth en orchestrator; deze container heeft geen Docker-socket.
-- `cmd/spin-client`: reconnectende Docker-runner voor snapshots, Git-workspaces, PTY, ACP en reviewoperaties.
-- `internal/capsule`: journalengine en echte Docker commit/clone-engine.
-- `internal/store`: persistente Artifactgraph, scope-resolutie, Jobs en Sessions.
-- `internal/server`: GUI, REST, commandparser en de langlevende ACP-session-supervisor.
+- `crates/hopos` (`spin-hopos-server`): de native HopOS-server met HTTP, web-GUI, state, Git/OAuth en orchestrator; hij voert zelf geen Docker uit.
+- `crates/host` (`spin-client`): de reconnectende macOS-runner voor snapshots, Git-workspaces, PTY, ACP en reviewoperaties; `spin-server` daarnaast is de lokale server voor ontwikkeling en integratietests.
+- `crates/core`, `crates/store`, `crates/server`: capsule-journal en Docker-opdrachten, de persistente Artifactgraph met Jobs en Sessions, en de REST- en WebSocket-routes. `crates/README.md` beschrijft de indeling.
 - `var/spin.db`: centrale SQLite-database met control-plane-state, Job-bijlagen en de opaque exports van iedere afgeronde Docker-snapshot.
 - `var/spin-master.key`: lokale AES-masterkey; apart van de state back-uppen en nooit publiceren.
 - `var/spin-worker.token`: apart bearer-token voor het headless runner-WebSocket.
@@ -300,38 +298,17 @@ De Session-container heeft gewoon netwerk (`-capsule-network bridge`), maar de s
 
 Bij `session/new` geeft Spin zowel `/workspace` als de capsule-HOME `/root` door. ACP-agents die `additionalDirectories` ondersteunen nemen HOME daardoor op als writable root van hun workspace-sandbox. Gewone tooling kan dus zonder productspecifieke uitzonderingen naar bijvoorbeeld `/root/.dotnet`, `/root/.npm` of `/root/.cache` schrijven. Dit is uitsluitend `/root` ín de geïsoleerde, gematerialiseerde Session-container; de host en de immutable bronsnapshot worden niet schrijfbaar. Een laag kan `/etc/spin/enabled/acp.env` nog steeds gebruiken voor aanvullende runtimeconfiguratie zoals netwerkbeleid. Dat bestand wordt als shell ingelezen (`set -a; . acp.env`), dus een JSON-waarde moet in enkele aanhalingstekens staan: `CODEX_CONFIG='{"…"}'`; zonder die quotes eet de shell de dubbele aanhalingstekens op en krijgt de agent ongeldige JSON.
 
-Alternatieve start:
-
-```sh
-docker compose up --build
-```
-
-Kies een vrije hostpoort met `SPIN_PORT=8090 docker compose up --build`. De hostbinding is veilig standaard `127.0.0.1`; alleen als een reverse proxy of netwerkdeployment dat bewust vereist verander je die, bijvoorbeeld met `SPIN_BIND=0.0.0.0`. Compose houdt state, keys, runnerauth en de stabiele client-ID in aparte volumes. Alleen `spin-client` mount `/var/run/docker.sock`; de server kan geen container starten. De runner leest het workertoken, maar krijgt nooit toegang tot de masterkey of serverstate.
-
-Een extra laptop/server draait dezelfde clientimage met een eigen persistent ID en hetzelfde servertoken:
-
-```sh
-docker build --target client -t easyacp-client .
-docker run --restart unless-stopped \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v spin-client-data:/client-data \
-  -e SPIN_WORKER_TOKEN='<server worker token>' \
-  easyacp-client \
-  -server https://spin.example.test -name laptop-john \
-  -id-file /client-data/client.id -capsule-network bridge
-```
-
 Connections → Runners toont online/offline/draining, engine, capaciteit, last-seen en hoeveel Sessions duurzaam aan iedere client hangen. Admins kunnen daar nieuwe plaatsing per runner drainen en hervatten, en een offline runner zonder werk verwijderen. Een runner is dezelfde runner over herstarts heen: zijn identiteit volgt de machine en de naam (of een identiteitsbestand van een oudere installatie), ook wanneer hij als HOP-job telkens uit een lege map start. Twee runnerprocessen met dezelfde identiteit (twee taken van één job op één machine, met dezelfde naam) zouden elkaars verbinding elke seconde vervangen; de server weigert de tweede zolang de eerste leeft, met de reden, en die tweede wacht een minuut voor hij het opnieuw probeert. Geef elke runner op één machine een eigen `SPIN_CLIENT_NAME`, of laat de job één taak per machine draaien. Offline runners waar niets meer aan hangt (geen Session, geen draaiende capsule of opname) ruimt de server na een dag zelf op; een runner die terugkomt meldt zich onder dezelfde identiteit opnieuw aan.
 
 ### Releases
 
-`release.sh` bouwt één matrix en publiceert die zowel onder een immutable versie als onder de overschrijfbare `rolling`-release:
+`release.sh` bouwt de drie artefacten en publiceert ze zowel onder een immutable versie als onder de overschrijfbare `rolling`-release. De versie is die van `Cargo.toml` (`[workspace.package]`): verhoog hem daar, commit, en draai:
 
 ```sh
-./release.sh v1.0.0
+./release.sh
 ```
 
-De Linux-server en -client worden statisch gebouwd voor amd64 en arm64. De client draait ook in Docker nog steeds als native binary van de hostarchitectuur; Docker levert de verpakking, Docker CLI en socket, geen CPU-emulatie. Daarnaast bouwt het script echte HopOS/Tamago server-ELF's voor arm64 en riscv64 tegen `${HOPOS_DIR:-$HOME/Git/hop-os}`. Met `PUBLISH=0` voer je alleen de volledige compile-gate uit.
+Het script bouwt de native HopOS-server-ELF's voor arm64 en riscv64 (`spin-server-arm64.elf`, `spin-server-riscv64.elf`) en de macOS arm64-runner (`spin-client-darwin-arm64`), op een Apple Silicon Mac met Homebrew-LLVM. Met `PUBLISH=0` voer je alleen de compile-gate uit.
 
 Een client krijgt alleen de publieke server-URL. `https://spin.example.test` wordt automatisch `wss://spin.example.test/api/runner/ws`; bij disconnect gebruikt hij ping/pong en exponential reconnect. Server en client delen uitsluitend het worker-token van dat domein.
 
@@ -341,22 +318,22 @@ Eén server draait meerdere Spins, één per domein. Het `Host`-header kiest de 
 
 ### Replica in S3
 
-Een Spin zonder replica is geen Spin: de server start niet zonder `SPIN_S3_ENDPOINT`, `SPIN_S3_BUCKET`, `SPIN_S3_ACCESS_KEY` en `SPIN_S3_SECRET_KEY` (optioneel `SPIN_S3_REGION`, standaard `auto`, en `SPIN_S3_PREFIX`, standaard `spin`). Alleen een ontwikkelserver zet `SPIN_REPLICATION=off`. De onafhankelijke Go-bibliotheek in [`replica/`](replica/README.md) volgt SQLite-pagina's via een VFS. Iedere vijftien seconden legt één leestransactie alle vuile pagina's vast in een lokaal spoolbestand; daarna wordt de database vrijgegeven en begint de upload. Pas een manifest na alle segmenten publiceert het volledige herstelpunt. Een generatie begint met een blijvende snapshot van alle pagina's; `current` wijst naar een complete generatie. Na een week of voldoende wijzigingen begint een nieuwe generatie; generaties blijven vier weken staan. Naast de database staat een dirty-log (`<db>.replica-dirty-a` en `-b`): vóór elke sync van het databasebestand schrijft de tracking-VFS de nummers van de beschreven pagina's in dat logboek en synct dat eerst, zoals een journal vóór de pagina's gaat die het beschermt. Een pagina kan dus alleen op schijf staan als het logboek hem noemt. Na een onnette stop (rolling update terwijl er nog wijzigingen niet weg waren) leest de server bij de start het logboek en gaat verder in dezelfde generatie met precies die pagina's; er wordt niets gehasht en niets gelezen, ook niet bij 500 GB. Alleen zonder bruikbaar logboek, of zonder complete generatie in de bucket, begint een nieuwe generatie met alle pagina's vóór het openen (stap `snapshot`), in één transactie, want niets anders gebruikt de database dan nog. Een generatie die te oud is of waarvan de verstuurde wijzigingen de database overtreffen, vernieuwt zichzelf op de achtergrond terwijl de Spin bedient, zoals Litestream tussendoor een snapshot maakt: segment voor segment in korte transacties, met aan het eind een herlezing van wat intussen veranderde, zodat de kopie consistent is en de database nooit minutenlang vastzit.
+Een Spin zonder replica is geen Spin: de server start niet zonder `SPIN_S3_ENDPOINT`, `SPIN_S3_BUCKET`, `SPIN_S3_ACCESS_KEY` en `SPIN_S3_SECRET_KEY` (optioneel `SPIN_S3_REGION`, standaard `auto`, en `SPIN_S3_PREFIX`, standaard `spin`). Alleen een ontwikkelserver zet `SPIN_REPLICATION=off`. De onafhankelijke Rust-bibliotheek in `third-party/replica` volgt SQLite-pagina's via een VFS. Iedere vijftien seconden legt één leestransactie alle vuile pagina's vast in een lokaal spoolbestand; daarna wordt de database vrijgegeven en begint de upload. Pas een manifest na alle segmenten publiceert het volledige herstelpunt. Een generatie begint met een blijvende snapshot van alle pagina's; `current` wijst naar een complete generatie. Na een week of voldoende wijzigingen begint een nieuwe generatie; generaties blijven vier weken staan. Naast de database staat een dirty-log (`<db>.replica-dirty-a` en `-b`): vóór elke sync van het databasebestand schrijft de tracking-VFS de nummers van de beschreven pagina's in dat logboek en synct dat eerst, zoals een journal vóór de pagina's gaat die het beschermt. Een pagina kan dus alleen op schijf staan als het logboek hem noemt. Na een onnette stop (rolling update terwijl er nog wijzigingen niet weg waren) leest de server bij de start het logboek en gaat verder in dezelfde generatie met precies die pagina's; er wordt niets gehasht en niets gelezen, ook niet bij 500 GB. Alleen zonder bruikbaar logboek, of zonder complete generatie in de bucket, begint een nieuwe generatie met alle pagina's vóór het openen (stap `snapshot`), in één transactie, want niets anders gebruikt de database dan nog. Een generatie die te oud is of waarvan de verstuurde wijzigingen de database overtreffen, vernieuwt zichzelf op de achtergrond terwijl de Spin bedient, zoals Litestream tussendoor een snapshot maakt: segment voor segment in korte transacties, met aan het eind een herlezing van wat intussen veranderde, zodat de kopie consistent is en de database nooit minutenlang vastzit.
 
 Herstelpunten dunnen uit met de leeftijd: kwartieren voor twee uur, uren voor een dag, dagen voor een week en wekelijkse generaties voor een maand (`SPIN_REPLICA_SCHEDULE=15m:2h,1h:24h,24h:168h`, `SPIN_REPLICA_GENERATION=168h`, `SPIN_REPLICA_RETENTION=672h`). Een venster bevat de laatste staat van iedere gewijzigde pagina en wordt pas zichtbaar wanneer alle delen geüpload zijn. Alleen een compleet venster mag fijnere bestanden vervangen. De oorspronkelijke snapshot blijft apart bewaard. Herstel volgt vanaf die snapshot aaneengesloten reeksen complete wijzigingen; ontbrekende delen en checksumfouten breken herstel af. Downloads landen eerst in een tijdelijk bestand. Een duurzaam herstelmerkteken zorgt dat een onderbroken publicatie bij de volgende start opnieuw wordt uitgevoerd, ook als het databasebestand al bestaat.
 
-Onder Backup & restore toont een admin de herstelpunten en zet er een terug via dezelfde gevalideerde restore als een backup-zip. De staat van vóór het herstel blijft zelf een herstelpunt. De opslagregel onder Connections → Runners en `/healthz` melden bucket, generatie, laatste sync, wachtende pagina's en fouten. Spin levert de databaseadapter, omgevingsvariabelen en levenscyclus; de replicatiebibliotheek heeft eigen tests met SQLite, vervangbare opslag, een nepklok en geïnjecteerde fouten. Zie de [pakketdocumentatie](replica/README.md) voor gebruik buiten Spin, het opslagprotocol en tests.
+Onder Backup & restore toont een admin de herstelpunten en zet er een terug via dezelfde gevalideerde restore als een backup-zip. De staat van vóór het herstel blijft zelf een herstelpunt. De opslagregel onder Connections → Runners en `/healthz` melden bucket, generatie, laatste sync, wachtende pagina's en fouten. Spin levert de databaseadapter, omgevingsvariabelen en levenscyclus; de replicatiebibliotheek heeft eigen tests met SQLite, vervangbare opslag, een nepklok en geïnjecteerde fouten. Zie `third-party/replica` voor gebruik buiten Spin, het opslagprotocol en tests.
 
 Beide servervarianten, tenantdetectie, status en Backup & restore gebruiken rechtstreeks dezelfde replicatiebibliotheek. Het bestaande opslagpad blijft gelden: er wordt geen extra versieprefix toegevoegd. Bij een nieuwe start kan de normale Backup & restore-interface een backup importeren; de databasewrites lopen door de tracking-VFS en worden bij de volgende sync gerepliceerd. Een lokale replica-marker wordt alleen hergebruikt als hij bij dezelfde opslagbestemming hoort.
 
-`hop-spin-server.example.json` in de root is de HOP-job voor de server (kopieer naar `hop-spin-server.json`, dat bestand staat in `.gitignore`): de Tamago-ELF's uit de `rolling`-release voor arm64 en riscv64, `/data` als volume, en alle instellingen als `env`. De HopOS-server verwacht een gepubliceerde `ER_PORT_HTTP`, een gemounte `/data` voor de databases, de S3-instellingen en een vaste base64 `SPIN_MASTER_KEY`. Let op: het lokale volume van HopOS is scratch en is leeg na een herstart; de replica in S3 is de duurzame kopie, en bij het opstarten haalt Spin elke database daaruit terug. SQLite v0.35.4 is libc-vrij via wasm2go; een eigen HopOS-VFS vertaalt random-access pagina-I/O naar de volume-ABI. De echte releasegate bouwt dit pad voor arm64 én riscv64. Control plane, runner-WebSocket, Job-bijlagen, centrale Docker-snapshots, databasebackup en replica zijn daardoor op beide targets beschikbaar.
+`hop-spin-server.example.json` in de root is de HOP-job voor de server (kopieer naar `hop-spin-server.json`, dat bestand staat in `.gitignore`): de server-ELF's uit de `rolling`-release voor arm64 en riscv64, `/data` als volume, en alle instellingen als `env`. De HopOS-server verwacht een gepubliceerde `ER_PORT_HTTP`, een gemounte `/data` voor de databases, de S3-instellingen en een vaste base64 `SPIN_MASTER_KEY`. Let op: het lokale volume van HopOS is scratch en is leeg na een herstart; de replica in S3 is de duurzame kopie, en bij het opstarten haalt Spin elke database daaruit terug. De releasegate bouwt dit pad voor arm64 én riscv64.
 
-Bij runners buiten het lokale Compose-netwerk moet `SPIN_INTERNAL_URL` op de server een voor de agentcontainers bereikbare HTTPS-URL zijn (meestal dezelfde reverse-proxy-URL als `SPIN_PUBLIC_URL`). De standaard `http://server:8080` is alleen geldig voor de meegeleverde lokale Compose-runner; workflow-MCP gebruikt deze URL vanuit de Session-container.
+`SPIN_INTERNAL_URL` op de server moet een voor de agentcontainers bereikbare HTTPS-URL zijn (meestal dezelfde reverse-proxy-URL als `SPIN_PUBLIC_URL`); workflow-MCP gebruikt deze URL vanuit de Session-container.
 
 ## Interface en stylesheet
 
 De interface gebruikt Haasstyle/Tactile. De gedeelde componenten komen als
-kopie uit `../haasstyle` en staan in `internal/server/assets/vendor/`
+kopie uit `../haasstyle` en staan in `crates/runtime/ui/assets/vendor/`
 (`tactile-theme.css`, `tactile-elements.css`, `tactile-components.css` en de
 adapters voor select, dialoog, combobox en Markdown). `spin.css` importeert die
 in eigen cascadelagen en houdt zelf alleen de shell, de pagina-indeling en de
@@ -368,9 +345,9 @@ adapters en de mobiele maten.
 ## Verifiëren
 
 ```sh
-GOCACHE=/tmp/easyacp-go-cache go test -race ./...
-GOCACHE=/tmp/easyacp-go-cache go vet ./...
-GOCACHE=/tmp/easyacp-go-cache go build ./cmd/spin-server ./cmd/spin-client
+CARGO_INCREMENTAL=0 cargo test --offline --workspace
+CARGO_INCREMENTAL=0 cargo clippy --offline --workspace --all-targets -- -D warnings
+PUBLISH=0 ./release.sh
 ```
 
 ## Belangrijke grens

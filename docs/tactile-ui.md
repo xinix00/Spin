@@ -3,7 +3,7 @@
 De interface gebruikt Haasstyle met drie materialen: Classic 95, Glossy 08
 en Tactile Matte. Glossy 08 in donkere modus is de standaard. De bron van de
 gedeelde componenten is `../haasstyle`; kopieën staan in
-`internal/server/assets/vendor/`. Er is geen buildstap of CDN nodig.
+`crates/runtime/ui/assets/vendor/`. Er is geen buildstap of CDN nodig.
 
 ## Opbouw
 
@@ -55,11 +55,11 @@ blijft beschikbaar als horizontale rij.
 
 Ontbreekt een generiek element, voeg het eerst toe aan de Haasstyle-galerij en
 guidelines. Kopieer vervolgens de gedeelde bestanden ongewijzigd naar vendor.
-Verhoog `frontendAssetVersion` in `internal/server/ui.go` bij frontendwijzigingen.
-Behoud `preventCaching` voor HTML/API-antwoorden.
+Verhoog `crates/runtime/ui/VERSION` bij frontendwijzigingen.
+Houd HTML- en API-antwoorden niet-cachebaar.
 
-Verplicht: `node --check internal/server/assets/spin.js` en
-`go test ./internal/server`. Controleer daarnaast de gewijzigde modules met
+Verplicht: `node --check crates/runtime/ui/assets/spin.js` en
+`cargo test --offline -p spin-host --test http`. Controleer daarnaast de gewijzigde modules met
 `node --check`, en de betrokken schermen op desktop en mobiel. Neem dynamische
 inhoud, toetsenbordbediening, annuleren, formulierwaarden/reset en lange teksten
 mee. Live runners en herstel van echte databases vragen hun eigen functionele

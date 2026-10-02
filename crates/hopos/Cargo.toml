@@ -1,0 +1,32 @@
+[package]
+name = "spin-hopos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "spin-hopos-server"
+path = "src/main.rs"
+
+[target.'cfg(target_os = "none")'.dependencies]
+leanhttp = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.2" }
+leanhttps = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.2" }
+leantls = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.2" }
+applib = { git = "https://github.com/xinix00/HopOS.git", tag = "v3.0.0-alpha.18", features = ["http"] }
+hop-types.workspace = true
+leans3 = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.2" }
+replica-core = { path = "../../third-party/replica/core" }
+replica-s3 = { path = "../../third-party/replica/s3" }
+spin-runtime = { path = "../runtime" }
+spin-core = { path = "../core" }
+spin-domain = { path = "../domain" }
+spin-server = { path = "../server" }
+spin-security = { path = "../security" }
+spin-persistence = { path = "../persistence" }
+spin-store = { path = "../store" }
+replica-sqlite = { path = "../../third-party/replica/sqlite" }
+replica-hopos = { path = "../../third-party/replica/hopos" }
+
+[lints]
+workspace = true

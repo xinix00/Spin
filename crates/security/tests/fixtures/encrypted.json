@@ -1,0 +1,23 @@
+[
+  {
+    "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "nonce": "AAECAwQFBgcICQoL",
+    "purpose": "login:lgn_1:/root/.codex/auth.json",
+    "sealed": "enc:v1:AAECAwQFBgcICQoLNGe1aaCRwZfUtHqainBRnogGF9mgUg",
+    "value": "secret"
+  },
+  {
+    "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "nonce": "AAECAwQFBgcICQoL",
+    "purpose": "login:lgn_1:/root/.codex/auth.json",
+    "sealed": "enc:v1:AAECAwQFBgcICQoLIme4O7GKqX7jS/ruxcm7xIN1tQrsfqVrIwaqfUFsCQ4k",
+    "value": "een token\nmet é\u0000"
+  },
+  {
+    "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "nonce": "AAECAwQFBgcICQoL",
+    "purpose": "login:lgn_1:/root/.codex/auth.json",
+    "sealed": "enc:v1:AAECAwQFBgcICQoLPCC3brGN4CGvIPXo1csFsZwiqAsL29xZI+jdUzOsJA",
+    "value": "{\"auth\":\"abcd\"}"
+  }
+]

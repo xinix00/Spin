@@ -9,22 +9,6 @@
         "node.os": "darwin"
       },
       "filename": "spin-client"
-    },
-    {
-      "url": "https://github.com/xinix00/Spin/releases/download/rolling/spin-client-linux-amd64",
-      "match": {
-        "node.arch": "amd64",
-        "node.os": "linux"
-      },
-      "filename": "spin-client"
-    },
-    {
-      "url": "https://github.com/xinix00/Spin/releases/download/rolling/spin-client-linux-arm64",
-      "match": {
-        "node.arch": "arm64",
-        "node.os": "linux"
-      },
-      "filename": "spin-client"
     }
   ],
   "env": {

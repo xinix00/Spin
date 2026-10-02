@@ -1,0 +1,31 @@
+{
+  "contents": {
+    "files": 4,
+    "bytes": 24,
+    "dropped_identical": {},
+    "entries": [
+      {
+        "path": "/root/alpha",
+        "bytes": 8
+      },
+      {
+        "path": "/root/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/long/file",
+        "bytes": 8
+      },
+      {
+        "path": "/root/gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-gnu-file",
+        "bytes": 8
+      },
+      {
+        "path": "/root/empty",
+        "bytes": 0
+      }
+    ]
+  },
+  "deletions": [
+    "/root/gone",
+    "/root/private/*"
+  ],
+  "filtered_hash": "ec4fae66a7950887dd4590bbd6b204c41ee0ddf1b207ec8cb64168d429d9d5e3",
+  "hash": "33126f4dd4c524340c3e6f07d4d2fb81956fa4daea49e23d81a901e1b9acaaa8"
+}

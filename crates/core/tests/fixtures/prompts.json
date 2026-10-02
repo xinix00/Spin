@@ -1,0 +1,1962 @@
+[
+  {
+    "job": {
+      "id": "job_379fb256fe92",
+      "title": "Fixture",
+      "reference": "#12",
+      "objective": "Een werkende port",
+      "owner": "derek",
+      "assignee": "derek",
+      "git_repository_id": "git_d6cec8eaea0f",
+      "git_repository_name": "spin",
+      "git_remote_url": "https://example.test/spin.git",
+      "git_provider": "example.test",
+      "git_credential_scope": "public",
+      "base_ref": "main",
+      "branch": "jobs/#12/main",
+      "repositories": [
+        {
+          "repository_id": "git_d6cec8eaea0f",
+          "name": "spin",
+          "remote_url": "https://example.test/spin.git",
+          "provider": "example.test",
+          "credential_scope": "public",
+          "base_ref": "main",
+          "mode": "change"
+        }
+      ],
+      "with_selectors": [
+        "tool:git"
+      ],
+      "template_id": "tpl_6d79ef6b65b8",
+      "template_snapshot": {
+        "id": "tpl_6d79ef6b65b8",
+        "revision": 1,
+        "name": "Port fixture",
+        "git_selector": "tool:git",
+        "created_by": "derek",
+        "phases": [
+          {
+            "id": "build",
+            "name": "Bouw",
+            "instructions": "Bouw dit zorgvuldig",
+            "executor": "agent",
+            "inject": null,
+            "deliverables": [
+              {
+                "name": "Plan",
+                "required": true,
+                "kind": "markdown"
+              }
+            ],
+            "allow_changes": true,
+            "accept": {
+              "target": "review"
+            },
+            "reject": {
+              "target": "SELF"
+            }
+          },
+          {
+            "id": "review",
+            "name": "Review",
+            "instructions": "Controleer de wijzigingen",
+            "executor": "agent",
+            "inject": [
+              "Plan"
+            ],
+            "deliverables": null,
+            "allow_changes": false,
+            "accept": {
+              "target": "DONE"
+            },
+            "reject": {
+              "target": "SELF",
+              "ask_user": true
+            }
+          }
+        ],
+        "created_at": "2026-09-30T11:15:47.38571Z",
+        "updated_at": "2026-09-30T11:15:47.38571Z"
+      },
+      "environment_selector": "tool:agent",
+      "phase_run_ids": [
+        "run_cd6de3c2881b"
+      ],
+      "current_phase_run_id": "run_cd6de3c2881b",
+      "workflow_status": "busy",
+      "status": "active",
+      "session_ids": [
+        "ses_194621992771"
+      ],
+      "candidate_result_ids": [],
+      "created_at": "2026-09-30T11:15:47.385742Z",
+      "updated_at": "2026-09-30T11:15:47.385773Z"
+    },
+    "phase": {
+      "id": "build",
+      "name": "Bouw",
+      "instructions": "Bouw dit zorgvuldig",
+      "executor": "agent",
+      "inject": null,
+      "deliverables": [
+        {
+          "name": "Plan",
+          "required": true,
+          "kind": "markdown"
+        }
+      ],
+      "allow_changes": true,
+      "accept": {
+        "target": "review"
+      },
+      "reject": {
+        "target": "SELF"
+      }
+    },
+    "prompt": "Je voert Spin workflowfase \"Bouw\" uit (poging 1).\n\nJOB\nNaam: Fixture\nReferentie: #12\nGoal: Een werkende port\n\nINSTRUCTIES\nBouw dit zorgvuldig\n\nGIT\nBasisbranch: main · waar deze Job uiteindelijk op landt; lokaal origin/main.\nJob-branch: jobs/#12/main · het geaccepteerde werk van alle eerdere fases van deze Job; lokaal origin/jobs/#12/main. Elke fase komt hierop als één commit.\nJouw branch: jobs/#12/sessions/ses_194621992771 · HEAD in deze workspace, begonnen op de Job-branch.\n\nREPOSITORYBELEID\nJe mag bestanden in de repository wijzigen. Commit of push niet zelf: bij accept maakt Spin zo nodig één resultaatcommit en publiceert die naar de Job-branch.\n\nDELIVERABLES\nDe deliverables van deze Job staan in /root/deliverables, elk als bestand of map; lees wat je nodig hebt.\n\nOP TE LEVEREN\nMaak of bewerk het bestand op schijf en zet het met put_deliverable(name, path) als nieuwe revisie; het pad ligt altijd binnen /root/deliverables. Gebruik de naam exact zoals vermeld.\n- Plan (VERPLICHT): Deliverable voor deze workflowfase\n  Markdown-bestand; bijvoorbeeld /root/deliverables/plan.md\n\nWERKWIJZE\nGebruik uitsluitend de aangeboden Spin workflowtools om workflowstate te wijzigen. ask stelt één formulier met één of meer vragen, elk met de antwoordopties die je verwacht; stel alleen wat je niet zelf kunt uitzoeken en bundel alles in één ask. Zet ieder hierboven gevraagd document of visueel resultaat met put_deliverable als revisie; dat overschrijft de vorige revisie van deze stap. Commit of push nooit zelf. Sluit de fase altijd af met accept, of reject met een concrete reden. ACCEPT laat Spin de Session gecontroleerd in de Job-branch opnemen.\n",
+    "run": {
+      "id": "run_cd6de3c2881b",
+      "job_id": "job_379fb256fe92",
+      "template_id": "tpl_6d79ef6b65b8",
+      "phase_id": "build",
+      "phase_name": "Bouw",
+      "attempt": 1,
+      "session_id": "ses_194621992771",
+      "status": "running",
+      "started_at": "2026-09-30T11:15:47.385754Z"
+    },
+    "session": {
+      "id": "ses_194621992771",
+      "job_id": "job_379fb256fe92",
+      "phase_run_id": "run_cd6de3c2881b",
+      "fork_mode": "root",
+      "tool": "agent",
+      "executor": "agent",
+      "environment_selector": "tool:agent",
+      "with_selectors": [
+        "tool:git"
+      ],
+      "role": "Bouw",
+      "operator": "derek",
+      "objective_delta": "Bouw dit zorgvuldig",
+      "git_repository_id": "git_d6cec8eaea0f",
+      "base_ref": "jobs/#12/main",
+      "git_ref": "jobs/#12/sessions/ses_194621992771",
+      "target_branch": "jobs/#12/main",
+      "status": "queued",
+      "activation_epoch": 0,
+      "turn_ids": [],
+      "checkpoint_ids": [],
+      "continuity_level": "workflow_phase",
+      "continuity_score": 10,
+      "created_at": "2026-09-30T11:15:47.385754Z",
+      "updated_at": "2026-09-30T11:15:47.385754Z"
+    },
+    "snapshot": {
+      "artifacts": [
+        {
+          "id": "art_ab06cdeae95c",
+          "kind": "tool",
+          "name": "agent",
+          "scope": "global",
+          "profile": "default",
+          "provides": [
+            "tool:agent"
+          ],
+          "requires": [],
+          "enables": [
+            {
+              "name": "acp",
+              "command": "agent-acp",
+              "transport": "stdio",
+              "protocol_version": 1
+            }
+          ],
+          "slot": "tool:agent",
+          "parent_artifact_ids": [
+            "art_1691c5b22432"
+          ],
+          "snapshot_digest": "sha256:test",
+          "snapshot": {
+            "driver": "test",
+            "ref": "image:rec_57bcf2a9e7d3",
+            "digest": "sha256:test",
+            "restorable": true,
+            "includes_process_state": false
+          },
+          "sensitivity": "public",
+          "created_by": "derek",
+          "created_at": "2026-09-30T11:15:47.385675Z"
+        },
+        {
+          "id": "art_1691c5b22432",
+          "kind": "tool",
+          "name": "git",
+          "scope": "global",
+          "profile": "default",
+          "provides": [
+            "tool:git"
+          ],
+          "requires": [],
+          "enables": [
+            {
+              "name": "git"
+            }
+          ],
+          "slot": "tool:git",
+          "parent_artifact_ids": [],
+          "snapshot_digest": "sha256:test",
+          "snapshot": {
+            "driver": "test",
+            "ref": "image:rec_2d971bcf462e",
+            "digest": "sha256:test",
+            "restorable": true,
+            "includes_process_state": false
+          },
+          "sensitivity": "public",
+          "created_by": "derek",
+          "created_at": "2026-09-30T11:15:47.385535Z"
+        }
+      ],
+      "recordings": [
+        {
+          "id": "rec_57bcf2a9e7d3",
+          "actor": "derek",
+          "kind": "tool",
+          "name": "agent",
+          "scope": "global",
+          "profile": "default",
+          "provides": [
+            "tool:agent"
+          ],
+          "requires": [],
+          "enables": [
+            {
+              "name": "acp",
+              "command": "agent-acp",
+              "transport": "stdio",
+              "protocol_version": 1
+            }
+          ],
+          "slot": "tool:agent",
+          "parent_artifact_ids": [
+            "art_1691c5b22432"
+          ],
+          "runtime": {
+            "driver": "test",
+            "container_id": "container-rec_57bcf2a9e7d3",
+            "base_ref": "image:rec_2d971bcf462e",
+            "attach_command": "attach rec_57bcf2a9e7d3",
+            "status": "recording"
+          },
+          "sensitivity": "public",
+          "status": "completed",
+          "commands": [
+            {
+              "sequence": 1,
+              "exit_code": 7,
+              "at": "2026-09-30T11:15:47.385669Z"
+            }
+          ],
+          "artifact_id": "art_ab06cdeae95c",
+          "started_at": "2026-09-30T11:15:47.38566Z",
+          "ended_at": "2026-09-30T11:15:47.385675Z"
+        },
+        {
+          "id": "rec_2d971bcf462e",
+          "actor": "derek",
+          "kind": "tool",
+          "name": "git",
+          "scope": "global",
+          "profile": "default",
+          "provides": [
+            "tool:git"
+          ],
+          "requires": [],
+          "enables": [
+            {
+              "name": "git"
+            }
+          ],
+          "slot": "tool:git",
+          "parent_artifact_ids": [],
+          "runtime": {
+            "driver": "test",
+            "container_id": "container-rec_2d971bcf462e",
+            "base_ref": "base:test",
+            "attach_command": "attach rec_2d971bcf462e",
+            "status": "recording"
+          },
+          "sensitivity": "public",
+          "status": "completed",
+          "commands": [
+            {
+              "sequence": 1,
+              "exit_code": 7,
+              "at": "2026-09-30T11:15:47.385467Z"
+            }
+          ],
+          "artifact_id": "art_1691c5b22432",
+          "started_at": "2026-09-30T11:15:47.384406Z",
+          "ended_at": "2026-09-30T11:15:47.385535Z"
+        }
+      ],
+      "compositions": [],
+      "jobs": [
+        {
+          "id": "job_379fb256fe92",
+          "title": "Fixture",
+          "reference": "#12",
+          "objective": "Een werkende port",
+          "owner": "derek",
+          "assignee": "derek",
+          "git_repository_id": "git_d6cec8eaea0f",
+          "git_repository_name": "spin",
+          "git_remote_url": "https://example.test/spin.git",
+          "git_provider": "example.test",
+          "git_credential_scope": "public",
+          "base_ref": "main",
+          "branch": "jobs/#12/main",
+          "repositories": [
+            {
+              "repository_id": "git_d6cec8eaea0f",
+              "name": "spin",
+              "remote_url": "https://example.test/spin.git",
+              "provider": "example.test",
+              "credential_scope": "public",
+              "base_ref": "main",
+              "mode": "change"
+            }
+          ],
+          "with_selectors": [
+            "tool:git"
+          ],
+          "template_id": "tpl_6d79ef6b65b8",
+          "template_snapshot": {
+            "id": "tpl_6d79ef6b65b8",
+            "revision": 1,
+            "name": "Port fixture",
+            "git_selector": "tool:git",
+            "created_by": "derek",
+            "phases": [
+              {
+                "id": "build",
+                "name": "Bouw",
+                "instructions": "Bouw dit zorgvuldig",
+                "executor": "agent",
+                "inject": null,
+                "deliverables": [
+                  {
+                    "name": "Plan",
+                    "required": true,
+                    "kind": "markdown"
+                  }
+                ],
+                "allow_changes": true,
+                "accept": {
+                  "target": "review"
+                },
+                "reject": {
+                  "target": "SELF"
+                }
+              },
+              {
+                "id": "review",
+                "name": "Review",
+                "instructions": "Controleer de wijzigingen",
+                "executor": "agent",
+                "inject": [
+                  "Plan"
+                ],
+                "deliverables": null,
+                "allow_changes": false,
+                "accept": {
+                  "target": "DONE"
+                },
+                "reject": {
+                  "target": "SELF",
+                  "ask_user": true
+                }
+              }
+            ],
+            "created_at": "2026-09-30T11:15:47.38571Z",
+            "updated_at": "2026-09-30T11:15:47.38571Z"
+          },
+          "environment_selector": "tool:agent",
+          "phase_run_ids": [
+            "run_cd6de3c2881b"
+          ],
+          "current_phase_run_id": "run_cd6de3c2881b",
+          "workflow_status": "busy",
+          "status": "active",
+          "session_ids": [
+            "ses_194621992771"
+          ],
+          "candidate_result_ids": [],
+          "created_at": "2026-09-30T11:15:47.385742Z",
+          "updated_at": "2026-09-30T11:15:47.385773Z"
+        }
+      ],
+      "job_attachments": [],
+      "workflow_templates": [
+        {
+          "id": "tpl_6d79ef6b65b8",
+          "revision": 1,
+          "name": "Port fixture",
+          "git_selector": "tool:git",
+          "created_by": "derek",
+          "phases": [
+            {
+              "id": "build",
+              "name": "Bouw",
+              "instructions": "Bouw dit zorgvuldig",
+              "executor": "agent",
+              "inject": [],
+              "deliverables": [
+                {
+                  "name": "Plan",
+                  "required": true,
+                  "kind": "markdown"
+                }
+              ],
+              "allow_changes": true,
+              "accept": {
+                "target": "review"
+              },
+              "reject": {
+                "target": "SELF"
+              }
+            },
+            {
+              "id": "review",
+              "name": "Review",
+              "instructions": "Controleer de wijzigingen",
+              "executor": "agent",
+              "inject": [
+                "Plan"
+              ],
+              "deliverables": [],
+              "allow_changes": false,
+              "accept": {
+                "target": "DONE"
+              },
+              "reject": {
+                "target": "SELF",
+                "ask_user": true
+              }
+            }
+          ],
+          "created_at": "2026-09-30T11:15:47.38571Z",
+          "updated_at": "2026-09-30T11:15:47.38571Z"
+        }
+      ],
+      "phase_runs": [
+        {
+          "id": "run_cd6de3c2881b",
+          "job_id": "job_379fb256fe92",
+          "template_id": "tpl_6d79ef6b65b8",
+          "phase_id": "build",
+          "phase_name": "Bouw",
+          "attempt": 1,
+          "session_id": "ses_194621992771",
+          "status": "running",
+          "started_at": "2026-09-30T11:15:47.385754Z"
+        }
+      ],
+      "deliverables": [],
+      "deliverable_comments": [],
+      "code_review_revisions": [],
+      "code_review_comments": [],
+      "workflow_questions": [],
+      "sessions": [
+        {
+          "id": "ses_194621992771",
+          "job_id": "job_379fb256fe92",
+          "phase_run_id": "run_cd6de3c2881b",
+          "fork_mode": "root",
+          "tool": "agent",
+          "executor": "agent",
+          "environment_selector": "tool:agent",
+          "with_selectors": [
+            "tool:git"
+          ],
+          "role": "Bouw",
+          "operator": "derek",
+          "objective_delta": "Bouw dit zorgvuldig",
+          "git_repository_id": "git_d6cec8eaea0f",
+          "base_ref": "jobs/#12/main",
+          "git_ref": "jobs/#12/sessions/ses_194621992771",
+          "target_branch": "jobs/#12/main",
+          "status": "queued",
+          "activation_epoch": 0,
+          "turn_ids": [],
+          "checkpoint_ids": [],
+          "continuity_level": "workflow_phase",
+          "continuity_score": 10,
+          "created_at": "2026-09-30T11:15:47.385754Z",
+          "updated_at": "2026-09-30T11:15:47.385754Z"
+        }
+      ],
+      "activations": [],
+      "turns": [],
+      "checkpoints": [],
+      "results": [],
+      "clients": [],
+      "mcp_servers": [],
+      "git_repositories": [
+        {
+          "id": "git_d6cec8eaea0f",
+          "name": "spin",
+          "remote_url": "https://example.test/spin.git",
+          "default_ref": "main",
+          "provider": "example.test",
+          "credential_scope": "public",
+          "created_by": "derek",
+          "created_at": "2026-09-30T11:15:47.385694Z",
+          "updated_at": "2026-09-30T11:15:47.385694Z"
+        }
+      ],
+      "git_accounts": [],
+      "users": [],
+      "logins": []
+    },
+    "tools": [
+      {
+        "name": "ask",
+        "title": "Vraag de gebruiker",
+        "description": "Stel de gebruiker één of meer concrete vragen tegelijk en pauzeer deze fase tot alles beantwoord is. Geef per vraag de antwoorden die je verwacht als options; de gebruiker kan altijd een eigen antwoord typen, dus voeg zelf geen optie 'anders' toe. Bundel alles wat je nu wilt weten in één ask.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "question": {
+              "description": "Verkorte vorm: één open vraag zonder opties",
+              "type": "string"
+            },
+            "questions": {
+              "description": "Eén formulier met vragen",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "options": {
+                    "description": "Verwachte antwoorden, in de volgorde die je aanbeveelt",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 8,
+                    "type": "array"
+                  },
+                  "question": {
+                    "description": "Eén concrete vraag",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "question"
+                ],
+                "type": "object"
+              },
+              "maxItems": 6,
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "type": "object"
+        }
+      },
+      {
+        "name": "accept",
+        "title": "Accepteer fase",
+        "description": "Markeer deze fase als geslaagd en volg de geconfigureerde accept-overgang. De samenvatting wordt als Markdown getoond aan wie het besluit neemt: gebruik koppen, lijsten en code waar dat helpt.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "summary": {
+              "description": "Wat je opleverde en waarom het klaar is, in Markdown",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      {
+        "name": "reject",
+        "title": "Wijs fase af",
+        "description": "Wijs deze fase af met een concrete reden en volg de geconfigureerde reject-overgang. De reden wordt als Markdown getoond aan wie het besluit neemt: gebruik koppen, lijsten en code waar dat helpt.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "description": "Wat er ontbreekt of fout is en wat er moet gebeuren, in Markdown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "type": "object"
+        }
+      },
+      {
+        "name": "put_deliverable",
+        "title": "Lever deliverable op",
+        "description": "Zet een bestand of map uit /root/deliverables als nieuwe revisie van een deliverable: een Markdown-bestand voor een document, een map met index.html (eigen CSS, JS en afbeeldingen mogen los) of een afbeelding of PDF voor een visuele deliverable. Bewerk het bestand op schijf en put het opnieuw voor een volgende versie.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "enum": [
+                "Plan"
+              ],
+              "type": "string"
+            },
+            "path": {
+              "description": "Absoluut pad binnen /root/deliverables, bijvoorbeeld /root/deliverables/fo.md of /root/deliverables/website/",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "path"
+          ],
+          "type": "object"
+        }
+      }
+    ]
+  },
+  {
+    "job": {
+      "id": "job_379fb256fe92",
+      "title": "Fixture",
+      "reference": "#12",
+      "objective": "Een werkende port",
+      "owner": "derek",
+      "assignee": "derek",
+      "git_repository_id": "git_d6cec8eaea0f",
+      "git_repository_name": "spin",
+      "git_remote_url": "https://example.test/spin.git",
+      "git_provider": "example.test",
+      "git_credential_scope": "public",
+      "base_ref": "main",
+      "branch": "jobs/#12/main",
+      "repositories": [
+        {
+          "repository_id": "git_d6cec8eaea0f",
+          "name": "spin",
+          "remote_url": "https://example.test/spin.git",
+          "provider": "example.test",
+          "credential_scope": "public",
+          "base_ref": "main",
+          "mode": "change"
+        }
+      ],
+      "with_selectors": [
+        "tool:git"
+      ],
+      "template_id": "tpl_6d79ef6b65b8",
+      "template_snapshot": {
+        "id": "tpl_6d79ef6b65b8",
+        "revision": 1,
+        "name": "Port fixture",
+        "git_selector": "tool:git",
+        "created_by": "derek",
+        "phases": [
+          {
+            "id": "build",
+            "name": "Bouw",
+            "instructions": "Bouw dit zorgvuldig",
+            "executor": "agent",
+            "inject": null,
+            "deliverables": [
+              {
+                "name": "Plan",
+                "required": true,
+                "kind": "markdown"
+              }
+            ],
+            "allow_changes": true,
+            "accept": {
+              "target": "review"
+            },
+            "reject": {
+              "target": "SELF"
+            }
+          },
+          {
+            "id": "review",
+            "name": "Review",
+            "instructions": "Controleer de wijzigingen",
+            "executor": "agent",
+            "inject": [
+              "Plan"
+            ],
+            "deliverables": null,
+            "allow_changes": false,
+            "accept": {
+              "target": "DONE"
+            },
+            "reject": {
+              "target": "SELF",
+              "ask_user": true
+            }
+          }
+        ],
+        "created_at": "2026-09-30T11:15:47.38571Z",
+        "updated_at": "2026-09-30T11:15:47.38571Z"
+      },
+      "environment_selector": "tool:agent",
+      "phase_run_ids": [
+        "run_cd6de3c2881b",
+        "run_5985fa80d54f"
+      ],
+      "current_phase_run_id": "run_5985fa80d54f",
+      "workflow_status": "busy",
+      "status": "active",
+      "session_ids": [
+        "ses_194621992771",
+        "ses_b505cd8246cd"
+      ],
+      "candidate_result_ids": [],
+      "created_at": "2026-09-30T11:15:47.385742Z",
+      "updated_at": "2026-09-30T11:15:47.385904Z"
+    },
+    "phase": {
+      "id": "review",
+      "name": "Review",
+      "instructions": "Controleer de wijzigingen",
+      "executor": "agent",
+      "inject": [
+        "Plan"
+      ],
+      "deliverables": null,
+      "allow_changes": false,
+      "accept": {
+        "target": "DONE"
+      },
+      "reject": {
+        "target": "SELF",
+        "ask_user": true
+      }
+    },
+    "prompt": "Je voert Spin workflowfase \"Review\" uit (poging 1).\n\nJOB\nNaam: Fixture\nReferentie: #12\nGoal: Een werkende port\n\nINSTRUCTIES\nControleer de wijzigingen\n\nGIT\nBasisbranch: main · waar deze Job uiteindelijk op landt; lokaal origin/main.\nJob-branch: jobs/#12/main · het geaccepteerde werk van alle eerdere fases van deze Job; lokaal origin/jobs/#12/main. Elke fase komt hierop als één commit.\nJouw branch: jobs/#12/sessions/ses_b505cd8246cd · HEAD in deze workspace, begonnen op de Job-branch.\n\nREPOSITORYBELEID\nDeze fase levert geen codewijzigingen op. Je mag in deze wegwerp-workspace wel vrij werken: restore, build, tests en experimenten, ook als dat bestanden in de repository schrijft of aanpast. Niets daarvan gaat mee: bij accept bevestigt Spin de onveranderde Git-basis van deze Session en commit niets. Commit of push niet zelf.\n\nDELIVERABLES\nDe deliverables van deze Job staan in /root/deliverables, elk als bestand of map; lees wat je nodig hebt.\n- Plan: /root/deliverables/plan.md (revisie 1, Markdown)\nVerplichte context voor deze stap: Plan.\n\nWERKWIJZE\nGebruik uitsluitend de aangeboden Spin workflowtools om workflowstate te wijzigen. ask stelt één formulier met één of meer vragen, elk met de antwoordopties die je verwacht; stel alleen wat je niet zelf kunt uitzoeken en bundel alles in één ask. Deze fase vraagt geen deliverables; put_deliverable is daarom niet beschikbaar en je hoeft niets op te leveren. Commit of push nooit zelf. Sluit de fase altijd af met accept, of reject met een concrete reden. ACCEPT laat Spin de Session gecontroleerd in de Job-branch opnemen.\n",
+    "run": {
+      "id": "run_5985fa80d54f",
+      "job_id": "job_379fb256fe92",
+      "template_id": "tpl_6d79ef6b65b8",
+      "phase_id": "review",
+      "phase_name": "Review",
+      "attempt": 1,
+      "session_id": "ses_b505cd8246cd",
+      "status": "running",
+      "started_at": "2026-09-30T11:15:47.385902Z"
+    },
+    "session": {
+      "id": "ses_b505cd8246cd",
+      "job_id": "job_379fb256fe92",
+      "phase_run_id": "run_5985fa80d54f",
+      "parent_session_id": "ses_194621992771",
+      "spawned_by_session_id": "ses_194621992771",
+      "fork_mode": "root",
+      "tool": "agent",
+      "executor": "agent",
+      "environment_selector": "tool:agent",
+      "with_selectors": [
+        "tool:git"
+      ],
+      "role": "Review",
+      "operator": "derek",
+      "objective_delta": "Controleer de wijzigingen",
+      "git_repository_id": "git_d6cec8eaea0f",
+      "base_ref": "jobs/#12/main",
+      "git_ref": "jobs/#12/sessions/ses_b505cd8246cd",
+      "target_branch": "jobs/#12/main",
+      "status": "queued",
+      "activation_epoch": 0,
+      "turn_ids": [],
+      "checkpoint_ids": [],
+      "continuity_level": "workflow_phase",
+      "continuity_score": 10,
+      "created_at": "2026-09-30T11:15:47.385902Z",
+      "updated_at": "2026-09-30T11:15:47.385902Z"
+    },
+    "snapshot": {
+      "artifacts": [
+        {
+          "id": "art_ab06cdeae95c",
+          "kind": "tool",
+          "name": "agent",
+          "scope": "global",
+          "profile": "default",
+          "provides": [
+            "tool:agent"
+          ],
+          "requires": [],
+          "enables": [
+            {
+              "name": "acp",
+              "command": "agent-acp",
+              "transport": "stdio",
+              "protocol_version": 1
+            }
+          ],
+          "slot": "tool:agent",
+          "parent_artifact_ids": [
+            "art_1691c5b22432"
+          ],
+          "snapshot_digest": "sha256:test",
+          "snapshot": {
+            "driver": "test",
+            "ref": "image:rec_57bcf2a9e7d3",
+            "digest": "sha256:test",
+            "restorable": true,
+            "includes_process_state": false
+          },
+          "sensitivity": "public",
+          "created_by": "derek",
+          "created_at": "2026-09-30T11:15:47.385675Z"
+        },
+        {
+          "id": "art_1691c5b22432",
+          "kind": "tool",
+          "name": "git",
+          "scope": "global",
+          "profile": "default",
+          "provides": [
+            "tool:git"
+          ],
+          "requires": [],
+          "enables": [
+            {
+              "name": "git"
+            }
+          ],
+          "slot": "tool:git",
+          "parent_artifact_ids": [],
+          "snapshot_digest": "sha256:test",
+          "snapshot": {
+            "driver": "test",
+            "ref": "image:rec_2d971bcf462e",
+            "digest": "sha256:test",
+            "restorable": true,
+            "includes_process_state": false
+          },
+          "sensitivity": "public",
+          "created_by": "derek",
+          "created_at": "2026-09-30T11:15:47.385535Z"
+        }
+      ],
+      "recordings": [
+        {
+          "id": "rec_57bcf2a9e7d3",
+          "actor": "derek",
+          "kind": "tool",
+          "name": "agent",
+          "scope": "global",
+          "profile": "default",
+          "provides": [
+            "tool:agent"
+          ],
+          "requires": [],
+          "enables": [
+            {
+              "name": "acp",
+              "command": "agent-acp",
+              "transport": "stdio",
+              "protocol_version": 1
+            }
+          ],
+          "slot": "tool:agent",
+          "parent_artifact_ids": [
+            "art_1691c5b22432"
+          ],
+          "runtime": {
+            "driver": "test",
+            "container_id": "container-rec_57bcf2a9e7d3",
+            "base_ref": "image:rec_2d971bcf462e",
+            "attach_command": "attach rec_57bcf2a9e7d3",
+            "status": "recording"
+          },
+          "sensitivity": "public",
+          "status": "completed",
+          "commands": [
+            {
+              "sequence": 1,
+              "exit_code": 7,
+              "at": "2026-09-30T11:15:47.385669Z"
+            }
+          ],
+          "artifact_id": "art_ab06cdeae95c",
+          "started_at": "2026-09-30T11:15:47.38566Z",
+          "ended_at": "2026-09-30T11:15:47.385675Z"
+        },
+        {
+          "id": "rec_2d971bcf462e",
+          "actor": "derek",
+          "kind": "tool",
+          "name": "git",
+          "scope": "global",
+          "profile": "default",
+          "provides": [
+            "tool:git"
+          ],
+          "requires": [],
+          "enables": [
+            {
+              "name": "git"
+            }
+          ],
+          "slot": "tool:git",
+          "parent_artifact_ids": [],
+          "runtime": {
+            "driver": "test",
+            "container_id": "container-rec_2d971bcf462e",
+            "base_ref": "base:test",
+            "attach_command": "attach rec_2d971bcf462e",
+            "status": "recording"
+          },
+          "sensitivity": "public",
+          "status": "completed",
+          "commands": [
+            {
+              "sequence": 1,
+              "exit_code": 7,
+              "at": "2026-09-30T11:15:47.385467Z"
+            }
+          ],
+          "artifact_id": "art_1691c5b22432",
+          "started_at": "2026-09-30T11:15:47.384406Z",
+          "ended_at": "2026-09-30T11:15:47.385535Z"
+        }
+      ],
+      "compositions": [],
+      "jobs": [
+        {
+          "id": "job_379fb256fe92",
+          "title": "Fixture",
+          "reference": "#12",
+          "objective": "Een werkende port",
+          "owner": "derek",
+          "assignee": "derek",
+          "git_repository_id": "git_d6cec8eaea0f",
+          "git_repository_name": "spin",
+          "git_remote_url": "https://example.test/spin.git",
+          "git_provider": "example.test",
+          "git_credential_scope": "public",
+          "base_ref": "main",
+          "branch": "jobs/#12/main",
+          "repositories": [
+            {
+              "repository_id": "git_d6cec8eaea0f",
+              "name": "spin",
+              "remote_url": "https://example.test/spin.git",
+              "provider": "example.test",
+              "credential_scope": "public",
+              "base_ref": "main",
+              "mode": "change"
+            }
+          ],
+          "with_selectors": [
+            "tool:git"
+          ],
+          "template_id": "tpl_6d79ef6b65b8",
+          "template_snapshot": {
+            "id": "tpl_6d79ef6b65b8",
+            "revision": 1,
+            "name": "Port fixture",
+            "git_selector": "tool:git",
+            "created_by": "derek",
+            "phases": [
+              {
+                "id": "build",
+                "name": "Bouw",
+                "instructions": "Bouw dit zorgvuldig",
+                "executor": "agent",
+                "inject": null,
+                "deliverables": [
+                  {
+                    "name": "Plan",
+                    "required": true,
+                    "kind": "markdown"
+                  }
+                ],
+                "allow_changes": true,
+                "accept": {
+                  "target": "review"
+                },
+                "reject": {
+                  "target": "SELF"
+                }
+              },
+              {
+                "id": "review",
+                "name": "Review",
+                "instructions": "Controleer de wijzigingen",
+                "executor": "agent",
+                "inject": [
+                  "Plan"
+                ],
+                "deliverables": null,
+                "allow_changes": false,
+                "accept": {
+                  "target": "DONE"
+                },
+                "reject": {
+                  "target": "SELF",
+                  "ask_user": true
+                }
+              }
+            ],
+            "created_at": "2026-09-30T11:15:47.38571Z",
+            "updated_at": "2026-09-30T11:15:47.38571Z"
+          },
+          "environment_selector": "tool:agent",
+          "phase_run_ids": [
+            "run_cd6de3c2881b",
+            "run_5985fa80d54f"
+          ],
+          "current_phase_run_id": "run_5985fa80d54f",
+          "workflow_status": "busy",
+          "status": "active",
+          "session_ids": [
+            "ses_194621992771",
+            "ses_b505cd8246cd"
+          ],
+          "candidate_result_ids": [],
+          "created_at": "2026-09-30T11:15:47.385742Z",
+          "updated_at": "2026-09-30T11:15:47.385904Z"
+        }
+      ],
+      "job_attachments": [],
+      "workflow_templates": [
+        {
+          "id": "tpl_6d79ef6b65b8",
+          "revision": 1,
+          "name": "Port fixture",
+          "git_selector": "tool:git",
+          "created_by": "derek",
+          "phases": [
+            {
+              "id": "build",
+              "name": "Bouw",
+              "instructions": "Bouw dit zorgvuldig",
+              "executor": "agent",
+              "inject": [],
+              "deliverables": [
+                {
+                  "name": "Plan",
+                  "required": true,
+                  "kind": "markdown"
+                }
+              ],
+              "allow_changes": true,
+              "accept": {
+                "target": "review"
+              },
+              "reject": {
+                "target": "SELF"
+              }
+            },
+            {
+              "id": "review",
+              "name": "Review",
+              "instructions": "Controleer de wijzigingen",
+              "executor": "agent",
+              "inject": [
+                "Plan"
+              ],
+              "deliverables": [],
+              "allow_changes": false,
+              "accept": {
+                "target": "DONE"
+              },
+              "reject": {
+                "target": "SELF",
+                "ask_user": true
+              }
+            }
+          ],
+          "created_at": "2026-09-30T11:15:47.38571Z",
+          "updated_at": "2026-09-30T11:15:47.38571Z"
+        }
+      ],
+      "phase_runs": [
+        {
+          "id": "run_cd6de3c2881b",
+          "job_id": "job_379fb256fe92",
+          "template_id": "tpl_6d79ef6b65b8",
+          "phase_id": "build",
+          "phase_name": "Bouw",
+          "attempt": 1,
+          "session_id": "ses_194621992771",
+          "status": "accepted",
+          "summary": "Plan klaar",
+          "agent_outcomes": [
+            {
+              "id": "out_569c0f786090",
+              "outcome": "accept",
+              "detail": "Plan klaar",
+              "created_at": "2026-09-30T11:15:47.385901Z"
+            }
+          ],
+          "started_at": "2026-09-30T11:15:47.385754Z",
+          "completed_at": "2026-09-30T11:15:47.385901Z"
+        },
+        {
+          "id": "run_5985fa80d54f",
+          "job_id": "job_379fb256fe92",
+          "template_id": "tpl_6d79ef6b65b8",
+          "phase_id": "review",
+          "phase_name": "Review",
+          "attempt": 1,
+          "session_id": "ses_b505cd8246cd",
+          "status": "running",
+          "started_at": "2026-09-30T11:15:47.385902Z"
+        }
+      ],
+      "deliverables": [
+        {
+          "id": "del_6f1c255f38b3",
+          "job_id": "job_379fb256fe92",
+          "phase_run_id": "run_cd6de3c2881b",
+          "session_id": "ses_194621992771",
+          "name": "Plan",
+          "content": "# Plan\n\nWerk rustig.",
+          "revision": 1,
+          "created_at": "2026-09-30T11:15:47.38589Z",
+          "updated_at": "0001-01-01T00:00:00Z",
+          "kind": "markdown"
+        }
+      ],
+      "deliverable_comments": [],
+      "code_review_revisions": [],
+      "code_review_comments": [],
+      "workflow_questions": [],
+      "sessions": [
+        {
+          "id": "ses_194621992771",
+          "job_id": "job_379fb256fe92",
+          "phase_run_id": "run_cd6de3c2881b",
+          "fork_mode": "root",
+          "tool": "agent",
+          "executor": "agent",
+          "environment_selector": "tool:agent",
+          "with_selectors": [
+            "tool:git"
+          ],
+          "role": "Bouw",
+          "operator": "derek",
+          "objective_delta": "Bouw dit zorgvuldig",
+          "git_repository_id": "git_d6cec8eaea0f",
+          "base_ref": "jobs/#12/main",
+          "git_ref": "jobs/#12/sessions/ses_194621992771",
+          "target_branch": "jobs/#12/main",
+          "status": "queued",
+          "activation_epoch": 0,
+          "turn_ids": [],
+          "checkpoint_ids": [],
+          "continuity_level": "workflow_phase",
+          "continuity_score": 10,
+          "created_at": "2026-09-30T11:15:47.385754Z",
+          "updated_at": "2026-09-30T11:15:47.385754Z"
+        },
+        {
+          "id": "ses_b505cd8246cd",
+          "job_id": "job_379fb256fe92",
+          "phase_run_id": "run_5985fa80d54f",
+          "parent_session_id": "ses_194621992771",
+          "spawned_by_session_id": "ses_194621992771",
+          "fork_mode": "root",
+          "tool": "agent",
+          "executor": "agent",
+          "environment_selector": "tool:agent",
+          "with_selectors": [
+            "tool:git"
+          ],
+          "role": "Review",
+          "operator": "derek",
+          "objective_delta": "Controleer de wijzigingen",
+          "git_repository_id": "git_d6cec8eaea0f",
+          "base_ref": "jobs/#12/main",
+          "git_ref": "jobs/#12/sessions/ses_b505cd8246cd",
+          "target_branch": "jobs/#12/main",
+          "status": "queued",
+          "activation_epoch": 0,
+          "turn_ids": [],
+          "checkpoint_ids": [],
+          "continuity_level": "workflow_phase",
+          "continuity_score": 10,
+          "created_at": "2026-09-30T11:15:47.385902Z",
+          "updated_at": "2026-09-30T11:15:47.385902Z"
+        }
+      ],
+      "activations": [],
+      "turns": [],
+      "checkpoints": [],
+      "results": [],
+      "clients": [],
+      "mcp_servers": [],
+      "git_repositories": [
+        {
+          "id": "git_d6cec8eaea0f",
+          "name": "spin",
+          "remote_url": "https://example.test/spin.git",
+          "default_ref": "main",
+          "provider": "example.test",
+          "credential_scope": "public",
+          "created_by": "derek",
+          "created_at": "2026-09-30T11:15:47.385694Z",
+          "updated_at": "2026-09-30T11:15:47.385694Z"
+        }
+      ],
+      "git_accounts": [],
+      "users": [],
+      "logins": []
+    },
+    "tools": [
+      {
+        "name": "ask",
+        "title": "Vraag de gebruiker",
+        "description": "Stel de gebruiker één of meer concrete vragen tegelijk en pauzeer deze fase tot alles beantwoord is. Geef per vraag de antwoorden die je verwacht als options; de gebruiker kan altijd een eigen antwoord typen, dus voeg zelf geen optie 'anders' toe. Bundel alles wat je nu wilt weten in één ask.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "question": {
+              "description": "Verkorte vorm: één open vraag zonder opties",
+              "type": "string"
+            },
+            "questions": {
+              "description": "Eén formulier met vragen",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "options": {
+                    "description": "Verwachte antwoorden, in de volgorde die je aanbeveelt",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 8,
+                    "type": "array"
+                  },
+                  "question": {
+                    "description": "Eén concrete vraag",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "question"
+                ],
+                "type": "object"
+              },
+              "maxItems": 6,
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "type": "object"
+        }
+      },
+      {
+        "name": "accept",
+        "title": "Accepteer fase",
+        "description": "Markeer deze fase als geslaagd en volg de geconfigureerde accept-overgang. De samenvatting wordt als Markdown getoond aan wie het besluit neemt: gebruik koppen, lijsten en code waar dat helpt.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "summary": {
+              "description": "Wat je opleverde en waarom het klaar is, in Markdown",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      {
+        "name": "reject",
+        "title": "Wijs fase af",
+        "description": "Wijs deze fase af met een concrete reden en volg de geconfigureerde reject-overgang. De reden wordt als Markdown getoond aan wie het besluit neemt: gebruik koppen, lijsten en code waar dat helpt.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "description": "Wat er ontbreekt of fout is en wat er moet gebeuren, in Markdown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "type": "object"
+        }
+      }
+    ]
+  },
+  {
+    "job": {
+      "id": "job_379fb256fe92",
+      "title": "Fixture",
+      "reference": "#12",
+      "objective": "Een werkende port",
+      "owner": "derek",
+      "assignee": "derek",
+      "git_repository_id": "git_d6cec8eaea0f",
+      "git_repository_name": "spin",
+      "git_remote_url": "https://example.test/spin.git",
+      "git_provider": "example.test",
+      "git_credential_scope": "public",
+      "base_ref": "main",
+      "branch": "jobs/#12/main",
+      "repositories": [
+        {
+          "repository_id": "git_d6cec8eaea0f",
+          "name": "spin",
+          "remote_url": "https://example.test/spin.git",
+          "provider": "example.test",
+          "credential_scope": "public",
+          "base_ref": "main",
+          "mode": "change"
+        }
+      ],
+      "with_selectors": [
+        "tool:git"
+      ],
+      "template_id": "tpl_6d79ef6b65b8",
+      "template_snapshot": {
+        "id": "tpl_6d79ef6b65b8",
+        "revision": 1,
+        "name": "Port fixture",
+        "git_selector": "tool:git",
+        "created_by": "derek",
+        "phases": [
+          {
+            "id": "build",
+            "name": "Bouw",
+            "instructions": "Bouw dit zorgvuldig",
+            "executor": "agent",
+            "inject": null,
+            "deliverables": [
+              {
+                "name": "Plan",
+                "required": true,
+                "kind": "markdown"
+              }
+            ],
+            "allow_changes": true,
+            "accept": {
+              "target": "review"
+            },
+            "reject": {
+              "target": "SELF"
+            }
+          },
+          {
+            "id": "review",
+            "name": "Review",
+            "instructions": "Controleer de wijzigingen",
+            "executor": "agent",
+            "inject": [
+              "Plan"
+            ],
+            "deliverables": null,
+            "allow_changes": false,
+            "accept": {
+              "target": "DONE"
+            },
+            "reject": {
+              "target": "SELF",
+              "ask_user": true
+            }
+          }
+        ],
+        "created_at": "2026-09-30T11:15:47.38571Z",
+        "updated_at": "2026-09-30T11:15:47.38571Z"
+      },
+      "environment_selector": "tool:agent",
+      "phase_run_ids": [
+        "run_cd6de3c2881b",
+        "run_5985fa80d54f"
+      ],
+      "workflow_status": "done",
+      "status": "done",
+      "session_ids": [
+        "ses_194621992771",
+        "ses_b505cd8246cd"
+      ],
+      "candidate_result_ids": [],
+      "created_at": "2026-09-30T11:15:47.385742Z",
+      "updated_at": "2026-09-30T11:15:47.385929Z"
+    },
+    "phase": {
+      "id": "review",
+      "name": "Review",
+      "instructions": "Controleer de wijzigingen",
+      "executor": "agent",
+      "inject": [
+        "Plan"
+      ],
+      "deliverables": null,
+      "allow_changes": false,
+      "accept": {
+        "target": "DONE"
+      },
+      "reject": {
+        "target": "SELF",
+        "ask_user": true
+      }
+    },
+    "prompt": "Je voert Spin workflowfase \"Review\" uit (poging 1).\n\nJOB\nNaam: Fixture\nReferentie: #12\nGoal: Een werkende port\n\nINSTRUCTIES\nControleer de wijzigingen\n\nGIT\nBasisbranch: main · waar deze Job uiteindelijk op landt; lokaal origin/main.\nJob-branch: jobs/#12/main · het geaccepteerde werk van alle eerdere fases van deze Job; lokaal origin/jobs/#12/main. Elke fase komt hierop als één commit.\nJouw branch: jobs/#12/sessions/ses_b505cd8246cd · HEAD in deze workspace, begonnen op de Job-branch.\n\nREPOSITORYBELEID\nDeze fase levert geen codewijzigingen op. Je mag in deze wegwerp-workspace wel vrij werken: restore, build, tests en experimenten, ook als dat bestanden in de repository schrijft of aanpast. Niets daarvan gaat mee: bij accept bevestigt Spin de onveranderde Git-basis van deze Session en commit niets. Commit of push niet zelf.\n\nDELIVERABLES\nDe deliverables van deze Job staan in /root/deliverables, elk als bestand of map; lees wat je nodig hebt.\n- Plan: /root/deliverables/plan.md (revisie 1, Markdown)\nVerplichte context voor deze stap: Plan.\n\nWERKWIJZE\nGebruik uitsluitend de aangeboden Spin workflowtools om workflowstate te wijzigen. ask stelt één formulier met één of meer vragen, elk met de antwoordopties die je verwacht; stel alleen wat je niet zelf kunt uitzoeken en bundel alles in één ask. Deze fase vraagt geen deliverables; put_deliverable is daarom niet beschikbaar en je hoeft niets op te leveren. Commit of push nooit zelf. Sluit de fase altijd af met accept, of reject met een concrete reden. ACCEPT laat Spin de Session gecontroleerd in de Job-branch opnemen.\n",
+    "run": {
+      "id": "run_5985fa80d54f",
+      "job_id": "job_379fb256fe92",
+      "template_id": "tpl_6d79ef6b65b8",
+      "phase_id": "review",
+      "phase_name": "Review",
+      "attempt": 1,
+      "session_id": "ses_b505cd8246cd",
+      "status": "accepted",
+      "pending_outcome": "reject",
+      "summary": "Nu akkoord",
+      "reject_reason": "Tweede fout",
+      "agent_outcomes": [
+        {
+          "id": "out_bdaa13501181",
+          "outcome": "reject",
+          "detail": "Eerste fout",
+          "created_at": "2026-09-30T11:15:47.385923Z"
+        },
+        {
+          "id": "out_6432b1db9617",
+          "outcome": "reject",
+          "detail": "Tweede fout",
+          "created_at": "2026-09-30T11:15:47.385926Z"
+        },
+        {
+          "id": "out_3d6d32e4b3d6",
+          "outcome": "accept",
+          "detail": "Nu akkoord",
+          "created_at": "2026-09-30T11:15:47.385928Z"
+        }
+      ],
+      "started_at": "2026-09-30T11:15:47.385902Z",
+      "completed_at": "2026-09-30T11:15:47.385928Z"
+    },
+    "session": {
+      "id": "ses_b505cd8246cd",
+      "job_id": "job_379fb256fe92",
+      "phase_run_id": "run_5985fa80d54f",
+      "parent_session_id": "ses_194621992771",
+      "spawned_by_session_id": "ses_194621992771",
+      "fork_mode": "root",
+      "tool": "agent",
+      "executor": "agent",
+      "environment_selector": "tool:agent",
+      "with_selectors": [
+        "tool:git"
+      ],
+      "role": "Review",
+      "operator": "derek",
+      "objective_delta": "Controleer de wijzigingen",
+      "git_repository_id": "git_d6cec8eaea0f",
+      "base_ref": "jobs/#12/main",
+      "git_ref": "jobs/#12/sessions/ses_b505cd8246cd",
+      "target_branch": "jobs/#12/main",
+      "status": "queued",
+      "activation_epoch": 0,
+      "turn_ids": [],
+      "checkpoint_ids": [],
+      "continuity_level": "workflow_phase",
+      "continuity_score": 10,
+      "created_at": "2026-09-30T11:15:47.385902Z",
+      "updated_at": "2026-09-30T11:15:47.385902Z"
+    },
+    "snapshot": {
+      "artifacts": [
+        {
+          "id": "art_ab06cdeae95c",
+          "kind": "tool",
+          "name": "agent",
+          "scope": "global",
+          "profile": "default",
+          "provides": [
+            "tool:agent"
+          ],
+          "requires": [],
+          "enables": [
+            {
+              "name": "acp",
+              "command": "agent-acp",
+              "transport": "stdio",
+              "protocol_version": 1
+            }
+          ],
+          "slot": "tool:agent",
+          "parent_artifact_ids": [
+            "art_1691c5b22432"
+          ],
+          "snapshot_digest": "sha256:test",
+          "snapshot": {
+            "driver": "test",
+            "ref": "image:rec_57bcf2a9e7d3",
+            "digest": "sha256:test",
+            "restorable": true,
+            "includes_process_state": false
+          },
+          "sensitivity": "public",
+          "created_by": "derek",
+          "created_at": "2026-09-30T11:15:47.385675Z"
+        },
+        {
+          "id": "art_1691c5b22432",
+          "kind": "tool",
+          "name": "git",
+          "scope": "global",
+          "profile": "default",
+          "provides": [
+            "tool:git"
+          ],
+          "requires": [],
+          "enables": [
+            {
+              "name": "git"
+            }
+          ],
+          "slot": "tool:git",
+          "parent_artifact_ids": [],
+          "snapshot_digest": "sha256:test",
+          "snapshot": {
+            "driver": "test",
+            "ref": "image:rec_2d971bcf462e",
+            "digest": "sha256:test",
+            "restorable": true,
+            "includes_process_state": false
+          },
+          "sensitivity": "public",
+          "created_by": "derek",
+          "created_at": "2026-09-30T11:15:47.385535Z"
+        }
+      ],
+      "recordings": [
+        {
+          "id": "rec_57bcf2a9e7d3",
+          "actor": "derek",
+          "kind": "tool",
+          "name": "agent",
+          "scope": "global",
+          "profile": "default",
+          "provides": [
+            "tool:agent"
+          ],
+          "requires": [],
+          "enables": [
+            {
+              "name": "acp",
+              "command": "agent-acp",
+              "transport": "stdio",
+              "protocol_version": 1
+            }
+          ],
+          "slot": "tool:agent",
+          "parent_artifact_ids": [
+            "art_1691c5b22432"
+          ],
+          "runtime": {
+            "driver": "test",
+            "container_id": "container-rec_57bcf2a9e7d3",
+            "base_ref": "image:rec_2d971bcf462e",
+            "attach_command": "attach rec_57bcf2a9e7d3",
+            "status": "recording"
+          },
+          "sensitivity": "public",
+          "status": "completed",
+          "commands": [
+            {
+              "sequence": 1,
+              "exit_code": 7,
+              "at": "2026-09-30T11:15:47.385669Z"
+            }
+          ],
+          "artifact_id": "art_ab06cdeae95c",
+          "started_at": "2026-09-30T11:15:47.38566Z",
+          "ended_at": "2026-09-30T11:15:47.385675Z"
+        },
+        {
+          "id": "rec_2d971bcf462e",
+          "actor": "derek",
+          "kind": "tool",
+          "name": "git",
+          "scope": "global",
+          "profile": "default",
+          "provides": [
+            "tool:git"
+          ],
+          "requires": [],
+          "enables": [
+            {
+              "name": "git"
+            }
+          ],
+          "slot": "tool:git",
+          "parent_artifact_ids": [],
+          "runtime": {
+            "driver": "test",
+            "container_id": "container-rec_2d971bcf462e",
+            "base_ref": "base:test",
+            "attach_command": "attach rec_2d971bcf462e",
+            "status": "recording"
+          },
+          "sensitivity": "public",
+          "status": "completed",
+          "commands": [
+            {
+              "sequence": 1,
+              "exit_code": 7,
+              "at": "2026-09-30T11:15:47.385467Z"
+            }
+          ],
+          "artifact_id": "art_1691c5b22432",
+          "started_at": "2026-09-30T11:15:47.384406Z",
+          "ended_at": "2026-09-30T11:15:47.385535Z"
+        }
+      ],
+      "compositions": [],
+      "jobs": [
+        {
+          "id": "job_379fb256fe92",
+          "title": "Fixture",
+          "reference": "#12",
+          "objective": "Een werkende port",
+          "owner": "derek",
+          "assignee": "derek",
+          "git_repository_id": "git_d6cec8eaea0f",
+          "git_repository_name": "spin",
+          "git_remote_url": "https://example.test/spin.git",
+          "git_provider": "example.test",
+          "git_credential_scope": "public",
+          "base_ref": "main",
+          "branch": "jobs/#12/main",
+          "repositories": [
+            {
+              "repository_id": "git_d6cec8eaea0f",
+              "name": "spin",
+              "remote_url": "https://example.test/spin.git",
+              "provider": "example.test",
+              "credential_scope": "public",
+              "base_ref": "main",
+              "mode": "change"
+            }
+          ],
+          "with_selectors": [
+            "tool:git"
+          ],
+          "template_id": "tpl_6d79ef6b65b8",
+          "template_snapshot": {
+            "id": "tpl_6d79ef6b65b8",
+            "revision": 1,
+            "name": "Port fixture",
+            "git_selector": "tool:git",
+            "created_by": "derek",
+            "phases": [
+              {
+                "id": "build",
+                "name": "Bouw",
+                "instructions": "Bouw dit zorgvuldig",
+                "executor": "agent",
+                "inject": null,
+                "deliverables": [
+                  {
+                    "name": "Plan",
+                    "required": true,
+                    "kind": "markdown"
+                  }
+                ],
+                "allow_changes": true,
+                "accept": {
+                  "target": "review"
+                },
+                "reject": {
+                  "target": "SELF"
+                }
+              },
+              {
+                "id": "review",
+                "name": "Review",
+                "instructions": "Controleer de wijzigingen",
+                "executor": "agent",
+                "inject": [
+                  "Plan"
+                ],
+                "deliverables": null,
+                "allow_changes": false,
+                "accept": {
+                  "target": "DONE"
+                },
+                "reject": {
+                  "target": "SELF",
+                  "ask_user": true
+                }
+              }
+            ],
+            "created_at": "2026-09-30T11:15:47.38571Z",
+            "updated_at": "2026-09-30T11:15:47.38571Z"
+          },
+          "environment_selector": "tool:agent",
+          "phase_run_ids": [
+            "run_cd6de3c2881b",
+            "run_5985fa80d54f"
+          ],
+          "workflow_status": "done",
+          "status": "done",
+          "session_ids": [
+            "ses_194621992771",
+            "ses_b505cd8246cd"
+          ],
+          "candidate_result_ids": [],
+          "created_at": "2026-09-30T11:15:47.385742Z",
+          "updated_at": "2026-09-30T11:15:47.385929Z"
+        }
+      ],
+      "job_attachments": [],
+      "workflow_templates": [
+        {
+          "id": "tpl_6d79ef6b65b8",
+          "revision": 1,
+          "name": "Port fixture",
+          "git_selector": "tool:git",
+          "created_by": "derek",
+          "phases": [
+            {
+              "id": "build",
+              "name": "Bouw",
+              "instructions": "Bouw dit zorgvuldig",
+              "executor": "agent",
+              "inject": [],
+              "deliverables": [
+                {
+                  "name": "Plan",
+                  "required": true,
+                  "kind": "markdown"
+                }
+              ],
+              "allow_changes": true,
+              "accept": {
+                "target": "review"
+              },
+              "reject": {
+                "target": "SELF"
+              }
+            },
+            {
+              "id": "review",
+              "name": "Review",
+              "instructions": "Controleer de wijzigingen",
+              "executor": "agent",
+              "inject": [
+                "Plan"
+              ],
+              "deliverables": [],
+              "allow_changes": false,
+              "accept": {
+                "target": "DONE"
+              },
+              "reject": {
+                "target": "SELF",
+                "ask_user": true
+              }
+            }
+          ],
+          "created_at": "2026-09-30T11:15:47.38571Z",
+          "updated_at": "2026-09-30T11:15:47.38571Z"
+        }
+      ],
+      "phase_runs": [
+        {
+          "id": "run_cd6de3c2881b",
+          "job_id": "job_379fb256fe92",
+          "template_id": "tpl_6d79ef6b65b8",
+          "phase_id": "build",
+          "phase_name": "Bouw",
+          "attempt": 1,
+          "session_id": "ses_194621992771",
+          "status": "accepted",
+          "summary": "Plan klaar",
+          "agent_outcomes": [
+            {
+              "id": "out_569c0f786090",
+              "outcome": "accept",
+              "detail": "Plan klaar",
+              "created_at": "2026-09-30T11:15:47.385901Z"
+            }
+          ],
+          "started_at": "2026-09-30T11:15:47.385754Z",
+          "completed_at": "2026-09-30T11:15:47.385901Z"
+        },
+        {
+          "id": "run_5985fa80d54f",
+          "job_id": "job_379fb256fe92",
+          "template_id": "tpl_6d79ef6b65b8",
+          "phase_id": "review",
+          "phase_name": "Review",
+          "attempt": 1,
+          "session_id": "ses_b505cd8246cd",
+          "status": "accepted",
+          "pending_outcome": "reject",
+          "summary": "Nu akkoord",
+          "reject_reason": "Tweede fout",
+          "agent_outcomes": [
+            {
+              "id": "out_bdaa13501181",
+              "outcome": "reject",
+              "detail": "Eerste fout",
+              "created_at": "2026-09-30T11:15:47.385923Z"
+            },
+            {
+              "id": "out_6432b1db9617",
+              "outcome": "reject",
+              "detail": "Tweede fout",
+              "created_at": "2026-09-30T11:15:47.385926Z"
+            },
+            {
+              "id": "out_3d6d32e4b3d6",
+              "outcome": "accept",
+              "detail": "Nu akkoord",
+              "created_at": "2026-09-30T11:15:47.385928Z"
+            }
+          ],
+          "started_at": "2026-09-30T11:15:47.385902Z",
+          "completed_at": "2026-09-30T11:15:47.385928Z"
+        }
+      ],
+      "deliverables": [
+        {
+          "id": "del_6f1c255f38b3",
+          "job_id": "job_379fb256fe92",
+          "phase_run_id": "run_cd6de3c2881b",
+          "session_id": "ses_194621992771",
+          "name": "Plan",
+          "content": "# Plan\n\nWerk rustig.",
+          "revision": 1,
+          "created_at": "2026-09-30T11:15:47.38589Z",
+          "updated_at": "0001-01-01T00:00:00Z",
+          "kind": "markdown"
+        }
+      ],
+      "deliverable_comments": [],
+      "code_review_revisions": [],
+      "code_review_comments": [],
+      "workflow_questions": [
+        {
+          "id": "ask_37d0b1a836d9",
+          "job_id": "job_379fb256fe92",
+          "phase_run_id": "run_5985fa80d54f",
+          "session_id": "ses_b505cd8246cd",
+          "kind": "approval",
+          "question": "AI rejected Review 1 keer. Eerste fout",
+          "outcome": "reject",
+          "agent_detail": "Eerste fout",
+          "agent_outcome_id": "out_bdaa13501181",
+          "accept_target": "DONE",
+          "reject_target": "review",
+          "status": "superseded",
+          "created_at": "2026-09-30T11:15:47.385923Z",
+          "answered_at": "2026-09-30T11:15:47.385926Z"
+        },
+        {
+          "id": "ask_5b8d8439f849",
+          "job_id": "job_379fb256fe92",
+          "phase_run_id": "run_5985fa80d54f",
+          "session_id": "ses_b505cd8246cd",
+          "kind": "approval",
+          "question": "AI rejected Review 2 keer. Tweede fout",
+          "outcome": "reject",
+          "agent_detail": "Tweede fout",
+          "agent_outcome_id": "out_6432b1db9617",
+          "accept_target": "DONE",
+          "reject_target": "review",
+          "status": "superseded",
+          "created_at": "2026-09-30T11:15:47.385927Z",
+          "answered_at": "2026-09-30T11:15:47.385928Z"
+        }
+      ],
+      "sessions": [
+        {
+          "id": "ses_194621992771",
+          "job_id": "job_379fb256fe92",
+          "phase_run_id": "run_cd6de3c2881b",
+          "fork_mode": "root",
+          "tool": "agent",
+          "executor": "agent",
+          "environment_selector": "tool:agent",
+          "with_selectors": [
+            "tool:git"
+          ],
+          "role": "Bouw",
+          "operator": "derek",
+          "objective_delta": "Bouw dit zorgvuldig",
+          "git_repository_id": "git_d6cec8eaea0f",
+          "base_ref": "jobs/#12/main",
+          "git_ref": "jobs/#12/sessions/ses_194621992771",
+          "target_branch": "jobs/#12/main",
+          "status": "queued",
+          "activation_epoch": 0,
+          "turn_ids": [],
+          "checkpoint_ids": [],
+          "continuity_level": "workflow_phase",
+          "continuity_score": 10,
+          "created_at": "2026-09-30T11:15:47.385754Z",
+          "updated_at": "2026-09-30T11:15:47.385754Z"
+        },
+        {
+          "id": "ses_b505cd8246cd",
+          "job_id": "job_379fb256fe92",
+          "phase_run_id": "run_5985fa80d54f",
+          "parent_session_id": "ses_194621992771",
+          "spawned_by_session_id": "ses_194621992771",
+          "fork_mode": "root",
+          "tool": "agent",
+          "executor": "agent",
+          "environment_selector": "tool:agent",
+          "with_selectors": [
+            "tool:git"
+          ],
+          "role": "Review",
+          "operator": "derek",
+          "objective_delta": "Controleer de wijzigingen",
+          "git_repository_id": "git_d6cec8eaea0f",
+          "base_ref": "jobs/#12/main",
+          "git_ref": "jobs/#12/sessions/ses_b505cd8246cd",
+          "target_branch": "jobs/#12/main",
+          "status": "queued",
+          "activation_epoch": 0,
+          "turn_ids": [],
+          "checkpoint_ids": [],
+          "continuity_level": "workflow_phase",
+          "continuity_score": 10,
+          "created_at": "2026-09-30T11:15:47.385902Z",
+          "updated_at": "2026-09-30T11:15:47.385902Z"
+        }
+      ],
+      "activations": [],
+      "turns": [],
+      "checkpoints": [],
+      "results": [],
+      "clients": [],
+      "mcp_servers": [],
+      "git_repositories": [
+        {
+          "id": "git_d6cec8eaea0f",
+          "name": "spin",
+          "remote_url": "https://example.test/spin.git",
+          "default_ref": "main",
+          "provider": "example.test",
+          "credential_scope": "public",
+          "created_by": "derek",
+          "created_at": "2026-09-30T11:15:47.385694Z",
+          "updated_at": "2026-09-30T11:15:47.385694Z"
+        }
+      ],
+      "git_accounts": [],
+      "users": [],
+      "logins": []
+    },
+    "tools": []
+  }
+]

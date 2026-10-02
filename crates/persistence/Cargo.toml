@@ -1,0 +1,15 @@
+[package]
+name = "spin-persistence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+spin-domain = { path = "../domain" }
+spin-store = { path = "../store" }
+spin-security = { path = "../security" }
+replica-sqlite = { path = "../../third-party/replica/sqlite" }
+
+[lints]
+workspace = true

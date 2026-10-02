@@ -1,0 +1,23 @@
+[package]
+name = "spin-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+spin-runtime = { path = "../runtime" }
+libc = "=0.2.189"
+spin-core = { path = "../core" }
+leanhttp = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.2" }
+leanhttps = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.2" }
+leantls = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.2" }
+spin-server = { path = "../server" }
+spin-domain = { path = "../domain" }
+spin-security = { path = "../security" }
+spin-store = { path = "../store" }
+spin-persistence = { path = "../persistence" }
+replica-sqlite = { path = "../../third-party/replica/sqlite" }
+
+[lints]
+workspace = true
