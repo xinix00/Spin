@@ -582,6 +582,12 @@ fn serve_inner<P: Persistence, H: Platform>(
     let mut chats: [Option<ChatLink>; CONNECTIONS] = core::array::from_fn(|_| None);
     let started = clock.millis();
     let mut maintained = clock.millis();
+    // De interface gaat voor: wanneer een browser het laatst iets vroeg, en
+    // wanneer het opslagonderhoud (met de Replica-capture) het laatst liep.
+    let mut interface_at = 0_u64;
+    let mut stored = clock.millis();
+    let mut bulk_cursor = 0_usize;
+    let mut bulk_left;
     let mut capsule_diagnosed = None;
     let mut health_updated = clock.millis();
     // De socketpomp en de providerpool pollen met de deurbel als waker: wat
@@ -662,7 +668,15 @@ fn serve_inner<P: Persistence, H: Platform>(
                 mail.slots.0.borrow_mut()[index] = Slot::default();
             }
         }
-        for index in 0..CONNECTIONS {
+        let (order, browser, left) = {
+            let slots = mail.slots.0.borrow();
+            request_order(&slots, &mut bulk_cursor)
+        };
+        bulk_left = left;
+        if browser {
+            interface_at = clock.millis();
+        }
+        for index in order.into_iter().flatten() {
             let input = {
                 let mut slots = mail.slots.0.borrow_mut();
                 let queued_ms = slots[index].queued_ms;
@@ -1170,7 +1184,19 @@ fn serve_inner<P: Persistence, H: Platform>(
         // of de Replica-capture.
         if !server.backup_active() && clock.millis().saturating_sub(maintained) >= 1000 {
             meter.mark();
-            if let Err(error) = server.maintain_storage(&now) {
+            // Een capture houdt de eigenaar seconden vast; terwijl een browser
+            // bezig is, wacht hij, maar nooit langer dan 30 s (de lease).
+            let at = clock.millis();
+            let defer =
+                at.saturating_sub(interface_at) < 3_000 && at.saturating_sub(stored) < 30_000;
+            if !defer {
+                stored = at;
+            }
+            if let Err(error) = if defer {
+                Ok(())
+            } else {
+                server.maintain_storage(&now)
+            } {
                 H::log(format_args!(
                     "SPIN_STORAGE_MAINTENANCE_FAILED error={error}"
                 ));
@@ -1225,7 +1251,8 @@ fn serve_inner<P: Persistence, H: Platform>(
                 until = until.min(watch.sent.saturating_add(150));
             }
         }
-        let next = if passwords.iter().any(Option::is_some) || server.restore_active() {
+        let next = if passwords.iter().any(Option::is_some) || server.restore_active() || bulk_left
+        {
             Idle::Yield
         } else {
             Idle::Until(until)
@@ -1247,6 +1274,49 @@ fn route_class(path: &str) -> &'static str {
     } else {
         "[other route]"
     }
+}
+/// Laagdata en uploads: bulk, die wacht op de interface.
+fn bulk(path: &str) -> bool {
+    path == "/api/uploads"
+        || path.starts_with("/api/uploads/")
+        || path.starts_with("/api/snapshots/")
+        || path.starts_with("/api/blobs/")
+}
+/// De volgorde van de verzoeken deze ronde: eerst alle gewone, daarna
+/// hoogstens één bulkverzoek (beurtelings over de slots). Ook: of er een
+/// browserverzoek (met cookie) bij zat, en of er bulk blijft liggen.
+fn request_order(
+    slots: &[Slot; CONNECTIONS],
+    cursor: &mut usize,
+) -> ([Option<usize>; CONNECTIONS], bool, bool) {
+    let mut order = [None; CONNECTIONS];
+    let mut next = 0;
+    let mut browser = false;
+    for (index, slot) in slots.iter().enumerate() {
+        if let Some(input) = &slot.request
+            && !bulk(&input.path)
+        {
+            browser |= input
+                .headers
+                .iter()
+                .any(|(key, _)| key.eq_ignore_ascii_case("cookie"));
+            order[next] = Some(index);
+            next += 1;
+        }
+    }
+    let mut waiting = 0;
+    let start = *cursor;
+    for offset in 0..CONNECTIONS {
+        let index = (start + offset) % CONNECTIONS;
+        if slots[index].request.as_ref().is_some_and(|i| bulk(&i.path)) {
+            if waiting == 0 && next < CONNECTIONS {
+                order[next] = Some(index);
+                *cursor = (index + 1) % CONNECTIONS;
+            }
+            waiting += 1;
+        }
+    }
+    (order, browser, waiting > 1)
 }
 /// Een stap of wachttijd vanaf deze duur krijgt zijn eigen regel.
 const SLOW_MS: u64 = 200;
@@ -1389,4 +1459,46 @@ struct Watch {
     version: u64,
     sent: u64,
     checked: u64,
+}
+
+#[cfg(test)]
+mod order_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    fn request(path: &str, cookie: bool) -> Option<Input> {
+        let mut headers = Vec::new();
+        if cookie {
+            headers.push((String::from("Cookie"), String::from("spin_session=x")));
+        }
+        Some(Input {
+            method: String::from("GET"),
+            path: String::from(path),
+            raw_query: String::new(),
+            headers,
+            body: Vec::new(),
+            peer: String::new(),
+            secure: false,
+        })
+    }
+    #[test]
+    fn the_interface_goes_first_and_bulk_one_per_round() {
+        let mut slots: [Slot; CONNECTIONS] = core::array::from_fn(|_| Slot::default());
+        slots[1].request = request("/api/uploads/u/chunk", false);
+        slots[2].request = request("/api/state", true);
+        slots[3].request = request("/api/uploads/v/chunk", false);
+        slots[4].request = request("/api/workflow/mcp/s", false);
+        let mut cursor = 0;
+        let (order, browser, left) = request_order(&slots, &mut cursor);
+        let order: Vec<usize> = order.into_iter().flatten().collect();
+        assert_eq!(order, [2, 4, 1]);
+        assert!(browser && left);
+        // De volgende ronde is de andere bulk aan de beurt.
+        slots[1].request = None;
+        slots[2].request = None;
+        slots[4].request = None;
+        let (order, browser, left) = request_order(&slots, &mut cursor);
+        assert_eq!(order.into_iter().flatten().collect::<Vec<_>>(), [3]);
+        assert!(!browser, "browser");
+        assert!(!left, "left");
+    }
 }

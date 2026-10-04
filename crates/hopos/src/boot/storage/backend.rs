@@ -164,6 +164,25 @@ pub(in crate::boot) struct Backend<'a> {
     pub(in crate::boot) wait: &'a Wait<'a>,
     database: String,
     written: u64,
+    /// Welk soort bestand achter een open FileId zit, voor de schrijfteller.
+    kinds: [(u32, usize); 16],
+    /// Geschreven bytes per soort: database, journal, capture, dirty-logs, overig.
+    per_kind: [u64; 5],
+}
+/// De soort van een SQLite- of Replica-bestand, op het achtervoegsel van zijn naam.
+fn kind(name: &str) -> usize {
+    let suffix = name.strip_prefix("spin.sqlite").unwrap_or(name);
+    if suffix.is_empty() {
+        0
+    } else if suffix.ends_with("-journal") {
+        1
+    } else if suffix.contains("replica-capture") {
+        2
+    } else if suffix.contains("replica-dirty") {
+        3
+    } else {
+        4
+    }
 }
 impl<'a> Backend<'a> {
     pub(in crate::boot) fn new(files: &'a FilesPool, wait: &'a Wait<'a>, database: String) -> Self {
@@ -172,6 +191,8 @@ impl<'a> Backend<'a> {
             wait,
             database,
             written: 0,
+            kinds: [(u32::MAX, 4); 16],
+            per_kind: [0; 5],
         }
     }
     /// De databasenaam waaronder ook de Replica-spool en -markers staan.
@@ -206,16 +227,28 @@ impl Storage for Backend<'_> {
         self.with(|b| b.cooperate())
     }
     fn open(&mut self, name: &CStr, flags: OpenFlags) -> replica_sqlite::Result<FileId> {
+        let sort = kind(name.to_str().unwrap_or(""));
         let name = self.name(name)?;
-        self.with(|b| {
+        let file = self.with(|b| {
             b.open(
                 name.cstr()
                     .map_err(|_| replica_sqlite::Error::CANNOT_OPEN)?,
                 flags,
             )
-        })
+        })?;
+        if let Some(slot) = self
+            .kinds
+            .iter_mut()
+            .find(|(id, _)| *id == file.0 || *id == u32::MAX)
+        {
+            *slot = (file.0, sort);
+        }
+        Ok(file)
     }
     fn close(&mut self, file: FileId) -> replica_sqlite::Result {
+        if let Some(slot) = self.kinds.iter_mut().find(|(id, _)| *id == file.0) {
+            *slot = (u32::MAX, 4);
+        }
         self.with(|b| b.close(file))
     }
     fn read(&mut self, file: FileId, offset: u64, dst: &mut [u8]) -> replica_sqlite::Result<usize> {
@@ -225,11 +258,24 @@ impl Storage for Backend<'_> {
         self.with(|b| b.write(file, offset, src))?;
         let previous = self.written / (64 << 20);
         self.written = self.written.saturating_add(src.len() as u64);
+        let sort = self
+            .kinds
+            .iter()
+            .find(|(id, _)| *id == file.0)
+            .map_or(4, |(_, sort)| *sort);
+        self.per_kind[sort] = self.per_kind[sort].saturating_add(src.len() as u64);
         if self.written / (64 << 20) != previous {
+            // Wie schrijft er: de database, het journal, de capture-spool van
+            // Replica, zijn dirty-logs of de rest (markers), in MB.
+            let mb = |n: u64| n >> 20;
             applib::log!(
-                "SPIN_STORAGE_WRITE_PROGRESS database={} written_bytes={}",
-                self.database,
-                self.written
+                "SPIN_STORAGE_WRITE_PROGRESS written_mb={} db={} journal={} capture={} dirty={} other={}",
+                mb(self.written),
+                mb(self.per_kind[0]),
+                mb(self.per_kind[1]),
+                mb(self.per_kind[2]),
+                mb(self.per_kind[3]),
+                mb(self.per_kind[4])
             );
         }
         Ok(())
