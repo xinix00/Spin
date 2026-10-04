@@ -8,7 +8,6 @@ hop-spin-server.json
 
 # Rust build artifacts.
 /target/
-/third-party/replica/target/
 
 # Local Python fixture bytecode.
 __pycache__/

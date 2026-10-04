@@ -20,25 +20,18 @@ SQLite-opslag; `server` de HTTP-routes en app-eigenaar. Deze crates gebruiken
 de native boot en platformadapters. `host` levert de macOS-runner en een
 lokale server die alleen voor integratietests bedoeld is.
 
-Replica wordt hergebruikt uit `third-party/replica` (snapshot van 04-10-2026:
-upstream 9da2578 plus de vereenvoudigde prepare zonder dirty-log-herstel);
-`SOURCE.json` vermeldt de herkomst, oorspronkelijke hashes en lokale patches;
-de manifestgrenzen zijn verruimd voor bestaande productiedatabases (16 MiB JSON,
-32.768 delen). De Hop-types-parser heeft daarvoor een expliciet bytebudget;
-het standaardbudget voor HTTP-JSON blijft 1 MiB. De C-bronnen zijn ongewijzigd.
-Herstel schrijft aaneengesloten pagina's in blokken van maximaal 64 KiB.
-Onderbroken S3-GETs krijgen maximaal vier pogingen; muterende verzoeken
-behouden Replica's bestaande afhandeling. Eén begrensde keep-alive-verbinding
-voorkomt dat S3-verzoeken de NAT-tabel vullen. Retentie vraagt generatiemappen
-op met een delimiter en verwijdert maximaal 128 verlopen objecten per ronde,
-met herstelmetadata vóór data en zonder de huidige generatie te verwijderen. Lean TLS gebruikt de reeds gepinde,
-allocatievrije RustCrypto AES-GCM-implementatie met sleutelwissing; suite,
-recordgrenzen en certificaatcontrole blijven gelijk. Lean HTTP neemt een
-requestbody ook met `Transfer-Encoding: chunked` aan (cloudflared stuurt een
-lege browser-POST zo door; dat was een 501), zoals leanhttp v3.1.6. De
-wijzigingen staan in `third-party/rust/LOCAL_PATCHES.json`.
-Dependencies zijn vastgelegd in `.cargo/config.toml` en `Cargo.lock`:
-HopOS SDK alpha.18, Lean v3.1.2 en de bestaande lokale Replica-snapshot.
+Replica komt rechtstreeks uit de bron: de crates linken naar `../replica`
+(naast deze checkout, `~/Git/haas.software/replica`); Spin houdt er geen kopie of
+patch van. Wijzigingen aan Replica gebeuren daar.
+
+De overige dependencies zijn vastgelegd in `.cargo/config.toml` en `Cargo.lock`
+(HopOS SDK alpha.18, Hop alpha.10, Lean v3.1.2) en gevendord in
+`third-party/rust`. Daar staan nog lokale patches, met hun hashes in
+`third-party/rust/LOCAL_PATCHES.json`: Hop's `types` (`json::parse_with_limit`,
+die Replica's manifestgrens van 16 MiB nodig heeft), `leans3` (delimiter-
+listings voor Replica's retentie), `leantls` (AES-GCM) en `leanhttp` (chunked
+requestbodies, zoals leanhttp v3.1.6). Die horen in hun eigen bron; tot ze daar
+getagd zijn bouwt Replica alleen vanuit Spin.
 
 ## Bouwen en controleren
 

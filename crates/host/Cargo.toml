@@ -17,7 +17,7 @@ spin-domain = { path = "../domain" }
 spin-security = { path = "../security" }
 spin-store = { path = "../store" }
 spin-persistence = { path = "../persistence" }
-replica-sqlite = { path = "../../third-party/replica/sqlite" }
+replica-sqlite = { path = "../../../replica/sqlite" }
 
 [lints]
 workspace = true

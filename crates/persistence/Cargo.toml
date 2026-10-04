@@ -9,7 +9,7 @@ publish.workspace = true
 spin-domain = { path = "../domain" }
 spin-store = { path = "../store" }
 spin-security = { path = "../security" }
-replica-sqlite = { path = "../../third-party/replica/sqlite" }
+replica-sqlite = { path = "../../../replica/sqlite" }
 
 [lints]
 workspace = true

@@ -1,7 +1,6 @@
 [workspace]
 resolver = "3"
 members = ["crates/domain", "crates/core", "crates/store", "crates/security", "crates/persistence", "crates/host", "crates/server", "crates/runtime", "crates/hopos"]
-exclude = ["third-party/replica"]
 
 [workspace.package]
 version = "3.0.8"
