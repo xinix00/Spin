@@ -119,6 +119,17 @@ pub struct Mailbox {
     /// De deurbel van de eigenaar; in een Arc zodat hij ook als [`Waker`]
     /// aan providertaken en de socketpomp mee kan.
     bell: Arc<Nudge>,
+    /// De voortgang van een herstel uit S3, voor de openingspagina.
+    restore: alloc::rc::Rc<Restore>,
+}
+/// Hoeveel van een herstel uit S3 binnen is: de bytes die de S3-verbinding van
+/// de eigenaar ontving, en het verwachte totaal (de snapshot in de bucket).
+#[derive(Default)]
+pub struct Restore {
+    /// Ontvangen bytes.
+    pub downloaded: Cell<u64>,
+    /// Verwacht totaal; 0 als onbekend.
+    pub total: Cell<u64>,
 }
 /// De deurbel: level-triggered en samengevoegd, tien bellen in één idle zijn
 /// er één. Als [`Waker`] doet hij precies wat [`Mailbox::nudge`] doet, zodat
@@ -166,10 +177,15 @@ impl Default for Mailbox {
                 nudged: Cell::new(false),
                 waker: RefCell::new(None),
             }),
+            restore: alloc::rc::Rc::new(Restore::default()),
         }
     }
 }
 impl Mailbox {
+    /// De voortgangsteller van een herstel; de opslag van de eigenaar telt erin.
+    pub fn restore(&self) -> alloc::rc::Rc<Restore> {
+        self.restore.clone()
+    }
     /// Belt de eigenaar: een sockettaak legde iets in een slot, of een
     /// platformtaak rondde werk af. De eigenaar verlaat zijn idle in de
     /// volgende ronde.

@@ -201,8 +201,12 @@ impl Routing for Tenants {
         let failed = self.entries.borrow()[index]
             .as_ref()
             .is_some_and(|e| e.stage == Stage::Failed);
+        let restore = mail.restore();
+        let (done, total) = (restore.downloaded.get(), restore.total.get());
         let message = if failed {
             "Openen mislukt; de server probeert het opnieuw"
+        } else if done > 0 {
+            "Herstellen uit S3"
         } else {
             "Deze Spin wordt geopend"
         };
@@ -216,6 +220,8 @@ impl Routing for Tenants {
             ("error", Value::string(message)?),
             ("failure", Value::string(if failed { message } else { "" })?),
             ("started_at", Value::string("")?),
+            ("downloaded_bytes", Value::uint(done)),
+            ("total_bytes", Value::uint(total)),
         ])?;
         let mut response =
             if path == "/api/opening" || path.starts_with("/api/") || path == "/healthz" {
@@ -231,7 +237,7 @@ impl Routing for Tenants {
     }
 }
 /// De pagina die een Spin toont zolang hij opent; ook de macOS-server gebruikt hem.
-pub const OPENING_PAGE: &str = r#"<!doctype html><html lang="nl"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Spin wordt geopend</title><style>body{font:16px system-ui;background:#10151c;color:#e9edf1;display:grid;min-height:90vh;place-content:center}main{max-width:30em;padding:2em;border:1px solid #344050;border-radius:1em}</style><main><h1>Spin</h1><p id="status">Deze Spin wordt geopend…</p></main><script>async function poll(){try{let r=await fetch('/api/opening',{cache:'no-store'});if(!r.ok){location.reload();return}let s=await r.json();if(s.opening===false&&!s.failure){location.reload();return}document.getElementById('status').textContent=s.failure||s.message||'Verbinden…'}catch(e){}setTimeout(poll,2000)}poll()</script></html>"#;
+pub const OPENING_PAGE: &str = r#"<!doctype html><html lang="nl"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Spin wordt geopend</title><style>body{font:16px system-ui;background:#10151c;color:#e9edf1;display:grid;min-height:90vh;place-content:center}main{width:min(30em,90vw);padding:2em;border:1px solid #344050;border-radius:1em}progress{width:100%;height:.8em;accent-color:#4c9bd6}#detail{color:#9fb0c2;font-size:.9em;margin:.4em 0 0}</style><main><h1>Spin</h1><p id="status">Deze Spin wordt geopend…</p><progress id="bar" max="1" value="0" hidden></progress><p id="detail"></p></main><script>let first=null;const gb=b=>(b/1e9).toLocaleString('nl-NL',{minimumFractionDigits:1,maximumFractionDigits:1});async function poll(){try{let r=await fetch('/api/opening',{cache:'no-store'});if(!r.ok){location.reload();return}let s=await r.json();if(s.opening===false&&!s.failure){location.reload();return}document.getElementById('status').textContent=s.failure||s.message||'Verbinden…';const done=s.downloaded_bytes||0,total=s.total_bytes||0,bar=document.getElementById('bar'),detail=document.getElementById('detail');if(done>0){const now=Date.now();if(!first)first={t:now,d:done};const rate=now>first.t+2000?(done-first.d)/((now-first.t)/1000):0;let text=total>0?gb(Math.min(done,total))+' van '+gb(total)+' GB':gb(done)+' GB binnen';if(rate>0){text+=' · '+Math.round(rate/1e6)+' MB/s';if(total>done)text+=' · nog ~'+Math.max(1,Math.round((total-done)/rate/60))+' min'}detail.textContent=text;bar.hidden=!(total>0);if(total>0)bar.value=Math.min(1,done/total)}}catch(e){}setTimeout(poll,2000)}poll()</script></html>"#;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]

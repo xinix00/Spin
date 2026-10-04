@@ -68,6 +68,24 @@ fn replica_error(error: replica_core::Error) -> spin_store::Error {
 fn time(now: &Timestamp) -> spin_store::Result<Time> {
     Time::parse(now.as_str()).map_err(replica_error)
 }
+/// De grootte van de snapshot in de bucket: het totaal op de openingspagina
+/// tijdens een herstel. Twee kleine GET's; 0 als er niets of iets onleesbaars is.
+fn snapshot_bytes(store: &mut impl replica_core::object::Store, namespace: &str) -> u64 {
+    let read = |store: &mut dyn FnMut(&str, usize) -> replica_core::Result<Vec<u8>>| -> replica_core::Result<u64> {
+        let current = store(&replica_core::object::key(namespace, "/current")?, 255)?;
+        let generation = core::str::from_utf8(&current)
+            .map_err(|_| replica_core::Error::Corrupt)?
+            .trim();
+        let prefix = replica_core::replication::generation_prefix(namespace, generation)?;
+        let bytes = store(
+            &replica_core::object::key(&prefix, "snapshot")?,
+            replica_core::manifest::MAX_MANIFEST_BYTES,
+        )?;
+        let manifest = replica_core::manifest::Manifest::decode(&bytes, &prefix)?;
+        Ok(manifest.parts.iter().map(|part| part.size).sum())
+    };
+    read(&mut |key, limit| store.get(key, limit).map_err(Into::into)).unwrap_or(0)
+}
 fn wall() -> u64 {
     applib::app().and_then(|a| a.wall_ns()).unwrap_or(0) / 1_000_000_000
 }
@@ -165,6 +183,7 @@ impl<'a> Owner<'a> {
         net: &'static Net,
         domain: &str,
         uploads: &'a Uploads,
+        restore: alloc::rc::Rc<spin_runtime::Restore>,
     ) -> spin_store::Result<Self> {
         let wait = backend.wait;
         let mut replica = None;
@@ -198,8 +217,13 @@ impl<'a> Owner<'a> {
             config.generation = duration(env("SPIN_REPLICA_GENERATION"), 7 * 86400)?;
             config.retention = duration(env("SPIN_REPLICA_RETENTION"), 28 * 86400)?;
             config.adopt_local = env("SPIN_REPLICA_ADOPT_LOCAL") == "1";
-            let mut remote = Bucket::new(client, Network::new(Dial { app, net }), Wait(wait.0))
-                .map_err(|_| spin_store::Error::Conflict("invalid Replica S3 configuration"))?;
+            let mut remote = Bucket::new(
+                client,
+                Network::new(Dial { app, net }).counting(restore.clone()),
+                Wait(wait.0),
+            )
+            .map_err(|_| spin_store::Error::Conflict("invalid Replica S3 configuration"))?;
+            restore.total.set(snapshot_bytes(&mut remote, &namespace));
             let now =
                 crate::platform::timestamp(app).map_err(|_| spin_store::Error::Storage(10))?;
             let owner = Replica::prepare(

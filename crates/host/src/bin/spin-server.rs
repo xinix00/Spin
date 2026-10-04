@@ -55,14 +55,10 @@ fn answer_opening(mut socket: TcpStream, scratch: &Path) -> std::io::Result<()> 
     // De scratchkopie krijgt meteen haar eindgrootte; zolang ze ontbreekt, wordt
     // het herstelplan nog gelezen.
     let total = std::fs::metadata(scratch).map_or(0, |m| m.len());
-    let message = if total > 0 {
-        format!(
-            "Herstellen uit S3: {:.1} van {:.1} GB",
-            done as f64 / 1e9,
-            total as f64 / 1e9
-        )
+    let message = if done > 0 {
+        "Herstellen uit S3"
     } else {
-        "Verbinden met S3".to_owned()
+        "Verbinden met S3"
     };
     let json = format!(
         r#"{{"opening":true,"stage":"restore","message":"{message}","failure":"","downloaded_bytes":{done},"total_bytes":{total}}}"#

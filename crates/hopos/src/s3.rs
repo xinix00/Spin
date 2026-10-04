@@ -8,7 +8,10 @@ use core::{
     time::Duration,
 };
 use leans3::IoError;
-pub(crate) struct Network(leanhttp::Client<Dial>);
+pub(crate) struct Network(
+    leanhttp::Client<Dial>,
+    Option<alloc::rc::Rc<spin_runtime::Restore>>,
+);
 pub(crate) struct Response {
     status: u16,
     reason: String,
@@ -68,7 +71,12 @@ impl Network {
         // Replica serializes requests: one reusable TLS connection is enough.
         client.pool.max_idle_per_host = 1;
         client.pool.max_idle_total = 1;
-        Self(client)
+        Self(client, None)
+    }
+    /// Telt de ontvangen bytes in de hersteltelling van een tenant.
+    pub(crate) fn counting(mut self, restore: alloc::rc::Rc<spin_runtime::Restore>) -> Self {
+        self.1 = Some(restore);
+        self
     }
     async fn once(
         &mut self,
@@ -102,6 +110,11 @@ impl Network {
             }
             // Keep this read future across Pending, including partial chunk headers.
             let body = inner.read_to_end(replica_core::segment::MAX_BYTES).await?;
+            if let Some(restore) = &self.1 {
+                restore
+                    .downloaded
+                    .set(restore.downloaded.get().saturating_add(body.len() as u64));
+            }
             let response = Response {
                 status: inner.status,
                 reason: core::mem::take(&mut inner.reason),

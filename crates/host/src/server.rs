@@ -47,15 +47,27 @@ impl Platform for Host<'_> {
     type Clock = HostClock;
     fn accept(&mut self, _: &mut Context<'_>) -> Result<Option<(Connection, String)>> {
         match self.listener.accept() {
-            Ok((socket, address)) => Ok(Some((
-                Connection::new(socket).map_err(boundary)?,
-                spin_core::validation::text(format_args!("{}", address.ip()))
-                    .map_err(|_| spin_server::Error::Http(503, "peer allocation failed"))?,
-            ))),
+            Ok((socket, address)) => match Connection::new(socket) {
+                Ok(connection) => Ok(Some((
+                    connection,
+                    spin_core::validation::text(format_args!("{}", address.ip()))
+                        .map_err(|_| spin_server::Error::Http(503, "peer allocation failed"))?,
+                ))),
+                // Een verbinding die al weg is (macOS geeft dan EINVAL op setsockopt,
+                // bijvoorbeeld na een lange wachtrij tijdens een herstel) is geen fout
+                // van de server: weggooien en doorgaan.
+                Err(error) => {
+                    eprintln!("SPIN_ACCEPT_DROPPED peer={} error={error}", address.ip());
+                    Ok(None)
+                }
+            },
             Err(e)
                 if matches!(
                     e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::ConnectionReset
                 ) =>
             {
                 Ok(None)
