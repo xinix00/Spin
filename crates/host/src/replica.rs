@@ -62,15 +62,13 @@ pub fn settings(env: impl Fn(&str) -> String) -> std::io::Result<Option<Settings
             )));
         }
     }
-    // "spin" is de namespace van productie (bollenloods). Twee schrijvers op één
-    // namespace overschrijven elkaars generaties: de Replica-lease leeft alleen
-    // op de lokale schijf. Ook geen testdata onder productie's boom.
+    // Eén schrijver per namespace: de Replica-lease leeft alleen op de lokale
+    // schijf. Draait dezelfde namespace al elders (bijvoorbeeld op HopOS), stop
+    // die eerst; de operator beslist, niet deze code.
     let prefix = env("SPIN_S3_PREFIX");
     let prefix = prefix.trim_matches('/');
-    if prefix.is_empty() || prefix.split('/').next() == Some("spin") {
-        return Err(invalid(
-            "SPIN_S3_PREFIX must not be \"spin\" or start with \"spin/\": that is production's namespace",
-        ));
+    if prefix.is_empty() {
+        return Err(invalid("SPIN_S3_PREFIX must not be empty"));
     }
     let domain = env("SPIN_DOMAIN");
     let domain = if domain.is_empty() { "local" } else { &domain };
@@ -408,10 +406,8 @@ mod tests {
         }
     }
     #[test]
-    fn refuses_production_prefix() {
-        for prefix in ["spin", "/spin/", "spin/test", "/"] {
-            assert!(result(&with("SPIN_S3_PREFIX", prefix)).is_err(), "{prefix}");
-        }
-        assert!(result(&with("SPIN_S3_PREFIX", "spinny")).unwrap().is_some());
+    fn prefix_is_required_and_trimmed() {
+        assert!(result(&with("SPIN_S3_PREFIX", "/")).is_err());
+        assert!(result(&with("SPIN_S3_PREFIX", "/spin/")).unwrap().is_some());
     }
 }

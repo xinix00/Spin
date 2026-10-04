@@ -68,7 +68,7 @@ fn run() -> std::io::Result<()> {
             }
             "--help" | "-h" => {
                 println!(
-                    "spin-server --addr 127.0.0.1:8080 --data-dir ./var/rust\nSPIN_MASTER_KEY or SPIN_MASTER_KEY_FILE supplies an existing encryption key.\nSPIN_S3_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY/PREFIX enable Replica to S3 (prefix never \"spin\")."
+                    "spin-server --addr 127.0.0.1:8080 --data-dir ./var/rust\nSPIN_MASTER_KEY or SPIN_MASTER_KEY_FILE supplies an existing encryption key.\nSPIN_S3_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY/PREFIX enable Replica to S3 (one writer per namespace)."
                 );
                 return Ok(());
             }
