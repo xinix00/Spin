@@ -67,11 +67,14 @@ impl<P: Persistence> Server<P> {
             .mark_artifact_agent_options_fetching(&work.artifact, true)?;
         match self.begin_materialize_probe(request, &work.artifact, now, random) {
             Ok(wait) => work.pending = Some(wait),
-            Err(_) => {
+            Err(error) => {
                 self.store.set_artifact_agent_options(
                     &work.artifact,
                     d::AgentOptions {
-                        error: try_string("agent probe capsule could not be prepared")?,
+                        error: match error {
+                            Error::Http(_, reason) => try_string(reason)?,
+                            _ => try_string("agent probe capsule could not be prepared")?,
+                        },
                         ..Default::default()
                     },
                     now,

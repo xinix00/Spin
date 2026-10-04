@@ -4048,3 +4048,44 @@ fn state_stream_sends_the_document_once_then_only_changed_entities() {
         0
     );
 }
+#[test]
+fn agent_options_of_a_credential_layer_need_a_login() {
+    let fail = Cell::new(false);
+    let state = PersistedState::from_json(br#"{"artifacts":{
+        "tool":{"id":"tool","kind":"tool","name":"agent","scope":"global","profile":"default","enables":[{"name":"acp","command":"agent","protocol_version":1}]},
+        "cred":{"id":"cred","kind":"credential","name":"agent-global","scope":"global","profile":"default","parent_artifact_ids":["tool"],"tracked_paths":["/root/.agent/"]}
+    }}"#)
+    .unwrap();
+    let mut server = Server::new(Store::new(state, Memory(&fail)));
+    let now = time();
+    let mut random = Random(16000);
+    // Geen login in de pool: geen probe zonder credentials.
+    assert_eq!(
+        server
+            .options_route(
+                &req("POST", "/api/artifacts/cred/acp/options", &[], b""),
+                "derek",
+                &now,
+                &mut random
+            )
+            .unwrap()
+            .unwrap()
+            .status,
+        202
+    );
+    let options = server
+        .store
+        .artifact("tool")
+        .unwrap()
+        .agent_options
+        .as_ref()
+        .unwrap()
+        .try_clone()
+        .unwrap();
+    assert!(options.error.contains("no login"), "{}", options.error);
+    assert!(server.options.is_empty());
+    assert!(
+        server.store.snapshot().unwrap().compositions.is_empty(),
+        "de capsule zonder login is weer weg"
+    );
+}

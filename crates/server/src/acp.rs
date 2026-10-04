@@ -858,7 +858,16 @@ impl<P: Persistence> Server<P> {
                 while let Some(signal) = session.take_signal() {
                     match signal {
                         Signal::Ready => {
-                            if !agent.options_probe && !agent.artifact.is_empty() {
+                            // Alleen een agent die met een login draait, zet de
+                            // opties neer: zonder login biedt Claude niets of
+                            // alleen de API-variant.
+                            if !agent.options_probe
+                                && !agent.artifact.is_empty()
+                                && self
+                                    .store
+                                    .composition(&agent.composition)
+                                    .is_ok_and(|c| !c.logins.is_empty())
+                            {
                                 self.store.set_artifact_agent_options(
                                     &agent.artifact,
                                     session.options(now)?,

@@ -365,6 +365,9 @@ impl<P: Persistence> Server<P> {
             // Persist cleanup identity before any command can create a remote capsule.
             if !probe.is_empty() {
                 self.store.mark_options_probe(&composition.id, probe)?;
+                // De gemarkeerde versie: prepare weet zo dat dit een probe is.
+                let marked = self.store.composition(&composition.id)?.try_clone()?;
+                return self.prepare_materialize(&marked, now, random);
             }
             self.prepare_materialize(&composition, now, random)
         })();
@@ -387,6 +390,17 @@ impl<P: Persistence> Server<P> {
                     .store
                     .hand_out_login(&composition.id, &target.key, target.exclusive, now)
                 {
+                    // De opties van een credential-laag komen alleen met een
+                    // login; anders bewaart de probe de opties van een
+                    // niet-ingelogde agent.
+                    Err(spin_store::Error::NotFound)
+                        if target.exclusive && !composition.probe_artifact_id.is_empty() =>
+                    {
+                        return Err(Error::Http(
+                            409,
+                            "no login for this credential layer; capture a login first",
+                        ));
+                    }
                     Ok(_) | Err(spin_store::Error::NotFound) => {}
                     Err(spin_store::Error::LoginsBusy) => {
                         self.note_login_wait(&composition.session_id, &target.key, now, random)?;
