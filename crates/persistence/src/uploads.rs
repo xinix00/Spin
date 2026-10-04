@@ -121,7 +121,7 @@ impl<B: Storage> Database<'_, '_, B> {
                         s.bind(1, Value::Text(digest))?;
                         if s.step()? { Some(integer(&mut s,0)?) } else { None }
                     };
-                    let id = if let Some(id) = existing { db.execute(c"DELETE FROM spin_objects WHERE id=? AND complete=0", &[Value::Integer(object)])?; id }
+                    let id = if let Some(id) = existing { db.execute(c"UPDATE spin_objects SET complete=-1 WHERE id=? AND complete=0", &[Value::Integer(object)])?; id }
                     else { db.execute(c"UPDATE spin_objects SET digest=?,complete=1 WHERE id=? AND complete=0", &[Value::Text(digest),Value::Integer(object)])?; object };
                     db.execute(c"INSERT INTO spin_object_refs(ref,object_id) VALUES(?,?) ON CONFLICT(ref) DO UPDATE SET object_id=excluded.object_id", &[Value::Text(reference),Value::Integer(id)])?;
                     Ok(BlobReply::Info(spin_store::BlobInfo { reference: try_string(reference)?, digest: try_string(digest)?, kind, size }))
@@ -130,7 +130,7 @@ impl<B: Storage> Database<'_, '_, B> {
             BlobRequest::Abandon(object) => {
                 self.transaction(|db| {
                     db.execute(
-                        c"DELETE FROM spin_objects WHERE id=? AND complete=0",
+                        c"UPDATE spin_objects SET complete=-1 WHERE id=? AND complete=0",
                         &[Value::Integer(object)],
                     )
                 })?;

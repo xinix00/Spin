@@ -28,6 +28,8 @@ pub(super) struct Owner<'a> {
     entropy: Random,
     initialized: bool,
     poisoned: bool,
+    /// Er kunnen dode objecten liggen: na de start en na elke blobopdracht.
+    purging: bool,
     exporting: Option<u64>,
     raw_upload: Option<restore::RawUpload>,
     next_upload: i64,
@@ -55,9 +57,12 @@ enum Op<'a> {
     /// De hele state, ook bij de migratie van de oude enkele rij.
     Replace(&'a [spin_persistence::Row]),
     Blob(BlobRequest<'a>),
+    /// Een begrensde opruimstap van dode objecten.
+    Purge,
     Restore(&'a [spin_persistence::Row]),
 }
 enum Reply {
+    Purged(bool),
     Usage(spin_persistence::Usage),
     State(Vec<u8>, bool),
     Empty,
@@ -181,6 +186,7 @@ fn sql<B: Storage>(
             Ok(Reply::Empty)
         }
         Op::Blob(request) => db.blob(request).map(Reply::Blob),
+        Op::Purge => db.purge_step(16).map(Reply::Purged),
         Op::Restore(rows) => {
             db.install_restore(rows)?;
             Ok(Reply::Empty)
@@ -312,6 +318,7 @@ impl<'a> Owner<'a> {
             entropy,
             initialized: false,
             poisoned: false,
+            purging: true,
             exporting: None,
             raw_upload: None,
             next_upload: -1,
@@ -583,6 +590,7 @@ impl Persistence for Owner<'_> {
         if restore::raw_request(&request) {
             return self.raw_blob(request);
         }
+        self.purging = true;
         match self.execute(Op::Blob(request))? {
             Reply::Blob(reply) => Ok(reply),
             _ => Err(spin_store::Error::Storage(21)),
@@ -597,6 +605,13 @@ impl Persistence for Owner<'_> {
         }
         let now = time(now)?;
         self.renew(now)?;
+        // Grote blobs gaan in stukken weg: hoogstens 16 MiB per seconde-beurt.
+        if self.purging {
+            match self.execute(Op::Purge)? {
+                Reply::Purged(more) => self.purging = more,
+                _ => return Err(spin_store::Error::Storage(21)),
+            }
+        }
         let (Some(replica), Some(bucket)) = (&mut self.replica, &mut self.bucket) else {
             return Ok(());
         };

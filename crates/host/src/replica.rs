@@ -208,8 +208,11 @@ enum Op<'a> {
     /// De hele state, ook bij de migratie van de oude enkele rij.
     Replace(&'a [spin_persistence::Row]),
     Blob(BlobRequest<'a>),
+    /// Een begrensde opruimstap van dode objecten.
+    Purge,
 }
 enum Reply {
+    Purged(bool),
     Usage(spin_persistence::Usage),
     State(Vec<u8>, bool),
     Empty,
@@ -259,6 +262,7 @@ fn sql<B: Storage>(
             Ok(Reply::Empty)
         }
         Op::Blob(request) => db.blob(request).map(Reply::Blob),
+        Op::Purge => db.purge_step(16).map(Reply::Purged),
     }
 }
 /// De gerepliceerde opslageigenaar; SQL is gesloten wanneer Replica een beurt krijgt.
@@ -272,6 +276,8 @@ pub struct Owner<S: Leased> {
     lease_key: String,
     initialized: bool,
     poisoned: bool,
+    /// Er kunnen dode objecten liggen: na de start en na elke blobopdracht.
+    purging: bool,
 }
 impl<S: Leased> Owner<S> {
     /// Neemt de voorbereide Replica, de bestanden en de SQLite-heap over;
@@ -295,6 +301,7 @@ impl<S: Leased> Owner<S> {
             lease_key,
             initialized: false,
             poisoned: false,
+            purging: true,
         }
     }
     fn execute(&mut self, op: Op<'_>) -> spin_store::Result<Reply> {
@@ -399,6 +406,7 @@ impl<S: Leased> Persistence for Owner<S> {
         self.execute(Op::Save(&rows)).map(|_| ())
     }
     fn blob(&mut self, request: BlobRequest<'_>) -> spin_store::Result<BlobReply> {
+        self.purging = true;
         match self.execute(Op::Blob(request))? {
             Reply::Blob(reply) => Ok(reply),
             _ => Err(spin_store::Error::Storage(21)),
@@ -410,6 +418,13 @@ impl<S: Leased> Persistence for Owner<S> {
     fn maintain(&mut self, now: &Timestamp) -> spin_store::Result {
         if self.poisoned {
             return Err(spin_store::Error::StorageUncertain(10));
+        }
+        // Grote blobs gaan in stukken weg: hoogstens 16 MiB per seconde-beurt.
+        if self.purging {
+            match self.execute(Op::Purge)? {
+                Reply::Purged(more) => self.purging = more,
+                _ => return Err(spin_store::Error::Storage(21)),
+            }
         }
         let at = self::now(now).map_err(replica_error)?;
         if let Err(error) = self

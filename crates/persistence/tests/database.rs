@@ -133,6 +133,17 @@ fn go_database_rust_reopen_deduplication_chunking_and_failed_upload() {
         assert_eq!(db.read_blob("large:b", bytes.len()).unwrap().0, bytes);
         db.delete_blob("large:b").unwrap();
         assert_eq!(db.usage().unwrap().objects, 1);
+        // Verwijderen markeert; de opruiming gaat in begrensde stappen.
+        assert!(
+            db.purge_step(1).unwrap(),
+            "het eerste stuk ging weg, er ligt meer"
+        );
+        while db.purge_step(1).unwrap() {}
+        assert!(!db.purge_step(1).unwrap());
+        assert_eq!(
+            db.read_blob("fixture:b", 100).unwrap().0,
+            b"Go SQLite fixture\0\xff"
+        );
         db.quick_check().unwrap();
     }
 }

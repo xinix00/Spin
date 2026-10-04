@@ -149,15 +149,16 @@ impl Report {
             last: [0; 4],
         }
     }
-    /// Sluit de ronde die op `started` begon af.
-    fn round(&mut self, started: u64) {
+    /// Sluit de ronde die op `started` begon af; `true` als de 30 s-regel net
+    /// geschreven is.
+    fn round(&mut self, started: u64) -> bool {
         let now = applib::clock::now_ns();
         let busy = now.saturating_sub(started);
         if busy > Self::SLOW {
             applib::log!("SPIN_BOOT_SLOW ms={}", busy / 1_000_000);
         }
         if now < self.due {
-            return;
+            return false;
         }
         self.due = now.saturating_add(Self::INTERVAL);
         let exec = EXEC.get();
@@ -184,6 +185,7 @@ impl Report {
             delta[3],
             exec.live_tasks()
         );
+        true
     }
 }
 async fn serve(
@@ -341,7 +343,19 @@ async fn serve(
                 None => EXEC.get().after_deferrable(Duration::from_millis(10)),
             });
             let outcome = tick.as_mut().poll(cx).map(|()| Ok(()));
-            report.round(started);
+            if report.round(started) {
+                // Een eigenaar slaapt hooguit een seconde en een stap duurt
+                // seconden; wie 5 s of langer in één fase zit, staat hier.
+                let now_ms = applib::clock::now_ns() / 1_000_000;
+                for index in 0..spin_runtime::tenancy::TENANTS {
+                    let mail = tenants.mailbox(index);
+                    let (phase, since) = mail.phase();
+                    let ms = now_ms.saturating_sub(since);
+                    if mail.active() && ms >= 5_000 {
+                        applib::log!("SPIN_OWNER_PHASE slot={index} phase={phase} ms={ms}");
+                    }
+                }
+            }
             outcome
         })
         .await?;

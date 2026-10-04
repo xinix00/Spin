@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS spin_objects(id INTEGER PRIMARY KEY,digest TEXT,kind 
 CREATE UNIQUE INDEX IF NOT EXISTS spin_objects_digest ON spin_objects(digest) WHERE complete=1;
 CREATE TABLE IF NOT EXISTS spin_object_chunks(id INTEGER PRIMARY KEY,object_id INTEGER NOT NULL REFERENCES spin_objects(id) ON DELETE CASCADE,sequence INTEGER NOT NULL,data BLOB NOT NULL,UNIQUE(object_id,sequence));
 CREATE TABLE IF NOT EXISTS spin_object_refs(ref TEXT PRIMARY KEY,object_id INTEGER NOT NULL REFERENCES spin_objects(id),FOREIGN KEY(object_id) REFERENCES spin_objects(id)) WITHOUT ROWID;
-DELETE FROM spin_objects WHERE complete=0;")?;
+UPDATE spin_objects SET complete=-1 WHERE complete=0;")?;
         Ok(Self {
             connection,
             uncertain: None,
@@ -287,7 +287,7 @@ DELETE FROM spin_objects WHERE complete=0;")?;
             }
             let digest=digest(hash)?;
             let existing={let mut s=db.connection.prepare(c"SELECT id FROM spin_objects WHERE digest=? AND complete=1")?;s.bind(1,Value::Text(&digest))?;if s.step()?{Some(integer(&mut s,0)?)}else{None}};
-            let id=if let Some(existing)=existing {db.execute(c"DELETE FROM spin_objects WHERE id=?",&[Value::Integer(object)])?;existing}
+            let id=if let Some(existing)=existing {db.execute(c"UPDATE spin_objects SET complete=-1 WHERE id=?",&[Value::Integer(object)])?;existing}
                 else {db.execute(c"UPDATE spin_objects SET digest=?,size=?,complete=1 WHERE id=?",&[Value::Text(&digest),Value::Integer(size),Value::Integer(object)])?;object};
             db.execute(c"INSERT INTO spin_object_refs(ref,object_id) VALUES(?,?) ON CONFLICT(ref) DO UPDATE SET object_id=excluded.object_id",&[Value::Text(reference),Value::Integer(id)])?;
             Ok(BlobInfo{reference:try_string(reference)?,digest,kind:try_string(kind)?,size})
@@ -394,7 +394,22 @@ DELETE FROM spin_objects WHERE complete=0;")?;
         self.transaction(|db| {
             let id={let mut s=db.connection.prepare(c"SELECT object_id FROM spin_object_refs WHERE ref=?")?;s.bind(1,Value::Text(reference))?;if !s.step()?{return Err(Error::NotFound);}integer(&mut s,0)?};
             db.execute(c"DELETE FROM spin_object_refs WHERE ref=?",&[Value::Text(reference)])?;
-            db.execute(c"DELETE FROM spin_objects WHERE id=? AND NOT EXISTS(SELECT 1 FROM spin_object_refs WHERE object_id=?)",&[Value::Integer(id),Value::Integer(id)])
+            db.execute(c"UPDATE spin_objects SET complete=-1 WHERE id=? AND NOT EXISTS(SELECT 1 FROM spin_object_refs WHERE object_id=?)",&[Value::Integer(id),Value::Integer(id)])
+        })
+    }
+    /// Ruimt een stuk van de dode objecten op (afgebroken uploads, dubbele
+    /// kopieën, verwijderde blobs): hoogstens `chunks` stukken van 1 MiB per
+    /// transactie, zodat een laag van gigabytes de eigenaar nooit minuten
+    /// vasthoudt. `true` als er daarna nog meer ligt.
+    pub fn purge_step(&mut self, chunks: i64) -> Result<bool> {
+        self.transaction(|db| {
+            db.execute(c"DELETE FROM spin_object_chunks WHERE id IN (SELECT c.id FROM spin_object_chunks c JOIN spin_objects o ON o.id=c.object_id WHERE o.complete=-1 LIMIT ?)",&[Value::Integer(chunks)])?;
+            let removed={let mut s=db.connection.prepare(c"SELECT changes()")?;if !s.step()?{return Err(Error::Invalid("missing change count"));}integer(&mut s,0)?};
+            if removed > 0 {
+                return Ok(true);
+            }
+            db.execute(c"DELETE FROM spin_objects WHERE complete=-1", &[])?;
+            Ok(false)
         })
     }
     /// De database meet zichzelf, onafhankelijk van de VFS.
@@ -516,6 +531,13 @@ impl<B: Storage, E: Entropy> spin_store::Persistence for Encrypted<'_, '_, B, E>
             .map_err(persistence_to_store)?;
         self.database
             .replace_rows(&rows)
+            .map_err(persistence_to_store)
+    }
+    /// Een begrensde opruimstap van dode objecten per onderhoudsbeurt.
+    fn maintain(&mut self, _: &d::Timestamp) -> spin_store::Result {
+        self.database
+            .purge_step(16)
+            .map(|_| ())
             .map_err(persistence_to_store)
     }
     fn save_changes(

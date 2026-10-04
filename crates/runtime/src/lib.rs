@@ -121,6 +121,10 @@ pub struct Mailbox {
     bell: Arc<Nudge>,
     /// De voortgang van een herstel uit S3, voor de openingspagina.
     restore: alloc::rc::Rc<Restore>,
+    /// Waar de eigenaar is: de laatst afgeronde stap (of `idle`, `woke`,
+    /// `request`) en sinds wanneer (ms, de klok van de eigenaar). De boot-schil
+    /// logt een eigenaar die lang in één fase blijft.
+    phase: Cell<(&'static str, u64)>,
 }
 /// Hoeveel van een herstel uit S3 binnen is: de bytes die de S3-verbinding van
 /// de eigenaar ontving, en het verwachte totaal (de snapshot in de bucket).
@@ -181,10 +185,15 @@ impl Default for Mailbox {
                 waker: RefCell::new(None),
             }),
             restore: alloc::rc::Rc::new(Restore::default()),
+            phase: Cell::new(("start", 0)),
         }
     }
 }
 impl Mailbox {
+    /// De fase van de eigenaar en sinds wanneer (ms).
+    pub fn phase(&self) -> (&'static str, u64) {
+        self.phase.get()
+    }
     /// De voortgangsteller van een herstel; de opslag van de eigenaar telt erin.
     pub fn restore(&self) -> alloc::rc::Rc<Restore> {
         self.restore.clone()
@@ -551,7 +560,7 @@ fn serve_inner<P: Persistence, H: Platform>(
 ) -> Result {
     let clock = platform.clock();
     let waker = mail.waker();
-    let mut meter = Meter::new(clock);
+    let mut meter = Meter::new(clock, &mail.phase);
     let mut outgoing = outbound::Pool::new();
     mail.active.set(true);
     let mut passwords: Vec<Option<PasswordWork>> = Vec::new();
@@ -1165,6 +1174,16 @@ fn serve_inner<P: Persistence, H: Platform>(
                 H::log(format_args!(
                     "SPIN_STORAGE_MAINTENANCE_FAILED error={error}"
                 ));
+                // Onzekere opslag (een verloren lease, een onbevestigde commit)
+                // herstelt alleen door opnieuw te openen: de eigenaar stopt, de
+                // boot-schil of Hop start hem opnieuw.
+                if matches!(
+                    error,
+                    spin_server::Error::Store(spin_store::Error::StorageUncertain(_))
+                ) {
+                    H::log(format_args!("SPIN_OWNER_STOPPED reason=storage_uncertain"));
+                    return Err(error);
+                }
             }
             meter.lap::<H>("maintain_storage");
             if let Err(error) = server.maintain_capsules(&now, runtime) {
@@ -1234,8 +1253,9 @@ const SLOW_MS: u64 = 200;
 /// Meting van de eigenaar per taak (apps.md, "Meet per taak"): bezette tijd,
 /// de langste stap met naam en de langste wachttijd in de rij, elke 30 s één
 /// regel. Niets hierin alloceert.
-struct Meter<K: Clock> {
+struct Meter<'m, K: Clock> {
     clock: K,
+    phase: &'m Cell<(&'static str, u64)>,
     since: u64,
     round_at: u64,
     lap_at: u64,
@@ -1246,11 +1266,12 @@ struct Meter<K: Clock> {
     longest: (&'static str, u64),
     queue_max_ms: u64,
 }
-impl<K: Clock> Meter<K> {
-    fn new(clock: K) -> Self {
+impl<'m, K: Clock> Meter<'m, K> {
+    fn new(clock: K, phase: &'m Cell<(&'static str, u64)>) -> Self {
         let now = clock.millis();
         Self {
             clock,
+            phase,
             since: now,
             round_at: now,
             lap_at: now,
@@ -1266,16 +1287,19 @@ impl<K: Clock> Meter<K> {
     fn round(&mut self) {
         self.round_at = self.clock.millis();
         self.lap_at = self.round_at;
+        self.phase.set(("woke", self.round_at));
     }
     /// Zet het beginpunt van de volgende stap.
     fn mark(&mut self) {
         self.lap_at = self.clock.millis();
+        self.phase.set(("request", self.lap_at));
     }
     /// Sluit de stap af die bij de laatste `mark` of `lap` begon.
     fn lap<H: Platform>(&mut self, step: &'static str) {
         let now = self.clock.millis();
         let ms = now.saturating_sub(self.lap_at);
         self.lap_at = now;
+        self.phase.set((step, now));
         if ms > self.longest.1 {
             self.longest = (step, ms);
         }
@@ -1295,6 +1319,7 @@ impl<K: Clock> Meter<K> {
     /// elke 30 s de samenvatting.
     fn finish<H: Platform>(&mut self) {
         let now = self.clock.millis();
+        self.phase.set(("idle", now));
         self.busy_ms = self
             .busy_ms
             .saturating_add(now.saturating_sub(self.round_at));
