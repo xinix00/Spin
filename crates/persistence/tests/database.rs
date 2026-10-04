@@ -30,6 +30,7 @@ fn read_from<'a>(
 fn go_database_rust_reopen_deduplication_chunking_and_failed_upload() {
     full_transaction_preserves_cause_and_committed_state();
     large_legacy_state_rewrite();
+    state_rows_write_only_what_changed();
     // Eén test in dit proces bezit de enige SQLite-runtime; geen parallelle engines.
     let mut heap = vec![0_u64; 2 << 20];
     let mut db_bytes = vec![0; 16 << 20];
@@ -205,4 +206,62 @@ fn full_transaction_preserves_cause_and_committed_state() {
         assert_eq!(db.read_file("state", 100).unwrap(), b"previously committed");
         db.quick_check().unwrap();
     }
+}
+
+fn state_rows_write_only_what_changed() {
+    use spin_domain::{TryClone, state::PersistedState};
+    use spin_persistence::state_rows;
+    let cipher = Cipher::new([7; 32]);
+    let state = PersistedState::from_json(
+        br#"{"jobs":{"a":{"id":"a","title":"A"},"b":{"id":"b"}},"git_accounts":{"g":{"id":"g","access_token":"secret-access"}},"worker_token":"secret-worker"}"#,
+    )
+    .unwrap();
+    let all = state_rows(&cipher, &mut Random(0), &state, None).unwrap();
+    // Twee jobs, een account, worker_token en garbage_refs.
+    assert_eq!(all.len(), 5);
+    assert!(
+        all.iter()
+            .all(|r| !r.value.as_deref().unwrap_or("").contains("secret-")),
+        "geheimen gaan alleen versleuteld in een rij"
+    );
+    let mut next = state.try_clone().unwrap();
+    next.jobs.get_mut("a").unwrap().title = "Gewijzigd".into();
+    next.jobs.remove("b");
+    let changes = spin_store::diff(&state, &next).unwrap();
+    let rows = state_rows(&cipher, &mut Random(10), &next, Some(&changes)).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().any(|r| r.id == "a" && r.value.is_some()));
+    assert!(rows.iter().any(|r| r.id == "b" && r.value.is_none()));
+
+    let mut heap = vec![0_u64; 2 << 20];
+    let mut db_bytes = vec![0; 4 << 20];
+    let mut journal = vec![0; 4 << 20];
+    let mut memory = Memory::new(
+        [Slot::new(&mut db_bytes), Slot::new(&mut journal)],
+        1_790_000_000_000,
+        1,
+    );
+    // SAFETY: Sequentieel vóór de andere SQLite-eigenaars in dit proces.
+    let mut engine = unsafe { Engine::initialize(&mut heap, &mut memory) }.unwrap();
+    let mut db = Database::open(engine.open(c"rows.db").unwrap()).unwrap();
+    db.write_file("state", b"oude enkele rij").unwrap();
+    db.replace_rows(&all).unwrap();
+    db.write_rows(&rows).unwrap();
+    let (bytes, legacy) = db
+        .read_state(spin_persistence::MAX_STATE_BYTES)
+        .unwrap()
+        .unwrap();
+    assert!(!legacy);
+    assert!(db.read_file("state", 100).is_err(), "de oude rij is weg");
+    let sealed = PersistedState::from_json(&bytes).unwrap();
+    let loaded = cipher
+        .decrypt_state(&sealed, || Err(spin_security::Error::Payload))
+        .unwrap();
+    assert_eq!(loaded.jobs.get("a").unwrap().title, "Gewijzigd");
+    assert!(loaded.jobs.get("b").is_none());
+    assert_eq!(
+        loaded.git_accounts.get("g").unwrap().access_token,
+        "secret-access"
+    );
+    assert_eq!(loaded.worker_token, "secret-worker");
 }

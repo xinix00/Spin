@@ -474,7 +474,11 @@ impl Owner<'_> {
                 .map_err(store_error)?,
             &mut self.backend,
             false,
-            |db| db.read_file("state", MAX_STATE_BYTES),
+            |db| {
+                db.read_state(MAX_STATE_BYTES)?
+                    .map(|(bytes, _)| bytes)
+                    .ok_or(Error::NotFound)
+            },
         )?;
         Ok(R::Prepared(PortableState {
             json: String::from_utf8(bytes).map_err(|_| invalid())?,
@@ -520,11 +524,9 @@ impl Owner<'_> {
                 Ok(())
             },
         )?;
-        let bytes = self
-            .cipher
-            .encrypt_state(state, &mut self.entropy)?
-            .to_json()?;
-        self.execute(Op::Restore(bytes.as_bytes()))?;
+        let rows = spin_persistence::state_rows(&self.cipher, &mut self.entropy, state, None)
+            .map_err(spin_persistence::persistence_to_store)?;
+        self.execute(Op::Restore(&rows))?;
         Ok(())
     }
 }

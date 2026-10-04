@@ -160,7 +160,10 @@ fn state_row(root: &std::path::Path) -> Vec<u8> {
     let mut engine = unsafe { replica_sqlite::Engine::initialize(&mut heap, &mut files) }.unwrap();
     let mut database =
         spin_persistence::Database::attach(engine.open(c"spin.sqlite").unwrap()).unwrap();
-    database
-        .read_file("state", spin_persistence::MAX_STATE_BYTES)
+    let (bytes, legacy) = database
+        .read_state(spin_persistence::MAX_STATE_BYTES)
         .unwrap()
+        .unwrap();
+    assert!(!legacy, "de state staat als rijen");
+    bytes
 }

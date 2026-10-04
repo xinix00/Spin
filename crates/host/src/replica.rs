@@ -203,12 +203,15 @@ pub fn prepare<S: Leased>(
 enum Op<'a> {
     Usage,
     Load,
-    Save(&'a [u8]),
+    /// Alleen de gewijzigde rijen.
+    Save(&'a [spin_persistence::Row]),
+    /// De hele state, ook bij de migratie van de oude enkele rij.
+    Replace(&'a [spin_persistence::Row]),
     Blob(BlobRequest<'a>),
 }
 enum Reply {
     Usage(spin_persistence::Usage),
-    State(Vec<u8>),
+    State(Vec<u8>, bool),
     Empty,
     Blob(BlobReply),
 }
@@ -243,13 +246,16 @@ fn sql<B: Storage>(
     };
     match op {
         Op::Usage => Ok(Reply::Usage(db.usage()?)),
-        Op::Load => match db.read_file("state", MAX_STATE_BYTES) {
-            Ok(bytes) => Ok(Reply::State(bytes)),
-            Err(Error::NotFound) => Ok(Reply::State(Vec::new())),
-            Err(e) => Err(e),
+        Op::Load => match db.read_state(MAX_STATE_BYTES)? {
+            Some((bytes, legacy)) => Ok(Reply::State(bytes, legacy)),
+            None => Ok(Reply::State(Vec::new(), false)),
         },
-        Op::Save(bytes) => {
-            db.write_file("state", bytes)?;
+        Op::Save(rows) => {
+            db.write_rows(rows)?;
+            Ok(Reply::Empty)
+        }
+        Op::Replace(rows) => {
+            db.replace_rows(rows)?;
             Ok(Reply::Empty)
         }
         Op::Blob(request) => db.blob(request).map(Reply::Blob),
@@ -314,16 +320,23 @@ impl<S: Leased> Owner<S> {
         &mut self,
         ids: impl FnMut() -> spin_security::Result<String>,
     ) -> spin_store::Result<PersistedState> {
-        let Reply::State(bytes) = self.execute(Op::Load)? else {
+        let Reply::State(bytes, legacy) = self.execute(Op::Load)? else {
             return Err(spin_store::Error::Storage(21));
         };
         if bytes.is_empty() {
             return Ok(PersistedState::default());
         }
         let sealed = PersistedState::from_json_with_limit(&bytes, MAX_STATE_BYTES)?;
-        let mut state = self.cipher.decrypt_state(&sealed, ids)?;
+        let loaded = self.cipher.decrypt_state(&sealed, ids)?;
+        let mut state = spin_domain::TryClone::try_clone(&loaded)?;
         state.normalize_loaded()?;
-        self.save(&state)?;
+        // De oude enkele rij wordt eenmalig rijen; daarna alleen wat de
+        // normalisatie veranderde.
+        if legacy {
+            self.save(&state)?;
+        } else {
+            self.save_changes(&state, &spin_store::diff(&loaded, &state)?)?;
+        }
         Ok(state)
     }
 }
@@ -368,14 +381,22 @@ impl<S: Leased> Persistence for Owner<S> {
         }))
     }
     fn save(&mut self, state: &PersistedState) -> spin_store::Result {
-        let bytes = self
-            .cipher
-            .encrypt_state(state, &mut self.entropy)?
-            .to_json()?;
-        if bytes.len() > MAX_STATE_BYTES {
-            return Err(spin_store::Error::Conflict("state exceeds storage budget"));
+        let rows = spin_persistence::state_rows(&self.cipher, &mut self.entropy, state, None)
+            .map_err(spin_persistence::persistence_to_store)?;
+        self.execute(Op::Replace(&rows)).map(|_| ())
+    }
+    fn save_changes(
+        &mut self,
+        state: &PersistedState,
+        changes: &[spin_store::Change],
+    ) -> spin_store::Result {
+        let rows =
+            spin_persistence::state_rows(&self.cipher, &mut self.entropy, state, Some(changes))
+                .map_err(spin_persistence::persistence_to_store)?;
+        if rows.is_empty() {
+            return Ok(());
         }
-        self.execute(Op::Save(bytes.as_bytes())).map(|_| ())
+        self.execute(Op::Save(&rows)).map(|_| ())
     }
     fn blob(&mut self, request: BlobRequest<'_>) -> spin_store::Result<BlobReply> {
         match self.execute(Op::Blob(request))? {

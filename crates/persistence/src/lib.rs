@@ -6,12 +6,14 @@
 #![forbid(unsafe_code)]
 extern crate alloc;
 mod restore;
+mod rows;
 mod uploads;
 use alloc::{string::String, vec::Vec};
 use core::ffi::CStr;
 pub use replica_sqlite::{Connection, Storage};
 use replica_sqlite::{Statement, Value};
-use spin_domain::{self as d, Wire, state::PersistedState, try_string};
+pub use rows::{Row, state_rows};
+use spin_domain::{self as d, TryClone, Wire, state::PersistedState, try_string};
 use spin_security::{Cipher, Entropy, Sha256};
 
 /// De bestaande chunkgrens; nooit een volledig Docker-image in het geheugen.
@@ -140,6 +142,7 @@ impl<'e, 'a, B: Storage> Database<'e, 'a, B> {
         // Leave room for large existing state rows, including legacy b-tree keys.
         connection.execute(c"PRAGMA locking_mode=EXCLUSIVE; PRAGMA cache_size=-16384; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA page_size=65536; PRAGMA journal_mode=DELETE;
 CREATE TABLE IF NOT EXISTS spin_kv(key TEXT PRIMARY KEY,value BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS spin_rows(collection TEXT NOT NULL,id TEXT NOT NULL,value BLOB NOT NULL,UNIQUE(collection,id));
 CREATE TABLE IF NOT EXISTS spin_objects(id INTEGER PRIMARY KEY,digest TEXT,kind TEXT NOT NULL,size INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS spin_objects_digest ON spin_objects(digest) WHERE complete=1;
 CREATE TABLE IF NOT EXISTS spin_object_chunks(id INTEGER PRIMARY KEY,object_id INTEGER NOT NULL REFERENCES spin_objects(id) ON DELETE CASCADE,sequence INTEGER NOT NULL,data BLOB NOT NULL,UNIQUE(object_id,sequence));
@@ -422,6 +425,24 @@ DELETE FROM spin_objects WHERE complete=0;")?;
     }
 }
 
+/// Een opslagfout zoals de Store hem kent.
+pub fn persistence_to_store(error: Error) -> spin_store::Error {
+    match error {
+        Error::Sql(e) => spin_store::Error::Storage(e.code),
+        Error::Uncertain(code) => spin_store::Error::StorageUncertain(code),
+        Error::Data(e) => spin_store::Error::Data(e),
+        Error::Security(e) => spin_store::Error::Security(e),
+        Error::NotFound => spin_store::Error::NotFound,
+        Error::Invalid(reason) => spin_store::Error::Conflict(reason),
+    }
+}
+fn store_to_persistence(error: spin_store::Error) -> Error {
+    match error {
+        spin_store::Error::Data(e) => Error::Data(e),
+        spin_store::Error::Security(e) => Error::Security(e),
+        _ => Error::Invalid("state comparison failed"),
+    }
+}
 /// De Store-adapter bezit de database, masterkey en entropiebron samen.
 pub struct Encrypted<'e, 'a, B: Storage, E: Entropy> {
     database: Database<'e, 'a, B>,
@@ -442,22 +463,31 @@ impl<'e, 'a, B: Storage, E: Entropy> Encrypted<'e, 'a, B, E> {
         &mut self,
         login_id: impl FnMut() -> spin_security::Result<String>,
     ) -> Result<PersistedState> {
-        let bytes = match self.database.read_file("state", MAX_STATE_BYTES) {
-            Ok(b) => b,
-            Err(Error::NotFound) => return Ok(PersistedState::default()),
-            Err(e) => return Err(e),
+        let Some((bytes, legacy)) = self.database.read_state(MAX_STATE_BYTES)? else {
+            return Ok(PersistedState::default());
         };
         let sealed = PersistedState::from_json_with_limit(&bytes, MAX_STATE_BYTES)?;
-        let mut state = self.cipher.decrypt_state(&sealed, login_id)?;
+        let loaded = self.cipher.decrypt_state(&sealed, login_id)?;
+        let mut state = loaded.try_clone()?;
         state.normalize_loaded()?;
-        let migrated = self
-            .cipher
-            .encrypt_state(&state, &mut self.entropy)?
-            .to_json()?;
-        if migrated.len() > MAX_STATE_BYTES {
-            return Err(Error::Invalid("migrated state exceeds budget"));
+        // De oude enkele rij wordt eenmalig rijen; daarna alleen wat de
+        // normalisatie veranderde.
+        let changes = if legacy {
+            None
+        } else {
+            Some(spin_store::diff(&loaded, &state).map_err(store_to_persistence)?)
+        };
+        let rows = state_rows(
+            &self.cipher,
+            &mut self.entropy,
+            &state,
+            changes.as_ref().map(|c| c.as_slice()),
+        )?;
+        if legacy {
+            self.database.replace_rows(&rows)?;
+        } else {
+            self.database.write_rows(&rows)?;
         }
-        self.database.write_file("state", migrated.as_bytes())?;
         Ok(state)
     }
     /// Dezelfde eigenaar voert blobopdrachten tussen Store-opdrachten uit.
@@ -482,21 +512,22 @@ impl<B: Storage, E: Entropy> spin_store::Persistence for Encrypted<'_, '_, B, E>
         self.database.blob(request).map_err(uploads::store_error)
     }
     fn save(&mut self, state: &PersistedState) -> spin_store::Result {
-        let sealed = self.cipher.encrypt_state(state, &mut self.entropy)?;
-        let bytes = sealed.to_json()?;
-        if bytes.len() > MAX_STATE_BYTES {
-            return Err(spin_store::Error::Conflict("state exceeds storage budget"));
-        }
+        let rows = state_rows(&self.cipher, &mut self.entropy, state, None)
+            .map_err(persistence_to_store)?;
         self.database
-            .write_file("state", bytes.as_bytes())
-            .map_err(|error| match error {
-                Error::Sql(e) => spin_store::Error::Storage(e.code),
-                Error::Uncertain(code) => spin_store::Error::StorageUncertain(code),
-                Error::Data(e) => spin_store::Error::Data(e),
-                Error::Security(e) => spin_store::Error::Security(e),
-                Error::NotFound => spin_store::Error::NotFound,
-                Error::Invalid(reason) => spin_store::Error::Conflict(reason),
-            })
+            .replace_rows(&rows)
+            .map_err(persistence_to_store)
+    }
+    fn save_changes(
+        &mut self,
+        state: &PersistedState,
+        changes: &[spin_store::Change],
+    ) -> spin_store::Result {
+        let rows = state_rows(&self.cipher, &mut self.entropy, state, Some(changes))
+            .map_err(persistence_to_store)?;
+        self.database
+            .write_rows(&rows)
+            .map_err(persistence_to_store)
     }
 }
 

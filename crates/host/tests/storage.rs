@@ -92,9 +92,9 @@ fn transactional_restore(root: &std::path::Path) {
     }
     {
         let mut connection = engine.open(c"spin.sqlite").unwrap();
-        connection.execute(c"CREATE TRIGGER reject_restore BEFORE INSERT ON spin_kv WHEN NEW.key='state' BEGIN SELECT RAISE(ABORT,'injected state rejection'); END;").unwrap();
+        connection.execute(c"CREATE TRIGGER reject_restore BEFORE INSERT ON spin_rows BEGIN SELECT RAISE(ABORT,'injected state rejection'); END;").unwrap();
         let mut live = spin_persistence::Database::attach(connection).unwrap();
-        assert!(live.install_restore(b"destination-key-ciphertext").is_err());
+        assert!(live.install_restore(&restored()).is_err());
         assert_eq!(
             live.read_file("proof", 100).unwrap(),
             b"committed before crash"
@@ -108,10 +108,13 @@ fn transactional_restore(root: &std::path::Path) {
         let mut connection = engine.open(c"spin.sqlite").unwrap();
         connection.execute(c"DROP TRIGGER reject_restore").unwrap();
         let mut live = spin_persistence::Database::attach(connection).unwrap();
-        live.install_restore(b"destination-key-ciphertext").unwrap();
+        live.install_restore(&restored()).unwrap();
         assert_eq!(
-            live.read_file("state", 100).unwrap(),
-            b"destination-key-ciphertext"
+            live.read_state(100).unwrap().unwrap(),
+            (
+                br#"{"worker_token":"destination-key-ciphertext"}"#.to_vec(),
+                false
+            )
         );
         assert!(live.read_file("proof", 100).is_err());
         assert!(live.read_file("backup/master_key", 100).is_err());
@@ -121,4 +124,12 @@ fn transactional_restore(root: &std::path::Path) {
         );
         live.quick_check().unwrap();
     }
+}
+/// De state van de bestemming, al met haar eigen sleutel versleuteld.
+fn restored() -> Vec<spin_persistence::Row> {
+    vec![spin_persistence::Row {
+        collection: "worker_token",
+        id: String::new(),
+        value: Some(r#""destination-key-ciphertext""#.into()),
+    }]
 }

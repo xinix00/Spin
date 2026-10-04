@@ -50,13 +50,16 @@ const LEASE_TTL_MS: u64 = 300_000;
 enum Op<'a> {
     Usage,
     Load,
-    Save(&'a [u8]),
+    /// Alleen de gewijzigde rijen.
+    Save(&'a [spin_persistence::Row]),
+    /// De hele state, ook bij de migratie van de oude enkele rij.
+    Replace(&'a [spin_persistence::Row]),
     Blob(BlobRequest<'a>),
-    Restore(&'a [u8]),
+    Restore(&'a [spin_persistence::Row]),
 }
 enum Reply {
     Usage(spin_persistence::Usage),
-    State(Vec<u8>),
+    State(Vec<u8>, bool),
     Empty,
     Blob(BlobReply),
 }
@@ -165,18 +168,21 @@ fn sql<B: Storage>(
     };
     match op {
         Op::Usage => Ok(Reply::Usage(db.usage()?)),
-        Op::Load => match db.read_file("state", MAX_STATE_BYTES) {
-            Ok(bytes) => Ok(Reply::State(bytes)),
-            Err(Error::NotFound) => Ok(Reply::State(Vec::new())),
-            Err(e) => Err(e),
+        Op::Load => match db.read_state(MAX_STATE_BYTES)? {
+            Some((bytes, legacy)) => Ok(Reply::State(bytes, legacy)),
+            None => Ok(Reply::State(Vec::new(), false)),
         },
-        Op::Save(bytes) => {
-            db.write_file("state", bytes)?;
+        Op::Save(rows) => {
+            db.write_rows(rows)?;
+            Ok(Reply::Empty)
+        }
+        Op::Replace(rows) => {
+            db.replace_rows(rows)?;
             Ok(Reply::Empty)
         }
         Op::Blob(request) => db.blob(request).map(Reply::Blob),
-        Op::Restore(bytes) => {
-            db.install_restore(bytes)?;
+        Op::Restore(rows) => {
+            db.install_restore(rows)?;
             Ok(Reply::Empty)
         }
     }
@@ -358,10 +364,10 @@ impl<'a> Owner<'a> {
         // Prepare kan lang duren; geef het laden en opslaan elk een vers budget.
         let now = self.clock()?;
         self.renew(now)?;
-        let Reply::State(bytes) = self.execute(Op::Load)? else {
+        let Reply::State(bytes, legacy) = self.execute(Op::Load)? else {
             return Err(spin_store::Error::Storage(21));
         };
-        applib::log!("SPIN_STATE_LOADED bytes={}", bytes.len());
+        applib::log!("SPIN_STATE_LOADED bytes={} legacy={legacy}", bytes.len());
         // Loading has first recovered any live SQLite journal. Interrupted uploads and
         // read-only import staging can now be discarded under the database lease.
         self.restore_step(spin_store::backup::RestoreRequest::Abort)?;
@@ -369,12 +375,19 @@ impl<'a> Owner<'a> {
             return Ok(PersistedState::default());
         }
         let sealed = PersistedState::from_json_with_limit(&bytes, MAX_STATE_BYTES)?;
-        let mut state = self.cipher.decrypt_state(&sealed, ids)?;
+        let loaded = self.cipher.decrypt_state(&sealed, ids)?;
+        let mut state = spin_domain::TryClone::try_clone(&loaded)?;
         state.normalize_loaded()?;
         applib::log!("SPIN_STATE_DECRYPTED users={}", state.users.len());
         let now = self.clock()?;
         self.renew(now)?;
-        self.save(&state)?;
+        // De oude enkele rij wordt eenmalig rijen; daarna alleen wat de
+        // normalisatie veranderde.
+        if legacy {
+            self.save(&state)?;
+        } else {
+            self.save_changes(&state, &spin_store::diff(&loaded, &state)?)?;
+        }
         Ok(state)
     }
     /// Vernieuwt de schrijverlease; Replica schrijft hoogstens eens per zesde
@@ -541,15 +554,27 @@ impl Persistence for Owner<'_> {
         }
     }
     fn save(&mut self, state: &PersistedState) -> spin_store::Result {
-        let bytes = self
-            .cipher
-            .encrypt_state(state, &mut self.entropy)?
-            .to_json()?;
-        if bytes.len() > MAX_STATE_BYTES {
-            return Err(spin_store::Error::Conflict("state exceeds storage budget"));
+        let rows = spin_persistence::state_rows(&self.cipher, &mut self.entropy, state, None)
+            .map_err(spin_persistence::persistence_to_store)?;
+        if let Err(error) = self.execute(Op::Replace(&rows)) {
+            applib::log!("SPIN_STATE_SAVE_FAILED rows={} error={error}", rows.len());
+            return Err(error);
         }
-        if let Err(error) = self.execute(Op::Save(bytes.as_bytes())) {
-            applib::log!("SPIN_STATE_SAVE_FAILED bytes={} error={error}", bytes.len());
+        Ok(())
+    }
+    fn save_changes(
+        &mut self,
+        state: &PersistedState,
+        changes: &[spin_store::Change],
+    ) -> spin_store::Result {
+        let rows =
+            spin_persistence::state_rows(&self.cipher, &mut self.entropy, state, Some(changes))
+                .map_err(spin_persistence::persistence_to_store)?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        if let Err(error) = self.execute(Op::Save(&rows)) {
+            applib::log!("SPIN_STATE_SAVE_FAILED rows={} error={error}", rows.len());
             return Err(error);
         }
         Ok(())

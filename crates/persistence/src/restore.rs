@@ -36,10 +36,7 @@ impl<'e, 'a, B: Storage> Database<'e, 'a, B> {
         }))
     }
     /// Import only known data columns. The destination rollback journal protects the entire replacement.
-    pub fn install_restore(&mut self, state: &[u8]) -> Result {
-        if state.len() > MAX_STATE_BYTES {
-            return Err(Error::Invalid("restored state exceeds budget"));
-        }
+    pub fn install_restore(&mut self, rows: &[Row]) -> Result {
         self.connection.execute(
             c"PRAGMA trusted_schema=OFF; ATTACH DATABASE 'spin-restore.sqlite' AS incoming;",
         )?;
@@ -48,8 +45,9 @@ impl<'e, 'a, B: Storage> Database<'e, 'a, B> {
 INSERT INTO main.spin_objects(id,digest,kind,size,complete) SELECT id,digest,kind,size,complete FROM incoming.spin_objects WHERE complete=1;
 INSERT INTO main.spin_object_chunks(object_id,sequence,data) SELECT c.object_id,c.sequence,c.data FROM incoming.spin_object_chunks c JOIN main.spin_objects o ON o.id=c.object_id;
 INSERT INTO main.spin_object_refs(ref,object_id) SELECT r.ref,r.object_id FROM incoming.spin_object_refs r JOIN main.spin_objects o ON o.id=r.object_id;
-INSERT INTO main.spin_kv(key,value) SELECT key,value FROM incoming.spin_kv WHERE key NOT IN ('state','backup/format','backup/master_key');")?;
-            db.execute(c"INSERT INTO main.spin_kv(key,value) VALUES('state',?)",&[Value::Blob(state)])
+INSERT INTO main.spin_kv(key,value) SELECT key,value FROM incoming.spin_kv WHERE key NOT IN ('state','backup/format','backup/master_key');
+DELETE FROM main.spin_rows;")?;
+            db.put_rows(rows)
         });
         // A failed detach cannot undo a confirmed commit; closing this epoch releases the attachment.
         let _ = self.connection.execute(c"DETACH DATABASE incoming");

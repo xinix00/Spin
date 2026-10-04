@@ -37,7 +37,7 @@ fn map<T: PartialEq>(
     Ok(())
 }
 /// Vergelijkt twee states per entiteit; geen serialisatie.
-pub(crate) fn diff(before: &PersistedState, after: &PersistedState) -> Result<List<Change>> {
+pub fn diff(before: &PersistedState, after: &PersistedState) -> Result<List<Change>> {
     let mut out = List::new();
     let o = &mut out;
     map("artifacts", &before.artifacts, &after.artifacts, o)?;

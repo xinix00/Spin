@@ -11,7 +11,7 @@ use spin_domain::{self as d, Name, Timestamp, TryClone, state::PersistedState};
 mod blobs;
 mod changes;
 pub use blobs::{BlobInfo, BlobReply, BlobRequest};
-pub use changes::Change;
+pub use changes::{Change, diff};
 mod artifacts;
 mod attachments;
 /// Portable backups valideren voordat ze de actieve staat vervangen.
@@ -117,6 +117,11 @@ pub trait Persistence {
 
     /// Publiceert atomair en duurzaam, of laat de vorige state intact.
     fn save(&mut self, state: &PersistedState) -> Result;
+    /// Zoals [`Persistence::save`], met de entiteiten die sinds de vorige
+    /// opslag veranderden; een adapter met rijen schrijft alleen die.
+    fn save_changes(&mut self, state: &PersistedState, _changes: &[Change]) -> Result {
+        self.save(state)
+    }
     /// Blobopslag is beschikbaar wanneer de runtime een database levert.
     fn blob(&mut self, _: BlobRequest<'_>) -> Result<BlobReply> {
         Err(Error::Conflict("blob storage is not configured"))
@@ -228,7 +233,7 @@ impl<P: Persistence> Store<P> {
         let mut candidate = self.state.try_clone()?;
         let result = change(&mut candidate)?;
         let changes = changes::diff(&self.state, &candidate)?;
-        if let Err(error) = self.persistence.save(&candidate) {
+        if let Err(error) = self.persistence.save_changes(&candidate, &changes) {
             if let Error::StorageUncertain(code) = error {
                 self.uncertain = Some(code);
             }
