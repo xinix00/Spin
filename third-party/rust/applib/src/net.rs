@@ -1,5 +1,5 @@
 //! Frame-niveau netwerk van een app: de [`Nic`] over de eigen frame-ringen
-//! naar de L2-switch van de kern, en de RX-pomp met de deurbel.
+//! naar de L2-switch van de kern, de deurbel en de slaapstand van de RX-pomp.
 //!
 //! Het twee-methode-device (`netdev::Device`) waaraan in Go elke
 //! stack-wissel hing (gVisor, lneto, leannet: elke wissel raakte alleen
@@ -15,14 +15,12 @@
 
 use crate::app::App;
 use crate::contract::{NET_MTU, NET_RING_DATA_CAP, slot_ip4, slot_mac};
-use crate::log;
 use crate::ring::{Corrupt, Kind, Peek, Reader, Writer};
-use crate::rt::Exec;
 use crate::sleep::{self, RxDoor};
-use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use core::time::Duration;
 use netdev::{Device, Mac, TxError};
-use sync::{Either, Signal, select, yield_now};
+use sync::{Signal, yield_now};
 
 /// De MTU van het slot-LAN (geen draad, geen bitfouten).
 pub const MTU: usize = NET_MTU;
@@ -51,6 +49,43 @@ pub static PUMP_TIMER: AtomicU64 = AtomicU64::new(0);
 /// tot zijn flush). 3 à 4 kicks tot en met de dial.
 pub static TX_KICKS: AtomicU64 = AtomicU64::new(0);
 
+/// Een publicatie op de TX-ring die de kern nog niet hoorde: op het hart
+/// van de kern (de OS-core) kickt de [`Nic`] niet bij elke burst. Daar is
+/// de kick een yield naar nu, en dus een wissel naar de buur terwijl deze
+/// bewoner zelf nog werk heeft (verder rekenen, tot zijn eigen idle komen):
+/// hij bleef met wektijd 0 "aan de beurt" en kreeg later een beurt zonder
+/// signaal, die hij met een lege yield teruggaf (03-10, hop-cost5). Het
+/// principe: een bewoner van de OS-core houdt de core tot hij wacht (zijn
+/// idle-yield, en die laat de kern het frame bezorgen, [`owed_by_yield`])
+/// of tot `TURN_CAP`; een ander komt alleen aan de beurt met een signaal.
+/// Blijft hij bezig (een taak die altijd klaar is, BURN), dan kickt de pomp
+/// alsnog ([`kick_owed`]): dan wacht het frame niet op `TURN_CAP`.
+static TX_OWED: AtomicBool = AtomicBool::new(false);
+
+/// De kick naar de kern: SEV voor een kern in WFE, HVC #6 (riscv: de
+/// kick-ecall) voor een kern die een bewoner draait of in WFI slaapt.
+fn kick() {
+    dev::notify();
+    crate::arch::hvc_kick_os();
+    TX_KICKS.fetch_add(1, Relaxed);
+}
+
+/// Betaalt een uitgestelde kick (zie [`TX_OWED`]): de app blijft bezig, of
+/// slaapt zonder yield. `true` als er een kick was.
+pub fn kick_owed() -> bool {
+    let owed = TX_OWED.swap(false, Relaxed);
+    if owed {
+        kick();
+    }
+    owed
+}
+
+/// De idle-yield naar de kern: die bezorgt wat er op de TX-ring ligt, dus
+/// een uitgestelde kick vervalt.
+pub(crate) fn owed_by_yield() {
+    TX_OWED.store(false, Relaxed);
+}
+
 /// Het interne IPv4 van slot `slot` (big-endian).
 #[must_use]
 pub const fn slot_ip(slot: u64) -> [u8; 4] {
@@ -75,17 +110,25 @@ pub struct Nic {
     rx: Reader,
     rx_peek: Peek,
     mac: Mac,
+    /// Op het hart van de kern: de kick wacht op de idle-yield
+    /// ([`TX_OWED`]).
+    defer: bool,
 }
 
 impl Nic {
-    /// Opent de frame-ringen van `app`.
+    /// Opent de frame-ringen van `app` met de belofte van deze kant
+    /// ([`crate::mmu::ring_coherence`]); de ring kopieert zonder onderhoud
+    /// zodra de kern hetzelfde belooft.
     pub fn open(app: &App) -> Result<Self, abi::Error> {
         let t = app.tail();
+        let on_kern = app.ctrl().on_kern_hart();
+        let c = crate::mmu::ring_coherence(on_kern);
         Ok(Self {
-            tx: Writer::open(t.net_tx(), NET_RING_DATA_CAP)?,
-            rx: Reader::open(t.net_rx(), NET_RING_DATA_CAP)?,
+            tx: Writer::open_with(t.net_tx(), NET_RING_DATA_CAP, c)?,
+            rx: Reader::open_with(t.net_rx(), NET_RING_DATA_CAP, c)?,
             rx_peek: Peek::new(t.net_rx(), NET_RING_DATA_CAP),
             mac: mac_of(app.slot()),
+            defer: on_kern,
         })
     }
 
@@ -98,7 +141,16 @@ impl Nic {
             rx,
             rx_peek,
             mac,
+            defer: false,
         }
+    }
+
+    /// Kickt de kern niet bij elke burst maar laat de kick wachten op de
+    /// idle-yield ([`TX_OWED`]), zoals [`Nic::open`] op het hart van de kern.
+    #[must_use]
+    pub fn deferring(mut self, yes: bool) -> Self {
+        self.defer = yes;
+        self
     }
 
     /// Hangt de deurbel aan: de idle van de app-core wapent vanaf nu
@@ -117,25 +169,63 @@ impl Nic {
         if frame.is_empty() || !self.tx.fits(frame.len()) {
             return Err(TxError::Size(frame.len()));
         }
-        match self.tx.write(Kind::FRAME, frame) {
-            Ok(was_empty) => {
-                if was_empty {
+        let r = self.tx.write(Kind::FRAME, frame).map(Some);
+        self.sent(r, frame.len()).map(|_| ())
+    }
+
+    /// Als [`Nic::try_transmit`], maar `fill` bouwt het frame in de TX-ring
+    /// zelf: hij krijgt `max` bytes en geeft de lengte van het frame (0 =
+    /// niets te zenden, `Ok(0)`). Geen kopie uit een eigen buffer. Is er nu
+    /// geen plaats voor `max` bytes, dan [`TxError::Full`] zonder `fill` te
+    /// roepen: de aanroeper bouwt dan in zijn eigen buffer en wacht met
+    /// [`Nic::transmit_wait`].
+    pub fn try_transmit_with(
+        &mut self,
+        max: usize,
+        fill: impl FnOnce(&mut [u8]) -> usize,
+    ) -> Result<usize, TxError> {
+        let mut len = 0;
+        let r = self.tx.write_with(Kind::FRAME, max, |dst| {
+            len = fill(dst).min(dst.len());
+            len
+        });
+        self.sent(r, max).map(|sent| if sent { len } else { 0 })
+    }
+
+    /// De afloop van een schrijf in de TX-ring: de kick bij de overgang van
+    /// leeg naar niet-leeg (op het hart van de kern de schuld, [`TX_OWED`]),
+    /// de bel bij vol. `Ok(false)`: geen record.
+    fn sent(&self, r: Result<Option<bool>, abi::Error>, len: usize) -> Result<bool, TxError> {
+        match r {
+            Ok(Some(was_empty)) => {
+                if self.defer {
+                    // De kern draait pas als wij de core teruggeven; dat doet
+                    // de idle-yield, of de pomp als we bezig blijven.
+                    TX_OWED.store(true, Relaxed);
+                } else if was_empty {
                     // De SEV wekt een kern in WFE; de kick een kern die een
                     // bewoner draait of in WFI slaapt (Go: `dev.Notify`, dat
                     // op de M4 beide deed). Zonder kick hoorde de kern een
                     // app die na zijn publicatie blijft rekenen pas op zijn
                     // failsafe van 1 ms of op de idle-yield van de app.
-                    dev::notify();
-                    crate::arch::hvc_kick_os();
-                    TX_KICKS.fetch_add(1, Relaxed);
+                    kick();
                 }
-                Ok(())
+                Ok(true)
             }
+            Ok(None) => Ok(false),
             Err(abi::Error::RingFull { .. }) => {
-                dev::notify();
+                // Op het hart van de kern leest niemand de ring leeg tot we
+                // de core teruggeven: nu dus, anders wacht `transmit_wait`
+                // zijn hele tegendruk voor niets.
+                if self.defer {
+                    TX_OWED.store(false, Relaxed);
+                    kick();
+                } else {
+                    dev::notify();
+                }
                 Err(TxError::Full)
             }
-            Err(abi::Error::RecordTooLarge { .. }) => Err(TxError::Size(frame.len())),
+            Err(abi::Error::RecordTooLarge { .. }) => Err(TxError::Size(len)),
             // Onmogelijke indexen: de switch beschrijft ze, en er valt niets
             // meer te herstellen tot de kern het slot herstart.
             Err(_) => Err(TxError::Dead),
@@ -159,6 +249,22 @@ impl Nic {
                     yield_now().await;
                 }
                 other => return other,
+            }
+        }
+    }
+
+    /// Eén frame uit de RX-ring, in de ring zelf aan `f`: geen kopie naar
+    /// een eigen buffer. `max` is het grootste frame dat we aannemen.
+    /// Records van een ander type worden overgeslagen. De producer is de
+    /// kern, en die schrijft een gepubliceerd record niet meer
+    /// ([`abi::ring::Reader::read_with`]).
+    pub fn receive_with<T>(&mut self, max: usize, mut f: impl FnMut(&[u8]) -> T) -> Option<T> {
+        loop {
+            let got = self
+                .rx
+                .read_with(max, |kind, frame| (kind == Kind::FRAME).then(|| f(frame)))?;
+            if got.is_some() {
+                return got;
             }
         }
     }
@@ -284,53 +390,6 @@ pub fn ws_shift_for(max_buf: u64) -> u8 {
     shift
 }
 
-/// De RX-pomp als taak: leest frames uit de ring en geeft ze aan `deliver`;
-/// als het stil is wacht hij op de bel of zijn timer. Keert nooit terug.
-///
-/// Elke 16 frames een yield: zonder die yield draait de pomp door zolang er
-/// frames liggen en komen de ACK's van de stack pas aan de beurt als de
-/// zender zijn hele venster kwijt is (20-09, een 1 Gbit-upload: 216.147
-/// segmenten in, 298 ACK's uit, 39 MB/s).
-pub async fn pump(
-    nic: &mut Nic,
-    buf: &mut [u8],
-    bell: &'static Signal,
-    exec: &'static Exec,
-    poll: RxPoll,
-    mut deliver: impl FnMut(&[u8]),
-) {
-    nic.watch_rx(bell);
-    let mut d = poll.lo;
-    let mut empty: u32 = 0;
-    let mut delivered: u32 = 0;
-    let mut corrupt_logged = false;
-    loop {
-        if let Some(n) = nic.receive(buf) {
-            d = poll.lo;
-            empty = 0;
-            deliver(buf.get(..n).unwrap_or_default());
-            delivered = delivered.wrapping_add(1);
-            if delivered.is_multiple_of(16) {
-                yield_now().await;
-            }
-            continue;
-        }
-        // Een dode ring is stil: niets meer te lezen en toch "pending". Eén
-        // regel met de reden, anders is dat een app die "gewoon niet
-        // reageert" (de SMP-jacht van 03-09).
-        if !corrupt_logged && let Some(why) = nic.rx_corruption() {
-            log!("appnet: RX ring corrupt: {why} HOPOS_APPNET_RX_CORRUPT");
-            corrupt_logged = true;
-        }
-        match select(bell.wait(), exec.after(d)).await {
-            Either::Left(()) => PUMP_EARLY.fetch_add(1, Relaxed),
-            Either::Right(()) => PUMP_TIMER.fetch_add(1, Relaxed),
-        };
-        empty = empty.saturating_add(1);
-        d = poll.next(d, empty);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,14 +410,17 @@ mod tests {
         let txb = Backing::new(4096);
         let rxb = Backing::new(4096);
         let mut filler = Writer::open(txb.pa(), 4096).unwrap();
-        let tx = Writer::open(txb.pa(), 4096).unwrap();
-        let rx = Reader::open(rxb.pa(), 4096).unwrap();
         let frame = [0xabu8; 1000];
         let mut filled = 0;
         while filler.write(Kind::FRAME, &frame).is_ok() {
             filled += 1;
         }
         assert!(filled >= 2, "testring vulde al na {filled} frames");
+        // De echte producer pas nu: een schrijver houdt zijn eigen head bij
+        // (`abi::ring::Writer`), dus hij opent na de vuller, zoals een app
+        // de ring één keer opent en daarna de enige schrijver is.
+        let tx = Writer::open(txb.pa(), 4096).unwrap();
+        let rx = Reader::open(rxb.pa(), 4096).unwrap();
 
         let mut nic = Nic::over(tx, rx, Peek::new(rxb.pa(), 4096), mac_of(1));
         let mut fut = pin!(nic.transmit_wait(&frame, now_zero));
@@ -386,10 +448,11 @@ mod tests {
         let txb = Backing::new(256);
         let rxb = Backing::new(256);
         let mut filler = Writer::open(txb.pa(), 256).unwrap();
+        while filler.write(Kind::FRAME, &[1; 100]).is_ok() {}
+        // Na de vuller, zie hierboven.
         let tx = Writer::open(txb.pa(), 256).unwrap();
         let rx = Reader::open(rxb.pa(), 256).unwrap();
         let mut nic = Nic::over(tx, rx, Peek::new(rxb.pa(), 256), mac_of(1));
-        while filler.write(Kind::FRAME, &[1; 100]).is_ok() {}
         let drops = TX_DROPS.load(Relaxed);
         let mut fut = pin!(nic.transmit_wait(&[1; 100], clock));
         let mut cx = Context::from_waker(Waker::noop());

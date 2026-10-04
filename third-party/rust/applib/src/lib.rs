@@ -61,6 +61,8 @@ pub mod ctrl;
 pub mod fb;
 pub mod heap;
 pub mod log;
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+mod mem;
 pub mod mmu;
 pub mod net;
 pub mod rand;

@@ -20,7 +20,6 @@
 //!   verifiëren en dus alleen publieke sleutels, digests en handtekeningen
 //!   zien.
 
-#[cfg(test)]
 pub(crate) mod aes;
 pub(crate) mod bignum;
 pub(crate) mod ct;

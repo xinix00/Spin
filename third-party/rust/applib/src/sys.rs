@@ -28,10 +28,10 @@
 
 use crate::contract::{
     HOPABI_HDR_LEN, HOPABI_VERSION, KIND_CALL, KIND_LOG, KIND_RESULT, MAX_IO_CHUNK, MAX_PAYLOAD,
-    OP_LIST, OP_READ, OP_REMOVE, OP_STAT, OP_STORE_DROP, OP_STORE_LIST, OP_STORE_PULL,
-    OP_STORE_PUSH, OP_SYNC, OP_TRUNCATE, OP_WRITE, STATUS_NOENT, STATUS_OK, SYS_HEADER_LEN,
-    SYS_MAGIC, SYS_PORT, SYS_VERSION,
+    OP_LIST, OP_READ, OP_READ_MANY, OP_REMOVE, OP_STAT, OP_SYNC, OP_TRUNCATE, OP_WRITE,
+    STATUS_NOENT, STATUS_OK, SYS_HEADER_LEN, SYS_MAGIC, SYS_PORT, SYS_VERSION,
 };
+use abi::hopabi::many;
 use core::fmt;
 use core::future::Future;
 use core::time::Duration;
@@ -45,6 +45,14 @@ pub const MAX_CHUNK: usize = MAX_IO_CHUNK;
 
 /// De timeout van een gewone call.
 pub const RPC_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Zoveel lezingen hoogstens in één bundel ([`Client::read_many`]); de
+/// NVMe-kern neemt er twee bundels van tegelijk.
+pub const MAX_READS: usize = many::MAX_OPS;
+
+/// Zoveel bytes hoogstens samen in één bundel; een grote lees is één
+/// [`Client::read_into`].
+pub const MAX_READ_BYTES: usize = many::MAX_BYTES;
 
 /// De timeout van de store-ops: een pull of push duurt zo lang als het
 /// object groot is (de kern streamt hem van of naar de bucket).
@@ -248,6 +256,85 @@ impl<'a> Req<'a> {
     }
 }
 
+/// Eén lees van een bundel ([`Client::read_many`]): vanaf `off` hooguit
+/// `dst.len()` bytes rechtstreeks in `dst`.
+#[derive(Debug)]
+pub struct ReadOp<'a> {
+    /// De offset in het bestand.
+    pub off: u64,
+    /// De bestemming.
+    pub dst: &'a mut [u8],
+    /// De uitkomst van deze ene lees: zoveel bytes vooraan in `dst` (0 is
+    /// het einde van het bestand), of de status van de kern (een blokfout).
+    pub got: core::result::Result<usize, u16>,
+}
+
+impl<'a> ReadOp<'a> {
+    /// Een lees van hooguit `dst.len()` bytes vanaf `off`.
+    pub fn new(off: u64, dst: &'a mut [u8]) -> Self {
+        Self {
+            off,
+            dst,
+            got: Ok(0),
+        }
+    }
+}
+
+/// Waar de data van een antwoord landt.
+enum Sink<'d, 'o> {
+    /// Aaneen in één buffer.
+    Buf(&'d mut [u8]),
+    /// De tabel van een bundel, dan elke lees in haar eigen buffer.
+    Many(&'d mut [ReadOp<'o>]),
+}
+
+/// Leest het antwoord van een bundel (`data` bytes): de tabel met de
+/// uitkomsten, dan de bytes van elke lees rechtstreeks in haar `dst`.
+async fn land_many<C: Conn>(
+    c: &mut C,
+    ops: &mut [ReadOp<'_>],
+    data: usize,
+) -> core::result::Result<(), Attempt> {
+    let fatal = |why| Attempt::fatal(Error::Protocol(why));
+    let mut table = [0u8; many::MAX_OPS * many::RESULT_LEN];
+    let t = table
+        .get_mut(..ops.len() * many::RESULT_LEN)
+        .ok_or_else(|| fatal("bundle table"))?;
+    if t.len() > data {
+        return Err(fatal("bundle shorter than its table"));
+    }
+    read_exact(c, t)
+        .await
+        .map_err(|e| Attempt::fatal(Error::Transport(e)))?;
+    let mut left = data - t.len();
+    for (i, op) in ops.iter_mut().enumerate() {
+        let (got, status) = many::result(t, i).ok_or_else(|| fatal("bundle table"))?;
+        let got = got as usize;
+        if status != STATUS_OK {
+            op.got = Err(status);
+            if got != 0 {
+                return Err(fatal("bytes for a failed read"));
+            }
+            continue;
+        }
+        if got > left {
+            return Err(fatal("bundle shorter than its reads"));
+        }
+        let dst = op
+            .dst
+            .get_mut(..got)
+            .ok_or_else(|| fatal("read longer than its buffer"))?;
+        read_exact(c, dst)
+            .await
+            .map_err(|e| Attempt::fatal(Error::Transport(e)))?;
+        (op.got, left) = (Ok(got), left - got);
+    }
+    if left != 0 {
+        return Err(fatal("bundle longer than its reads"));
+    }
+    Ok(())
+}
+
 /// Leest een responskop van 24 bytes.
 pub fn decode_resp(h: &[u8; HOPABI_HDR_LEN]) -> Result<Resp> {
     if h[0] != HOPABI_VERSION {
@@ -347,11 +434,11 @@ impl Attempt {
 }
 
 /// Eén poging op een open verbinding: request schrijven, response lezen
-/// met de data in `dst` (die er niet in past: protocolfout).
+/// met de data in `sink` (die er niet in past: protocolfout).
 async fn exchange<C: Conn>(
     c: &mut C,
     req: &Req<'_>,
-    dst: &mut [u8],
+    sink: &mut Sink<'_, '_>,
 ) -> core::result::Result<(Resp, usize), Attempt> {
     let len = req.payload_len().map_err(Attempt::fatal)?;
     let len32 = u32::try_from(len).map_err(|_| Attempt::fatal(Error::Protocol("length")))?;
@@ -399,14 +486,19 @@ async fn exchange<C: Conn>(
         };
         return Err(Attempt::fatal(err));
     }
-    let Some(out) = dst.get_mut(..data) else {
-        return Err(Attempt::fatal(Error::Protocol(
-            "response longer than the buffer",
-        )));
-    };
-    read_exact(c, out)
-        .await
-        .map_err(|e| Attempt::fatal(Error::Transport(e)))?;
+    match sink {
+        Sink::Buf(dst) => {
+            let Some(out) = dst.get_mut(..data) else {
+                return Err(Attempt::fatal(Error::Protocol(
+                    "response longer than the buffer",
+                )));
+            };
+            read_exact(c, out)
+                .await
+                .map_err(|e| Attempt::fatal(Error::Transport(e)))?;
+        }
+        Sink::Many(ops) => land_many(c, ops, data).await?,
+    }
     Ok((resp, data))
 }
 
@@ -447,7 +539,7 @@ impl<D: Dial, T: Timer> Client<D, T> {
     async fn once(
         &mut self,
         req: &Req<'_>,
-        dst: &mut [u8],
+        sink: &mut Sink<'_, '_>,
         timeout: Duration,
     ) -> core::result::Result<(Resp, usize), Attempt> {
         let Self {
@@ -459,7 +551,7 @@ impl<D: Dial, T: Timer> Client<D, T> {
         let Some(c) = conn.as_mut() else {
             return Err(Attempt::from(ConnError::Refused));
         };
-        let r = match select(timer.sleep(timeout), exchange(c, req, dst)).await {
+        let r = match select(timer.sleep(timeout), exchange(c, req, sink)).await {
             Either::Left(()) => Err(Attempt::fatal(Error::Timeout)),
             Either::Right(r) => r,
         };
@@ -479,19 +571,28 @@ impl<D: Dial, T: Timer> Client<D, T> {
     /// wegviel. `dst` krijgt de data van de response.
     pub async fn call(
         &mut self,
-        mut req: Req<'_>,
+        req: Req<'_>,
         dst: &mut [u8],
+        timeout: Duration,
+    ) -> Result<(Resp, usize)> {
+        self.call_into(req, &mut Sink::Buf(dst), timeout).await
+    }
+
+    async fn call_into(
+        &mut self,
+        mut req: Req<'_>,
+        sink: &mut Sink<'_, '_>,
         timeout: Duration,
     ) -> Result<(Resp, usize)> {
         self.seq = self.seq.wrapping_add(1);
         req.seq = self.seq;
-        match self.once(&req, dst, timeout).await {
+        match self.once(&req, sink, timeout).await {
             Ok(r) => Ok(r),
             Err(a) if !a.retry => Err(a.err),
             Err(_) => {
                 self.seq = self.seq.wrapping_add(1);
                 req.seq = self.seq;
-                match self.once(&req, dst, timeout).await {
+                match self.once(&req, sink, timeout).await {
                     Ok(r) => Ok(r),
                     Err(a) => Err(a.err),
                 }
@@ -511,7 +612,9 @@ impl<D: Dial, T: Timer> Client<D, T> {
     ) -> Result<(Resp, usize)> {
         self.seq = self.seq.wrapping_add(1);
         req.seq = self.seq;
-        self.once(&req, dst, timeout).await.map_err(|a| a.err)
+        self.once(&req, &mut Sink::Buf(dst), timeout)
+            .await
+            .map_err(|a| a.err)
     }
 
     /// Bevestigt data, namen en groottes op duurzame opslag; retourneert de
@@ -581,6 +684,52 @@ impl<D: Dial, T: Timer> Client<D, T> {
         Ok(n)
     }
 
+    /// Leest een bundel: tot [`MAX_READS`] lezingen uit één bestand in één
+    /// call (`OP_READ_MANY`), samen hooguit [`MAX_READ_BYTES`]. De kern zet
+    /// ze in één keer op het device en antwoordt één keer; elke lees landt
+    /// rechtstreeks in haar eigen `dst` en krijgt haar eigen uitkomst in
+    /// `got` (een blokfout in de ene laat de andere staan). Geeft de som van
+    /// de gelezen bytes. Een lege lijst is nul zonder call.
+    ///
+    /// Meer bundels tegelijk in de lucht: een tweede [`Client`] (een eigen
+    /// verbinding) en beide futures samen afwachten (`sync::join`); de kern
+    /// laat lezingen van één app naast elkaar lopen. Een app heeft er twee
+    /// (`MAX_SYSTEM_CONNS` in de kern), en de node dertien voor iedereen.
+    /// Een kern zonder de op antwoordt met een nette fout.
+    pub async fn read_many(&mut self, path: &str, ops: &mut [ReadOp<'_>]) -> Result<usize> {
+        if ops.is_empty() {
+            return Ok(0);
+        }
+        if ops.len() > MAX_READS {
+            return Err(Error::TooLarge {
+                len: ops.len(),
+                max: MAX_READS,
+            });
+        }
+        let mut list = [0u8; MAX_READS * many::OP_LEN];
+        let mut sum = 0usize;
+        for (i, op) in ops.iter().enumerate() {
+            sum = sum.saturating_add(op.dst.len());
+            let len = u32::try_from(op.dst.len()).unwrap_or(u32::MAX);
+            many::put_op(&mut list, i, op.off, len);
+        }
+        if sum > MAX_READ_BYTES {
+            return Err(Error::TooLarge {
+                len: sum,
+                max: MAX_READ_BYTES,
+            });
+        }
+        let req = Req {
+            n: ops.len() as u64,
+            data: list.get(..ops.len() * many::OP_LEN).unwrap_or_default(),
+            ..Req::path(OP_READ_MANY, path)
+        };
+        let (r, _) = self
+            .call_into(req, &mut Sink::Many(ops), RPC_TIMEOUT)
+            .await?;
+        Ok(usize::try_from(r.size).unwrap_or(usize::MAX))
+    }
+
     /// Schrijft één chunk (≤ [`MAX_CHUNK`]) op `off`, zonder te truncaten.
     pub async fn write_at(&mut self, path: &str, off: u64, data: &[u8]) -> Result<usize> {
         if data.len() > MAX_CHUNK {
@@ -636,13 +785,13 @@ impl<D: Dial, T: Timer> Client<D, T> {
         self.seq = self.seq.wrapping_add(1);
         let mut req = Req::path(OP_REMOVE, path);
         req.seq = self.seq;
-        match self.once(&req, &mut [], RPC_TIMEOUT).await {
+        match self.once(&req, &mut Sink::Buf(&mut []), RPC_TIMEOUT).await {
             Ok(_) => Ok(()),
             Err(a) if !a.retry => Err(a.err),
             Err(_) => {
                 self.seq = self.seq.wrapping_add(1);
                 req.seq = self.seq;
-                match self.once(&req, &mut [], RPC_TIMEOUT).await {
+                match self.once(&req, &mut Sink::Buf(&mut []), RPC_TIMEOUT).await {
                     Ok(_)
                     | Err(Attempt {
                         err: Error::NotFound { .. },
@@ -652,38 +801,6 @@ impl<D: Dial, T: Timer> Client<D, T> {
                 }
             }
         }
-    }
-
-    /// Haalt object `path` uit de eigen bucket-map en vervangt er het lokale
-    /// bestand mee; geeft de grootte.
-    pub async fn store_pull(&mut self, path: &str) -> Result<u64> {
-        let (r, _) = self
-            .call(Req::path(OP_STORE_PULL, path), &mut [], STORE_TIMEOUT)
-            .await?;
-        Ok(r.size)
-    }
-
-    /// Uploadt het lokale bestand `path` naar de eigen bucket-map.
-    pub async fn store_push(&mut self, path: &str) -> Result<u64> {
-        let (r, _) = self
-            .call(Req::path(OP_STORE_PUSH, path), &mut [], STORE_TIMEOUT)
-            .await?;
-        Ok(r.size)
-    }
-
-    /// De objectnamen onder `prefix` in de eigen bucket-map, in `dst`.
-    pub async fn store_list(&mut self, prefix: &str, dst: &mut [u8]) -> Result<usize> {
-        let (_, n) = self
-            .call(Req::path(OP_STORE_LIST, prefix), dst, STORE_TIMEOUT)
-            .await?;
-        Ok(n)
-    }
-
-    /// Verwijdert object `path` (idempotent).
-    pub async fn store_drop(&mut self, path: &str) -> Result {
-        self.call(Req::path(OP_STORE_DROP, path), &mut [], STORE_TIMEOUT)
-            .await
-            .map(|_| ())
     }
 
     /// Eén logregel over de verbinding (`KindLog`), zonder antwoord. Een
@@ -1001,5 +1118,86 @@ mod tests {
         let sent = &s.borrow().sent[0];
         assert_eq!(sent[5], KIND_LOG);
         assert_eq!(&sent[12..], b"hello");
+    }
+
+    /// Het antwoord op een bundel: per lees (bytes, status), dan de bytes.
+    fn bundle(seq: u32, reads: &[(&[u8], u16)]) -> Vec<u8> {
+        let mut d = vec![0u8; reads.len() * many::RESULT_LEN];
+        let mut size = 0u64;
+        for (i, (b, st)) in reads.iter().enumerate() {
+            many::put_result(&mut d, i, b.len() as u32, *st).unwrap();
+            size += b.len() as u64;
+        }
+        for (b, _) in reads {
+            d.extend_from_slice(b);
+        }
+        resp(seq, STATUS_OK, size, &d)
+    }
+
+    #[test]
+    fn read_many_sends_one_list_and_lands_each_read_in_its_own_buffer() {
+        let (mut c, s) = client(vec![Some(bundle(
+            1,
+            &[(b"abcd", STATUS_OK), (b"", 1), (b"xy", STATUS_OK)],
+        ))]);
+        let (mut a, mut b, mut z) = ([0u8; 4], [7u8; 4], [0u8; 4]);
+        let mut ops = [
+            ReadOp::new(4096, &mut a),
+            ReadOp::new(1 << 33, &mut b),
+            ReadOp::new(10, &mut z),
+        ];
+        assert_eq!(block_on(c.read_many("/db", &mut ops)), Ok(6));
+        assert_eq!(ops[0].got, Ok(4));
+        assert_eq!(ops[1].got, Err(1), "een fout in de ene");
+        assert_eq!(ops[2].got, Ok(2), "het einde van het bestand");
+        assert_eq!((a, b, &z[..2]), (*b"abcd", [7; 4], &b"xy"[..]));
+        assert!(c.is_connected());
+        let sent = &s.borrow().sent[0];
+        assert_eq!(sent[13], OP_READ_MANY);
+        assert_eq!(u64::from_le_bytes(sent[28..36].try_into().unwrap()), 3, "n");
+        let list = &sent[36 + 3..];
+        assert_eq!(list.len(), 3 * many::OP_LEN);
+        assert_eq!(many::op(list, 1), Some((1 << 33, 4)));
+        assert_eq!(many::op(list, 2), Some((10, 4)));
+    }
+
+    #[test]
+    fn read_many_refuses_an_empty_long_or_large_list_without_a_call() {
+        let (mut c, s) = client(vec![]);
+        assert_eq!(block_on(c.read_many("/f", &mut [])), Ok(0));
+        let mut bufs = [[0u8; 1]; MAX_READS + 1];
+        let mut ops: Vec<ReadOp<'_>> = bufs.iter_mut().map(|b| ReadOp::new(0, b)).collect();
+        assert_eq!(
+            block_on(c.read_many("/f", &mut ops)),
+            Err(Error::TooLarge {
+                len: MAX_READS + 1,
+                max: MAX_READS
+            })
+        );
+        let mut big = vec![0u8; MAX_READ_BYTES + 1];
+        let mut ops = [ReadOp::new(0, &mut big)];
+        assert!(matches!(
+            block_on(c.read_many("/f", &mut ops)),
+            Err(Error::TooLarge { .. })
+        ));
+        assert_eq!(s.borrow().dials, 0);
+    }
+
+    #[test]
+    fn a_bundle_answer_that_does_not_fit_is_a_protocol_error() {
+        // Meer bytes dan de buffer van de lees.
+        let (mut c, _) = client(vec![Some(bundle(1, &[(b"abcdef", STATUS_OK)]))]);
+        let mut a = [0u8; 4];
+        let mut ops = [ReadOp::new(0, &mut a)];
+        assert!(matches!(
+            block_on(c.read_many("/f", &mut ops)),
+            Err(Error::Protocol(_))
+        ));
+        assert!(!c.is_connected());
+        // Een reset: één keer opnieuw, op een verse verbinding.
+        let (mut c, s) = client(vec![None, Some(bundle(2, &[(b"ok", STATUS_OK)]))]);
+        let mut ops = [ReadOp::new(0, &mut a)];
+        assert_eq!(block_on(c.read_many("/f", &mut ops)), Ok(2));
+        assert_eq!(s.borrow().dials, 2);
     }
 }

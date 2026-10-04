@@ -175,12 +175,6 @@ impl<'a, T, const N: usize> Receiver<'a, T, N> {
         RecvFut { rx: self }
     }
 
-    /// Wacht tot er iets klaarligt, zonder het te nemen: voor een `select`
-    /// waarin de andere tak voorrang heeft.
-    pub fn readable(&self) -> Readable<'_, T, N> {
-        Readable { ch: self.ch }
-    }
-
     /// Het aantal elementen dat klaarligt.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -249,28 +243,6 @@ impl<T, const N: usize> Future for RecvFut<'_, '_, T, N> {
         match this.rx.try_recv() {
             Some(v) => Poll::Ready(v),
             None => Poll::Pending,
-        }
-    }
-}
-
-/// De future van [`Receiver::readable`].
-#[must_use = "een future doet niets tot hij gepolld wordt"]
-pub struct Readable<'a, T, const N: usize> {
-    ch: &'a Channel<T, N>,
-}
-
-impl<T, const N: usize> Future for Readable<'_, T, N> {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        if !self.ch.is_empty() {
-            return Poll::Ready(());
-        }
-        self.ch.rx.register(cx.waker());
-        if self.ch.is_empty() {
-            Poll::Pending
-        } else {
-            Poll::Ready(())
         }
     }
 }

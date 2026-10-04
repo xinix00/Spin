@@ -314,18 +314,159 @@ fn head_pending_snapshots() {
         let h = new_ring(CAP);
         h.g.set_head(head);
         h.g.set_tail(tail);
-        assert_eq!(h.r.head_pending(), (head, pending), "{name}");
+        // De lezer leest zijn eigen tail bij het openen (daarna houdt hij hem
+        // zelf bij), dus een lezer die de gezette tail ziet.
+        let r = Reader::open(h.g.base, h.g.size).unwrap();
+        assert_eq!(r.head_pending(), (head, pending), "{name}");
     }
 }
 
+/// Elke combinatie van [`Coherence`] aan de twee kanten spreekt hetzelfde
+/// protocol: dezelfde bytes, dezelfde PAD-wraps, dezelfde indexen. Op de host
+/// zijn `push`/`pull` no-ops, dus dit bewijst de vorm, niet de cache; het
+/// woord in de ringkop toetst `hardware_needs_both_words`.
 #[test]
-fn snapshot_draagt_de_getallen() {
+fn coherence_mixes_round_trip_over_wraps() {
+    use Coherence::{Hardware, Maintained};
+    for (wc, rc) in [
+        (Maintained, Maintained),
+        (Hardware, Hardware),
+        (Hardware, Maintained),
+        (Maintained, Hardware),
+    ] {
+        let mut h = new_ring(256);
+        h.w = Writer::open_with(h.g.base, 256, wc).unwrap();
+        h.r = Reader::open_with(h.g.base, 256, rc).unwrap();
+        let mut buf = [0u8; 256];
+        let mut sent = 0u64;
+        // Oneven lengtes laten head over elke 8-uitlijning en de rand lopen.
+        for i in 0..200usize {
+            let n = (i * 37) % 113;
+            let p: Vec<u8> = (0..n).map(|j| (i ^ j) as u8).collect();
+            h.w.write(Kind::FRAME, &p).unwrap();
+            sent += 1;
+            let (kind, got) = read(&mut h, &mut buf).unwrap();
+            assert_eq!((kind, got), (Kind::FRAME, p), "{wc:?}->{rc:?} record {i}");
+        }
+        assert_eq!(sent, 200);
+        assert_eq!(h.g.head(), h.g.tail(), "{wc:?}->{rc:?}");
+        assert!(read(&mut h, &mut buf).is_none());
+    }
+}
+
+/// Een coherente lezer verdedigt zich net zo tegen een verzonnen kop.
+#[test]
+fn hardware_reader_still_refuses_a_bad_header() {
     let mut h = new_ring(128);
-    h.w.write(Kind::LOG, b"x").unwrap();
-    let s = h.r.snapshot();
-    assert_eq!((s.head, s.tail, s.size, s.hdr), (16, 0, 128, 1 | 1 << 32));
-    h.g.set_head(1 << 62);
-    let _ = read(&mut h, &mut [0u8; 128]);
-    let text = format!("{}", h.r.snapshot());
-    assert!(text.contains("corrupt=head-tail>size"), "{text}");
+    h.r = Reader::open_with(h.g.base, 128, Coherence::Hardware).unwrap();
+    h.w.write(Kind::LOG, &[1; 8]).unwrap();
+    dev::write64(h.g.at(0), 200 | 1 << 32); // len 200 > buf en > gepubliceerd
+    assert!(read(&mut h, &mut [0u8; 64]).is_none());
+    assert!(matches!(h.r.corrupt(), Some(Corrupt::BadHeader { .. })));
+}
+
+/// Alleen een kant die [`Coherence::Hardware`] opent, zet zijn woord, elk in
+/// zijn eigen regel; een kant zonder belofte laat de kop ongemoeid.
+#[test]
+fn hardware_needs_both_words() {
+    let h = new_ring(128);
+    let word = |off| dev::read64(h.g.base.add(off));
+    assert_eq!((word(PRODUCER_WB_OFF), word(CONSUMER_WB_OFF)), (0, 0));
+    let _w = Writer::open_with(h.g.base, 128, Coherence::Maintained).unwrap();
+    let _r = Reader::open_with(h.g.base, 128, Coherence::Maintained).unwrap();
+    assert_eq!((word(PRODUCER_WB_OFF), word(CONSUMER_WB_OFF)), (0, 0));
+    let _w = Writer::open_with(h.g.base, 128, Coherence::Hardware).unwrap();
+    assert_eq!((word(PRODUCER_WB_OFF), word(CONSUMER_WB_OFF)), (WB_WORD, 0));
+    let _r = Reader::open_with(h.g.base, 128, Coherence::Hardware).unwrap();
+    assert_eq!(word(CONSUMER_WB_OFF), WB_WORD);
+    assert_eq!(h.g.size, word(SIZE_OFF));
+    // Een verse init wist de beloftes weer.
+    init(h.g.base, 128).unwrap();
+    assert_eq!((word(PRODUCER_WB_OFF), word(CONSUMER_WB_OFF)), (0, 0));
+}
+
+/// Het record in de ring zelf schrijven en lezen spreekt hetzelfde protocol
+/// als de kopie: over elke wrap, in elke combinatie met `write` en
+/// `read_into`, met PAD-records ertussen.
+#[test]
+fn in_place_round_trips_over_wraps() {
+    let mut h = new_ring(256);
+    let mut buf = [0u8; 256];
+    for i in 0..300usize {
+        let n = (i * 29) % 100 + 1;
+        let p: Vec<u8> = (0..n).map(|j| (i * 3 + j) as u8).collect();
+        if i % 2 == 0 {
+            let got = h.w.write_with(Kind::FRAME, 100, |dst| {
+                dst[..n].copy_from_slice(&p);
+                n
+            });
+            assert!(matches!(got, Ok(Some(true))), "record {i}: {got:?}");
+        } else {
+            h.w.write(Kind::FRAME, &p).unwrap();
+        }
+        if i % 3 == 0 {
+            let (kind, got) = read(&mut h, &mut buf).unwrap();
+            assert_eq!((kind, got), (Kind::FRAME, p), "record {i}");
+        } else {
+            let got = h.r.read_with(100, |k, s| (k, s.to_vec())).unwrap();
+            assert_eq!(got, (Kind::FRAME, p), "record {i}");
+        }
+    }
+    assert_eq!(h.g.head(), h.g.tail());
+}
+
+/// Schrijft `f` niets, dan is er geen record; is er geen plaats voor `max`,
+/// dan wordt `f` niet geroepen en blijft de ring zoals hij was.
+#[test]
+fn in_place_write_of_nothing_or_too_much() {
+    let mut h = new_ring(256);
+    assert!(matches!(h.w.write_with(Kind::FRAME, 64, |_| 0), Ok(None)));
+    assert_eq!(h.g.head(), 0);
+    h.w.write(Kind::FRAME, &[7; 100]).unwrap();
+    h.w.write(Kind::FRAME, &[8; 100]).unwrap();
+    let mut called = false;
+    let r = h.w.write_with(Kind::FRAME, 40, |_| {
+        called = true;
+        1
+    });
+    assert!(matches!(r, Err(Error::RingFull { .. })) && !called, "{r:?}");
+    // Meer dan `max` telt als `max`.
+    let mut buf = [0u8; 256];
+    let _ = read(&mut h, &mut buf);
+    let _ = read(&mut h, &mut buf);
+    assert!(matches!(
+        h.w.write_with(Kind::FRAME, 16, |_| 999),
+        Ok(Some(true))
+    ));
+    assert_eq!(read(&mut h, &mut buf).unwrap().1.len(), 16);
+}
+
+/// Een lezer in plaats weigert een kop boven zijn `max` net als `read_into`.
+#[test]
+fn in_place_reader_refuses_a_header_above_max() {
+    let mut h = new_ring(256);
+    h.w.write(Kind::FRAME, &[1; 40]).unwrap();
+    assert!(h.r.read_with(32, |_, _| ()).is_none());
+    assert!(matches!(h.r.corrupt(), Some(Corrupt::BadHeader { .. })));
+}
+
+/// De eigen index komt van de eigen kant (03-10): een tegenpartij die tail
+/// (of head) in gedeeld geheugen overschrijft, laat de lezer niet opnieuw
+/// lezen of de schrijver niet over ongelezen records heen schrijven.
+#[test]
+fn own_index_is_kept_by_its_owner() {
+    let mut h = new_ring(256);
+    assert!(h.w.write(Kind::FRAME, &[1; 8]).unwrap());
+    let mut buf = [0u8; 64];
+    assert_eq!(h.r.read_into(&mut buf).map(|r| r.payload.len()), Some(8));
+    // Een verzonnen tail terug naar 0: de lezer leest het record niet nog eens.
+    h.g.set_tail(0);
+    assert!(h.r.read_into(&mut buf).is_none());
+    // De schrijver gaat door vanaf zijn eigen head, niet vanaf een
+    // verzonnen head in gedeeld geheugen; de lezer vindt dat record achter
+    // het eerste.
+    h.g.set_head(0);
+    assert!(h.w.write(Kind::FRAME, &[2; 8]).is_ok());
+    let r = h.r.read_into(&mut buf).map(|r| r.payload.to_vec());
+    assert_eq!(r.as_deref(), Some(&[2u8; 8][..]));
 }

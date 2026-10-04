@@ -257,9 +257,14 @@ impl<I: Idle> AppSleeper<I> {
         if self.ctrl.is_shared() || self.ctrl.is_yield_mode() {
             // Eén yield per idle-ronde: de switcher doet zelf de slaap en de
             // rotatie, en de wektijd houdt twee wachtende buren uit een
-            // pingpong.
+            // pingpong. Op de OS-core bezorgt de kern na deze yield ook wat
+            // er op de TX-ring ligt: een uitgestelde kick vervalt.
+            crate::net::owed_by_yield();
             return self.idle.hvc_yield(deadline);
         }
+        // Een WFE geeft de core niet terug: wie nog een kick schuldig is,
+        // kickt nu.
+        crate::net::kick_owed();
         if deadline == 0 {
             return 0; // de deadline is al voorbij
         }

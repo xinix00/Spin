@@ -9,9 +9,9 @@ publish.workspace = true
 spin-runtime = { path = "../runtime" }
 libc = "=0.2.189"
 spin-core = { path = "../core" }
-leanhttp = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.2" }
-leanhttps = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.2" }
-leantls = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.2" }
+leanhttp = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.9" }
+leanhttps = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.9" }
+leantls = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.9" }
 spin-server = { path = "../server" }
 spin-domain = { path = "../domain" }
 spin-security = { path = "../security" }

@@ -12,9 +12,9 @@
 //! lifecycle; de kern rekent hem uit met [`super::Tail`].
 
 use super::{
-    BOOT_SCRATCH_LEN, CAGE_STRIDE, CTRL_STRIDE, CTX_OFF, Core, DTB_PTR_OFF, HANDOFF_MAGIC_OFF,
-    HANDOFF_PTR_OFF, HOP_RAM_START, PARK_CODE_OFF, PARK_MBOX_LEN, PARK_MBOX_OFF, SLOT_CAP,
-    SMP_CTX_OFF, SWITCH_CODE_OFF, Slot, USB_DMA_SIZE,
+    BOOT_SCRATCH_LEN, CAGE_STRIDE, CTRL_STRIDE, CTX_OFF, Core, HANDOFF_PTR_OFF, HOP_RAM_START,
+    PARK_CODE_OFF, PARK_MBOX_LEN, PARK_MBOX_OFF, SLOT_CAP, SMP_CTX_OFF, SWITCH_CODE_OFF, Slot,
+    USB_DMA_SIZE,
 };
 use crate::{Error, Region, Result};
 use bounded::BoundedVec;
@@ -51,6 +51,17 @@ fn push(out: &mut Pool, r: Region) -> Result {
         what: "pool regions",
         cap: POOL_MAX,
     })
+}
+
+/// Een pool uit gegeven regio's (een board met een vaste indeling, of een
+/// kaart die al gesorteerd en gesmolten is), of [`Error::TooMany`] boven
+/// [`POOL_MAX`].
+pub fn pool_of(regions: impl IntoIterator<Item = Region>) -> Result<Pool> {
+    let mut out = Pool::new();
+    for r in regions {
+        push(&mut out, r)?;
+    }
+    Ok(out)
 }
 
 /// Sorteert regio's op basis en smelt overlappende en aangrenzende samen;
@@ -156,6 +167,11 @@ pub struct PlanSpec {
     /// park-mailboxen. 2 KB-gealigneerd (de eis van VBAR_EL2). Verplicht:
     /// zonder las de Go-kern vanaf adres nul (gemeten 30-07).
     pub cage_pa: u64,
+    /// Het venster dat de identity map van de kern als Device mapt (maat 0 =
+    /// geen eis). De hele kooi-regio moet erin vallen: de app-cores lezen
+    /// hem op EL2 met de MMU uit, en een gecachte park-mailbox is op ijzer
+    /// een verloren startschot.
+    pub device_window: Region,
     /// Eén woord voor de vluchtrecorder van de kern-flip, buiten alles wat
     /// firmware bij een verse boot beschrijft (0 = geen). Een plan-veld en
     /// geen boot-scratch-offset: op de M4 legt iBoot het bootobject terug
@@ -262,10 +278,18 @@ impl Plan {
         }
 
         let blocks = spec.max_slots as u64 + 1;
+        let cage = Region::new(spec.cage_pa, blocks * CAGE_STRIDE);
+        let w = spec.device_window;
+        if w.size != 0
+            && (cage.base < w.base
+                || cage.base.saturating_add(cage.size) > w.base.saturating_add(w.size))
+        {
+            return Err(Error::Overlap { a: cage, b: w });
+        }
         let mut reserved = BoundedVec::<Region, 8>::new();
         let fixed = [
             Region::new(spec.node_ctrl_pa, blocks * CTRL_STRIDE),
-            Region::new(spec.cage_pa, blocks * CAGE_STRIDE),
+            cage,
             Region::new(spec.boot_scratch_pa, BOOT_SCRATCH_LEN),
         ];
         let optional = [
@@ -380,28 +404,10 @@ impl Plan {
         Ok(Pa(self.spec.node_ctrl_pa + core.get() as u64 * CTRL_STRIDE))
     }
 
-    /// De fysieke boot-scratch.
-    #[must_use]
-    pub fn boot_scratch_pa(&self) -> Pa {
-        Pa(self.spec.boot_scratch_pa)
-    }
-
-    /// Het fysieke DTB-pointer-woord op de boot-scratch.
-    #[must_use]
-    pub fn dtb_ptr_pa(&self) -> Pa {
-        Pa(self.spec.boot_scratch_pa + DTB_PTR_OFF)
-    }
-
     /// Het fysieke handoff-pointer-woord van de kern-flip.
     #[must_use]
     pub fn handoff_ptr_pa(&self) -> Pa {
         Pa(self.spec.boot_scratch_pa + HANDOFF_PTR_OFF)
-    }
-
-    /// Het fysieke handoff-magic-woord van de kern-flip.
-    #[must_use]
-    pub fn handoff_magic_pa(&self) -> Pa {
-        Pa(self.spec.boot_scratch_pa + HANDOFF_MAGIC_OFF)
     }
 
     /// Het vluchtrecorder-woord van de kern-flip, als het board er een heeft.

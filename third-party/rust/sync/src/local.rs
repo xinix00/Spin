@@ -35,6 +35,16 @@ impl<T> Local<T> {
     pub const fn get(&self) -> &T {
         &self.0
     }
+
+    /// De waarde, veranderlijk: wie de `Local` zelf bezit, leent niets.
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+
+    /// Geeft de waarde terug.
+    pub fn into_inner(self) -> T {
+        self.0
+    }
 }
 
 impl<T> Deref for Local<T> {

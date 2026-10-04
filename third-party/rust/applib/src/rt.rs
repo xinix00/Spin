@@ -118,6 +118,8 @@ where
     // De timebase vóór de eerste klok-lees: op RISC-V komt hij alleen van de
     // control-page (de kern zet hem bij de bouw, `CTRL_TIMEBASE_HZ`).
     clock::adopt_timebase(&app.ctrl());
+    // De kick naar de kern, als de kern hem hoort (RISC-V, `IDLE_KICK`).
+    crate::arch::adopt_kick(app.ctrl().get(abi::hopabi::CTRL_IDLE_MODE));
     exec.set_clock(clock::now_ns);
     clock::start_event_stream();
     app.announce();
@@ -332,6 +334,16 @@ mod entry {
         ".global _start",
         "_start:",
         "    msr daifset, #0xf",
+        // Hardwarefloat-apps gebruiken FP/SIMD ook in compilergegenereerde
+        // kopieerlussen. Zet een eigen, voorspelbaar EL1-regime vóór Rust.
+        "    mov x0, #0x300000",
+        "    msr cpacr_el1, x0",
+        "    isb",
+        // Als `.inst`: de assembler van het softfloat-target kent fpcr en
+        // fpsr niet als doel, de hardware wel (MSR S3_3_C4_C4_0 en _1).
+        "    .inst 0xd51b441f",
+        "    .inst 0xd51b443f",
+        "    isb",
         "    adrp x0, __applib_vectors",
         "    add x0, x0, :lo12:__applib_vectors",
         "    msr vbar_el1, x0",

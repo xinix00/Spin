@@ -13,6 +13,8 @@
 //!   een actor.
 //! - [`Local`]: een static die alleen de executor van één core aanraakt.
 //! - [`select`], [`yield_now`]: de twee lus-hulpjes uit de Go-vertaling.
+//! - [`Pool`]: een vaste set futures van één soort in één taak (een actor
+//!   met meerdere verzoeken in de lucht).
 //!
 //! Wat hier NIET staat: een mutex. Zie het handboek §1 en §3.
 
@@ -29,6 +31,7 @@
 
 pub mod local;
 pub mod mpsc;
+pub mod pool;
 pub mod select;
 pub mod signal;
 pub mod spsc;
@@ -36,6 +39,7 @@ pub mod stop;
 pub mod waker;
 
 pub use local::{Local, LocalCell};
+pub use pool::Pool;
 pub use select::{Either, select};
 pub use signal::Signal;
 pub use stop::Stop;

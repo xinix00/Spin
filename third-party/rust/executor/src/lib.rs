@@ -3,13 +3,31 @@
 //! De executor is de governor uit de Go-kern, maar dan als voordeur: hij
 //! bezit de takenlijst en het timerwiel, en als er niets te doen is vraagt
 //! hij het board te slapen tot de vroegste deadline of tot een wek. Een
-//! wek is één bit (`Slot::ready`) plus `dev::notify`, en dat mag uit een
-//! ISR of van een andere core komen.
+//! wek is één bit (in [`Executor::ready`], het bit van zijn slot) plus
+//! `dev::notify`, en dat mag uit een ISR of van een andere core komen.
+//!
+//! Een ronde kost wat er klaar staat, niet de grootte van de tabel: de
+//! bits staan in acht woorden, en een ronde leest die en pollt alleen wat
+//! erin staat (de ready-bitmap van een RTOS-scheduler, Linux'
+//! `sched_find_first_bit`); de timerscans stoppen bij de hoogste bezette
+//! plaats. Tot 03-10 vroeg elke ronde 512 slots af met een atomaire swap,
+//! elke slaap 512 met een acquire-load (op RISC-V een `fence` per slot) en
+//! elke ronde 256 timerplaatsen: op de OS-core, waar de kern tussen elke
+//! twee beurten van zijn bewoners rondes draait, was dat twee derde van een
+//! rtt tussen twee bewoners (QEMU virt met `-icount shift=0`, één instructie
+//! per ns: riscv64 359 naar 108 us, arm64 252 naar 85 us).
 //!
 //! De ronde: alle taken met een gezet bit pollen, dan de timers die
 //! verstreken zijn wekken, en als er in die ronde niets gebeurd is slapen.
 //! De verloren-wek-race is dicht doordat de [`Sleeper`] het `ready`-
 //! predicaat nog één keer toetst mét interrupts gemaskeerd.
+//!
+//! Een taak is een future in een box op de heap ([`Executor::spawn`]; een
+//! volle heap is [`SpawnError::OutOfMemory`]), in een vaste tabel van
+//! `TASKS` plaatsen. `spawn` zet hem in een rij; de volgende ronde geeft
+//! hem een plaats, en is de tabel dan vol, dan gaat hij weg en telt
+//! [`Stats::dropped`] (de kern zegt dat op zijn tik, `HOPOS_TASK_DROPPED`).
+//! Het aantal taken staat dus niet bij de compiler, alleen het plafond.
 //!
 //! Wat hier niet staat: prioriteiten, werk-stelen, een tweede core. Elke
 //! core heeft zijn eigen executor en zijn eigen taken; tussen cores gaan
@@ -35,7 +53,7 @@ use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{
-    AtomicBool, AtomicU64,
+    AtomicPtr, AtomicU64,
     Ordering::{AcqRel, Acquire, Relaxed, Release},
 };
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
@@ -91,14 +109,22 @@ pub struct Stats {
     pub polls: AtomicU64,
     /// Keren geslapen.
     pub sleeps: AtomicU64,
-    /// Taken die geen slot kregen (gedropt).
+    /// Taken die geen slot kregen (gedropt): `spawn` gaf `Ok`, maar de
+    /// tabel was vol toen de ronde hem een plaats wilde geven.
     pub dropped: AtomicU64,
     /// Timers die geen slot kregen (de wachter spint op ronde-korrel).
     pub timer_overflows: AtomicU64,
+    /// Nanoseconden in de slaper (handboek §4: de slaaptijd). Wat een tik
+    /// daar niet van heeft, was werk: zo is "de core zit vol" een getal.
+    pub slept_ns: AtomicU64,
 }
 
 struct Slot {
-    ready: AtomicBool,
+    /// Het woord in [`Executor::ready`] en het bit van dit slot daarin: wat
+    /// de waker zet. Gezet bij het plaatsen van een taak, vóór er een waker
+    /// van bestaat (en elke keer dezelfde waarde).
+    word: AtomicPtr<AtomicU64>,
+    bit: AtomicU64,
     task: RefCell<Option<Task>>,
     /// De taak van dit slot wordt nu gepolld (hij is even uit `task`). Een
     /// nieuwe taak mag hier dan niet in: de lopende poll zet zijn taak na
@@ -114,7 +140,8 @@ struct Slot {
 impl Slot {
     const fn new() -> Self {
         Self {
-            ready: AtomicBool::new(false),
+            word: AtomicPtr::new(core::ptr::null_mut()),
+            bit: AtomicU64::new(0),
             task: RefCell::new(None),
             polling: Cell::new(false),
         }
@@ -136,7 +163,12 @@ unsafe fn wake(p: *const ()) {
     // SAFETY: `p` komt uit `Executor::waker` en wijst naar een `Slot` in een
     // executor die voor altijd leeft (`&'static self`).
     let slot = unsafe { &*p.cast::<Slot>() };
-    slot.ready.store(true, Release);
+    let word = slot.word.load(Acquire);
+    if !word.is_null() {
+        // SAFETY: `word` wijst naar een woord van `Executor::ready` in
+        // dezelfde executor, die voor altijd leeft.
+        unsafe { &*word }.fetch_or(slot.bit.load(Relaxed), Release);
+    }
     dev::notify();
 }
 
@@ -154,19 +186,45 @@ struct Timer {
     waker: Waker,
 }
 
+/// De woorden van [`Executor::ready`]: plaats voor 512 taken, de
+/// standaard van de kern.
+const READY_WORDS: usize = 8;
+
 /// Een executor met plaats voor `TASKS` taken en `TIMERS` lopende timers.
 ///
 /// Leeft voor altijd: in de kern een `static` in een [`sync::Local`], in
 /// een test een gelekte `Box`. Wakers wijzen naar zijn slots.
 pub struct Executor<const TASKS: usize = 512, const TIMERS: usize = 256> {
     slots: [Slot; TASKS],
-    spawn: Mailbox<Task, 64>,
+    /// De gereed-bits: bit `i % 64` van woord `i / 64` is slot `i`.
+    ready: [AtomicU64; READY_WORDS],
+    /// Zo groot als de takentabel: bij boot spawnt de kern één servicer per
+    /// slot vóór de eerste ronde van de executor, en de Altra heeft er 128
+    /// (03-10, de eerste v3-boot: bus van 64 vol, "first placement not
+    /// spawned: Full", geen Hop).
+    spawn: Mailbox<Task, TASKS>,
     timers: RefCell<[Option<Timer>; TIMERS]>,
+    /// Eén voorbij de hoogste bezette plaats in `timers`: de scans van een
+    /// ronde stoppen daar. Een plaats wordt van onderen af genomen, dus dit
+    /// is de handvol timers die echt loopt, niet de hele tabel.
+    timers_hi: Cell<usize>,
+    /// De vroegste deadline in het wiel, of eerder (een `After` die vóór
+    /// zijn tijd gedropt is, laat hem staan): een ronde scant het wiel
+    /// alleen als die verstreken is. 03-10: elke ronde scande, en op de
+    /// OS-core draait de kern tussen twee beurten van zijn bewoners een
+    /// paar rondes zonder dat er iets verloopt.
+    timers_at: Cell<u64>,
     /// De generatie van de volgende registratie: elke plaats in het wiel
     /// draagt de generatie van zijn huidige bewoner, zodat een `After` die
     /// zijn plaats al kwijt is (verlopen, hergebruikt) nooit die van een
     /// ander wist.
     timer_gen: Cell<u32>,
+    /// De gereed-bits van het woord dat de lopende ronde afwerkt en die
+    /// nog aan de beurt komen: de ronde haalt een woord in één swap leeg,
+    /// dus zonder dit ziet [`Self::has_ready`] vanuit een taak niet dat er
+    /// in deze ronde na hem nog een klaarstaat (de pomp van applib vraagt
+    /// het, hop-cost5).
+    rest: AtomicU64,
     clock: Cell<Option<Clock>>,
     /// De meetlat.
     pub stats: Stats,
@@ -182,11 +240,21 @@ impl<const TASKS: usize, const TIMERS: usize> Executor<TASKS, TIMERS> {
     /// Een lege executor zonder klok.
     #[must_use]
     pub const fn new() -> Self {
+        const {
+            assert!(
+                TASKS <= 64 * READY_WORDS,
+                "TASKS past niet in de gereed-bits"
+            )
+        };
         Self {
             slots: [const { Slot::new() }; TASKS],
+            ready: [const { AtomicU64::new(0) }; READY_WORDS],
             spawn: Mailbox::new(),
             timers: RefCell::new([const { None }; TIMERS]),
+            timers_hi: Cell::new(0),
+            timers_at: Cell::new(u64::MAX),
             timer_gen: Cell::new(0),
+            rest: AtomicU64::new(0),
             clock: Cell::new(None),
             stats: Stats {
                 rounds: AtomicU64::new(0),
@@ -194,6 +262,7 @@ impl<const TASKS: usize, const TIMERS: usize> Executor<TASKS, TIMERS> {
                 sleeps: AtomicU64::new(0),
                 dropped: AtomicU64::new(0),
                 timer_overflows: AtomicU64::new(0),
+                slept_ns: AtomicU64::new(0),
             },
         }
     }
@@ -249,10 +318,13 @@ impl<const TASKS: usize, const TIMERS: usize> Executor<TASKS, TIMERS> {
         }
     }
 
-    /// Ligt er werk: een gezet bit of een spawn in de rij?
+    /// Ligt er werk: een gezet bit, een spawn in de rij, of (vanuit een
+    /// taak) een taak die in deze ronde nog na hem gepolld wordt?
     #[must_use]
     pub fn has_ready(&self) -> bool {
-        !self.spawn.is_empty() || self.slots.iter().any(|s| s.ready.load(Acquire))
+        !self.spawn.is_empty()
+            || self.rest.load(Relaxed) != 0
+            || self.ready.iter().any(|w| w.load(Relaxed) != 0)
     }
 
     /// De vroegste deadline van een timer die een slapende core mag wekken
@@ -262,6 +334,7 @@ impl<const TASKS: usize, const TIMERS: usize> Executor<TASKS, TIMERS> {
         self.timers
             .borrow()
             .iter()
+            .take(self.timers_hi.get())
             .flatten()
             .filter(|t| !t.deferrable)
             .map(|t| t.at)
@@ -279,11 +352,15 @@ impl<const TASKS: usize, const TIMERS: usize> Executor<TASKS, TIMERS> {
         let mut worked = false;
         while let Some(task) = self.spawn.try_recv() {
             worked = true;
-            let free = self.slots.iter().find(|s| s.is_free());
+            let free = self.slots.iter().enumerate().find(|(_, s)| s.is_free());
             match free {
-                Some(slot) => {
+                Some((i, slot)) => {
                     *slot.task.borrow_mut() = Some(task);
-                    slot.ready.store(true, Release);
+                    let word = &self.ready[i / 64];
+                    slot.bit.store(1 << (i % 64), Relaxed);
+                    slot.word
+                        .store(core::ptr::from_ref(word).cast_mut(), Release);
+                    word.fetch_or(1 << (i % 64), Release);
                 }
                 None => {
                     self.stats.dropped.fetch_add(1, Relaxed);
@@ -295,16 +372,27 @@ impl<const TASKS: usize, const TIMERS: usize> Executor<TASKS, TIMERS> {
     }
 
     fn expire_timers(&self, now: u64) -> bool {
+        if now < self.timers_at.get() {
+            return false;
+        }
         let mut worked = false;
+        let mut hi = 0;
+        let mut at = u64::MAX;
         let mut timers = self.timers.borrow_mut();
-        for entry in timers.iter_mut() {
+        for (i, entry) in timers.iter_mut().enumerate().take(self.timers_hi.get()) {
             if entry.as_ref().is_some_and(|t| t.at <= now)
                 && let Some(t) = entry.take()
             {
                 t.waker.wake();
                 worked = true;
             }
+            if let Some(t) = entry {
+                hi = i + 1;
+                at = at.min(t.at);
+            }
         }
+        self.timers_hi.set(hi);
+        self.timers_at.set(at);
         worked
     }
 
@@ -313,30 +401,50 @@ impl<const TASKS: usize, const TIMERS: usize> Executor<TASKS, TIMERS> {
     pub fn step(&'static self) -> bool {
         let mut worked = self.drain_spawns();
         worked |= self.expire_timers(self.now());
-        for slot in &self.slots {
-            if !slot.ready.swap(false, AcqRel) {
+        // Een geneste ronde (een taak die zelf rondes draait) laat de rest
+        // van de buitenste zoals hij hem vond.
+        let outer = self.rest.load(Relaxed);
+        for (w, word) in self.ready.iter().enumerate() {
+            // Eerst kijken, dan pas de atomaire swap: een AMO per leeg woord
+            // is op de C906 geen kleingeld.
+            if word.load(Relaxed) == 0 {
                 continue;
             }
-            // De taak komt uit zijn slot zolang hij gepolld wordt: zo houdt
-            // niemand een lening op de tabel terwijl vreemde code draait.
-            let Some(mut task) = slot.task.borrow_mut().take() else {
-                continue;
-            };
-            let waker = Self::waker(slot);
-            let mut cx = Context::from_waker(&waker);
-            self.stats.polls.fetch_add(1, Relaxed);
-            slot.polling.set(true);
-            let pending = task.as_mut().poll(&mut cx).is_pending();
-            slot.polling.set(false);
-            if pending {
-                *slot.task.borrow_mut() = Some(task);
+            let mut bits = word.swap(0, AcqRel);
+            while bits != 0 {
+                let i = w * 64 + bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                self.rest.store(bits, Relaxed);
+                let Some(slot) = self.slots.get(i) else {
+                    continue;
+                };
+                worked |= self.poll(slot);
             }
-            worked = true;
         }
+        self.rest.store(outer, Relaxed);
         if worked {
             self.stats.rounds.fetch_add(1, Relaxed);
         }
         worked
+    }
+
+    /// Pollt de taak van `slot`, als hij er een heeft. `true` = gepolld.
+    fn poll(&'static self, slot: &'static Slot) -> bool {
+        // De taak komt uit zijn slot zolang hij gepolld wordt: zo houdt
+        // niemand een lening op de tabel terwijl vreemde code draait.
+        let Some(mut task) = slot.task.borrow_mut().take() else {
+            return false;
+        };
+        let waker = Self::waker(slot);
+        let mut cx = Context::from_waker(&waker);
+        self.stats.polls.fetch_add(1, Relaxed);
+        slot.polling.set(true);
+        let pending = task.as_mut().poll(&mut cx).is_pending();
+        slot.polling.set(false);
+        if pending {
+            *slot.task.borrow_mut() = Some(task);
+        }
+        true
     }
 
     /// De hoofdlus: rondes draaien, en slapen als een ronde niets deed.
@@ -346,7 +454,10 @@ impl<const TASKS: usize, const TIMERS: usize> Executor<TASKS, TIMERS> {
                 continue;
             }
             self.stats.sleeps.fetch_add(1, Relaxed);
-            sleeper.sleep(self.now(), self.next_deadline(), &|| self.has_ready());
+            let t = self.now();
+            sleeper.sleep(t, self.next_deadline(), &|| self.has_ready());
+            let slept = self.now().saturating_sub(t);
+            self.stats.slept_ns.fetch_add(slept, Relaxed);
         }
     }
 
@@ -395,6 +506,12 @@ impl<const TASKS: usize, const TIMERS: usize> Future for After<TASKS, TIMERS> {
         }
         match this.slot {
             Some((i, g)) => {
+                if i >= this.exec.timers_hi.get() {
+                    this.exec.timers_hi.set(i + 1);
+                }
+                this.exec
+                    .timers_at
+                    .set(this.exec.timers_at.get().min(this.deadline));
                 timers[i] = Some(Timer {
                     at: this.deadline,
                     owner: g,
@@ -453,7 +570,7 @@ fn try_box<F: Future<Output = ()> + 'static>(f: F) -> Option<Task> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering::SeqCst;
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
     use sync::Signal;
 
     static NOW: AtomicU64 = AtomicU64::new(0);
@@ -485,6 +602,53 @@ mod tests {
         assert!(e.step());
         assert!(DONE.load(SeqCst));
         assert_eq!(e.live_tasks(), 0);
+    }
+
+    #[test]
+    fn a_task_sees_who_comes_after_it_in_the_same_round() {
+        // De pomp van applib vraagt na een ontvangst of de lezer die hij
+        // wekte nog moet draaien. Die staat in hetzelfde woord, dat de
+        // ronde al leeghaalde: `has_ready` moet hem toch zien, en een taak
+        // die als laatste draait niemand.
+        static SAW: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
+        let e = exec();
+        for saw in &SAW {
+            e.spawn(async move { saw.store(e.has_ready(), SeqCst) })
+                .unwrap();
+        }
+        assert!(e.step());
+        assert!(SAW[0].load(SeqCst), "de eerste ziet de tweede");
+        assert!(!SAW[1].load(SeqCst), "na de laatste komt niemand meer");
+        assert!(!e.has_ready(), "buiten de ronde telt alleen het woord");
+    }
+
+    #[test]
+    fn a_wake_past_the_first_word_is_polled_and_only_it() {
+        // Slot 64 en verder staan in het tweede woord van de gereed-bits.
+        static BELL: Signal = Signal::new();
+        static POLLS: AtomicU64 = AtomicU64::new(0);
+        let e: &'static Executor<70, 4> = Box::leak(Box::new(Executor::new()));
+        e.set_clock(fake_now);
+        for _ in 0..66 {
+            e.spawn(async {
+                loop {
+                    POLLS.fetch_add(1, SeqCst);
+                    BELL.wait().await;
+                }
+            })
+            .unwrap();
+        }
+        assert!(e.step());
+        assert_eq!(POLLS.load(SeqCst), 66);
+        assert!(!e.has_ready());
+        assert!(!e.step());
+        // Eén bel wekt de ene wachter die zich als laatste registreerde
+        // (een `Signal` houdt één waker): slot 65, in woord 1.
+        BELL.set();
+        assert!(e.has_ready());
+        assert!(e.step());
+        assert_eq!(POLLS.load(SeqCst), 67);
+        assert!(!e.has_ready());
     }
 
     #[test]
@@ -622,10 +786,17 @@ mod tests {
 
     #[test]
     fn full_table_drops_and_counts() {
+        // De bus is zo groot als de tabel: een negende spawn vóór de eerste
+        // ronde is Full; een spawn ná de ronde past in de bus en valt pas
+        // bij het leegmaken op de volle tabel, geteld.
         let e = exec();
-        for _ in 0..9 {
+        for _ in 0..8 {
             e.spawn(core::future::pending()).unwrap();
         }
+        assert!(e.spawn(core::future::pending()).is_err());
+        e.step();
+        assert_eq!(e.live_tasks(), 8);
+        e.spawn(core::future::pending()).unwrap();
         e.step();
         assert_eq!(e.live_tasks(), 8);
         assert_eq!(e.stats.dropped.load(SeqCst), 1);

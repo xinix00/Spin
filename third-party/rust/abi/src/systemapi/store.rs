@@ -18,7 +18,7 @@ use crate::{Error, Result};
 /// de padresolutie in de kern, `kern::rpc::MAX_PATH`).
 pub const MAX_STORE_PATH: usize = 1024;
 /// De langste jobnaam (de grens van het handoff-blob van de flip,
-/// `kern::slots::MAX_FLIP_JOB`).
+/// `kern::kernflip::MAX_FLIP_JOB`).
 pub const MAX_STORE_JOB: usize = 256;
 /// De grootste lijst namen in één antwoord aan de app: de historische
 /// grens van Go (`hopabi.MaxChunk`, 8 KiB). Een lijst die niet past, is een

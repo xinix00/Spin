@@ -11,7 +11,7 @@
 //! `github.com` en de CDN waar een release naartoe stuurt), en een
 //! recursieve resolver op het LAN of bij de provider doet het echte werk.
 //! Geen cache (een download per uur vraagt niets twee keer kort na elkaar),
-//! geen AAAA (het slot-LAN is IPv4), geen TCP-terugval (een A-antwoord past
+//! AAAA gebruikt dezelfde UDP-resolver; geen TCP-terugval (een A-antwoord past
 //! altijd in 512 bytes; een afgekapt antwoord is een fout, geen uitnodiging).
 //!
 //! Streng lezen is de verdediging van een stubresolver zonder DNSSEC: het
@@ -115,7 +115,7 @@ impl fmt::Display for DnsError {
             Self::Mismatch => f.write_str("dns: answer to a different question"),
             Self::NxDomain => f.write_str("dns: no such name (NXDOMAIN)"),
             Self::Rcode(r) => write!(f, "dns: server error rcode={r}"),
-            Self::NoAnswer => f.write_str("dns: no A record in the answer"),
+            Self::NoAnswer => f.write_str("dns: no requested address record in the answer"),
             Self::Malformed => f.write_str("dns: malformed answer"),
             Self::Timeout { attempts } => write!(f, "dns: no answer after {attempts} queries"),
         }
@@ -150,6 +150,13 @@ fn checked_name(host: &str) -> Result<&str> {
 /// `out` moet [`QUERY_MAX`] bytes kunnen dragen; een kortere buffer is
 /// [`DnsError::BadName`] niet waard en geeft [`DnsError::Truncated`].
 pub fn encode_query(id: u16, host: &str, out: &mut [u8]) -> Result<usize> {
+    encode_kind(id, host, out, TYPE_A)
+}
+/// Schrijft een AAAA-vraag met dezelfde naam- en buffertoetsen.
+pub fn encode_query6(id: u16, host: &str, out: &mut [u8]) -> Result<usize> {
+    encode_kind(id, host, out, 28)
+}
+pub(super) fn encode_kind(id: u16, host: &str, out: &mut [u8], kind: u16) -> Result<usize> {
     let name = checked_name(host)?;
     let mut w = Writer { out, at: 0 };
     w.u16(id)?;
@@ -164,7 +171,7 @@ pub fn encode_query(id: u16, host: &str, out: &mut [u8]) -> Result<usize> {
         w.bytes(label.as_bytes())?;
     }
     w.u8(0)?;
-    w.u16(TYPE_A)?;
+    w.u16(kind)?;
     w.u16(CLASS_IN)?;
     Ok(w.at)
 }
@@ -172,6 +179,18 @@ pub fn encode_query(id: u16, host: &str, out: &mut [u8]) -> Result<usize> {
 /// Leest het antwoord `msg` op de A-vraag `id` naar `host`: het eerste
 /// A-record voor `host` of voor een CNAME-doel daarvan.
 pub fn parse_answer(id: u16, host: &str, msg: &[u8]) -> Result<[u8; 4]> {
+    parse_kind(id, host, msg, TYPE_A)
+}
+/// Leest uitsluitend een AAAA-record voor de gevraagde naam of haar CNAME-doel.
+pub fn parse_answer6(id: u16, host: &str, msg: &[u8]) -> Result<[u8; 16]> {
+    parse_kind(id, host, msg, 28)
+}
+pub(super) fn parse_kind<const N: usize>(
+    id: u16,
+    host: &str,
+    msg: &[u8],
+    kind: u16,
+) -> Result<[u8; N]> {
     let name = checked_name(host)?;
     let mut r = Reader { msg, at: 0 };
     let got = r.u16()?;
@@ -196,7 +215,7 @@ pub fn parse_answer(id: u16, host: &str, msg: &[u8]) -> Result<[u8; 4]> {
     }
     let q = r.name()?;
     let (qtype, qclass) = (r.u16()?, r.u16()?);
-    if !q.is(name) || qtype != TYPE_A || qclass != CLASS_IN {
+    if !q.is(name) || qtype != kind || qclass != CLASS_IN {
         return Err(DnsError::Mismatch);
     }
     match (flags & 0x000f) as u8 {
@@ -219,8 +238,8 @@ pub fn parse_answer(id: u16, host: &str, msg: &[u8]) -> Result<[u8; 4]> {
             continue;
         }
         match rtype {
-            TYPE_A => {
-                return <[u8; 4]>::try_from(data).map_err(|_| DnsError::Malformed);
+            t if t == kind => {
+                return <[u8; N]>::try_from(data).map_err(|_| DnsError::Malformed);
             }
             TYPE_CNAME => {
                 cnames += 1;
@@ -567,5 +586,30 @@ pub(crate) mod tests {
         // Een wijzer uit de boodschap.
         let out = answer(7, 0, "a.b", &[(&[0xc0, 0xff], TYPE_A, &[1, 2, 3, 4])]);
         assert!(parse_answer(7, "a.b", &out).is_err());
+    }
+    #[test]
+    fn aaaa_answer_checks_question_type_owner_and_length() {
+        let mut q = [0; QUERY_MAX];
+        let n = encode_query6(0x1234, "thread.example", &mut q).unwrap();
+        let mut msg = q[..n].to_vec();
+        msg[2..4].copy_from_slice(&0x8180_u16.to_be_bytes());
+        msg[6..8].copy_from_slice(&1_u16.to_be_bytes());
+        msg.extend_from_slice(&[0xc0, 0x0c, 0, 28, 0, 1, 0, 0, 0, 30, 0, 16]);
+        let ip = [0xfd, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7];
+        msg.extend_from_slice(&ip);
+        assert_eq!(parse_answer6(0x1234, "thread.example", &msg), Ok(ip));
+        assert_eq!(
+            parse_answer(0x1234, "thread.example", &msg),
+            Err(DnsError::Mismatch)
+        );
+        assert_eq!(
+            parse_answer6(0x1234, "other.example", &msg),
+            Err(DnsError::Mismatch)
+        );
+        msg.pop();
+        assert_eq!(
+            parse_answer6(0x1234, "thread.example", &msg),
+            Err(DnsError::Truncated)
+        );
     }
 }

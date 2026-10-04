@@ -33,9 +33,9 @@
 use crate::App;
 use core::fmt;
 
-/// De IPA-basis van het glas in de kooi (`kern::stage2::FB_IPA`): het
-/// venster staat daar plus de offset in zijn 2 MB-blok.
-pub const FB_IPA: u64 = 0x2000_0000;
+/// De IPA-basis van het glas in de kooi: het venster staat daar plus de
+/// offset in zijn 2 MB-blok.
+pub use abi::layout::FB_IPA;
 
 /// De langste invoerregel die de lezer bewaart. De langste regel van de
 /// kern (`gui_usbin::deliver::LINE_MAX`) is 96 bytes.
@@ -207,13 +207,7 @@ pub fn input_addr<'a>(
     env: impl Fn(&str) -> Option<&'a str>,
 ) -> Option<Result<([u8; 4], u16), FbError>> {
     let v = env("INPUT_ADDR")?;
-    let bad = FbError::Bad("INPUT_ADDR");
-    let parsed = v.trim().rsplit_once(':').and_then(|(ip, port)| {
-        let ip = crate::appnet::parse_ip4(ip)?;
-        let port = port.parse::<u16>().ok().filter(|p| *p != 0)?;
-        Some((ip, port))
-    });
-    Some(parsed.ok_or(bad))
+    Some(crate::appnet::parse_addr(v).ok_or(FbError::Bad("INPUT_ADDR")))
 }
 
 /// Hoe het venster op het glas staat na [`map`].

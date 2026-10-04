@@ -18,6 +18,8 @@
 //! Eén brug, één plek voor een fix. Achter een feature, want niet elke app
 //! praat HTTP en leanhttp hoort dan niet in zijn image.
 //!
+//! Daarnaast de [`Dialer`] voor leanhttp als client (decode, vitals).
+//!
 //! Wat hier niet staat: de server zelf (leanhttp), de stack (`appnet`).
 
 use crate::appnet::{NetError, StackError, TcpStream};
@@ -27,7 +29,7 @@ use core::future::Future;
 use core::pin::{Pin, pin};
 use core::task::{Context, Poll};
 use core::time::Duration;
-use leanhttp::{AsyncRead, AsyncWrite, Close, IoError};
+use leanhttp::{AsyncRead, AsyncWrite, Close, Dial, IoError, Target};
 
 /// Wat de brug van een stroom vraagt: lezen, schrijven, sluiten.
 ///
@@ -129,6 +131,29 @@ impl<S: Stream> TcpConn<S> {
     pub fn with_read_cap(mut self, cap: Duration) -> Self {
         self.cap = Some(cap);
         self
+    }
+}
+
+/// Verbindingen voor leanhttp over de stack van de app: de naam via de
+/// DNS-server uit de env (een adres meteen), dan TCP met termijn `connect`.
+pub struct Dialer {
+    /// De executor waar de termijnen van de verbinding op lopen.
+    pub exec: &'static Exec,
+    /// Hoe lang het opzetten van de verbinding mag duren.
+    pub connect: Duration,
+}
+
+impl Dial for Dialer {
+    type Conn = TcpConn;
+
+    async fn dial(&mut self, t: Target<'_>) -> leanhttp::Result<TcpConn> {
+        let ip = crate::appnet::resolve(t.host)
+            .await
+            .map_err(|_| leanhttp::Error::Connect)?;
+        let s = TcpStream::connect_timeout(ip, t.port, self.connect)
+            .await
+            .map_err(|_| leanhttp::Error::Connect)?;
+        Ok(TcpConn::new(s, self.exec))
     }
 }
 

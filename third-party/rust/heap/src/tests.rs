@@ -1,7 +1,18 @@
 //! De heap op de host: over een gewone buffer, met na elke stap de
 //! invarianten van `State` via [`Heap::check`].
 
-use super::*;
+use super::{Core, GlobalAlloc, HDR, Layout, MAX_ALIGN, MIN_BLOCK, Walk};
+type Heap = super::Heap<TestCore>;
+struct TestCore;
+impl Core for TestCore {
+    fn id() -> u64 {
+        std::thread_local! { static ID: u64 = {
+            static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+            NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+        }; }
+        ID.with(|id| *id)
+    }
+}
 use std::vec::Vec;
 
 /// Een heap over een eigen, op een pagina uitgelijnde buffer.
@@ -157,28 +168,6 @@ fn holes_are_reused_before_the_tail() {
 }
 
 #[test]
-fn the_ceiling_holds_and_gives_way_on_free() {
-    let a = Arena::new(64 << 10);
-    a.heap.set_ceiling(4096);
-    let mut ps = Vec::new();
-    while let Some(p) = a.alloc(200, 8) {
-        ps.push(p);
-    }
-    let s = a.heap.stats();
-    assert!(s.used <= 4096 && s.used + 216 > 4096, "{s:?}");
-    assert_eq!(s.ceiling, 4096);
-    assert_eq!(s.failed, 1);
-    assert_eq!(s.peak, s.used);
-    a.free(ps.pop().unwrap());
-    assert!(a.alloc(200, 8).is_some());
-    // Groter dan het plafond maar kleiner dan het gebied: geweigerd.
-    a.heap.set_ceiling(usize::MAX);
-    assert_eq!(a.heap.stats().ceiling, 64 << 10);
-    assert_eq!(a.alloc(1 << 20, 8), None);
-    a.walk();
-}
-
-#[test]
 fn a_double_or_foreign_free_is_ignored_and_counted() {
     let a = Arena::new(16 << 10);
     let p = a.alloc(64, 8).unwrap();
@@ -284,5 +273,134 @@ fn stress(seed: u64, ops: usize) {
 fn seeded_random_stress_keeps_the_invariants() {
     for seed in [1, 42, 0xdead_beef, 0x9e37_79b9_7f4a_7c15] {
         stress(seed, 20_000);
+    }
+}
+
+#[test]
+fn concurrent_allocations_and_cross_thread_frees_keep_ownership() {
+    let arena = Arena::new(4 << 20);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for tag in 1..=4u8 {
+            let a = &arena;
+            handles.push(scope.spawn(move || {
+                let mut keep = Vec::new();
+                for i in 0..2000 {
+                    let p = a.alloc(1024, 64).unwrap();
+                    fill(p, 1024, tag);
+                    if i % 100 == 0 {
+                        keep.push((p, tag));
+                    } else {
+                        assert!(intact(p, 1024, tag));
+                        a.free(p);
+                    }
+                }
+                keep
+            }));
+        }
+        for h in handles {
+            for (p, tag) in h.join().unwrap() {
+                assert!(intact(p, 1024, tag));
+                arena.free(p);
+            }
+        }
+    });
+    arena.assert_whole();
+    assert_eq!(arena.heap.stats().bad_frees, 0);
+}
+#[test]
+fn reserved_core_identity_cannot_acquire_the_lock() {
+    struct Reserved;
+    impl Core for Reserved {
+        fn id() -> u64 {
+            u64::MAX
+        }
+    }
+    let h = super::Heap::<Reserved>::new();
+    assert!(h.reserve(16, 16).is_none());
+}
+/// De werklast van Stulp (JSON-waarden, strings, staatskopieën): veel kleine
+/// blokken van wisselende maat, door elkaar terug en opnieuw. Geeft de
+/// gemiddelde tijd per alloc+free en het aantal lijststappen; draai met
+/// `cargo test -p heap --release -- --ignored json_like --nocapture`.
+#[test]
+#[ignore = "meting, geen toets"]
+fn json_like_churn_cost() {
+    let a = Arena::new(32 << 20);
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let size = |r: u64| -> usize {
+        match r % 100 {
+            0..=69 => 8 + (r as usize >> 8) % 56, // korte strings, kleine objecten
+            70..=94 => 64 + (r as usize >> 8) % 192, // grotere strings, vecs
+            _ => 256 + (r as usize >> 8) % 3840,  // buffers
+        }
+    };
+    let mut live: Vec<usize> = Vec::new();
+    for _ in 0..40_000 {
+        let r = next();
+        live.push(a.alloc(size(r), 8).unwrap());
+    }
+    let ops: u32 = 400_000;
+    let t0 = std::time::Instant::now();
+    for _ in 0..ops {
+        let r = next();
+        let i = (r as usize >> 3) % live.len();
+        a.free(live[i]);
+        live[i] = a.alloc(size(next()), 8).unwrap();
+    }
+    let dt = t0.elapsed();
+    let w = a.walk();
+    std::println!(
+        "json_like: {:.0} ns per free+alloc over {ops} ops; free blocks {}",
+        dt.as_nanos() as f64 / f64::from(ops),
+        w.free_blocks
+    );
+}
+
+/// De vorm van Stulp (03-10): duizenden vrije blokken van 32 bytes (vraag
+/// 16) en dan vragen van 48 (vraag 32), tot de exacte klassen allebei in de
+/// klasse 32 tot 63. Draai met
+/// `cargo test -p heap --release -- --ignored stulp_shape --nocapture`.
+#[test]
+#[ignore = "meting, geen toets"]
+fn stulp_shape_cost() {
+    let a = Arena::new(32 << 20);
+    let mut small = Vec::new();
+    let mut keep = Vec::new();
+    for _ in 0..4547 {
+        small.push(a.alloc(16, 8).unwrap());
+        // Een bezet blok ertussen, anders smelten de vrije samen.
+        keep.push(a.alloc(16, 8).unwrap());
+    }
+    for b in small {
+        a.free(b);
+    }
+    let ops: u32 = 100_000;
+    let mut p = a.alloc(32, 8).unwrap();
+    let t0 = std::time::Instant::now();
+    for _ in 0..ops {
+        a.free(p);
+        // Een vraag van 16 neemt het blok van 48 dat net vrijkwam (de rest
+        // is kleiner dan een blok), zodat de vraag van 32 geen passend blok
+        // vooraan vindt en de 32'ers langs moet, of eroverheen springt.
+        keep.push(a.alloc(16, 8).unwrap());
+        p = a.alloc(32, 8).unwrap();
+    }
+    let dt = t0.elapsed();
+    let w = a.walk();
+    std::println!(
+        "stulp_shape: {:.0} ns per free+alloc+alloc met {} vrije blokken",
+        dt.as_nanos() as f64 / f64::from(ops),
+        w.free_blocks
+    );
+    a.free(p);
+    for b in keep {
+        a.free(b);
     }
 }

@@ -5,8 +5,9 @@
 //! zodat een job die de API binnenkomt byte voor byte dezelfde is als die de
 //! leader naar een agent stuurt en die in de gecommitte snapshot staat.
 //!
-//! De JSON-vorm volgt de Go-generatie (`OLD/internal/types`) veld voor veld,
-//! zodat de GUI, de CLI en bestaande snapshots blijven werken.
+//! De JSON-vorm volgt de Go-generatie (github.com/xinix00/hop, tag v1.0.7,
+//! `internal/types`) veld voor veld, zodat de GUI, de CLI en bestaande
+//! snapshots blijven werken.
 //!
 //! Alles is `no_std` met `alloc`, en elke allocatie is faalbaar: een job komt
 //! van buiten, en een te grote job is een fout, geen afgebroken programma.
@@ -36,7 +37,7 @@ pub mod time;
 pub use error::{Error, NAME_BYTES, Name};
 pub use job::{Artifact, CheckType, Driver, HealthCheck, Job, UpdatePolicy};
 pub use map::Map;
-pub use task::{Agent, Task, TaskState};
+pub use task::{Agent, HOP_SLOT, KERN_SLOT, SysUsage, Task, TaskState, Telemetry};
 pub use time::{Nanos, Time};
 
 /// Het resultaat van elke faalbare handeling in deze crate.
@@ -114,11 +115,13 @@ pub fn try_push_str(out: &mut alloc::string::String, s: &str) -> Result {
 
 #[cfg(test)]
 mod tests {
-    //! De tests van `OLD/internal/types/types_test.go`, plus de jobspecs in
-    //! `OLD/jobs/` als vectoren.
+    //! De tests van `internal/types/types_test.go` uit de Go-generatie
+    //! (github.com/xinix00/hop, tag v1.0.7), plus de jobspecs uit `jobs/`
+    //! daar als vectoren, letterlijk in de toetsen overgenomen.
 
     use super::*;
     use crate::time::SECOND;
+    use alloc::format;
     use alloc::string::ToString;
 
     fn map(pairs: &[(&str, &str)]) -> Map<String> {
@@ -136,6 +139,8 @@ mod tests {
         assert_eq!(TaskState::Queued.as_str(), "queued");
         assert_eq!(TaskState::Downloading.as_str(), "downloading");
         assert_eq!(TaskState::Stopping.as_str(), "stopping");
+        assert_eq!(TaskState::System.as_str(), "system");
+        assert_eq!(TaskState::parse("system"), Some(TaskState::System));
     }
 
     #[test]
@@ -198,12 +203,29 @@ mod tests {
             state: TaskState::Running,
             started_at: Time(1_790_000_000 * SECOND),
             restart_count: 2,
+            cores: 2,
+            core: Some(0),
             ..Task::default()
         };
         let data = json::to_string(&task.to_value().unwrap()).unwrap();
+        assert!(data.contains(r#""cores":2"#), "{data}");
+        // Core 0 (de OS-core) is een meting en staat erin.
+        assert!(data.contains(r#""core":0"#), "{data}");
         let decoded = Task::from_value(&json::parse_str(&data).unwrap()).unwrap();
         assert_eq!(decoded, task);
         assert_eq!(decoded.ports.get("http"), Some(&8080));
+        // 0 cores is onbekend: het veld ontbreekt, en een taak zonder leest als 0.
+        // Geen core is onbekend: dan ontbreekt "core" ook.
+        let none = Task {
+            cores: 0,
+            core: None,
+            ..task
+        };
+        let data = json::to_string(&none.to_value().unwrap()).unwrap();
+        assert!(!data.contains("cores") && !data.contains("core"), "{data}");
+        let old =
+            Task::from_value(&json::parse_str(r#"{"id":"t","cores":null}"#).unwrap()).unwrap();
+        assert_eq!((old.cores, old.core), (0, None));
     }
 
     #[test]
@@ -217,6 +239,91 @@ mod tests {
         let data = agent.to_json().unwrap();
         let decoded = Agent::from_value(&json::parse_str(&data).unwrap()).unwrap();
         assert_eq!(decoded, agent);
+    }
+
+    /// De telemetrie van een heartbeat: plat op de draad, wat niet gemeten
+    /// is ontbreekt, en een cpu van 0 is een meting.
+    #[test]
+    fn agent_telemetry_roundtrip() {
+        let agent = Agent {
+            id: "n1".to_string(),
+            telemetry: Telemetry {
+                temp_milli_c: 59_800,
+                kern: SysUsage {
+                    cpu_percent: Some(0.0),
+                    mem_bytes: 3 << 20,
+                    ram_bytes: 64 << 20,
+                    core: Some(0),
+                },
+                hop: SysUsage {
+                    cpu_percent: None,
+                    mem_bytes: 5 << 20,
+                    ram_bytes: 0,
+                    core: None,
+                },
+            },
+            ..Agent::default()
+        };
+        let data = agent.to_json().unwrap();
+        assert!(data.contains(r#""kern_cpu_percent":0"#), "{data}");
+        assert!(data.contains(r#""kern_mem_bytes":3145728"#), "{data}");
+        assert!(data.contains(r#""kern_ram_bytes":67108864"#), "{data}");
+        assert!(data.contains(r#""hop_mem_bytes":5242880"#), "{data}");
+        assert!(!data.contains("hop_cpu_percent"), "{data}");
+        assert!(!data.contains("hop_ram_bytes"), "{data}");
+        assert!(data.contains(r#""kern_core":0"#), "{data}");
+        assert!(!data.contains("hop_core"), "{data}");
+        let decoded = Agent::from_value(&json::parse_str(&data).unwrap()).unwrap();
+        assert_eq!(decoded, agent);
+        // Een oude agent zonder de velden: niets gemeten.
+        let old = Agent::from_value(&json::parse_str(r#"{"id":"n2","temp_milli_c":1}"#).unwrap())
+            .unwrap();
+        assert_eq!(old.telemetry.kern, SysUsage::default());
+        assert!(old.system_tasks().unwrap().is_empty());
+        // De heartbeat leest dezelfde sleutels; de rest telt niet.
+        let hb = r#"{"id":"n1","version":"3","kern_mem_bytes":7,"hop_cpu_percent":12.5,"hop_core":1,"x":1}"#;
+        let t = Telemetry::from_value(&json::parse_str(hb).unwrap()).unwrap();
+        assert_eq!((t.kern.mem_bytes, t.hop.cpu_percent), (7, Some(12.5)));
+        assert_eq!((t.kern.core, t.hop.core), (None, Some(1)));
+    }
+
+    /// `kern` en `hop` als taken: pid is het slot, staat `system`, het
+    /// geheugen tegen het RAM met één decimaal; alleen wat gemeten is.
+    #[test]
+    fn agent_system_tasks() {
+        let mut agent = Agent::default();
+        agent.telemetry.kern = SysUsage {
+            cpu_percent: Some(3.0),
+            mem_bytes: 3 << 20,
+            ram_bytes: 64 << 20,
+            core: Some(0),
+        };
+        let tasks = agent.system_tasks().unwrap();
+        assert_eq!(tasks.len(), 1);
+        let k = &tasks[0];
+        assert_eq!(
+            (k.id.as_str(), k.job_name.as_str(), k.driver.as_str(), k.pid),
+            ("kern", "kern", "hop", KERN_SLOT)
+        );
+        assert_eq!(k.state, TaskState::System);
+        assert_eq!((k.cpu_percent, k.mem_percent), (3.0, 4.6));
+        // Het cpu-procent van de kern en van Hop slaat op één core.
+        assert_eq!(k.cores, 1);
+        // De kern leeft op de OS-core.
+        assert_eq!(k.core, Some(0));
+        agent.telemetry.hop.mem_bytes = 1 << 20;
+        let tasks = agent.system_tasks().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(
+            (tasks[1].job_name.as_str(), tasks[1].pid),
+            ("hop", HOP_SLOT)
+        );
+        // Zonder RAM geen noemer: 0, en geen cpu-meting ook 0.
+        assert_eq!((tasks[1].cpu_percent, tasks[1].mem_percent), (0.0, 0.0));
+        // Hop zonder gemelde core: onbekend, niet 0.
+        assert_eq!(tasks[1].core, None);
+        let back = Task::from_value(&tasks[0].to_value().unwrap()).unwrap();
+        assert_eq!(back, tasks[0]);
     }
 
     #[test]
@@ -253,7 +360,7 @@ mod tests {
 
     #[test]
     fn job_vectors_from_old_jobs() {
-        // OLD/jobs/counter.json en counter-docker.json, letterlijk.
+        // jobs/counter.json en counter-docker.json van v1.0.7, letterlijk.
         let counter = br#"{
   "name": "counter",
   "command": "sh -c 'i=0; while true; do echo counter: $i; i=$((i+1)); sleep 1; done'",
@@ -287,7 +394,7 @@ mod tests {
 
     #[test]
     fn job_readme_spec_parses() {
-        // De jobspec uit OLD/README.md, met duren als strings zoals daar.
+        // De jobspec uit de README van v1.0.7, met duren als strings zoals daar.
         let spec = br#"{
   "name": "api-service",
   "command": "./server --http=$ER_PORT_HTTP",
@@ -332,6 +439,49 @@ mod tests {
         assert!(Job::from_value(&v, false).is_ok());
         let err = Job::from_value(&v, true).unwrap_err();
         assert_eq!(err.to_string(), "unknown field \"comand\"");
+    }
+
+    #[test]
+    fn a_fixed_port_recreates_unless_told_to_roll() {
+        let job = |s: &str| Job::from_json(s.as_bytes()).unwrap();
+        // Zonder policy is een vaste poort recreate; zonder vaste poort rolling.
+        let fixed = job(r#"{"name":"web","command":"x","ports":{"http":80}}"#);
+        assert_eq!(fixed.policy(), UpdatePolicy::Recreate);
+        assert!(fixed.check_rollable().is_ok());
+        let dynamic = job(r#"{"name":"web","command":"x","ports":{"http":0}}"#);
+        assert_eq!(dynamic.policy(), UpdatePolicy::Rolling);
+        // Een expliciete rolling met een vaste poort: nee, met de zin.
+        let err = job(r#"{"name":"web","ports":{"http":80},"update_policy":"rolling"}"#)
+            .check_rollable()
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "job web: a fixed port (http 80) cannot roll; use update_policy recreate or a dynamic port"
+        );
+        for policy in ["rolling", "blue-green"] {
+            let j = job(&format!(
+                r#"{{"name":"web","ports":{{"admin":0,"http":80}},"update_policy":"{policy}"}}"#
+            ));
+            assert!(
+                matches!(
+                    j.check_rollable(),
+                    Err(Error::FixedPortRolls { number: 80, .. })
+                ),
+                "{policy}"
+            );
+        }
+        // Recreate, een dynamische poort (0) of geen poort: goed.
+        assert!(
+            job(r#"{"name":"web","ports":{"http":80},"update_policy":"recreate"}"#)
+                .check_rollable()
+                .is_ok()
+        );
+        assert!(
+            job(r#"{"name":"web","ports":{"http":0}}"#)
+                .check_rollable()
+                .is_ok()
+        );
+        assert!(job(r#"{"name":"web"}"#).check_rollable().is_ok());
     }
 
     #[test]

@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.93"
 name = "leantls"
-version = "3.1.1"
+version = "3.1.9"
 build = false
 autolib = false
 autobins = false
@@ -30,11 +30,6 @@ name = "leantls"
 path = "src/lib.rs"
 
 [dependencies]
-aes-gcm = { version = "=0.10.3", default-features = false, features = ["aes", "zeroize"] }
-# Enable wiping for the cipher and universal-hash keys held by aes-gcm.
-aes = { version = "=0.8.4", default-features = false, features = ["zeroize"] }
-ghash = { version = "=0.5.1", default-features = false, features = ["zeroize"] }
-polyval = { version = "=0.6.2", default-features = false, features = ["zeroize"] }
 
 [lints.clippy]
 as_ptr_cast_mut = "warn"

@@ -17,10 +17,10 @@
 use crate::{Error, Result};
 
 /// Zoveel volumes draagt één start: de grens die de lifecycle en de flip
-/// ook bewaren (`kern::slots::MAX_FLIP_MOUNTS`).
+/// ook bewaren (`kern::kernflip::MAX_FLIP_MOUNTS`, die deze waarde neemt).
 pub const MAX_START_MOUNTS: usize = 32;
 /// Het langste lokale of gedeelde pad. Gelijk aan wat het handoff-blob van
-/// de flip per pad draagt (`kern::slots::MAX_FLIP_PATH`): een volume dat de
+/// de flip per pad draagt (`kern::kernflip::MAX_FLIP_PATH`): een volume dat de
 /// start aannam maar de flip niet kan overdragen, zou een flip later
 /// weigeren om iets dat bij de start al vaststond.
 pub const MAX_MOUNT_PATH: usize = 256;

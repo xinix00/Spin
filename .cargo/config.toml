@@ -1,20 +1,25 @@
 [source.crates-io]
 replace-with = "vendored-sources"
 
-[source."git+https://github.com/xinix00/hop.git?tag=v3.0.0-alpha.10"]
-git = "https://github.com/xinix00/hop.git"
-tag = "v3.0.0-alpha.10"
+[source."git+https://github.com/xinix00/HopOS.git?tag=v3.0.9"]
+git = "https://github.com/xinix00/HopOS.git"
+tag = "v3.0.9"
 replace-with = "vendored-sources"
 
-[source."git+https://github.com/xinix00/lean.git?tag=v3.1.2"]
+[source."git+https://github.com/xinix00/hop.git?tag=v3.0.9"]
+git = "https://github.com/xinix00/hop.git"
+tag = "v3.0.9"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/xinix00/lean.git?tag=v3.1.10"]
 git = "https://github.com/xinix00/lean.git"
-tag = "v3.1.2"
+tag = "v3.1.10"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/xinix00/lean.git?tag=v3.1.9"]
+git = "https://github.com/xinix00/lean.git"
+tag = "v3.1.9"
 replace-with = "vendored-sources"
 
 [source.vendored-sources]
 directory = "third-party/rust"
-
-[source."git+https://github.com/xinix00/HopOS.git?tag=v3.0.0-alpha.18"]
-git = "https://github.com/xinix00/HopOS.git"
-tag = "v3.0.0-alpha.18"
-replace-with = "vendored-sources"

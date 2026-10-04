@@ -9,7 +9,7 @@
 
 use dev::Pa;
 
-pub use abi::ring::{Corrupt, Kind, Reader, Record, Writer, init};
+pub use abi::ring::{Coherence, Corrupt, Kind, Reader, Record, Writer, init};
 
 /// Een leesblik op de kop van een ring zonder hem te consumeren: wat de
 /// deurbel nodig heeft (head als wek-drempel, pending als wek-besluit).

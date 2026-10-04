@@ -191,6 +191,33 @@ fn use_plan_pool_cannot_overlap_admin_or_itself() {
 }
 
 #[test]
+fn the_cage_stays_inside_the_device_window() {
+    // QEMU virt: 64 MB vanaf de control-pages, de kooi op +32 MB.
+    let mut p = test_spec();
+    p.device_window = Region::new(0xc000_0000, 0x0400_0000);
+    assert!(Plan::new(p.clone()).is_ok());
+    // Een venster dat vóór het einde van de kooi stopt (SLOT_CAP + 1 blokken).
+    p.device_window = Region::new(0xc000_0000, 0x0200_0000 + CAGE_STRIDE);
+    assert!(matches!(
+        Plan::new(p.clone()),
+        Err(crate::Error::Overlap { .. })
+    ));
+    // Een venster boven het begin van de kooi.
+    p.device_window = Region::new(0xc200_1000, 0x0400_0000);
+    assert!(Plan::new(p).is_err());
+}
+
+#[test]
+fn pool_of_counts_its_regions() {
+    let r = Region::new(0x5000_0000, 2 << 20);
+    assert_eq!(pool_of([r, r]).unwrap().len(), 2);
+    assert!(matches!(
+        pool_of(core::iter::repeat_n(r, POOL_MAX + 1)),
+        Err(crate::Error::TooMany { .. })
+    ));
+}
+
+#[test]
 fn use_plan_preserves_ordered_banks_and_nested_admin() {
     let mut p = test_spec();
     p.pool.swap(0, 1);
@@ -300,7 +327,7 @@ fn sched_offsets() {
     }
 }
 
-// --- lottery_mirror_test.go: de RISC-V-cpuinit bestaat in v3 nog niet. -----
+// --- lottery_mirror_test.go: niet geport, v3 kent geen boot-hart-loterij. ---
 
 #[test]
 fn tail_rekent_uit_twee_waarden() {

@@ -1,6 +1,6 @@
 //! De control-page van een slot en de payload van een system-call.
 //!
-//! **De control-page** ([`CtrlPage`]) is de eerste pagina van de staart
+//! **De control-page** is de eerste pagina van de staart
 //! ([`crate::layout::Tail::ctrl_page`]): 64-bit woorden in de kop, een
 //! env-blob in het midden, en woorden die later kwamen bovenaan de page,
 //! naar beneden groeiend. Elk veld heeft één schrijver; die staat bij het
@@ -23,11 +23,12 @@
 //! bytes die al in de partitie van de app liggen, geen bytes. De
 //! device-payloads (`device.go`) horen bij de optische drive en komen met
 //! haar driver; hun opcode staat er wel, zodat het nummer bezet blijft.
+//! De lijst van het gebundelde lezen ([`OP_READ_MANY`]) staat in [`many`].
 
 use crate::{Error, Result};
-use core::mem::{offset_of, size_of};
 
 pub mod device;
+pub mod many;
 
 // ---------------------------------------------------------------------------
 // De control-page.
@@ -56,7 +57,7 @@ pub const CTRL_WALL_OFF: u64 = 0x40;
 /// App naar kern: geaccumuleerde idle-TIJD in timer-tikken. Sinds 18-07
 /// tijd in plaats van rondes: rondes bleken op ijzer door SEV-ruis
 /// opgeblazen. Stond op 0xD8 en botste daar met [`CTRL_SMP_TCR`]; de
-/// uniekheidstoets bewaakt dat voortaan.
+/// veldtabel onder de offsets bewaakt dat voortaan.
 pub const CTRL_IDLE: u64 = 0x48;
 /// Kern naar trampoline: de fysieke basis van de EL2-vectoren.
 pub const CTRL_VEC_PA: u64 = 0x50;
@@ -70,8 +71,6 @@ pub const CTRL_FAULT_VEC: u64 = 0x68;
 pub const CTRL_CORES: u64 = 0x70;
 /// De actieve VBAR_EL1 van de dispatchende primaire, voor een secundaire.
 pub const CTRL_SMP_VBAR: u64 = 0x78;
-/// Kern naar app: het fysieke adres van de EL2-SMP-trampoline.
-pub const CTRL_SMP_TRAMP: u64 = 0x80;
 /// App naar secundaire: de stacktop (IPA).
 pub const CTRL_SMP_SP: u64 = 0x88;
 /// App naar secundaire: eerste runtime-argument (Go: `*m`).
@@ -98,14 +97,19 @@ pub const CTRL_SMP_MBOX: u64 = 0xD0;
 /// levende registers, geen afgeleide kopie: de 39-bit-standaard kon de
 /// Altra-UART op 16 TB niet vertalen, gemeten 17-07).
 pub const CTRL_SMP_TCR: u64 = 0xD8;
-/// Apploader naar kern: de maat van het gestagede image.
-pub const CTRL_STAGED_SIZE: u64 = 0xE0;
+/// Kern naar app: deelt dit slot het hart van de kern ([`HART_MAGIC`]
+/// bovenin, [`HART_KERN`] onderin; [`shares_kern_hart`] leest hem)? Dan
+/// draaien app en kern in één cache, en kan de app zijn frame-ringen
+/// zonder onderhoud beloven ([`crate::ring::Coherence::Hardware`]), ook op
+/// een architectuur waar de harts onderling niet coherent zijn (de C906 van
+/// de LicheeRV, 03-10: per rondreis tussen twee bewoners van de OS-core
+/// ~270 payload-regels plus de indexen, aan beide kanten). Een oude kern
+/// liet dit woord 0 (in Go droeg het de maat van het gestagede image, en
+/// geen v3-kern schreef het); zonder de magic belooft de app niets.
+pub const CTRL_HART: u64 = 0xE0;
 /// App naar kern: de werkelijke geheugen-draw van de runtime (0 = nog niet
 /// gerapporteerd).
 pub const CTRL_MEM_SYS: u64 = 0xE8;
-/// Apploader naar kern: de IPA van het zelfplaatsings-stubje (0 = geen).
-/// Niet vertrouwd voor isolatie: het draait ín de kooi.
-pub const CTRL_PLACE_ENTRY: u64 = 0xF0;
 /// De actieve MAIR_EL1 van de primaire, voor een secundaire.
 pub const CTRL_SMP_MAIR: u64 = 0xF8;
 /// Kern naar app: 1 als dit slot zijn core deelt; de idle-governor yieldt
@@ -220,6 +224,25 @@ pub const RNG_SRC_SMCCC: u8 = 3;
 /// de Pi's, de RKRNG van de Radxa).
 pub const RNG_SRC_SOC: u8 = 4;
 
+/// De bovenste 32 bits van [`CTRL_HART`]; elke byte boven 0x7F, zoals
+/// [`RNG_MAGIC`], zodat env-tekst van een oude kern hem nooit vormt.
+pub const HART_MAGIC: u32 = 0xC0DE_4A87;
+/// [`CTRL_HART`]: de app draait op het hart van de kern (de OS-core).
+pub const HART_KERN: u64 = 1;
+
+/// Het woord voor [`CTRL_HART`]: `kern` = op het hart van de kern.
+#[must_use]
+pub const fn hart_word(kern: bool) -> u64 {
+    ((HART_MAGIC as u64) << 32) | if kern { HART_KERN } else { 0 }
+}
+
+/// Zegt het [`CTRL_HART`]-woord `word` dat de app op het hart van de kern
+/// draait? Zonder de magic nooit.
+#[must_use]
+pub const fn shares_kern_hart(word: u64) -> bool {
+    (word >> 32) as u32 == HART_MAGIC && word & HART_KERN != 0
+}
+
 /// Het woord voor [`CTRL_RNG_SOURCE`] bij bron `src` (een `RNG_SRC_*`).
 #[must_use]
 pub const fn rng_source_word(src: u8) -> u64 {
@@ -253,6 +276,13 @@ pub const RX_DOOR_ARMED: u64 = 1 << 63;
 /// eigen core. Zo idlet Apple silicon: op de M4 slaapt een app-core op EL1
 /// niet (gemeten 02-09). De kern zet dit niet op een SMP-slot.
 pub const IDLE_YIELD: u64 = 1;
+
+/// [`CTRL_IDLE_MODE`]: de kern hoort de kick van deze app (RISC-V: `ecall`
+/// met a7 = 2; de switcher belt de OS-core en hervat de app meteen, de
+/// rotatie van de OS-core neemt hem als een yield naar nu). Zonder dit bit
+/// kickt de app niet: voor een switcher van vóór 02-10 is elke a7 anders dan
+/// 0 een exit.
+pub const IDLE_KICK: u64 = 2;
 
 /// [`CTRL_FAULT_VEC`]: geen fault gezien sinds de laatste start.
 pub const FAULT_NONE: u64 = 0;
@@ -301,218 +331,74 @@ impl AppStatus {
     }
 }
 
-/// De indeling van de control-page, als type: de offsets hierboven zijn de
-/// velden van deze struct, en de asserties eronder houden ze byte voor
-/// byte gelijk. Een botsing zoals `CtrlSMPTcr` en `CtrlIdle` op 0xD8
-/// (18-07) is zo een compilefout.
-#[repr(C)]
-#[derive(Debug)]
-pub struct CtrlPage {
-    /// [`CTRL_STATUS`].
-    pub status: u64,
-    /// [`CTRL_EXIT_CODE`].
-    pub exit_code: u64,
-    /// [`CTRL_KILL`].
-    pub kill: u64,
-    /// [`CTRL_HEARTBEAT`].
-    pub heartbeat: u64,
-    /// [`CTRL_RAM_SIZE`].
-    pub ram_size: u64,
-    /// [`CTRL_ENV_LEN`].
-    pub env_len: u64,
-    /// [`CTRL_ENTRY`].
-    pub entry: u64,
-    /// [`CTRL_S2_TABLE`].
-    pub s2_table: u64,
-    /// [`CTRL_WALL_OFF`].
-    pub wall_off: u64,
-    /// [`CTRL_IDLE`].
-    pub idle: u64,
-    /// [`CTRL_VEC_PA`].
-    pub vec_pa: u64,
-    /// [`CTRL_FAULT_ESR`].
-    pub fault_esr: u64,
-    /// [`CTRL_FAULT_FAR`].
-    pub fault_far: u64,
-    /// [`CTRL_FAULT_VEC`].
-    pub fault_vec: u64,
-    /// [`CTRL_CORES`].
-    pub cores: u64,
-    /// [`CTRL_SMP_VBAR`].
-    pub smp_vbar: u64,
-    /// [`CTRL_SMP_TRAMP`].
-    pub smp_tramp: u64,
-    /// [`CTRL_SMP_SP`].
-    pub smp_sp: u64,
-    /// [`CTRL_SMP_MP`].
-    pub smp_mp: u64,
-    /// [`CTRL_SMP_G0`].
-    pub smp_g0: u64,
-    /// [`CTRL_SMP_FN`].
-    pub smp_fn: u64,
-    /// [`CTRL_SMP_STUB`].
-    pub smp_stub: u64,
-    /// [`CTRL_SMP_TTBR0`].
-    pub smp_ttbr0: u64,
-    /// [`CTRL_SLOT`].
-    pub slot: u64,
-    /// [`CTRL_SMP_REQ`].
-    pub smp_req: u64,
-    /// [`CTRL_MBOX_PA`].
-    pub mbox_pa: u64,
-    /// [`CTRL_SMP_MBOX`].
-    pub smp_mbox: u64,
-    /// [`CTRL_SMP_TCR`].
-    pub smp_tcr: u64,
-    /// [`CTRL_STAGED_SIZE`].
-    pub staged_size: u64,
-    /// [`CTRL_MEM_SYS`].
-    pub mem_sys: u64,
-    /// [`CTRL_PLACE_ENTRY`].
-    pub place_entry: u64,
-    /// [`CTRL_SMP_MAIR`].
-    pub smp_mair: u64,
-    /// [`CTRL_SHARED`].
-    pub shared: u64,
-    /// [`CTRL_WAKES`].
-    pub wakes: u64,
-    /// [`CTRL_RX_DOOR`].
-    pub rx_door: u64,
-    /// [`CTRL_DOOR_IRQ`].
-    pub door_irq: u64,
-    /// [`CTRL_ENV_DATA`].
-    pub env: [u8; CTRL_ENV_MAX as usize],
-    /// [`CTRL_RNG_SOURCE`].
-    pub rng_source: u64,
-    /// [`CTRL_RNG_GEN`].
-    pub rng_gen: u64,
-    /// [`CTRL_RNG_SEED`].
-    pub rng_seed: [u64; CTRL_RNG_SEED_LEN / 8],
-    /// [`CTRL_APP_FAULT_FAR`].
-    pub app_fault_far: u64,
-    /// [`CTRL_APP_FAULT_ELR`].
-    pub app_fault_elr: u64,
-    /// [`CTRL_APP_FAULT_ESR`].
-    pub app_fault_esr: u64,
-    /// [`CTRL_APP_FAULT_VEC`].
-    pub app_fault_vec: u64,
-    /// [`CTRL_TIMEBASE_HZ`].
-    pub timebase_hz: u64,
-    /// [`CTRL_TEMP`].
-    pub temp: u64,
-    /// [`CTRL_IDLE_MODE`].
-    pub idle_mode: u64,
-}
-
-/// Alle woord-offsets van de page, voor de uniekheidstoets.
-pub const CTRL_WORDS: [u64; 49] = [
-    CTRL_STATUS,
-    CTRL_EXIT_CODE,
-    CTRL_KILL,
-    CTRL_HEARTBEAT,
-    CTRL_RAM_SIZE,
-    CTRL_ENV_LEN,
-    CTRL_ENTRY,
-    CTRL_S2_TABLE,
-    CTRL_WALL_OFF,
-    CTRL_IDLE,
-    CTRL_VEC_PA,
-    CTRL_FAULT_ESR,
-    CTRL_FAULT_FAR,
-    CTRL_FAULT_VEC,
-    CTRL_CORES,
-    CTRL_SMP_VBAR,
-    CTRL_SMP_TRAMP,
-    CTRL_SMP_SP,
-    CTRL_SMP_MP,
-    CTRL_SMP_G0,
-    CTRL_SMP_FN,
-    CTRL_SMP_STUB,
-    CTRL_SMP_TTBR0,
-    CTRL_SLOT,
-    CTRL_SMP_REQ,
-    CTRL_MBOX_PA,
-    CTRL_SMP_MBOX,
-    CTRL_SMP_TCR,
-    CTRL_STAGED_SIZE,
-    CTRL_MEM_SYS,
-    CTRL_PLACE_ENTRY,
-    CTRL_SMP_MAIR,
-    CTRL_SHARED,
-    CTRL_WAKES,
-    CTRL_RX_DOOR,
-    CTRL_DOOR_IRQ,
-    CTRL_RNG_SOURCE,
-    CTRL_RNG_GEN,
-    CTRL_RNG_SEED,
-    CTRL_RNG_SEED + 8,
-    CTRL_RNG_SEED + 16,
-    CTRL_RNG_SEED + 24,
-    CTRL_APP_FAULT_FAR,
-    CTRL_APP_FAULT_ELR,
-    CTRL_APP_FAULT_ESR,
-    CTRL_APP_FAULT_VEC,
-    CTRL_TIMEBASE_HZ,
-    CTRL_TEMP,
-    CTRL_IDLE_MODE,
+/// Elk veld van de control-page als (offset, lengte), oplopend. De toets
+/// eronder maakt een botsing zoals `CtrlSMPTcr` en `CtrlIdle` op 0xD8
+/// (18-07) een compilefout: elk veld is 8-uitgelijnd, begint niet vóór het
+/// einde van het vorige, en het laatste sluit de page af. Vrij: 0x80 en 0xF0
+/// droegen in Go de SMP-trampoline en de zelfplaatsing; niemand leest ze
+/// nog. 0xE0 (in Go de maat van het gestagede image) is sinds 03-10
+/// [`CTRL_HART`].
+const FIELDS: &[(u64, u64)] = &[
+    (CTRL_STATUS, 8),
+    (CTRL_EXIT_CODE, 8),
+    (CTRL_KILL, 8),
+    (CTRL_HEARTBEAT, 8),
+    (CTRL_RAM_SIZE, 8),
+    (CTRL_ENV_LEN, 8),
+    (CTRL_ENTRY, 8),
+    (CTRL_S2_TABLE, 8),
+    (CTRL_WALL_OFF, 8),
+    (CTRL_IDLE, 8),
+    (CTRL_VEC_PA, 8),
+    (CTRL_FAULT_ESR, 8),
+    (CTRL_FAULT_FAR, 8),
+    (CTRL_FAULT_VEC, 8),
+    (CTRL_CORES, 8),
+    (CTRL_SMP_VBAR, 8),
+    (CTRL_SMP_SP, 8),
+    (CTRL_SMP_MP, 8),
+    (CTRL_SMP_G0, 8),
+    (CTRL_SMP_FN, 8),
+    (CTRL_SMP_STUB, 8),
+    (CTRL_SMP_TTBR0, 8),
+    (CTRL_SLOT, 8),
+    (CTRL_SMP_REQ, 8),
+    (CTRL_MBOX_PA, 8),
+    (CTRL_SMP_MBOX, 8),
+    (CTRL_SMP_TCR, 8),
+    (CTRL_HART, 8),
+    (CTRL_MEM_SYS, 8),
+    (CTRL_SMP_MAIR, 8),
+    (CTRL_SHARED, 8),
+    (CTRL_WAKES, 8),
+    (CTRL_RX_DOOR, 8),
+    (CTRL_DOOR_IRQ, 8),
+    (CTRL_ENV_DATA, CTRL_ENV_MAX),
+    (CTRL_RNG_SOURCE, 8),
+    (CTRL_RNG_GEN, 8),
+    (CTRL_RNG_SEED, CTRL_RNG_SEED_LEN as u64),
+    (CTRL_APP_FAULT_FAR, 8),
+    (CTRL_APP_FAULT_ELR, 8),
+    (CTRL_APP_FAULT_ESR, 8),
+    (CTRL_APP_FAULT_VEC, 8),
+    (CTRL_TIMEBASE_HZ, 8),
+    (CTRL_TEMP, 8),
+    (CTRL_IDLE_MODE, 8),
 ];
 
-macro_rules! at {
-    ($field:ident, $off:expr) => {
-        const _: () = assert!(offset_of!(CtrlPage, $field) as u64 == $off);
-    };
-}
-
-const _: () = assert!(size_of::<CtrlPage>() as u64 == crate::layout::CTRL_STRIDE);
-at!(status, CTRL_STATUS);
-at!(exit_code, CTRL_EXIT_CODE);
-at!(kill, CTRL_KILL);
-at!(heartbeat, CTRL_HEARTBEAT);
-at!(ram_size, CTRL_RAM_SIZE);
-at!(env_len, CTRL_ENV_LEN);
-at!(entry, CTRL_ENTRY);
-at!(s2_table, CTRL_S2_TABLE);
-at!(wall_off, CTRL_WALL_OFF);
-at!(idle, CTRL_IDLE);
-at!(vec_pa, CTRL_VEC_PA);
-at!(fault_esr, CTRL_FAULT_ESR);
-at!(fault_far, CTRL_FAULT_FAR);
-at!(fault_vec, CTRL_FAULT_VEC);
-at!(cores, CTRL_CORES);
-at!(smp_vbar, CTRL_SMP_VBAR);
-at!(smp_tramp, CTRL_SMP_TRAMP);
-at!(smp_sp, CTRL_SMP_SP);
-at!(smp_mp, CTRL_SMP_MP);
-at!(smp_g0, CTRL_SMP_G0);
-at!(smp_fn, CTRL_SMP_FN);
-at!(smp_stub, CTRL_SMP_STUB);
-at!(smp_ttbr0, CTRL_SMP_TTBR0);
-at!(slot, CTRL_SLOT);
-at!(smp_req, CTRL_SMP_REQ);
-at!(mbox_pa, CTRL_MBOX_PA);
-at!(smp_mbox, CTRL_SMP_MBOX);
-at!(smp_tcr, CTRL_SMP_TCR);
-at!(staged_size, CTRL_STAGED_SIZE);
-at!(mem_sys, CTRL_MEM_SYS);
-at!(place_entry, CTRL_PLACE_ENTRY);
-at!(smp_mair, CTRL_SMP_MAIR);
-at!(shared, CTRL_SHARED);
-at!(wakes, CTRL_WAKES);
-at!(rx_door, CTRL_RX_DOOR);
-at!(door_irq, CTRL_DOOR_IRQ);
-at!(env, CTRL_ENV_DATA);
-at!(rng_source, CTRL_RNG_SOURCE);
-at!(rng_gen, CTRL_RNG_GEN);
-at!(rng_seed, CTRL_RNG_SEED);
+const _: () = {
+    let mut end = 0;
+    let mut i = 0;
+    while i < FIELDS.len() {
+        let (off, len) = FIELDS[i];
+        assert!(off % 8 == 0 && off >= end);
+        end = off + len;
+        i += 1;
+    }
+    assert!(end == crate::layout::CTRL_STRIDE);
+};
 // Het zaad sluit precies aan op het fault-rapport erboven.
 const _: () = assert!(CTRL_RNG_SEED + CTRL_RNG_SEED_LEN as u64 == CTRL_APP_FAULT_FAR);
-at!(app_fault_far, CTRL_APP_FAULT_FAR);
-at!(app_fault_elr, CTRL_APP_FAULT_ELR);
-at!(app_fault_esr, CTRL_APP_FAULT_ESR);
-at!(app_fault_vec, CTRL_APP_FAULT_VEC);
-at!(timebase_hz, CTRL_TIMEBASE_HZ);
-at!(temp, CTRL_TEMP);
-at!(idle_mode, CTRL_IDLE_MODE);
 // De SMP-handoff in het ctx-blok draagt de control-velden onder 256 bytes.
 const _: () = assert!(CTRL_SMP_MAIR + 8 <= crate::layout::CTX_LEN - crate::layout::CTX_SMP);
 
@@ -575,9 +461,14 @@ pub const OP_DEVICE_COMMAND: u8 = 19;
 /// `off`, `n` en data zijn nul/leeg. Geeft de vastgelegde boomgeneratie in size.
 /// Na verwijderen gebruikt de app het ouderpad; een vluchtige FS weigert.
 pub const OP_SYNC: u8 = 20;
+/// Gebundeld lezen: tot [`many::MAX_OPS`] lezingen uit één bestand in één
+/// call, samen op het device, één antwoord met per opdracht de uitkomst
+/// (de draadvorm in [`many`]). Idempotent, zoals [`OP_READ`]. Additief: een
+/// oude kern geeft een nette "onbekende op".
+pub const OP_READ_MANY: u8 = 21;
 /// Het hoogste opnummer van deze module; de bevoegde operaties van
 /// [`crate::systemapi`] liggen erboven.
-pub const OP_MAX: u8 = OP_SYNC;
+pub const OP_MAX: u8 = OP_READ_MANY;
 
 /// Een call-status: gelukt.
 pub const STATUS_OK: u16 = 0;
@@ -751,27 +642,6 @@ pub fn decode_resp(b: &[u8]) -> Result<Resp<'_>> {
 mod tests {
     use super::*;
 
-    /// Geport uit `TestCtrlOffsetsUniek`: élke offset is uniek,
-    /// 8-gealigneerd, binnen de page en buiten de env-regio. Aanleiding
-    /// (18-07): `CtrlSMPTcr` en `CtrlIdle` stonden allebei op 0xD8.
-    #[test]
-    fn ctrl_offsets_uniek() {
-        let page = crate::layout::CTRL_STRIDE;
-        for (i, &v) in CTRL_WORDS.iter().enumerate() {
-            assert!(v.is_multiple_of(8), "{v:#x} niet gealigneerd");
-            assert!(v + 8 <= page, "{v:#x} buiten de page");
-            assert!(
-                v + 8 <= CTRL_ENV_DATA || v >= CTRL_ENV_DATA + CTRL_ENV_MAX,
-                "{v:#x} overlapt de env-regio"
-            );
-            assert!(
-                !CTRL_WORDS[i + 1..].contains(&v),
-                "OFFSET-COLLISIE op {v:#x}"
-            );
-        }
-        const { assert!(CTRL_WORDS.len() >= 20) };
-    }
-
     /// Het bronwoord van het RNG-blok: alleen met de magic, alleen een
     /// bekende bron, en tekst (een env op een oude kern) is nooit een bron.
     #[test]
@@ -786,6 +656,10 @@ mod tests {
         assert_eq!(rng_source(u64::from_le_bytes(*b"HOP_X=1\n")), None);
         assert_eq!(CTRL_ENV_LEGACY_MAX, 0xEA8);
         assert_eq!(CTRL_ENV_MAX, 0xE78);
+        assert!(shares_kern_hart(hart_word(true)));
+        assert!(!shares_kern_hart(hart_word(false)));
+        assert!(!shares_kern_hart(u64::from_le_bytes(*b"HOP_X=1\n")));
+        assert!(!shares_kern_hart(HART_KERN));
     }
 
     #[test]

@@ -789,7 +789,7 @@ impl Client {
         self.list_inner(t, prefix, max, false).await
     }
 
-    /// Lists immediate child prefixes using S3's delimiter, without downloading data keys.
+    /// Somt directe kindprefixen op met S3's delimiter, zonder de onderliggende objectsleutels.
     pub async fn list_directories<T: Transport>(
         &self,
         t: &mut T,
@@ -813,12 +813,14 @@ impl Client {
         let mut token = String::new();
         loop {
             let page = self.list_page(t, prefix, &token, directories).await?;
+            // Een delimiterpagina kan alleen losse objecten bevatten. Ook die
+            // pagina levert voortgang, hoewel de caller alleen prefixen krijgt.
+            let progressed = !page.keys.is_empty() || !page.prefixes.is_empty();
             let entries = if directories {
                 page.prefixes
             } else {
                 page.keys
             };
-            let progressed = !entries.is_empty();
             for key in entries {
                 if keys.len() >= max {
                     return Ok((keys, true));

@@ -32,46 +32,28 @@
 mod plan;
 
 pub use crate::Region;
-pub use plan::{POOL_MAX, Plan, PlanSpec, Pool, carve_pool, coalesce};
+pub use plan::{POOL_MAX, Plan, PlanSpec, Pool, carve_pool, coalesce, pool_of};
 
 use core::fmt;
 use core::mem::{offset_of, size_of};
 use dev::Pa;
 
 // ---------------------------------------------------------------------------
-// De kern op QEMU virt en zijn DMA-regio's.
+// Het thuis van de kern en de maten van zijn DMA-regio's.
 // ---------------------------------------------------------------------------
 
 /// Het begin van het RAM van de kern op QEMU `-M virt` (het DRAM begint daar
 /// op 0x4000_0000). Een board met een ander thuisadres zet
 /// [`PlanSpec::ram_base`].
 pub const HOP_RAM_START: u64 = 0x4000_0000;
-/// De RAM-maat van de kern op QEMU virt: 240 MB. De bovenste 16 MB van zijn
-/// partitie is DMA-regio en valt buiten de RAM-declaratie, zodat hij
-/// device-gemapt en dus niet gecached is.
-pub const HOP_RAM_SIZE: u64 = 0x0F00_0000;
-/// De DMA-regio op QEMU virt: virtio-ringen en buffers.
-pub const DMA_BASE: u64 = 0x4F00_0000;
-/// De maat van de DMA-regio: 16 MB.
-pub const DMA_SIZE: u64 = 0x0100_0000;
-/// De NIC-helft van de DMA-regio (onderin); elk device een eigen
-/// sub-regio, zodat er geen gedeelde allocator nodig is.
-pub const NET_DMA_BASE: u64 = DMA_BASE;
-/// De maat van de NIC-helft: 8 MB.
+/// De maat van de NIC-DMA-regio: 8 MB.
 pub const NET_DMA_SIZE: u64 = 0x0080_0000;
-/// De NVMe-helft van de DMA-regio (bovenin).
-pub const NVME_DMA_BASE: u64 = DMA_BASE + NET_DMA_SIZE;
-/// De maat van de NVMe-helft.
-pub const NVME_DMA_SIZE: u64 = DMA_SIZE - NET_DMA_SIZE;
 /// De maat van de xHCI-DMA-regio ([`PlanSpec::usb_dma_pa`]).
 ///
 /// 2 MB is ruim: de vaste structuren zijn ~16 KB, elk slot kost 20 KB en de
 /// scratchpad is een handvol pagina's. De maat is 2 MB omdat de pool op die
 /// korrel gesneden wordt; kleiner zou alsnog 2 MB kosten.
 pub const USB_DMA_SIZE: u64 = 0x0020_0000;
-
-const _: () = assert!(HOP_RAM_START + HOP_RAM_SIZE == DMA_BASE);
-const _: () = assert!(NVME_DMA_BASE + NVME_DMA_SIZE == DMA_BASE + DMA_SIZE);
 
 // ---------------------------------------------------------------------------
 // Het canonieke adresbeeld van een app (IPA).
@@ -89,6 +71,13 @@ pub const SLOT_STRIDE: u64 = 0x2000_0000;
 /// (control-pages van node-cores, kooi-blokken) worden voor
 /// [`PlanSpec::max_slots`] gereserveerd; een board zet die lager.
 pub const SLOT_CAP: usize = 128;
+/// De kooi-capaciteit die een board standaard neemt: kooien tellen niet
+/// mee als cores (meerdere kooien delen één core, Go: `MaxSlots` los van
+/// `NumAppCores`), dus een board met één app-core heeft toch plaats voor
+/// 32 apps. Elke kooi kost een servicer-taak, een control-page en een
+/// kooi-blok; een board met een kleine staart (LicheeRV, Radxa) zet het
+/// lager, een board met meer app-cores dan dit neemt die plus één.
+pub const SLOTS_DEFAULT: usize = 32;
 /// De basis waartegen elk app-image gelinkt is: het venster van slot 1.
 /// [`crate::place::build`] toetst segmenten tegen `[LINK_BASE, LINK_BASE +
 /// app_ram)`.
@@ -113,11 +102,6 @@ pub const CTRL_STRIDE: u64 = 0x1000;
 /// gealigneerde 64-bit toegang. `cpuinit` schrijft er vóór de EL-drop het
 /// boot-EL op +0. Fysiek: [`PlanSpec::boot_scratch_pa`].
 pub const BOOT_SCRATCH: u64 = CTRL_BASE;
-/// De offset van de DTB-pointer op de boot-scratch: `cpuinit` legt er neer
-/// wat de firmware in x0 meegaf.
-pub const DTB_PTR_OFF: u64 = 8;
-/// De DTB-pointer (IPA).
-pub const DTB_PTR: u64 = BOOT_SCRATCH + DTB_PTR_OFF;
 /// De offset van de handoff-pointer van de kern-flip op de boot-scratch;
 /// het woord erna ([`HANDOFF_MAGIC_OFF`]) draagt de magic.
 ///
@@ -136,6 +120,17 @@ pub const HANDOFF_MAGIC_OFF: u64 = HANDOFF_PTR_OFF + 8;
 /// handoff-paar.
 pub const BOOT_SCRATCH_LEN: u64 = HANDOFF_MAGIC_OFF + 8;
 
+/// De maat van het handoff-blob van de kern-flip
+/// (`kern::kernflip::HANDOFF_TAIL`, de binary toetst het).
+pub const FLIP_HANDOFF_LEN: u64 = 0x4_0000;
+
+/// Waar het handoff-blob van de kern-flip staat: de [`FLIP_HANDOFF_LEN`]
+/// bytes direct onder het staging-maatwoord `stage_hdr`, op elk board.
+#[must_use]
+pub const fn flip_handoff_pa(stage_hdr: u64) -> u64 {
+    stage_hdr - FLIP_HANDOFF_LEN
+}
+
 const _: () = assert!(HANDOFF_PTR_OFF / dev::LINE != 0x40 / dev::LINE);
 const _: () = assert!(HANDOFF_PTR_OFF / dev::LINE == HANDOFF_MAGIC_OFF / dev::LINE);
 const _: () = assert!(BOOT_SCRATCH_LEN <= 0x100);
@@ -146,12 +141,6 @@ const _: () = assert!(BOOT_SCRATCH_LEN <= 0x100);
 pub const FB_IPA: u64 = 0x2000_0000;
 
 const _: () = assert!(FB_IPA + (1 << 30) <= SLOTS_BASE + SLOT_STRIDE);
-
-/// De kern woont op deze core. 0 is de core waar de firmware ons startte;
-/// anders verhuist de boot vóór de eerste instructie van de kern
-/// (16-08: "HOP altijd in coreX, het principe is globaal"). Een constante,
-/// want de wissel gebeurt vóór de runtime.
-pub const HOP_CORE: usize = 1;
 
 // ---------------------------------------------------------------------------
 // De slot-ABI: de staart van de eigen partitie.
@@ -276,13 +265,6 @@ impl Tail {
     #[must_use]
     pub const fn map(self) -> Pa {
         self.base.add(ABI_MAP_OFF)
-    }
-
-    /// De basis van de net-regio: de switch krijgt dit adres en telt zelf
-    /// [`NET_TX_OFF`]/[`NET_RX_OFF`] erbij.
-    #[must_use]
-    pub const fn net_base(self) -> Pa {
-        self.base.add(ABI_NET_OFF)
     }
 
     /// De TX-frame-ring (app naar switch).
@@ -467,8 +449,21 @@ pub const SCHED_ROTOR: u64 = 56;
 /// preemptie: een tick hervat dezelfde bewoner en kijkt alleen of de kern
 /// hem dood wil ([`CTX_REVOKE`]).
 pub const SCHED_TICK_TICKS: u64 = 64;
+/// De bel naar de OS-core zoals DIT hart hem adresseert (RISC-V): de PA
+/// waar de kick van een bewoner (`ecall` met a7 = 2) een 1 schrijft, op
+/// QEMU virt `msip` van hart 0. 0 = geen bel: de kick is dan een no-op en
+/// de kern hoort het frame op zijn failsafe.
+pub const SCHED_OS_BELL: u64 = 72;
 /// De laatst geplande lijst-index (ARM).
 pub const SCHED_CURSOR: u64 = 80;
+/// De uit-stub van de koude flip (RISC-V, `cpu::riscv::switch::off_stub`):
+/// niet-nul is het adres waar de switcher van dit hart bij zijn volgende
+/// ronde in machine mode heen springt, met sp = dit sched-blok. Hetzelfde
+/// woord als [`SCHED_CURSOR`]: dat is van ARM en, op RISC-V, alleen van
+/// sched-blok 0 (de OS-core, `cpu::riscv::oscore`), nooit van een app-hart.
+/// Een regel van de kern. De stub bevestigt in [`SCHED_MBOX_CTX`] (regel 0,
+/// op RISC-V verder ongebruikt) met zijn eigen adres.
+pub const SCHED_OFF_PC: u64 = SCHED_CURSOR;
 /// De lijstlengte (monotoon; 0-bytes zijn gaten).
 pub const SCHED_COUNT: u64 = 88;
 /// De bewonerslijst: [`SLOT_CAP`] bytes met context-id's.
@@ -487,11 +482,9 @@ pub const SCHED_MSIP_PA: u64 = 248;
 
 /// Park-mailbox woord 0: nooit geparkeerd.
 pub const PARK_COLD: u64 = 0;
-/// Park-mailbox woord 0: geparkeerd in de WFE-lus.
+/// Park-mailbox woord 0: geparkeerd in de WFE-lus. Elke grotere waarde is
+/// het startschot (de x0 van de trampoline).
 pub const PARK_PARKED: u64 = 1;
-/// Park-mailbox woord 0: de dispatch is bevestigd. Elke andere waarde is
-/// een ctx-adres: het startschot.
-pub const PARK_DISPATCHED: u64 = 2;
 
 /// De indeling van een sched-blok, als type: de offsets hierboven zijn de
 /// velden van deze struct, en de asserties eronder houden ze byte voor
@@ -518,7 +511,8 @@ pub struct SchedBlock {
     pub rotor: u64,
     /// De kill-tick-periode.
     pub tick_ticks: u64,
-    _pad0: u64,
+    /// De bel naar de OS-core (RISC-V).
+    pub os_bell: u64,
     /// De cursor (ARM).
     pub cursor: u64,
     /// De lijstlengte.
@@ -542,6 +536,7 @@ const _: () = assert!(offset_of!(SchedBlock, scratch) as u64 == SCHED_SCRATCH);
 const _: () = assert!(offset_of!(SchedBlock, current) as u64 == SCHED_CURRENT);
 const _: () = assert!(offset_of!(SchedBlock, rotor) as u64 == SCHED_ROTOR);
 const _: () = assert!(offset_of!(SchedBlock, tick_ticks) as u64 == SCHED_TICK_TICKS);
+const _: () = assert!(offset_of!(SchedBlock, os_bell) as u64 == SCHED_OS_BELL);
 const _: () = assert!(offset_of!(SchedBlock, cursor) as u64 == SCHED_CURSOR);
 const _: () = assert!(offset_of!(SchedBlock, count) as u64 == SCHED_COUNT);
 const _: () = assert!(offset_of!(SchedBlock, list) as u64 == SCHED_LIST);
@@ -625,6 +620,32 @@ pub const CTX_SMP: u64 = 768;
 /// De maat van het hele ctx-blok. FP staat er bewust niet in: de laag die
 /// de kern bezit draait met de MMU uit en een SIMD-store naar Device faultt.
 pub const CTX_LEN: u64 = 1024;
+/// De FP-registers van een bewoner, in de kier achter het ctx-blok (vóór
+/// [`SMP_CTX_OFF`]). Alleen voor kooi-contexten: een secundair ctx-blok
+/// heeft deze kier niet.
+///
+/// riscv64: f0..f31 en `fcsr`, 33 woorden. De riscv-switcher en de
+/// OS-core bewaren ze bij elke trap en zetten ze terug bij het hervatten;
+/// een gedeeld hart draagt sinds 02-10 meer dan één bewoner.
+///
+/// arm64: q0..q31 (elk twee woorden, laag dan hoog), FPCR en FPSR,
+/// [`CTX_FPRS_ARM_WORDS`] woorden, met daarachter [`CTX_FP_LIVE`]. Alleen
+/// de OS-core gebruikt ze (`cpu::el2::oscore`, die onderbreekt), via
+/// GP-registers, want ook deze kier is op sommige borden Device. De
+/// switcher van de app-cores wisselt alleen op een yield en bewaart geen FP.
+pub const CTX_FPRS: u64 = CTX_LEN;
+const _: () = assert!(CTX_OFF + CTX_FPRS + 33 * 8 <= SMP_CTX_OFF);
+/// Het aantal FP-woorden op arm64: 32 keer 16 bytes plus FPCR en FPSR.
+pub const CTX_FPRS_ARM_WORDS: u64 = 66;
+/// arm64: niet-nul = [`CTX_FPRS`] draagt de FP-staat van de bewoner en de
+/// OS-core zet hem terug bij de volgende beurt. De OS-core schrijft het bij
+/// elke terugkeer (1 na een onderbreking, 0 na een yield); een verse
+/// bewoner krijgt 1 met nullen, zodat hij niets van een voorganger ziet.
+pub const CTX_FP_LIVE: u64 = CTX_FPRS + 8 * CTX_FPRS_ARM_WORDS;
+/// Het einde van wat een ctx-blok van een kooi-context inclusief zijn
+/// FP-kier beslaat, voor een kladblok buiten het plan (de zelftests).
+pub const CTX_FP_END: u64 = CTX_FP_LIVE + 8;
+const _: () = assert!(CTX_OFF + CTX_FP_END <= SMP_CTX_OFF);
 
 /// De toestand van een ctx-blok ([`CTX_STATE`]). De kern schrijft `Empty`,
 /// `BootPending` en `Running`; de switcher `Running`, `Saved` en `Dead`.

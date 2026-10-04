@@ -53,13 +53,13 @@ use core::pin::pin;
 use core::sync::atomic::Ordering::Relaxed;
 use core::task::{Poll, Waker};
 use core::time::Duration;
-use leannet::{Config, ListenHandle, Stack, TcpHandle, UdpHandle};
+use leannet::{Config, ListenHandle, Stack, TcpHandle, Udp6Handle, UdpHandle};
 use sync::{Local, Signal, yield_now};
 
 pub mod dns;
 
 pub use dns::DnsError;
-pub use leannet::{Endpoint, Error as StackError, Stats, TcpState};
+pub use leannet::{Endpoint, Endpoint6, Error as StackError, Stats, TcpState};
 
 /// Het adres van de kern op het slot-LAN (de gateway).
 pub const HOST: [u8; 4] = abi::layout::HOST_IP4.to_be_bytes();
@@ -79,6 +79,18 @@ pub const RX_BATCH: usize = 16;
 
 /// Zoveel frames zendt de pomp achter elkaar voor hij een beurt afgeeft.
 pub const TX_BATCH: usize = 16;
+
+/// Zoveel rondes van de executor geeft de pomp na een ontvangst hooguit aan
+/// de taken die hij wekte, voor hij zendt ([`Net::readers`]). Een gewekte
+/// taak draait in de ronde na de wek; staat de pomp in die ronde vóór hem,
+/// dan is er één ronde meer nodig. Meer niet: een taak die altijd klaar is
+/// (BURN, ~0,3 ms per ronde) houdt de ACK zo hooguit één ronde langer op
+/// dan zijn eigen antwoord toch al kostte.
+pub const READER_ROUNDS: u32 = 2;
+
+/// De ruimte die één maximaal frame in een slot-ring inneemt: kop en
+/// payload, op 8 afgerond.
+const FRAME_ROOM: u64 = (abi::ring::REC_HDR + NET_MTU as u64 + 14).next_multiple_of(8);
 
 /// De kortste slaap van de pomp. `next_timeout` geeft "nu" zolang er iets
 /// in een rij ligt dat nog op een route wacht; zonder deze bodem spint de
@@ -255,6 +267,13 @@ pub fn parse_ip4(s: &str) -> Option<[u8; 4]> {
     parts.next().is_none().then_some(ip)
 }
 
+/// Een `ip:poort` als `10.100.0.3:9000`; poort 0 is geen adres.
+#[must_use]
+pub fn parse_addr(s: &str) -> Option<([u8; 4], u16)> {
+    let (ip, port) = s.trim().rsplit_once(':')?;
+    Some((parse_ip4(ip)?, port.parse().ok().filter(|&p| p != 0)?))
+}
+
 /// De stack-config van slot `slot` met budget `budget`: het slot-IP en de
 /// MAC uit het netplan, de kern als gateway.
 #[must_use]
@@ -265,12 +284,17 @@ pub fn slot_config(slot: u64, budget: usize) -> Config {
         mac: mac_of(slot).0,
         gw: host_ip(),
         budget,
-        // Per ring hooguit de helft van de slot-ring: het venster dat wij
-        // adverteren is wat de kern in één burst mag sturen, en een venster
-        // groter dan de ring laat de switch met tegendruk op ons wachten
-        // (03-09: 459 naar 155 MB/s; 04-09: 128× rx-full en twee drops bij
-        // vier hameraars).
-        max_buf_per_conn: usize::try_from(NET_RING_DATA_CAP / 2).unwrap_or(usize::MAX),
+        // Het venster dat wij adverteren is wat de kern in één burst in onze
+        // RX-ring mag zetten. Groter dan de ring laat de switch met
+        // tegendruk op ons wachten (03-09: 459 naar 155 MB/s), dus de ring
+        // min een PAD aan de rand (hooguit één frame) en één frame speling.
+        // Tot 01-10 was het de halve ring, maar het venster is de rem van
+        // één stroom: zijn rondgang (zender, switch, lezer) bepaalt de
+        // doorvoer, en twee stromen haalden samen het dubbele (O6N: één
+        // stroom 1434, met dit venster 1749 MB/s). Veel verbindingen tegelijk
+        // vullen de ring ook met de halve ring al (04-09: 128x rx-full bij
+        // vier hameraars); TCP herstelt een drop.
+        max_buf_per_conn: usize::try_from(NET_RING_DATA_CAP - 2 * FRAME_ROOM).unwrap_or(usize::MAX),
         adv_ws: ws_shift_for(budget as u64 / 4),
         mtu: NET_MTU,
         // Het slot-LAN is geheugen, geen draad: geen checksums. De kern-kant
@@ -322,7 +346,15 @@ pub fn up(app: &'static App) -> Result<&'static Net> {
         log!("appnet: log link not started: {e} HOPOS_APPNET_LOGNET");
     }
     let [a, b, c, d] = net.ip();
-    log!("appnet: up ip={a}.{b}.{c}.{d} budget={budget} mtu={NET_MTU} HOPOS_APPNET_UP");
+    // Hoe de frame-ringen kopiëren (zie `Nic::open`): op ijzer de eerste
+    // vraag als de doorvoer van een app verandert.
+    let rings = match crate::mmu::ring_coherence(app.ctrl().on_kern_hart()) {
+        crate::ring::Coherence::Hardware => "wb",
+        crate::ring::Coherence::Maintained => "maintained",
+    };
+    log!(
+        "appnet: up ip={a}.{b}.{c}.{d} budget={budget} mtu={NET_MTU} rings={rings} HOPOS_APPNET_UP"
+    );
     Ok(net)
 }
 
@@ -343,6 +375,9 @@ enum Wake {
     Bell,
     /// De timer: poll-ronde of een deadline van de stack.
     Timer,
+    /// De uitstelbare ronde van `lo`: de core bleef bezig, dus de slaper
+    /// (en met hem de deurbel) kwam niet aan de beurt.
+    Busy,
     /// De stack (een write, een close, een accept) of een loze wek.
     Stack,
 }
@@ -382,6 +417,7 @@ enum Open {
     Tcp(TcpHandle),
     Listen(ListenHandle),
     Udp(UdpHandle),
+    Udp6(Udp6Handle),
 }
 
 /// Wat [`Net::shutdown`] deed.
@@ -502,7 +538,13 @@ impl Net {
         let mut corrupt_logged = false;
         loop {
             let got = self.ingest(nic, buf);
+            let busy = got > 0 && got < RX_BATCH && self.readers().await;
             self.transmit(nic, buf).await;
+            if busy {
+                // De core blijft bezig na wat we net zonden: niet wachten
+                // tot de idle-yield of `TURN_CAP` (OS-core, `net::TX_OWED`).
+                crate::net::kick_owed();
+            }
             if got == RX_BATCH {
                 // Er ligt waarschijnlijk meer; eerst de rest een beurt.
                 yield_now().await;
@@ -519,7 +561,7 @@ impl Net {
                 log!("appnet: RX ring corrupt: {why} HOPOS_APPNET_RX_CORRUPT");
                 corrupt_logged = true;
             }
-            match self.idle(bell, self.deadline(d)).await {
+            match self.idle(bell, self.deadline(d), poll.lo).await {
                 Wake::Bell => {
                     PUMP_EARLY.fetch_add(1, Relaxed);
                 }
@@ -527,6 +569,13 @@ impl Net {
                     PUMP_TIMER.fetch_add(1, Relaxed);
                     empty = empty.saturating_add(1);
                     d = poll.next(d, empty);
+                }
+                // Geen lege ronde voor de verdubbeling: `d` is de slaap van
+                // een stille core, en deze core was niet stil. Wel een kick
+                // die nog openstaat: de core sliep al `lo` lang niet, dus
+                // de idle-yield komt niet snel (`net::TX_OWED`).
+                Wake::Busy => {
+                    crate::net::kick_owed();
                 }
                 // De app praat: het antwoord hoort in het scherpe venster te
                 // komen, dus terug naar `lo` (de `hold` van Go).
@@ -538,36 +587,77 @@ impl Net {
         }
     }
 
+    /// Na een ontvangst eerst de taken die hij wekte, dan pas zenden: wat
+    /// de lezer terugschrijft, gaat zo in hetzelfde segment als de ACK (de
+    /// stack stuurt een kale ACK alleen als er geen data ligt). Zenden we
+    /// meteen, dan gaat de ACK alleen de deur uit, en op de OS-core is elk
+    /// frame naar de buur een beurt voor die buur: een rondreis van `bench
+    /// ping` was zes hops (vraag, ack, lege yield, antwoord, ack, lege
+    /// yield) in plaats van twee (03-10, hop-cost5). Hooguit
+    /// [`READER_ROUNDS`] rondes van de executor; staat er na de eerste
+    /// niemand meer klaar, dan meteen. `true`: na de laatste ronde stond er
+    /// nog een taak klaar, de core blijft bezig.
+    async fn readers(&self) -> bool {
+        for _ in 0..READER_ROUNDS {
+            yield_now().await;
+            if !self.exec.has_ready() {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Hooguit [`RX_BATCH`] frames uit de RX-ring de stack in; het aantal.
-    fn ingest(&self, nic: &mut Nic, buf: &mut [u8]) -> usize {
+    /// Elk frame gaat vanuit de ring zelf de stack in (01-10: één kopie
+    /// minder per byte op het ontvangstpad; de lezer van een stroom zat op
+    /// het kritieke pad van elk venster). `buf` begrenst de framemaat.
+    fn ingest(&self, nic: &mut Nic, buf: &[u8]) -> usize {
         let mut got = 0;
         while got < RX_BATCH {
-            let Some(n) = netdev::Device::receive(nic, buf) else {
-                break;
-            };
-            got += 1;
             let now = self.now();
-            let frame = buf.get(..n).unwrap_or_default();
             // Een geweigerd frame telt de stack zelf (Stats); een fout per
             // frame loggen is een kapotte stack (leannet DESIGN, 11-08).
-            let _ = self.with(|st| st.receive(frame, now));
+            let rx = nic.receive_with(buf.len(), |frame| {
+                let _ = self.with(|st| st.receive(frame, now));
+            });
+            if rx.is_none() {
+                break;
+            }
+            got += 1;
         }
         got
     }
 
-    /// Alles wat de stack klaar heeft naar de TX-ring. Een frame dat na de
-    /// tegendruk van de ring nog niet kon, is weg en geteld
+    /// Alles wat de stack klaar heeft naar de TX-ring. De stack bouwt elk
+    /// frame in de ring zelf; alleen als daar geen plaats is voor een vol
+    /// frame, in `buf` met de tegendruk van [`Nic::transmit_wait`]. Een frame
+    /// dat na die tegendruk nog niet kon, is weg en geteld
     /// (`net::TX_DROPS`); TCP hertransmitteert.
     async fn transmit(&self, nic: &mut Nic, buf: &mut [u8]) {
         let mut sent = 0;
         loop {
             let now = self.now();
-            let Ok(Some(n)) = self.with(|st| st.poll_transmit(now, buf)) else {
-                self.tx_rounds.set(self.tx_rounds.get().wrapping_add(1));
-                return;
-            };
-            if let Some(frame) = buf.get(..n) {
-                let _ = nic.transmit_wait(frame, self.clock).await;
+            let direct = nic.try_transmit_with(buf.len(), |ring| {
+                self.with(|st| st.poll_transmit(now, ring))
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0)
+            });
+            match direct {
+                Ok(0) => {
+                    self.tx_rounds.set(self.tx_rounds.get().wrapping_add(1));
+                    return;
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    let Ok(Some(n)) = self.with(|st| st.poll_transmit(now, buf)) else {
+                        self.tx_rounds.set(self.tx_rounds.get().wrapping_add(1));
+                        return;
+                    };
+                    if let Some(frame) = buf.get(..n) {
+                        let _ = nic.transmit_wait(frame, self.clock).await;
+                    }
+                }
             }
             sent += 1;
             if sent % TX_BATCH == 0 {
@@ -589,13 +679,21 @@ impl Net {
 
     /// Slaapt tot de bel, de timer op `deadline`, of een wek van de stack.
     ///
+    /// Plus een uitstelbare ronde na `busy` (`RxPoll::lo`): de bel gaat
+    /// alleen vanuit de slaper, en een app die blijft rekenen (BURN, de
+    /// vitals-cpu) slaapt niet. Zonder deze ronde zag zijn pomp RX alleen
+    /// op de timer, die na stilte oploopt tot `RxPoll::hi` (1 s). Hij wekt
+    /// een slapende core nooit (`Exec::after_deferrable`): een stille app
+    /// kost hij hooguit één pomp-ronde per wek die er toch al was.
+    ///
     /// De stack wekt via de waker van deze taak en zegt niet dat hij het
     /// deed. Daarom: wie ons na de eerste poll opnieuw pollt zonder bel of
     /// timer, is de stack (of een loze wek, en dan kost dat één ronde).
     /// De waker gaat ná het leegpompen de stack in en zonder `.await`
     /// ertussen, dus er valt geen wek tussen wal en schip.
-    async fn idle(&self, bell: &'static Signal, deadline: u64) -> Wake {
+    async fn idle(&self, bell: &'static Signal, deadline: u64, busy: Duration) -> Wake {
         let mut timer = pin!(self.exec.until(deadline));
+        let mut round = pin!(self.exec.after_deferrable(busy));
         let mut ring = pin!(bell.wait());
         let mut armed = false;
         poll_fn(|cx| {
@@ -605,6 +703,9 @@ impl Net {
             if timer.as_mut().poll(cx).is_ready() {
                 return Poll::Ready(Wake::Timer);
             }
+            if round.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(Wake::Busy);
+            }
             if armed {
                 return Poll::Ready(Wake::Stack);
             }
@@ -613,6 +714,28 @@ impl Net {
             let _ = self.with(|st| st.register_driver_waker(cx.waker()));
             Poll::Pending
         })
+        .await
+    }
+
+    /// Eén readiness-vraag als future: `check` zegt of een op nu zonder
+    /// `WouldBlock` zou slagen, en zo niet registreert `register` de waker
+    /// van deze taak. Verbruikt niets; de `readable()`'s van de sockets zijn
+    /// hierop één regel. `deadline` als bij [`Net::wait`].
+    async fn ready(
+        &self,
+        deadline: Option<u64>,
+        mut check: impl FnMut(&mut Stack) -> leannet::Result<bool>,
+        register: impl FnMut(&mut Stack, &Waker) -> leannet::Result,
+    ) -> Result<()> {
+        self.wait(
+            deadline,
+            |st, _| match check(st) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(StackError::WouldBlock),
+                Err(e) => Err(e),
+            },
+            register,
+        )
         .await
     }
 
@@ -715,6 +838,33 @@ impl Net {
         })
     }
 
+    /// Bindt IPv6-UDP en activeert NDP/router discovery voor deze slot-interface.
+    pub fn udp6_bind(&'static self, port: u16) -> Result<Udp6Socket> {
+        self.admit()?;
+        let h = self.with(|st| st.udp6_bind(port, self.now()))??;
+        Ok(Udp6Socket {
+            net: self,
+            h,
+            deadline: None,
+            slot: self.track(Open::Udp6(h)),
+        })
+    }
+
+    /// Abonneert op ff02-multicast op de ene slot-interface.
+    pub fn join_group6(&self, group: [u8; 16]) -> Result {
+        self.with(|st| st.join_group6(group, self.now()))?
+            .map_err(NetError::Stack)
+    }
+
+    /// Link-local en optioneel SLAAC-adres; activeert de baan op eerste gebruik.
+    pub fn ipv6_addresses(&self) -> Result<([u8; 16], Option<[u8; 16]>)> {
+        self.with(|st| {
+            st.enable_ipv6(self.now())?;
+            st.ipv6_addresses(self.now()).ok_or(StackError::StackClosed)
+        })?
+        .map_err(NetError::Stack)
+    }
+
     /// Abonneert de stack op multicastgroep `group`, voor zijn hele
     /// levensduur; een tweede join van dezelfde groep doet niets.
     ///
@@ -755,6 +905,26 @@ impl Net {
     /// echt antwoord dat nee zegt (NXDOMAIN, geen A, kapot) is meteen de
     /// uitkomst; nog eens vragen verandert daar niets aan.
     pub async fn resolve_via(&'static self, server: [u8; 4], host: &str) -> Result<[u8; 4]> {
+        self.resolve_record(server, host, 1).await
+    }
+    /// Het AAAA-adres van een host, of het letterlijke IPv6-adres zelf.
+    pub async fn resolve6(&'static self, host: &str) -> Result<[u8; 16]> {
+        if let Ok(ip) = host.parse::<core::net::Ipv6Addr>() {
+            return Ok(ip.octets());
+        }
+        let server = self.dns.ok_or(NetError::Dns(DnsError::NoServer))?;
+        self.resolve6_via(server, host).await
+    }
+    /// AAAA via de geconfigureerde IPv4-DNS-server; DNS-transport en antwoordfamilie zijn onafhankelijk.
+    pub async fn resolve6_via(&'static self, server: [u8; 4], host: &str) -> Result<[u8; 16]> {
+        self.resolve_record(server, host, 28).await
+    }
+    async fn resolve_record<const N: usize>(
+        &'static self,
+        server: [u8; 4],
+        host: &str,
+        kind: u16,
+    ) -> Result<[u8; N]> {
         let mut query = [0u8; dns::QUERY_MAX];
         let mut buf = [0u8; dns::UDP_MAX];
         let mut sock = self.udp_bind(0)?;
@@ -764,7 +934,7 @@ impl Net {
         };
         for _ in 0..DNS_ATTEMPTS {
             let id = self.dns_id();
-            let n = dns::encode_query(id, host, &mut query)?;
+            let n = dns::encode_kind(id, host, &mut query, kind)?;
             sock.set_timeout(Some(DNS_TIMEOUT));
             sock.send_to(to, query.get(..n).unwrap_or_default()).await?;
             loop {
@@ -776,7 +946,7 @@ impl Net {
                 if from != to {
                     continue;
                 }
-                match dns::parse_answer(id, host, buf.get(..n).unwrap_or_default()) {
+                match dns::parse_kind(id, host, buf.get(..n).unwrap_or_default(), kind) {
                     Ok(ip) => return Ok(ip),
                     Err(DnsError::BadId { .. } | DnsError::Mismatch) => {}
                     Err(e) => return Err(NetError::Dns(e)),
@@ -907,6 +1077,10 @@ impl Net {
                 Open::Tcp(h) => st.tcp_close(h, now).is_ok(),
                 Open::Listen(h) => {
                     st.tcp_listen_close(h);
+                    true
+                }
+                Open::Udp6(h) => {
+                    st.udp6_close(h);
                     true
                 }
                 Open::Udp(h) => {
@@ -1050,6 +1224,22 @@ impl TcpStream {
             .wait(
                 self.deadline,
                 |st, now| st.tcp_read(h, buf, now),
+                |st, w| st.tcp_register_read_waker(h, w),
+            )
+            .await
+    }
+
+    /// Wacht tot een read niet zou blokkeren: er staan bytes klaar, of de
+    /// peer sloot (de read geeft dan EOF of de fout). Verbruikt niets, zodat
+    /// een eigenaar met één `select` op meerdere verbindingen kan wachten in
+    /// plaats van ze rond te pollen met een lege read en een dutje (de les
+    /// van de gedeelde core, 02-10). De deadline van de stroom geldt ook hier.
+    pub async fn readable(&mut self) -> Result<()> {
+        let h = self.h;
+        self.net
+            .ready(
+                self.deadline,
+                |st| st.tcp_readable(h),
                 |st, w| st.tcp_register_read_waker(h, w),
             )
             .await
@@ -1223,6 +1413,20 @@ impl UdpSocket {
             )
             .await
     }
+
+    /// Wacht tot er een datagram klaarligt, zonder het te lezen: de
+    /// tegenhanger van [`TcpStream::readable`] voor een eigenaar die op
+    /// meerdere sockets tegelijk wacht.
+    pub async fn readable(&self) -> Result<()> {
+        let h = self.h;
+        self.net
+            .ready(
+                self.deadline,
+                |st| st.udp_readable(h),
+                |st, w| st.udp_register_read_waker(h, w),
+            )
+            .await
+    }
 }
 
 impl Drop for UdpSocket {
@@ -1230,6 +1434,85 @@ impl Drop for UdpSocket {
         let h = self.h;
         self.net.untrack(self.slot, Open::Udp(h));
         let _ = self.net.with(|st| st.udp_close(h));
+    }
+}
+
+/// Een IPv6-UDP-socket. Sluit in `Drop`.
+pub struct Udp6Socket {
+    net: &'static Net,
+    h: Udp6Handle,
+    deadline: Option<u64>,
+    /// De plek in de tabel van open handvatten.
+    slot: Option<usize>,
+}
+
+impl Udp6Socket {
+    /// Bindt `port` op de stack van deze app.
+    pub fn bind(port: u16) -> Result<Self> {
+        net().ok_or(NetError::NotUp)?.udp6_bind(port)
+    }
+
+    /// Zet de deadline van elke volgende send en recv; `None` wist hem.
+    pub fn set_deadline(&mut self, at: Option<u64>) {
+        self.deadline = at;
+    }
+
+    /// Zet de deadline op `d` vanaf nu; `None` wist hem.
+    pub fn set_timeout(&mut self, d: Option<Duration>) {
+        self.deadline = self.net.at(d);
+    }
+
+    /// Het lokale eindpunt.
+    pub fn local(&self) -> Result<Endpoint6> {
+        let h = self.h;
+        Ok(self.net.with(|st| st.udp6_local(h))??)
+    }
+
+    /// Verstuurt één datagram naar `to`; wacht op een route (NDP) of op
+    /// ruimte in de zendrij.
+    pub async fn send_to(&self, to: Endpoint6, data: &[u8]) -> Result<usize> {
+        let h = self.h;
+        self.net
+            .wait(
+                self.deadline,
+                |st, now| st.udp6_send_to(h, to, data, now),
+                |st, w| st.udp6_register_write_waker(h, w),
+            )
+            .await
+    }
+
+    /// Wacht op één datagram: lengte en afzender. Wat niet in `buf` past,
+    /// valt weg (UDP).
+    pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, Endpoint6)> {
+        let h = self.h;
+        self.net
+            .wait(
+                self.deadline,
+                |st, now| st.udp6_recv_from(h, buf, now),
+                |st, w| st.udp6_register_read_waker(h, w),
+            )
+            .await
+    }
+
+    /// Wacht tot er een datagram klaarligt, zonder het te lezen: de
+    /// IPv6-tegenhanger van [`UdpSocket::readable`].
+    pub async fn readable(&self) -> Result<()> {
+        let h = self.h;
+        self.net
+            .ready(
+                self.deadline,
+                |st| st.udp6_readable(h),
+                |st, w| st.udp6_register_read_waker(h, w),
+            )
+            .await
+    }
+}
+
+impl Drop for Udp6Socket {
+    fn drop(&mut self) {
+        let h = self.h;
+        self.net.untrack(self.slot, Open::Udp6(h));
+        let _ = self.net.with(|st| st.udp6_close(h));
     }
 }
 

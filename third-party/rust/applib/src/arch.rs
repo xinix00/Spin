@@ -39,6 +39,10 @@ mod imp {
     #[inline]
     pub(crate) fn set_counter_hz(_hz: u64) {}
 
+    /// Op arm64 is de kick altijd HVC #6: niets over te nemen.
+    #[inline]
+    pub(crate) fn adopt_kick(_mode: u64) {}
+
     /// ID_AA64MMFR0_EL1: bits 63:60 zijn FEAT_ECV.
     #[inline]
     pub(crate) fn mmfr0() -> u64 {
@@ -76,9 +80,9 @@ mod imp {
     /// Geeft de idle-wall-tijd in tikken (mede-bewoner plus slaap).
     ///
     /// De Go-versie bewaarde V8-V15 en FPCR zelf omdat de switcher op EL2
-    /// met de MMU uit geen FP-store naar Device-geheugen kan doen. Dit image
-    /// is softfloat: de compiler raakt die registers nooit, dus er valt niets
-    /// te bewaren.
+    /// met de MMU uit geen FP-store naar Device-geheugen kan doen. Deze runtime
+    /// bewaart bij hardwarefloat dezelfde callee-saved staat op zijn eigen
+    /// Normal-WB-stack. Bij softfloat raakt de compiler die registers niet.
     #[inline]
     pub(crate) fn hvc_yield(deadline: u64) -> u64 {
         let a = counter();
@@ -86,7 +90,31 @@ mod imp {
         // systeemregisters en hervat ons na de HVC; `clobber_abi("C")` laat
         // de compiler alle caller-saved registers als verloren beschouwen,
         // dus ook als de switcher er een omgooit, is dat geen fout.
-        unsafe { asm!("hvc #1", in("x1") deadline, clobber_abi("C"), options(nostack)) };
+        unsafe {
+            #[cfg(target_abi = "softfloat")]
+            asm!("hvc #1", in("x1") deadline, clobber_abi("C"), options(nostack));
+            #[cfg(not(target_abi = "softfloat"))]
+            asm!(
+                "sub sp, sp, #80",
+                "stp d8, d9, [sp, #0]",
+                "stp d10, d11, [sp, #16]",
+                "stp d12, d13, [sp, #32]",
+                "stp d14, d15, [sp, #48]",
+                "mrs x9, fpcr",
+                "mrs x10, fpsr",
+                "stp x9, x10, [sp, #64]",
+                "hvc #1",
+                "ldp x9, x10, [sp, #64]",
+                "msr fpcr, x9",
+                "msr fpsr, x10",
+                "ldp d8, d9, [sp, #0]",
+                "ldp d10, d11, [sp, #16]",
+                "ldp d12, d13, [sp, #32]",
+                "ldp d14, d15, [sp, #48]",
+                "add sp, sp, #80",
+                in("x1") deadline, clobber_abi("C"),
+            );
+        }
         counter().wrapping_sub(a)
     }
 
@@ -159,7 +187,7 @@ mod imp {
     //! draaien): elke wacht is een yield (Go, cpu/idle/idle_riscv64.go:
     //! "de ecall is zijn enige route naar een wfi").
     use core::arch::asm;
-    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 
     /// De timebase van de TIME-CSR tot de control-page iets anders zegt: de
     /// 10 MHz van QEMU virt. RISC-V heeft geen register waaruit hij volgt
@@ -237,9 +265,35 @@ mod imp {
         counter().wrapping_sub(a)
     }
 
-    /// De kern heeft op riscv64 geen OS-core-rotatie: niets te bellen.
+    /// Hoort de kern de kick (`IDLE_KICK` op de control-page)? Eén
+    /// schrijver bij de start ([`adopt_kick`]), daarna alleen lezers.
+    static KICK: AtomicBool = AtomicBool::new(false);
+
+    /// Neemt `CTRL_IDLE_MODE` over: kicken alleen als de kern het bit zette
+    /// (een switcher van vóór 02-10 neemt a7 = 2 als exit).
+    pub(crate) fn adopt_kick(mode: u64) {
+        KICK.store(mode & abi::hopabi::IDLE_KICK != 0, Relaxed);
+    }
+
+    /// De bel naar de kern na een publicatie op de TX-ring (`ecall`,
+    /// a7 = 2; de tegenhanger van HVC #6). Op een app-hart belt de switcher
+    /// de OS-core en hervat ons meteen; op de OS-core is het een yield naar
+    /// nu (de kern draait zijn ronde). Zonder bel naar de kern hoort hij het
+    /// frame pas op zijn failsafe van 1 ms.
     #[inline]
-    pub(crate) fn hvc_kick_os() {}
+    pub(crate) fn hvc_kick_os() {
+        if !KICK.load(Relaxed) {
+            return;
+        }
+        // SAFETY: de switcher raakt alleen t0..t2 aan en zet ze terug uit
+        // zijn scratch; de rotatie van de OS-core bewaart x1..x31 en hervat
+        // op mepc + 4. `clobber_abi("C")` zoals bij de yield: op de OS-core
+        // bewaart de rotatie de f-registers niet. Geen `nomem`: de
+        // publicatie op de ring moet vóór de trap staan.
+        unsafe {
+            asm!("ecall", in("a7") 2u64, clobber_abi("C"), options(nostack));
+        }
+    }
 
     /// Geen SMP-apps op riscv64: niets te wekken.
     #[inline]
@@ -284,6 +338,9 @@ mod imp {
 
     /// De host-teller is een getal van de tests: niets over te nemen.
     pub(crate) fn set_counter_hz(_hz: u64) {}
+
+    /// Geen kern om te kicken: niets over te nemen.
+    pub(crate) fn adopt_kick(_mode: u64) {}
 
     pub(crate) fn mmfr0() -> u64 {
         0

@@ -25,13 +25,11 @@ Replica komt rechtstreeks uit de bron: de crates linken naar `../replica`
 patch van. Wijzigingen aan Replica gebeuren daar.
 
 De overige dependencies zijn vastgelegd in `.cargo/config.toml` en `Cargo.lock`
-(HopOS SDK alpha.18, Hop alpha.10, Lean v3.1.2) en gevendord in
-`third-party/rust`. Daar staan nog lokale patches, met hun hashes in
-`third-party/rust/LOCAL_PATCHES.json`: Hop's `types` (`json::parse_with_limit`,
-die Replica's manifestgrens van 16 MiB nodig heeft), `leans3` (delimiter-
-listings voor Replica's retentie), `leantls` (AES-GCM) en `leanhttp` (chunked
-requestbodies, zoals leanhttp v3.1.6). Die horen in hun eigen bron; tot ze daar
-getagd zijn bouwt Replica alleen vanuit Spin.
+en gevendord in `third-party/rust`, ongewijzigd van hun tags: HopOS v3.0.9, Hop
+v3.0.9, Lean v3.1.9 (`leanhttp`, `leanhttps`, `leantls`, dezelfde als `applib`)
+en Lean v3.1.10 (`leans3`, dezelfde als Replica). Lokale patches bestaan niet;
+een wijziging gaat naar de bron en komt terug als tag. Opnieuw vendoren:
+`cargo vendor third-party/rust` (de uitvoer is de inhoud van `.cargo/config.toml`).
 
 ## Bouwen en controleren
 

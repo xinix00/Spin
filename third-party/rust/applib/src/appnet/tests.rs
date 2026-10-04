@@ -55,16 +55,27 @@ fn nic(tx: &Backing, rx: &Backing, slot: u64) -> Nic {
     )
 }
 
-fn spawn_pump(exec: &'static Exec, net: &'static Net, mut nic: Nic, rx: &Backing) -> Door {
+fn spawn_pump(
+    exec: &'static Exec,
+    net: &'static Net,
+    mut nic: Nic,
+    rx: &Backing,
+    poll: RxPoll,
+) -> Door {
     let bell: &'static Signal = leak(Signal::new());
     let mut buf = frame_buf(net.frame_len()).unwrap();
-    exec.spawn(async move { net.pump(&mut nic, &mut buf, bell, POLL).await })
+    exec.spawn(async move { net.pump(&mut nic, &mut buf, bell, poll).await })
         .unwrap();
     (Peek::new(rx.pa(), CAP), bell)
 }
 
 /// De kern en slot 1 aan één draad, met hun pompen al gespawnd.
 fn pair() -> Pair {
+    pair_with(POLL)
+}
+
+/// Als [`pair`], met de pompen op `poll`.
+fn pair_with(poll: RxPoll) -> Pair {
     let exec: &'static Exec = leak(Exec::new());
     exec.set_clock(now);
     let up = leak(Backing::new(CAP));
@@ -72,8 +83,8 @@ fn pair() -> Pair {
     let kern = leak(Net::new(slot_config(0, BUDGET), 7, exec, now).unwrap());
     let app = leak(Net::new(slot_config(1, BUDGET), 9, exec, now).unwrap());
     app.seed_neighbor(host_ip(), mac_of(0).0).unwrap();
-    let k = spawn_pump(exec, kern, nic(down, up, 0), up);
-    let a = spawn_pump(exec, app, nic(up, down, 1), down);
+    let k = spawn_pump(exec, kern, nic(down, up, 0), up, poll);
+    let a = spawn_pump(exec, app, nic(up, down, 1), down, poll);
     Pair {
         exec,
         kern,
@@ -270,6 +281,68 @@ fn bulk_both_ways_then_close() {
 }
 
 #[test]
+fn a_small_answer_carries_the_ack_in_the_same_frame() {
+    // De rondreis van `bench ping` (03-10, hop-cost5): op de OS-core is elk
+    // frame naar de buur een beurt voor die buur. Zond de pomp na een
+    // ontvangst meteen, dan ging de ACK alleen (een frame van 54 bytes) en
+    // kwam het antwoord in een tweede: drie frames per rondreis en zes hops.
+    // Nu wacht hij tot de lezer die hij wekte schreef, en per richting is er
+    // per rondreis één frame: kop (8) plus 54 plus 64 bytes, op 8 = 128.
+    const ROUNDS: u64 = 20;
+    const LEN: usize = 64;
+    const RECORD: u64 = 128;
+    let p = pair();
+    let l = p.kern.tcp_listen(7).unwrap();
+    p.exec
+        .spawn(async move {
+            let mut c = l.accept().await.unwrap();
+            let mut buf = [0u8; LEN];
+            loop {
+                let n = c.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                c.write_all(&buf[..n]).await.unwrap();
+            }
+        })
+        .unwrap();
+    let app = p.app;
+    let (up, down) = (p.doors[0].0, p.doors[1].0);
+    let result = slot();
+    p.exec
+        .spawn(async move {
+            let mut c = app.tcp_connect([10, 100, 0, 1], 7).await.unwrap();
+            let mut msg = [0x5au8; LEN];
+            let heads = || (up.head_pending().0, down.head_pending().0);
+            // Eén rondreis warm: de handshake en zijn ACK's tellen niet.
+            c.write_all(&msg).await.unwrap();
+            read_exact(&mut c, &mut msg).await;
+            let before = heads();
+            for _ in 0..ROUNDS {
+                c.write_all(&msg).await.unwrap();
+                read_exact(&mut c, &mut msg).await;
+            }
+            let after = heads();
+            *result.borrow_mut() = Some((after.0 - before.0, after.1 - before.1));
+        })
+        .unwrap();
+    p.run_until(|| result.borrow().is_some());
+    let (sent, answered) = result.borrow_mut().take().unwrap();
+    assert_eq!(
+        sent,
+        ROUNDS * RECORD,
+        "de vragen: {} bytes per rondreis",
+        sent / ROUNDS
+    );
+    assert_eq!(
+        answered,
+        ROUNDS * RECORD,
+        "de antwoorden: {} bytes per rondreis",
+        answered / ROUNDS
+    );
+}
+
+#[test]
 fn a_closed_port_is_refused() {
     let p = pair();
     let got = slot();
@@ -385,6 +458,56 @@ fn udp_round_trip() {
     );
 }
 
+/// Een core die blijft rekenen slaapt niet, dus niemand belt de deurbel:
+/// zijn pomp ziet RX dan op de uitstelbare ronde van `lo`, ook als zijn
+/// poll-ronde na stilte al op `hi` stond. Zonder die ronde wachtte het
+/// datagram hier op de timer van de kern-pomp, een (gesimuleerde) seconde.
+#[test]
+fn a_busy_core_still_sees_rx_within_lo() {
+    let p = pair_with(RxPoll {
+        lo: Duration::from_micros(300),
+        hi: Duration::from_secs(1),
+        hold: 0,
+    });
+    let (kern, app) = (p.kern, p.app);
+    // Eerst stilte, tot beide pompen op `hi` staan.
+    let t0 = now();
+    p.run_until(|| elapsed(t0) >= 5_000_000_000);
+    let got: &'static Cell<Option<u64>> = leak(Cell::new(None));
+    let server = kern.udp_bind(53).unwrap();
+    p.exec
+        .spawn(async move {
+            let mut buf = [0u8; 64];
+            let (n, from) = server.recv_from(&mut buf).await.unwrap();
+            server.send_to(from, &buf[..n]).await.unwrap();
+        })
+        .unwrap();
+    // De rekenaar: elke ronde 20 µs werk en een yield, tot het antwoord er
+    // is; zolang hij leeft, doet geen ronde niets.
+    p.exec
+        .spawn(async move {
+            while got.get().is_none() {
+                NOW.with(|c| c.set(c.get() + 20_000));
+                yield_now().await;
+            }
+        })
+        .unwrap();
+    let sent = now();
+    p.exec
+        .spawn(async move {
+            let s = app.udp_bind(0).unwrap();
+            let to = Endpoint { ip: HOST, port: 53 };
+            s.send_to(to, b"ping").await.unwrap();
+            let mut buf = [0u8; 64];
+            s.recv_from(&mut buf).await.unwrap();
+            got.set(Some(now()));
+        })
+        .unwrap();
+    p.run_until(|| got.get().is_some());
+    let rtt = got.get().unwrap() - sent;
+    assert!(rtt < 5_000_000, "round trip on a busy core took {rtt} ns");
+}
+
 /// Multicast: een socket op de poort van de groep hoort een datagram naar
 /// de groep pas na de join; de kern zendt naar de groep zoals de switch
 /// het naar elk slot floodt.
@@ -453,6 +576,13 @@ fn budget_env_and_address_parsing() {
     assert_eq!(parse_ip4("1.1.1"), None);
     assert_eq!(parse_ip4("1.1.1.1.1"), None);
     assert_eq!(parse_ip4("1.1.1.256"), None);
+    assert_eq!(parse_addr("10.100.0.3:9000"), Some(([10, 100, 0, 3], 9000)));
+    assert_eq!(parse_addr(" 10.100.0.1:10100\n"), Some((HOST, 10100)));
+    assert_eq!(parse_addr("10.100.0.1"), None);
+    assert_eq!(parse_addr("10.100.0:9000"), None);
+    assert_eq!(parse_addr("10.100.0.3.4:9000"), None);
+    assert_eq!(parse_addr("10.100.0.3:0"), None);
+    assert_eq!(parse_addr("node:80"), None);
     let c = slot_config(3, 2 << 20);
     assert_eq!(
         (c.ip, c.mac, c.gw, c.prefix),
@@ -863,5 +993,77 @@ fn an_address_needs_no_server_and_a_name_without_server_says_so() {
     assert_eq!(
         got.borrow_mut().take(),
         Some((Ok([10, 0, 2, 2]), Err(NetError::Dns(DnsError::NoServer))))
+    );
+}
+
+#[test]
+fn ipv6_udp_roundtrip_drop_and_timeout_use_the_real_pumps() {
+    let p = pair();
+    let server = p.kern.udp6_bind(5540).unwrap();
+    let address = Endpoint6 {
+        ip: p.kern.ipv6_addresses().unwrap().0,
+        port: server.local().unwrap().port,
+    };
+    let mut client = p.app.udp6_bind(0).unwrap();
+    client.set_timeout(Some(Duration::from_secs(3)));
+    let done = leak(Cell::new(false));
+    p.exec
+        .spawn(async move {
+            let mut bytes = [0; 64];
+            let (n, peer) = server.recv_from(&mut bytes).await.unwrap();
+            assert_eq!(&bytes[..n], b"Matter over IPv6");
+            server.send_to(peer, b"IPv6 reply").await.unwrap();
+        })
+        .unwrap();
+    p.exec
+        .spawn(async move {
+            client.send_to(address, b"Matter over IPv6").await.unwrap();
+            let mut bytes = [0; 64];
+            let (n, peer) = client.recv_from(&mut bytes).await.unwrap();
+            assert_eq!(peer, address);
+            assert_eq!(&bytes[..n], b"IPv6 reply");
+            client.set_timeout(Some(Duration::from_millis(10)));
+            assert!(matches!(
+                client.recv_from(&mut bytes).await,
+                Err(NetError::Timeout)
+            ));
+            let local = client.local().unwrap();
+            drop(client);
+            let rebound = p.app.udp6_bind(local.port).unwrap();
+            drop(rebound);
+            done.set(true);
+        })
+        .unwrap();
+    p.run_until(|| done.get());
+}
+
+#[test]
+fn aaaa_resolves_over_the_real_udp_pumps() {
+    let p = pair();
+    let server = p.kern.udp_bind(53).unwrap();
+    let got = slot();
+    let app = p.app;
+    p.exec
+        .spawn(async move {
+            let mut buf = [0; 512];
+            let (n, from) = server.recv_from(&mut buf).await.unwrap();
+            assert_eq!(&buf[n - 4..n - 2], &[0, 28]);
+            let mut response = buf[..n].to_vec();
+            response[2..4].copy_from_slice(&0x8180_u16.to_be_bytes());
+            response[6..8].copy_from_slice(&1_u16.to_be_bytes());
+            response.extend_from_slice(&[0xc0, 12, 0, 28, 0, 1, 0, 0, 0, 60, 0, 16]);
+            response.extend_from_slice(&[0xfd, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7]);
+            server.send_to(from, &response).await.unwrap();
+        })
+        .unwrap();
+    p.exec
+        .spawn(async move {
+            *got.borrow_mut() = Some(app.resolve6_via(HOST, "thread.example").await);
+        })
+        .unwrap();
+    p.run_until(|| got.borrow().is_some());
+    assert_eq!(
+        got.borrow_mut().take().unwrap(),
+        Ok([0xfd, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7])
     );
 }

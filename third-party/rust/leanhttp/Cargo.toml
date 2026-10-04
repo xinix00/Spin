@@ -13,14 +13,14 @@
 edition = "2024"
 rust-version = "1.93"
 name = "leanhttp"
-version = "3.1.1"
+version = "3.1.9"
 build = false
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "HTTP/1.1 zonder TLS: client en server, sequentiele keep-alive, chunked antwoorden."
+description = "HTTP/1.1 zonder TLS: client en server, sequentiele keep-alive, chunked antwoorden en requestbodies."
 readme = false
 license = "MIT"
 repository = "https://github.com/xinix00/lean"

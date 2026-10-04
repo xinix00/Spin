@@ -32,6 +32,14 @@ pub const SYM_SLOT_HINT: &str = "github.com/xinix00/HopOS/metal/v2/board/hopslot
 /// Go-image een luide "spreekt ABI 10" krijgt in plaats van "geen stempel".
 pub const SYM_ABI: &str = "github.com/xinix00/HopOS/metal/v2/app/applib.abiVersion";
 
+/// De stempel van de Go-generatie: slot-ABI 10, de laatste van `OLD/metal`.
+/// Die staart is byte voor byte [`crate::ABI_VERSION`] 1, dus een
+/// tamago-image met deze stempel mag erop binnen (bewezen 02-10-2026 op
+/// QEMU met de Go-welcome; `docs/go-apps.md`). Verschuift er ooit iets in de
+/// staart, dan vervalt deze alias met dezelfde versie-ophoging, want dan is
+/// een Go-image precies de stille misread waar de stempel tegen is.
+pub const GO_ABI_VERSION: u64 = 10;
+
 /// Hoeveel PT_LOAD-segmenten een image mag hebben. Een Go- of Rust-image
 /// heeft er drie of vier; zestien is ruim en begrensd.
 pub const MAX_SEGMENTS: usize = 16;
@@ -247,7 +255,9 @@ pub fn build(img: &Image<'_>, w: &Window, slot: Slot, abi: Option<u32>) -> Resul
     };
     match img.symbols.abi {
         None => Err(Error::NoAbiStamp { want }),
-        Some(v) if v != u64::from(want) => Err(Error::AbiMismatch { image: v, want }),
+        Some(v) if v != u64::from(want) && v != GO_ABI_VERSION => {
+            Err(Error::AbiMismatch { image: v, want })
+        }
         Some(_) => Ok(p),
     }
 }
@@ -488,14 +498,17 @@ mod tests {
     #[test]
     fn abi_stempel_wordt_getoetst() {
         let mut img = image();
-        img.symbols.abi = Some(10);
+        img.symbols.abi = Some(9);
         assert_eq!(
             build(&img, &window(), slot(), Some(ABI_VERSION)).unwrap_err(),
             Error::AbiMismatch {
-                image: 10,
+                image: 9,
                 want: ABI_VERSION
             }
         );
+        // De Go-stempel is een alias van ABI 1.
+        img.symbols.abi = Some(GO_ABI_VERSION);
+        assert!(build(&img, &window(), slot(), Some(ABI_VERSION)).is_ok());
         img.symbols.abi = None;
         assert_eq!(
             build(&img, &window(), slot(), Some(ABI_VERSION)).unwrap_err(),

@@ -10,7 +10,7 @@ spin-core = { path = "../core" }
 spin-domain = { path = "../domain" }
 spin-server = { path = "../server" }
 spin-store = { path = "../store" }
-leanhttp = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.2" }
+leanhttp = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.9" }
 
 [lints]
 workspace = true

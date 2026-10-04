@@ -25,7 +25,7 @@
 //! STREAM_IMAGE(slot, n, brok)  -> More
 //! STREAM_IMAGE(slot, m, brok)  -> Placed      laatste byte: plaatsen + starten
 //!                              |  Failed(tekst)
-//! SLOT_STATUS(slot)            -> SlotInfo    staat, core, heartbeat, exit
+//! SLOT_STATUS(slot)            -> SlotInfo    staat, core, heartbeat, exit (slot 0: de kern)
 //! NEXT_LOG(slot, max)          -> regel | leeg
 //! STOP_SLOT(slot, timeout_ms)  -> Ok (de kern geeft vrij) | fout (quarantaine)
 //! ```
@@ -738,6 +738,14 @@ pub enum SlotState {
 }
 
 /// Het antwoord op een [`PrivOp::SlotStatus`], in `data` (little-endian).
+///
+/// Slot 0 is de kern: `Running`, `core_on` 1, de OS-core met span 1, `app`
+/// [`crate::hopabi::AppStatus::Ready`], `heartbeat` het tiknummer,
+/// `ram_size` de kern-RAM, `mem_sys` de heap in gebruik, `idle_ns` en
+/// `wakes` de slaap van zijn executor (cumulatief, op dezelfde klok als
+/// `at_ns`), `cores` 1, de rest 0. Een lezer rekent er cpu en geheugen van
+/// de kern mee uit zoals van elke app. Elke andere bevoegde op weigert
+/// slot 0.
 #[repr(C)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub struct SlotInfo {
@@ -747,7 +755,8 @@ pub struct SlotInfo {
     pub core_on: u8,
     /// Gereserveerd, 0.
     pub reserved: u16,
-    /// De primaire fysieke core (0 = geen).
+    /// De primaire core van het slot, het logische nummer van de kern (0 is
+    /// de OS-core; zonder core is `span` 0).
     pub core: u16,
     /// Het aantal cores van het slot.
     pub span: u16,
@@ -771,10 +780,31 @@ pub struct SlotInfo {
     pub received: u64,
     /// Tijdens een stroom: de aangekondigde image-maat.
     pub image_size: u64,
+    /// Het geheugen dat de app zelf in gebruik meldt (`CTRL_MEM_SYS`).
+    pub mem_sys: u64,
+    /// De meetlat (docs/apps.md), rauw: idle-nanoseconden van de app (alle
+    /// cores bij elkaar), wekken, cores, en de kernklok bij het lezen. Hop
+    /// vergelijkt twee standen voor cpu-procent en wek-tempo.
+    pub idle_ns: u64,
+    /// Het aantal wekken van de slaper van de app.
+    pub wakes: u64,
+    /// De cores van de app, zoals hij ze zelf telt.
+    pub cores: u64,
+    /// De klok van de kern (ns) bij het lezen van deze stand.
+    pub at_ns: u64,
 }
 
 /// De lengte van [`SlotInfo`] op de draad.
-pub const SLOT_INFO_LEN: usize = 88;
+pub const SLOT_INFO_LEN: usize = 128;
+/// De lengte tot en met Hop v3.0.3 (vóór d827e5b, 02-10: tot en met
+/// `image_size`); de velden erna zijn het gebruik (`mem_sys`, `idle_ns`,
+/// `wakes`, `cores`, `at_ns`). Een lezer die geen maat vraagt krijgt dit
+/// voorvoegsel, zodat een nieuwe kern een oudere Hop niet breekt (de Hop
+/// van de kaart overleeft een kern-flip; gemeten 03-10: zijn client
+/// verbreekt de verbinding op een langer antwoord en elke nieuwe
+/// plaatsing kwam in een herstartlus).
+pub const SLOT_INFO_LEN_V1: usize = 88;
+const _: () = assert!(SLOT_INFO_LEN_V1 == 88 && SLOT_INFO_LEN_V1 < SLOT_INFO_LEN);
 
 const _: () = assert!(core::mem::size_of::<SlotInfo>() == SLOT_INFO_LEN);
 field!(SlotInfo, state, 0);
@@ -814,6 +844,11 @@ impl SlotInfo {
             self.partition,
             self.received,
             self.image_size,
+            self.mem_sys,
+            self.idle_ns,
+            self.wakes,
+            self.cores,
+            self.at_ns,
         ];
         for (w, o) in words.iter().zip(b[8..].chunks_exact_mut(8)) {
             o.copy_from_slice(&w.to_le_bytes());
@@ -842,6 +877,11 @@ impl SlotInfo {
             partition: le64(b, 64),
             received: le64(b, 72),
             image_size: le64(b, 80),
+            mem_sys: le64(b, 88),
+            idle_ns: le64(b, 96),
+            wakes: le64(b, 104),
+            cores: le64(b, 112),
+            at_ns: le64(b, 120),
         })
     }
 
@@ -1053,6 +1093,11 @@ mod tests {
             partition: 64 << 20,
             received: 0,
             image_size: 0,
+            mem_sys: 4096,
+            idle_ns: 7,
+            wakes: 8,
+            cores: 1,
+            at_ns: 9,
         };
         let b = i.encode();
         assert_eq!(SlotInfo::decode(&b).unwrap(), i);

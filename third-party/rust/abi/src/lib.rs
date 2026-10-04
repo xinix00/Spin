@@ -20,6 +20,7 @@
 //! - [`checksum`]: de content-som die kern en app over hetzelfde bestand
 //!   rekenen.
 //! - [`place`]: de plaatsingstoets van een app-image.
+//! - [`sha256`]: SHA-256, voor de DRBG, hopfs en de flip-bundel.
 //!
 //! Wat hier NIET staat: toegang tot device-geheugen buiten de ring. Wie een
 //! control-page-veld leest, doet `dev::read64(tail.ctrl_page().add(..))` met
@@ -42,6 +43,7 @@ pub mod hopabi;
 pub mod layout;
 pub mod place;
 pub mod ring;
+pub mod sha256;
 pub mod systemapi;
 
 use core::fmt;
@@ -56,6 +58,13 @@ use core::fmt;
 /// `CtrlCorePrep` met een ander bevel, en een oude app op een nieuwe kern
 /// voerde elke idle-ronde een IMP-DEF-write uit. Een woord hergebruiken kost
 /// een versie, ook als het adres blijft staan.
+///
+/// Versie 1 is byte voor byte de Go-ABI 10 (`OLD/metal/abi/layout`): de
+/// staart, de control-page-offsets, de ringgeometrie, de HVC-nummers en het
+/// systemapi-frame. Daarom laat [`place::build`] ook de Go-stempel
+/// ([`place::GO_ABI_VERSION`]) toe, en draait een tamago-image uit `OLD/`
+/// ongewijzigd (`docs/go-apps.md`). Wie hier 2 van maakt, haalt die alias
+/// weg of hertaalt de Go-applib mee.
 pub const ABI_VERSION: u32 = 1;
 
 /// Een regio fysiek geheugen: basis en maat in bytes.
@@ -94,6 +103,30 @@ impl Region {
             _ => true,
         }
     }
+}
+
+/// Eén masquerade-flow van de switch in overdraagbare vorm: platte velden,
+/// vaste maten, 24 bytes in het handoff-blob van een kern-flip (de volle
+/// conntrack past zo in ~96 KB van de staart). `net::nat` maakt en leest
+/// hem, `kern::kernflip` legt hem in het blob en haalt hem eruit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FlowState {
+    /// IP-protocol (6 of 17).
+    pub proto: u8,
+    /// Het slot (1..=255; de switch-MAC codeert hem ook in één byte).
+    pub slot: u8,
+    /// Bit 0 = FIN gezien richting peer, bit 1 = richting client.
+    pub fins: u8,
+    /// Poort in het slot.
+    pub slot_port: u16,
+    /// Poort van de peer.
+    pub dst_port: u16,
+    /// De node-poort die de peer kent.
+    pub node_port: u16,
+    /// IP in het slot.
+    pub slot_ip: u32,
+    /// IP van de peer.
+    pub dst_ip: u32,
 }
 
 /// Waarom een ABI-operatie weigerde; elke variant draagt de getallen.
