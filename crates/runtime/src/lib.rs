@@ -130,6 +130,9 @@ pub struct Restore {
     pub downloaded: Cell<u64>,
     /// Verwacht totaal; 0 als onbekend.
     pub total: Cell<u64>,
+    /// Zolang de vorige start de schrijverlease nog houdt: wanneer die
+    /// verloopt (Unix-milliseconden). 0 als er niet gewacht wordt.
+    pub lease_until: Cell<u64>,
 }
 /// De deurbel: level-triggered en samengevoegd, tien bellen in één idle zijn
 /// er één. Als [`Waker`] doet hij precies wat [`Mailbox::nudge`] doet, zodat

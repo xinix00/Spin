@@ -251,12 +251,21 @@ impl<'a> Owner<'a> {
                 )
                 .map_err(replica_error)?
                 {
-                    replica_core::writer::Role::Writer(writer) => break writer,
+                    replica_core::writer::Role::Writer(writer) => {
+                        restore.lease_until.set(0);
+                        break writer;
+                    }
                     replica_core::writer::Role::Reader { leader } => {
                         applib::log!(
                             "SPIN_REPLICA_LEASE_WAIT leader={}",
                             leader.as_deref().unwrap_or("unknown")
                         );
+                        // De openingspagina toont tot wanneer we wachten.
+                        if let Ok((state, _)) = replica_core::writer::Backend::read(
+                            &mut remote.lease(&key, LEASE_TTL_MS),
+                        ) {
+                            restore.lease_until.set(state.expires_at);
+                        }
                         wait.0
                             .wait(applib::EXEC.get().after(core::time::Duration::from_secs(5)))
                             .map_err(|_| spin_store::Error::Storage(10))?;
