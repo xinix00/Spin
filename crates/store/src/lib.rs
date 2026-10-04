@@ -9,7 +9,9 @@ extern crate alloc;
 use spin_domain::{self as d, Name, Timestamp, TryClone, state::PersistedState};
 
 mod blobs;
+mod changes;
 pub use blobs::{BlobInfo, BlobReply, BlobRequest};
+pub use changes::Change;
 mod artifacts;
 mod attachments;
 /// Portable backups valideren voordat ze de actieve staat vervangen.
@@ -183,6 +185,7 @@ pub struct Store<P: Persistence> {
     persistence: P,
     version: u64,
     uncertain: Option<i32>,
+    changes: changes::Log,
 }
 impl<P: Persistence> Store<P> {
     /// A read-only statistics request to the unique storage owner.
@@ -201,7 +204,13 @@ impl<P: Persistence> Store<P> {
             persistence,
             version: 0,
             uncertain: None,
+            changes: changes::Log::default(),
         }
+    }
+    /// De entiteiten die na `version` veranderden; `None` als dat niet meer
+    /// te zeggen is (te oud, of de hele state werd vervangen).
+    pub fn changes_since(&self, version: u64) -> Result<Option<d::List<Change>>> {
+        self.changes.since(version, self.version)
     }
     /// Het aantal bevestigde mutaties, voor samengevoegde browsernotificaties.
     pub fn version(&self) -> u64 {
@@ -217,6 +226,7 @@ impl<P: Persistence> Store<P> {
             .ok_or(Error::Conflict("state version exhausted"))?;
         let mut candidate = self.state.try_clone()?;
         let result = change(&mut candidate)?;
+        let changes = changes::diff(&self.state, &candidate)?;
         if let Err(error) = self.persistence.save(&candidate) {
             if let Error::StorageUncertain(code) = error {
                 self.uncertain = Some(code);
@@ -225,6 +235,7 @@ impl<P: Persistence> Store<P> {
         }
         self.state = candidate;
         self.version = next_version;
+        self.changes.push(next_version, changes);
         Ok(result)
     }
 }

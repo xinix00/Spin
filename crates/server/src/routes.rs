@@ -52,6 +52,36 @@ fn array<'a, T: Wire + 'a>(out: &mut String, items: impl Iterator<Item = &'a T>)
     }
     Ok(try_push_str(out, "]")?)
 }
+/// De gebruiker zoals hij zichzelf in het document ziet.
+fn public(user: &d::User) -> Result<d::PublicUser> {
+    Ok(d::PublicUser {
+        id: user.id.try_clone()?,
+        username: user.username.try_clone()?,
+        display_name: user.display_name.try_clone()?,
+        role: user.role.try_clone()?,
+        archived_at: user.archived_at.try_clone()?,
+        created_at: user.created_at.try_clone()?,
+    })
+}
+/// Hetzelfde filter per gebruiker als het volledige document, op de JSON-velden.
+fn visible(collection: &str, value: &Value, me: &str) -> bool {
+    let field = |key: &str| {
+        value
+            .as_object()
+            .and_then(|o| o.get(key))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    };
+    match collection {
+        "artifacts" => field("scope") != d::SCOPE_USER || field("subject") == me,
+        "recordings" => field("actor") == me,
+        "mcp_servers" => field("operator") == me,
+        "git_accounts" => {
+            field("credential_scope") == d::CREDENTIAL_SCOPE_GLOBAL || field("operator") == me
+        }
+        _ => true,
+    }
+}
 impl<P: Persistence> Server<P> {
     /// Bouwt het gedeelde deel opnieuw zodra de versie (Store plus weergave) verschilt.
     fn ensure_state_cache(&mut self) -> Result {
@@ -104,30 +134,121 @@ impl<P: Persistence> Server<P> {
             .as_ref()
             .ok_or(Error::Http(500, "state cache unavailable"))
     }
-    /// Het staatdocument voor één gebruiker: de gedeelde tekst plus zijn eigen
-    /// artefacten, opnames, MCP-servers, git-accounts en de vluchtige velden.
-    pub(super) fn state_for(&mut self, user: &d::User) -> Result<StateDocument> {
-        let public = d::PublicUser {
-            id: user.id.try_clone()?,
-            username: user.username.try_clone()?,
-            display_name: user.display_name.try_clone()?,
-            role: user.role.try_clone()?,
-            archived_at: user.archived_at.try_clone()?,
-            created_at: user.created_at.try_clone()?,
-        };
-        let volatile = [
+    /// De vluchtige velden die elk document en elke delta meekrijgt.
+    fn volatile(&mut self) -> Result<[(&'static str, Value); 5]> {
+        Ok([
             ("version", Value::uint(self.version())),
             ("preparing", self.preparation_state()?),
             ("git_oauth_providers", self.oauth_providers()?),
             ("engine", self.runner_info()?.to_value()?),
             ("storage", self.storage_report.try_clone()?),
-        ];
+        ])
+    }
+    /// De aanbevelingen, alleen opnieuw berekend als jobs of sessions veranderden.
+    fn recommendations(&mut self) -> Result<Value> {
+        let version = self.store.version();
+        if let Some((at, value)) = &self.recommendations {
+            let unchanged = *at == version
+                || self.store.changes_since(*at)?.is_some_and(|changes| {
+                    !changes
+                        .iter()
+                        .any(|c| c.collection == "jobs" || c.collection == "sessions")
+                });
+            if unchanged {
+                let value = value.try_clone()?;
+                self.recommendations = Some((version, value.try_clone()?));
+                return Ok(value);
+            }
+        }
+        let mut list = self.store.recommendations()?;
+        if list.is_empty() {
+            list = List::new();
+        }
+        let value = list.to_value()?;
+        self.recommendations = Some((version, value.try_clone()?));
+        Ok(value)
+    }
+    /// Alleen wat sinds `from` veranderde: per collectie de nieuwe entiteiten
+    /// (`upsert`) en de verdwenen of voor deze gebruiker onzichtbare (`remove`),
+    /// plus de kleine afgeleide lijsten en de vluchtige velden. De browser past
+    /// dit alleen toe als hij precies op versie `from` staat.
+    pub(super) fn delta_for(
+        &mut self,
+        user: &d::User,
+        from: u64,
+        changes: &List<spin_store::Change>,
+    ) -> Result<String> {
+        let me = user.username.as_str();
+        let mut out = String::new();
+        try_push_str(&mut out, "{\"delta\":true")?;
+        member(&mut out, "from")?;
+        json::write(&Value::uint(from), &mut out)?;
+        member(&mut out, "current_user")?;
+        json::write(&public(user)?.to_value()?, &mut out)?;
+        member(&mut out, "changes")?;
+        try_push_str(&mut out, "{")?;
+        let mut first = true;
+        for (index, change) in changes.iter().enumerate() {
+            let collection = change.collection;
+            if !Store::<P>::in_snapshot(collection)
+                || changes
+                    .iter()
+                    .take(index)
+                    .any(|c| c.collection == collection)
+            {
+                continue;
+            }
+            if !first {
+                try_push_str(&mut out, ",")?;
+            }
+            first = false;
+            json::write_string(collection, &mut out)?;
+            try_push_str(&mut out, ":{\"upsert\":[")?;
+            let mut removed = List::<&str>::new();
+            let mut written = 0;
+            for c in changes.iter().filter(|c| c.collection == collection) {
+                match self.store.snapshot_entity(collection, &c.id)? {
+                    Some(value) if visible(collection, &value, me) => {
+                        if written > 0 {
+                            try_push_str(&mut out, ",")?;
+                        }
+                        written += 1;
+                        json::write(&value, &mut out)?;
+                    }
+                    _ => removed.push(c.id.as_str())?,
+                }
+            }
+            try_push_str(&mut out, "],\"remove\":[")?;
+            for (i, id) in removed.iter().enumerate() {
+                if i > 0 {
+                    try_push_str(&mut out, ",")?;
+                }
+                json::write_string(id, &mut out)?;
+            }
+            try_push_str(&mut out, "]}")?;
+        }
+        try_push_str(&mut out, "}")?;
+        member(&mut out, "logins")?;
+        json::write(&self.store.login_summaries()?.to_value()?, &mut out)?;
+        member(&mut out, "recommendations")?;
+        json::write(&self.recommendations()?, &mut out)?;
+        for (key, value) in &self.volatile()? {
+            member(&mut out, key)?;
+            json::write(value, &mut out)?;
+        }
+        try_push_str(&mut out, "}")?;
+        Ok(out)
+    }
+    /// Het staatdocument voor één gebruiker: de gedeelde tekst plus zijn eigen
+    /// artefacten, opnames, MCP-servers, git-accounts en de vluchtige velden.
+    pub(super) fn state_for(&mut self, user: &d::User) -> Result<StateDocument> {
+        let volatile = self.volatile()?;
         let cache = self.state_cache()?;
         let mut out = String::new();
         out.try_reserve(cache.shared.len() + (64 << 10))
             .map_err(|_| d::Error::OutOfMemory)?;
         try_push_str(&mut out, "{\"current_user\":")?;
-        json::write(&public.to_value()?, &mut out)?;
+        json::write(&public(user)?.to_value()?, &mut out)?;
         try_push_str(&mut out, &cache.shared)?;
         let me = user.username.as_str();
         member(&mut out, "artifacts")?;

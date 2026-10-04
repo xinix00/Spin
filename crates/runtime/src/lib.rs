@@ -735,8 +735,8 @@ fn serve_inner<P: Persistence, H: Platform>(
                         503,
                         "password worker capacity reached",
                     ))),
-                    Ok(Outcome::State(watch)) => {
-                        match server.state_for_watch(&watch, &now).and_then(|json| {
+                    Ok(Outcome::State(mut watch)) => {
+                        match server.state_for_watch(&mut watch, &now).and_then(|json| {
                             if json.len() > MAX_STATE_FRAME {
                                 return Err(spin_server::Error::Http(
                                     503,
@@ -1113,7 +1113,7 @@ fn serve_inner<P: Persistence, H: Platform>(
                 && mail.slots.0.borrow()[index].close.is_none()
             {
                 meter.mark();
-                let (code, error) = match server.state_for_watch(&watch.watch, &now) {
+                let (code, error) = match server.state_for_watch(&mut watch.watch, &now) {
                     Ok(json) if json.len() > MAX_STATE_FRAME => {
                         (1008, "state frame exceeds budget")
                     }

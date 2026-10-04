@@ -141,6 +141,9 @@ pub enum Outcome {
 /// Een browserabonnement bewaart uitsluitend de hash van de sessiecapability.
 pub struct StateWatch {
     token_hash: String,
+    /// De laatst verstuurde serverversie en de Store-versie daaronder; daarna
+    /// gaan er alleen delta's uit.
+    sent: Option<(u64, u64)>,
 }
 /// De netwerk-runtime levert cryptografische willekeur en objectidentiteiten.
 pub trait Runtime: Entropy + IdSource {}
@@ -178,6 +181,8 @@ pub struct Server<P: Persistence> {
     storage_started: Option<d::Time>,
     storage_checked: Option<d::Time>,
     state_cache: Option<routes::StateCache>,
+    /// De aanbevelingen met de Store-versie waarop ze berekend zijn.
+    recommendations: Option<(u64, Value)>,
     diagnostics_due: bool,
 }
 impl<P: Persistence> Server<P> {
@@ -215,6 +220,7 @@ impl<P: Persistence> Server<P> {
             storage_started: None,
             storage_checked: None,
             state_cache: None,
+            recommendations: None,
             diagnostics_due: false,
         }
     }
@@ -251,6 +257,7 @@ impl<P: Persistence> Server<P> {
     /// De boot-schil herstelt vluchtige runtimeverwijzingen vóór de listener werk aanneemt.
     pub fn recover(&mut self, now: &Timestamp) -> Result {
         self.store.recover_runtime_status(now)?;
+        self.store.externalize_composition_changes()?;
         self.restore_agents(now)?;
         Ok(())
     }
@@ -319,6 +326,7 @@ impl<P: Persistence> Server<P> {
             }
             return Ok(Outcome::State(StateWatch {
                 token_hash: identity.1.token_hash,
+                sent: None,
             }));
         }
         if req.is_mutation() {
@@ -413,9 +421,21 @@ impl<P: Persistence> Server<P> {
         self.finish_auth(work, now, runtime)
     }
     /// Iedere live stream verliest toegang zodra haar browsersessie is ingetrokken.
-    pub fn state_for_watch(&mut self, watch: &StateWatch, now: &Timestamp) -> Result<String> {
+    /// Het eerste bericht is het hele document, daarna alleen delta's zolang
+    /// de Store weet wat er sinds het vorige bericht veranderde.
+    pub fn state_for_watch(&mut self, watch: &mut StateWatch, now: &Timestamp) -> Result<String> {
         let (user, _) = self.store.authenticate_session(&watch.token_hash, now)?;
-        Ok(self.state_for(&user)?.0)
+        let sent = (self.version(), self.store.version());
+        let changes = match watch.sent {
+            Some((_, since)) => self.store.changes_since(since)?,
+            None => None,
+        };
+        let document = match (watch.sent, changes) {
+            (Some((from, _)), Some(changes)) => self.delta_for(&user, from, &changes)?,
+            _ => self.state_for(&user)?.0,
+        };
+        watch.sent = Some(sent);
+        Ok(document)
     }
     /// Controleert ook een stille verbinding op verlopen of ingetrokken autorisatie.
     pub fn validate_watch(&mut self, watch: &StateWatch, now: &Timestamp) -> Result {

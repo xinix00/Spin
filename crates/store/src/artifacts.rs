@@ -98,6 +98,7 @@ impl<P: Persistence> Store<P> {
         self.edit(|state| {
             let members = prepare(state, id, operator, admin)?;
             let mut removed_compositions = Map::new();
+            let mut garbage = List::<alloc::string::String>::new();
             for a in members.iter() {
                 if !a.snapshot.digest.is_empty() {
                     crate::blobs::queue_garbage(
@@ -121,6 +122,16 @@ impl<P: Persistence> Store<P> {
                         removed_compositions.insert(try_string(id)?, true)?;
                     }
                 }
+            }
+            for (id, c) in state.compositions.iter() {
+                if c.capsule_changes.is_some() && removed_compositions.contains_key(id) {
+                    garbage.push(spin_core::validation::text(format_args!(
+                        "manifest:composition:{id}"
+                    ))?)?;
+                }
+            }
+            for reference in garbage.iter() {
+                crate::blobs::queue_garbage(state, reference)?;
             }
             state
                 .compositions

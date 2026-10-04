@@ -1652,11 +1652,32 @@ document.getElementById('retry-form').onsubmit=async event=>{event.preventDefaul
 // The server pushes the state over one WebSocket: whole on connect, again
 // on every change, and every few seconds while something moves in memory.
 // refresh() stays for the moment right after an action; nothing polls.
-const stateStream={socket:null,timer:null,stopped:true,failures:0};
+const stateStream={socket:null,timer:null,stopped:true,failures:0,version:0};
+// Dezelfde volgorde als de snapshot van de server: [veld, richting].
+const snapshotOrder={artifacts:['created_at',-1],recordings:['started_at',-1],compositions:['created_at',-1],jobs:['created_at',-1],job_attachments:['created_at',1],workflow_templates:['name',1],phase_runs:['started_at',1],deliverables:['created_at',1],deliverable_comments:['created_at',1],code_review_revisions:['created_at',1],code_review_comments:['created_at',1],workflow_questions:['created_at',1],sessions:['created_at',1],activations:['started_at',1],turns:['started_at',1],checkpoints:['created_at',1],results:['created_at',1],clients:['name',1],mcp_servers:['created_at',-1],git_repositories:['name',1],git_accounts:['operator',1],users:['username',1]};
+function sortSnapshot(key,list){const [field,direction]=snapshotOrder[key]||[];if(!field)return;const time=field.endsWith('_at'),value=item=>time?(Date.parse(item[field]||'')||0):String(item[field]||'');list.sort((a,b)=>{const x=value(a),y=value(b);return (x<y?-1:x>y?1:0)*direction;});}
+// Een delta vervangt per collectie de gewijzigde entiteiten, haalt verdwenen
+// weg en neemt de kleine afgeleide lijsten en vluchtige velden over.
+function applyDelta(delta){
+  const next={...snapshot};
+  for(const [key,change] of Object.entries(delta.changes||{})){
+    const list=(next[key]||[]).slice(),index=new Map(list.map((item,i)=>[item.id,i]));let added=false;
+    for(const item of change.upsert||[]){const at=index.get(item.id);if(at===undefined){list.push(item);added=true;}else list[at]=item;}
+    const gone=new Set(change.remove||[]);next[key]=gone.size?list.filter(item=>!gone.has(item.id)):list;
+    if(added)sortSnapshot(key,next[key]);
+  }
+  for(const key of ['current_user','logins','recommendations','preparing','git_oauth_providers','engine','storage'])if(key in delta)next[key]=delta[key];
+  next.version=Math.max(delta.version||0,snapshot.version||0);
+  applyState(next,false);
+}
 function connectStateStream(){
   stateStream.stopped=false;clearTimeout(stateStream.timer);if(stateStream.socket&&[WebSocket.OPEN,WebSocket.CONNECTING].includes(stateStream.socket.readyState))return;
   const socket=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/state/ws`);stateStream.socket=socket;
-  socket.onmessage=event=>{let next;try{next=JSON.parse(event.data);}catch(_){return;}stateStream.failures=0;applyState(next,false);};
+  socket.onmessage=event=>{let next;try{next=JSON.parse(event.data);}catch(_){return;}stateStream.failures=0;
+    // Het eerste bericht is het hele document, daarna alleen wat veranderde.
+    // Mist er een, dan opnieuw verbinden: de server begint dan weer met alles.
+    if(next.delta){if(next.from!==stateStream.version){socket.close();return;}stateStream.version=next.version;applyDelta(next);return;}
+    stateStream.version=next.version;applyState(next,false);};
   socket.onclose=()=>{if(stateStream.socket===socket)stateStream.socket=null;if(stateStream.stopped)return;document.getElementById('server-status').textContent='verbinding herstellen…';const delay=Math.min(15000,500*2**Math.min(stateStream.failures++,5));stateStream.timer=setTimeout(async()=>{if(stateStream.stopped)return;try{const status=await api('/api/auth/status');if(status?.authenticated){authState=status;csrfToken=status.csrf_token||csrfToken;}connectStateStream();}catch(error){if(error.status===401){stopStateStream();authState.authenticated=false;csrfToken='';showAuthGate('Je sessie is verlopen. Log opnieuw in.');return;}connectStateStream();}},delay);};
   socket.onerror=()=>socket.close();
 }

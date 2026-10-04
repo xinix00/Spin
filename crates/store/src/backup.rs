@@ -96,6 +96,7 @@ impl<P: Persistence> Store<P> {
         }
         self.state = candidate;
         self.version = version;
+        self.changes.clear();
         Ok(())
     }
     /// Behoudt de duurzame foutgrens van de gewone Store-opdrachten.

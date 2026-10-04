@@ -182,6 +182,100 @@ impl<P: Persistence> Store<P> {
     }
 }
 
+impl<P: Persistence> Store<P> {
+    /// Eén entiteit zoals [`Store::snapshot`] hem toont, met dezelfde redactie;
+    /// `None` als hij er niet (meer) in staat. Collecties buiten de snapshot
+    /// (en `logins`, een afgeleide lijst) geven altijd `None`.
+    pub fn snapshot_entity(&self, collection: &str, id: &str) -> Result<Option<d::json::Value>> {
+        use d::Wire;
+        fn value<T: Wire>(item: Option<&T>) -> Result<Option<d::json::Value>> {
+            Ok(match item {
+                Some(item) => Some(item.to_value()?),
+                None => None,
+            })
+        }
+        let s = &self.state;
+        match collection {
+            "artifacts" => value(s.artifacts.get(id)),
+            "recordings" => value(s.recordings.get(id)),
+            "compositions" => value(s.compositions.get(id)),
+            "jobs" => value(s.jobs.get(id)),
+            "job_attachments" => value(s.job_attachments.get(id).filter(|a| !a.job_id.is_empty())),
+            "workflow_templates" => value(s.workflow_templates.get(id)),
+            "phase_runs" => value(s.phase_runs.get(id)),
+            "deliverables" => value(s.deliverables.get(id)),
+            "deliverable_comments" => value(s.deliverable_comments.get(id)),
+            "code_review_revisions" => match s.code_review_revisions.get(id) {
+                Some(r) => Ok(Some(review_summary(r)?.to_value()?)),
+                None => Ok(None),
+            },
+            "code_review_comments" => value(s.code_review_comments.get(id)),
+            "workflow_questions" => value(s.workflow_questions.get(id)),
+            "sessions" => value(s.sessions.get(id)),
+            "activations" => value(s.activations.get(id)),
+            "turns" => value(s.turns.get(id)),
+            "checkpoints" => value(s.checkpoints.get(id)),
+            "results" => value(s.results.get(id)),
+            "clients" => value(s.clients.get(id)),
+            "mcp_servers" => match s.mcp_servers.get(id) {
+                Some(m) => Ok(Some(redact_mcp(m.try_clone()?).to_value()?)),
+                None => Ok(None),
+            },
+            "git_repositories" => value(s.git_repositories.get(id)),
+            "git_accounts" => match s.git_accounts.get(id) {
+                Some(g) => Ok(Some(redact_git(g.try_clone()?).to_value()?)),
+                None => Ok(None),
+            },
+            "users" => match s.users.get(id) {
+                Some(u) => Ok(Some(public_user(u)?.to_value()?)),
+                None => Ok(None),
+            },
+            _ => Ok(None),
+        }
+    }
+    /// Of een collectie van de opgeslagen state ook in de snapshot staat.
+    pub fn in_snapshot(collection: &str) -> bool {
+        matches!(
+            collection,
+            "artifacts"
+                | "recordings"
+                | "compositions"
+                | "jobs"
+                | "job_attachments"
+                | "workflow_templates"
+                | "phase_runs"
+                | "deliverables"
+                | "deliverable_comments"
+                | "code_review_revisions"
+                | "code_review_comments"
+                | "workflow_questions"
+                | "sessions"
+                | "activations"
+                | "turns"
+                | "checkpoints"
+                | "results"
+                | "clients"
+                | "mcp_servers"
+                | "git_repositories"
+                | "git_accounts"
+                | "users"
+        )
+    }
+    /// De aanbevelingen; die lezen alleen jobs en sessions, in snapshotvolgorde.
+    pub fn recommendations(&self) -> Result<List<d::Recommendation>> {
+        let mut partial = d::Snapshot::default();
+        for (_, job) in self.state.jobs.iter() {
+            partial.jobs.push(job.try_clone()?)?;
+        }
+        by_time(&mut partial.jobs, |v| &v.created_at, true)?;
+        for (_, session) in self.state.sessions.iter() {
+            partial.sessions.push(session.try_clone()?)?;
+        }
+        by_time(&mut partial.sessions, |v| &v.created_at, false)?;
+        Ok(spin_core::orchestrator::recommend(&partial)?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -448,8 +448,25 @@ impl<P: Persistence> Store<P> {
         }
         Ok(out)
     }
-    /// Bewaart het laatst opgehaalde filesystemverschil buiten de workspace.
-    pub fn set_composition_changes(&mut self, id: &str, changes: d::LayerContents) -> Result {
+    /// Bewaart het laatst opgehaalde filesystemverschil buiten de workspace: de
+    /// samenvatting in de state, de bestandslijst als blob
+    /// `manifest:composition:<id>` (die kan megabytes zijn). Een ongewijzigd
+    /// verschil schrijft niets.
+    pub fn set_composition_changes(&mut self, id: &str, mut changes: d::LayerContents) -> Result {
+        let current = self.composition(id)?.capsule_changes.as_ref();
+        // Een lege lijst wist de blob alleen als het verschil nu echt leeg is
+        // en er eerder een lijst stond; anders blijft een losse lijst staan.
+        let listed = current.is_some_and(|c| c.files > 0 || !c.entries.is_empty());
+        let entries = core::mem::take(&mut changes.entries);
+        if !entries.is_empty() || (listed && changes.files == 0) {
+            self.put_manifest(
+                &spin_core::validation::text(format_args!("manifest:composition:{id}"))?,
+                &entries,
+            )?;
+        }
+        if self.composition(id)?.capsule_changes.as_ref() == Some(&changes) {
+            return Ok(());
+        }
         self.edit(|state| {
             state
                 .compositions
@@ -457,6 +474,47 @@ impl<P: Persistence> Store<P> {
                 .ok_or(Error::NotFound)?
                 .capsule_changes = Some(changes);
             Ok(())
+        })
+    }
+    /// Eenmalig na het laden: bestandslijsten die nog in de state staan, gaan
+    /// naar hun blob. Daarna draagt de state alleen de samenvatting.
+    pub fn externalize_composition_changes(&mut self) -> Result<usize> {
+        let mut ids = d::List::new();
+        for (id, c) in self.state.compositions.iter() {
+            if c.capsule_changes
+                .as_ref()
+                .is_some_and(|x| !x.entries.is_empty())
+            {
+                ids.push(try_string(id)?)?;
+            }
+        }
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        for id in ids.iter() {
+            let entries = self
+                .composition(id)?
+                .capsule_changes
+                .as_ref()
+                .map(|c| c.entries.try_clone())
+                .transpose()?
+                .unwrap_or_default();
+            self.put_manifest(
+                &spin_core::validation::text(format_args!("manifest:composition:{id}"))?,
+                &entries,
+            )?;
+        }
+        self.edit(|state| {
+            for id in ids.iter() {
+                if let Some(changes) = state
+                    .compositions
+                    .get_mut(id)
+                    .and_then(|c| c.capsule_changes.as_mut())
+                {
+                    changes.entries = d::List::new();
+                }
+            }
+            Ok(ids.len())
         })
     }
     /// Na herstart houden onafgebouwde capsules geen loginpool meer bezet.
@@ -493,6 +551,12 @@ impl<P: Persistence> Store<P> {
 }
 fn discard(state: &mut d::state::PersistedState, id: &str, now: &d::Timestamp) -> Result {
     let c = state.compositions.remove(id).ok_or(Error::NotFound)?;
+    if c.capsule_changes.is_some() {
+        crate::blobs::queue_garbage(
+            state,
+            &spin_core::validation::text(format_args!("manifest:composition:{id}"))?,
+        )?;
+    }
     if let Some(s) = state.sessions.get_mut(&c.session_id)
         && s.prepared_composition_id == id
     {

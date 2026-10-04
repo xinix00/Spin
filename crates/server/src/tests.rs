@@ -3965,3 +3965,86 @@ fn a_queued_capsule_start_reports_why_it_waits() {
             .contains("credential:claude-global")
     );
 }
+#[test]
+fn state_stream_sends_the_document_once_then_only_changed_entities() {
+    let fail = Cell::new(false);
+    let now = time();
+    let mut random = Random(92000);
+    let state = PersistedState::from_json(
+        br#"{
+        "jobs":{"job":{"id":"job","owner":"derek","status":"active"}},
+        "compositions":{"c":{"id":"c","operator":"derek"}}
+    }"#,
+    )
+    .unwrap();
+    let mut server = Server::new(Store::new(state, Memory(&fail)));
+    let setup = response(
+        &mut server,
+        req(
+            "POST",
+            "/api/auth/setup",
+            &[],
+            br#"{"username":"Derek","display_name":"Derek","password":"a-long-password"}"#,
+        ),
+        &now,
+        &mut random,
+    );
+    assert_eq!(setup.status, 201);
+    let headers = [
+        ("Cookie", cookie(&setup)),
+        ("Host", "bollenloods.getspin.app"),
+        ("Origin", "https://bollenloods.getspin.app"),
+    ];
+    let Ok(Outcome::State(mut watch)) = server.begin(
+        req("GET", "/api/state/ws", &headers, b""),
+        &now,
+        &mut random,
+    ) else {
+        panic!("expected state stream")
+    };
+    let field = |json: &str, key: &str| {
+        Value::from_json(json.as_bytes())
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .get(key)
+            .cloned()
+    };
+    let first = server.state_for_watch(&mut watch, &now).unwrap();
+    assert!(field(&first, "delta").is_none());
+    let version = field(&first, "version").unwrap();
+    server
+        .store
+        .set_composition_changes(
+            "c",
+            d::LayerContents {
+                files: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let second = server.state_for_watch(&mut watch, &now).unwrap();
+    assert_eq!(field(&second, "delta"), Some(Value::Bool(true)));
+    assert_eq!(field(&second, "from"), Some(version));
+    let changes = field(&second, "changes").unwrap();
+    let changes = changes.as_object().unwrap();
+    assert_eq!(changes.len(), 1);
+    let upsert = changes
+        .get("compositions")
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .get("upsert")
+        .unwrap();
+    let Value::Array(items) = upsert else {
+        panic!("upsert is an array")
+    };
+    assert_eq!(items.len(), 1);
+    assert!(second.len() < first.len());
+    // Niets veranderd: een lege delta met alleen de vluchtige velden.
+    let third = server.state_for_watch(&mut watch, &now).unwrap();
+    assert_eq!(
+        field(&third, "changes").unwrap().as_object().unwrap().len(),
+        0
+    );
+}

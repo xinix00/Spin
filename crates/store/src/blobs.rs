@@ -131,6 +131,43 @@ impl<P: Persistence> Store<P> {
     }
 }
 
+impl<P: Persistence> Store<P> {
+    /// Schrijft een bestandslijst als blob `reference`, alleen als de inhoud
+    /// verschilt van wat er al staat; een lege lijst zonder blob blijft leeg.
+    pub(crate) fn put_manifest(
+        &mut self,
+        reference: &str,
+        entries: &spin_domain::List<spin_domain::ContentEntry>,
+    ) -> Result {
+        use spin_domain::Wire;
+        let bytes = entries.to_json()?;
+        let mut hash = spin_security::Sha256::new();
+        hash.update(bytes.as_bytes());
+        let mut digest = spin_domain::try_string("sha256:")?;
+        for byte in hash.finish() {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            for nibble in [byte >> 4, byte & 15] {
+                digest
+                    .try_reserve(1)
+                    .map_err(|_| spin_domain::Error::OutOfMemory)?;
+                digest.push(char::from(HEX[usize::from(nibble)]));
+            }
+        }
+        match self.blob(BlobRequest::Info(reference)) {
+            Ok(BlobReply::Info(info)) if info.digest == digest => return Ok(()),
+            Err(Error::NotFound) if entries.is_empty() => return Ok(()),
+            Ok(_) | Err(Error::NotFound) => {}
+            Err(error) => return Err(error),
+        }
+        self.blob(BlobRequest::Put {
+            reference,
+            kind: "manifest",
+            bytes: bytes.as_bytes(),
+        })?;
+        Ok(())
+    }
+}
+
 /// A bounded outbox survives a failed object deletion or a server restart.
 pub(crate) fn queue_garbage(
     state: &mut spin_domain::state::PersistedState,
@@ -211,6 +248,93 @@ mod tests {
                 .push(spin_domain::try_string(reference)?);
             Ok(BlobReply::Done)
         }
+    }
+    /// Een blobopslag in het geheugen die Info en Put telt.
+    struct Blobs<'a>(&'a RefCell<Vec<(String, Vec<u8>)>>, &'a Cell<u32>);
+    impl Persistence for Blobs<'_> {
+        fn save(&mut self, _: &PersistedState) -> Result {
+            Ok(())
+        }
+        fn blob(&mut self, request: BlobRequest<'_>) -> Result<BlobReply> {
+            let info = |reference: &str, bytes: &[u8]| {
+                let mut hash = spin_security::Sha256::new();
+                hash.update(bytes);
+                let mut digest = String::from("sha256:");
+                for b in hash.finish() {
+                    digest.push_str(&alloc::format!("{b:02x}"));
+                }
+                BlobInfo {
+                    reference: reference.into(),
+                    digest,
+                    kind: "manifest".into(),
+                    size: bytes.len() as i64,
+                }
+            };
+            match request {
+                BlobRequest::Info(reference) => {
+                    let blobs = self.0.borrow();
+                    let (_, bytes) = blobs
+                        .iter()
+                        .find(|(r, _)| r == reference)
+                        .ok_or(Error::NotFound)?;
+                    Ok(BlobReply::Info(info(reference, bytes)))
+                }
+                BlobRequest::Put {
+                    reference, bytes, ..
+                } => {
+                    self.1.set(self.1.get() + 1);
+                    let mut blobs = self.0.borrow_mut();
+                    blobs.retain(|(r, _)| r != reference);
+                    blobs.push((reference.into(), bytes.to_vec()));
+                    Ok(BlobReply::Info(info(reference, bytes)))
+                }
+                _ => Err(Error::NotFound),
+            }
+        }
+    }
+    #[test]
+    fn capsule_change_lists_live_in_a_blob_and_unchanged_lists_are_not_rewritten() {
+        let state = PersistedState::from_json(
+            br#"{"compositions":{"c":{"id":"c","capsule_changes":{"files":1,"bytes":3,"entries":[{"path":"/old","bytes":3}]}}}}"#,
+        )
+        .unwrap();
+        let blobs = RefCell::new(Vec::new());
+        let puts = Cell::new(0);
+        let mut store = Store::new(state, Blobs(&blobs, &puts));
+        // De migratie bij de boot haalt de inline lijst uit de state.
+        assert_eq!(store.externalize_composition_changes().unwrap(), 1);
+        let changes = store
+            .composition("c")
+            .unwrap()
+            .capsule_changes
+            .as_ref()
+            .unwrap();
+        assert!(changes.entries.is_empty());
+        assert_eq!(changes.files, 1);
+        assert_eq!(blobs.borrow()[0].0, "manifest:composition:c");
+        let next = spin_domain::LayerContents::from_json(
+            br#"{"files":2,"bytes":5,"entries":[{"path":"/a","bytes":2},{"path":"/b","bytes":3}]}"#,
+        )
+        .unwrap();
+        store
+            .set_composition_changes("c", next.try_clone().unwrap())
+            .unwrap();
+        assert_eq!(puts.get(), 2);
+        let version = store.version();
+        // Hetzelfde verschil opnieuw: geen Put en geen nieuwe stateversie.
+        store.set_composition_changes("c", next).unwrap();
+        assert_eq!(puts.get(), 2);
+        assert_eq!(store.version(), version);
+        assert_eq!(
+            store
+                .composition("c")
+                .unwrap()
+                .capsule_changes
+                .as_ref()
+                .unwrap()
+                .files,
+            2
+        );
     }
     #[test]
     fn deletion_cleanup_survives_restart_and_never_deletes_a_reused_reference() {
