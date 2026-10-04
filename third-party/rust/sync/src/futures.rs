@@ -1,4 +1,4 @@
-//! [`Pool`]: een vaste set futures van één soort in één taak.
+//! [`Futures`]: een vaste set futures van één soort in één taak.
 //!
 //! De `FuturesUnordered` van één core, maar dan met `N` vaste plaatsen en
 //! zonder heap: een actor die meerdere verzoeken tegelijk in de lucht wil
@@ -8,9 +8,9 @@
 //! heeft nog steeds één eigenaar (handboek §1); de futures lenen hem alleen
 //! binnen één poll.
 //!
-//! Elke [`poll_next`](Pool::poll_next) pollt de lopende futures (hoogstens
+//! Elke [`poll_next`](Futures::poll_next) pollt de lopende futures (hoogstens
 //! `N`, voor de hopfs-actor 16) met de waker van de taak: wie wekt, wekt de
-//! hele taak, en de pool kijkt dan bij iedereen. Bij zestien plaatsen is
+//! hele taak, en de set kijkt dan bij iedereen. Bij zestien plaatsen is
 //! dat goedkoper dan een waker per plaats.
 
 use core::future::Future;
@@ -22,18 +22,18 @@ use core::task::{Context, Poll};
 /// # Invariants
 ///
 /// Een future in een plaats wordt nooit verplaatst: hij komt erin via
-/// [`push`](Pool::push) op een gepinde pool en gaat eruit door hem ter
-/// plekke te droppen (`*slot = None`). Daarmee pint een gepinde `Pool` zijn
+/// [`push`](Futures::push) op een gepinde set en gaat eruit door hem ter
+/// plekke te droppen (`*slot = None`). Daarmee pint een gepinde `Futures` zijn
 /// futures (structurele pinning, zoals `Select`).
-pub struct Pool<F, const N: usize> {
+pub struct Futures<F, const N: usize> {
     slots: [Option<F>; N],
     /// Waar de volgende ronde begint: zo komt niet steeds dezelfde plaats
     /// als eerste aan de beurt.
     next: usize,
 }
 
-impl<F: Future, const N: usize> Pool<F, N> {
-    /// Een lege pool.
+impl<F: Future, const N: usize> Futures<F, N> {
+    /// Een lege set.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -76,7 +76,7 @@ impl<F: Future, const N: usize> Pool<F, N> {
     }
 
     /// Pollt de lopende futures en geeft de eerste uitkomst die klaar is;
-    /// de rest blijft lopen. `Ready(None)` als de pool leeg is.
+    /// de rest blijft lopen. `Ready(None)` als de set leeg is.
     pub fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<F::Output>> {
         // SAFETY: structurele pinning (zie de invariant): een plaats wordt
         // alleen ter plekke gepolld of gedropt.
@@ -105,7 +105,7 @@ impl<F: Future, const N: usize> Pool<F, N> {
     }
 }
 
-impl<F: Future, const N: usize> Default for Pool<F, N> {
+impl<F: Future, const N: usize> Default for Futures<F, N> {
     fn default() -> Self {
         Self::new()
     }
@@ -122,7 +122,7 @@ mod tests {
         let bells = [Signal::new(), Signal::new(), Signal::new()];
         let (_, w) = waker();
         let mut cx = Context::from_waker(&w);
-        let mut pool = core::pin::pin!(Pool::<_, 2>::new());
+        let mut set = core::pin::pin!(Futures::<_, 2>::new());
         let job = |i: usize| {
             let b = &bells[i];
             async move {
@@ -130,27 +130,27 @@ mod tests {
                 i
             }
         };
-        assert!(pool.as_mut().push(job(0)).is_ok());
-        assert!(pool.as_mut().push(job(1)).is_ok());
-        assert!(pool.is_full());
-        assert!(pool.as_mut().push(job(2)).is_err(), "vol");
-        assert_eq!(pool.as_mut().poll_next(&mut cx), Poll::Pending);
+        assert!(set.as_mut().push(job(0)).is_ok());
+        assert!(set.as_mut().push(job(1)).is_ok());
+        assert!(set.is_full());
+        assert!(set.as_mut().push(job(2)).is_err(), "vol");
+        assert_eq!(set.as_mut().poll_next(&mut cx), Poll::Pending);
         bells[1].set();
-        assert_eq!(pool.as_mut().poll_next(&mut cx), Poll::Ready(Some(1)));
-        assert_eq!(pool.len(), 1);
-        assert!(pool.as_mut().push(job(2)).is_ok(), "de plaats is weer vrij");
+        assert_eq!(set.as_mut().poll_next(&mut cx), Poll::Ready(Some(1)));
+        assert_eq!(set.len(), 1);
+        assert!(set.as_mut().push(job(2)).is_ok(), "de plaats is weer vrij");
         bells[2].set();
         bells[0].set();
         let mut got = [
-            pool.as_mut().poll_next(&mut cx),
-            pool.as_mut().poll_next(&mut cx),
+            set.as_mut().poll_next(&mut cx),
+            set.as_mut().poll_next(&mut cx),
         ];
         got.sort_by_key(|p| match p {
             Poll::Ready(Some(v)) => *v,
             _ => usize::MAX,
         });
         assert_eq!(got, [Poll::Ready(Some(0)), Poll::Ready(Some(2))]);
-        assert_eq!(pool.as_mut().poll_next(&mut cx), Poll::Ready(None));
-        assert!(pool.is_empty());
+        assert_eq!(set.as_mut().poll_next(&mut cx), Poll::Ready(None));
+        assert!(set.is_empty());
     }
 }

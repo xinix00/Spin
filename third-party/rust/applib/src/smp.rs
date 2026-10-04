@@ -76,10 +76,13 @@ pub const SMP_STACK: usize = 512 << 10;
 /// Hoe lang [`bring_up`] op de kern wacht, per verzoek en per opgang.
 pub const BRING_UP_LIMIT: Duration = Duration::from_secs(2);
 
-/// De langste slaap van een secundaire. Zijn wekken komen via [`kick`];
-/// deze grens is de vangrail als er toch een verloren gaat, zoals de
-/// 10 ms van de OS-core (`TURN_CAP_NS`): "geen deadline" als oneindig
-/// lezen is geen zuinigheid maar een hang.
+/// De langste yield van een secundaire. In de yield maken alleen zijn
+/// wektijd en een HVC #4 van een sibling ([`kick`]) hem weer due; de SEV
+/// van een waker op een andere core of de kick van de kern bij een stop
+/// niet. Deze grens is daar de vangrail, zoals de 10 ms van de OS-core
+/// (`TURN_CAP_NS`): "geen deadline" als oneindig lezen is geen zuinigheid
+/// maar een hang. In WFE geldt hij niet: daar ziet de lus elke wek en elke
+/// vlag na hooguit één tik van de event-stream.
 pub const SECONDARY_NAP: Duration = Duration::from_millis(10);
 
 /// De executors, één per core: [`crate::EXEC`] is die van core 0.
@@ -371,13 +374,14 @@ extern "C" fn secondary_main(k: u64) -> ! {
     exec.run(&mut CoreSleeper::new(ctrl, crate::sleep::Hw, k))
 }
 
-/// De slaap van een secundaire core: een yield naar de switcher of WFE,
-/// zoals de control-page zegt, begrensd op [`SECONDARY_NAP`]. Geen
-/// deurbel (alleen de primaire leest de RX-ring) en geen eigen woorden op
-/// de page: zijn slaap staat in zijn eigen woord van `sleep::SECONDARY_IDLE`
-/// (bijgewerkt na elke WFE), en de
-/// primaire publiceert de som (`CtrlIdle` is de idle-tijd van álle cores
-/// van de app; de dvfs van de kern deelt door `CtrlCores`).
+/// De slaap van een secundaire core: een yield naar de switcher, begrensd
+/// op [`SECONDARY_NAP`], of WFE tot zijn eigen deadline, zoals de
+/// control-page zegt. Geen deurbel (alleen de primaire leest de RX-ring)
+/// en geen eigen woorden op de page: zijn slaap en zijn rondes staan in
+/// zijn eigen woord van `sleep::SECONDARY_IDLE` (bijgewerkt na elke WFE)
+/// en `sleep::SECONDARY_WAKES`, en de primaire publiceert de som
+/// (`CtrlIdle` is de idle-tijd van álle cores van de app; de dvfs van de
+/// kern deelt door `CtrlCores`).
 ///
 /// Is de app weg (de primaire zette `Exited`, of de kern vraagt de stop),
 /// dan gaat deze core ook: HVC #0, en de switcher meldt zijn context dood
@@ -415,7 +419,7 @@ impl<I: crate::sleep::Idle> CoreSleeper<I> {
     /// Is de app weg?
     #[must_use]
     pub fn app_gone(&self) -> bool {
-        self.ctrl.kill_requested() || self.ctrl.status() == Some(AppStatus::Exited)
+        gone(&self.ctrl)
     }
 
     /// De slaap zelf, als de app er nog is.
@@ -423,21 +427,30 @@ impl<I: crate::sleep::Idle> CoreSleeper<I> {
         if ready() {
             return;
         }
-        let cap = now.saturating_add(SECONDARY_NAP.as_nanos() as u64);
-        let until = until.map_or(cap, |u| u.min(cap));
+        let yields = self.ctrl.is_shared() || self.ctrl.is_yield_mode();
+        let until = if yields {
+            let cap = now.saturating_add(SECONDARY_NAP.as_nanos() as u64);
+            Some(until.map_or(cap, |u| u.min(cap)))
+        } else {
+            until
+        };
         let hz = self.idle.counter_hz();
-        let deadline = clock::wake_at(now, Some(until), self.idle.counter(), hz);
+        let deadline = clock::wake_at(now, until, self.idle.counter(), hz);
         self.naps = self.naps.wrapping_add(1);
+        if let Some(w) = crate::sleep::SECONDARY_WAKES.get(self.core) {
+            w.store(self.naps, Relaxed);
+        }
         let word = crate::sleep::SECONDARY_IDLE.get(self.core);
         let base = self.idle_ticks;
-        let slept = if self.ctrl.is_shared() || self.ctrl.is_yield_mode() {
+        let slept = if yields {
             self.idle.hvc_yield(deadline)
         } else {
-            // Tot werk of de deadline (sleep::wfe_until): een wek zonder werk
-            // is geen ronde. Een stop of een buur ziet hij hooguit
-            // SECONDARY_NAP later, zoals voorheen de vangrail.
+            // Tot werk, een vlag of de eigen deadline (sleep::wfe_until): een
+            // wek zonder werk is geen ronde. Een stop, een buur of een taak
+            // van een andere core ziet hij na de eerstvolgende WFE (een SEV,
+            // of de tik van de event-stream); geen ronde per 10 ms meer.
             let ctrl = &self.ctrl;
-            let woke = || ready() || ctrl.is_shared() || ctrl.is_yield_mode();
+            let woke = || ready() || ctrl.is_shared() || ctrl.is_yield_mode() || gone(ctrl);
             let progress = |s: u64| {
                 if let Some(w) = word {
                     w.store(base.wrapping_add(s), Relaxed);
@@ -453,6 +466,11 @@ impl<I: crate::sleep::Idle> CoreSleeper<I> {
             w.store(self.idle_ticks, Relaxed);
         }
     }
+}
+
+/// Is de app weg (de primaire zette `Exited`, of de kern vraagt de stop)?
+fn gone(ctrl: &Ctrl) -> bool {
+    ctrl.kill_requested() || ctrl.status() == Some(AppStatus::Exited)
 }
 
 impl<I: crate::sleep::Idle> Sleeper for CoreSleeper<I> {
@@ -692,7 +710,7 @@ mod tests {
     // De secundaire yieldt als de page dat zegt, met zijn wektijd begrensd op
     // de vangrail; zonder deadline ook op de vangrail, nooit een uur.
     #[test]
-    fn a_secondary_naps_within_the_guard_rail() {
+    fn a_secondary_yields_within_the_guard_rail() {
         let mut p = Page::new();
         p.put(CTRL_IDLE_MODE, IDLE_YIELD);
         let mut s = CoreSleeper::new(p.ctrl(), Fake::default(), 3);
@@ -703,25 +721,56 @@ mod tests {
         // Werk: niet slapen.
         s.sleep(0, None, &|| true);
         assert_eq!(s.idle().yields.len(), 3);
-        // Zonder yield-modus: WFE tot de vangrail (10 ms in stappen van
-        // 5 µs), één ronde; zijn woord in SECONDARY_IDLE loopt mee met
-        // elke WFE, niet pas aan het eind.
+        assert_eq!(crate::sleep::SECONDARY_WAKES[3].load(Relaxed), 3);
+    }
+
+    // Zonder yield-modus: WFE tot zijn eigen deadline, één ronde, zonder
+    // vangrail; zijn woord in SECONDARY_IDLE loopt mee met elke WFE, niet
+    // pas aan het eind.
+    #[test]
+    fn a_secondary_sleeps_in_wfe_until_its_deadline() {
         let p = Page::new();
         let word = &crate::sleep::SECONDARY_IDLE[4];
         let mut s = CoreSleeper::new(p.ctrl(), Fake::default(), 4);
         let seen = Cell::new(0u64);
-        s.sleep(0, None, &|| {
+        s.sleep(0, Some(50_000_000), &|| {
             let w = word.load(Relaxed);
             assert!(w >= seen.get(), "the word went back");
             seen.set(w);
             false
         });
-        assert_eq!(s.idle().wfes, 2_000);
+        assert_eq!(s.idle().wfes, 10_000);
         assert_eq!(s.naps, 1);
         assert!(s.idle().yields.is_empty());
         // De toets na de laatste WFE, nog in de lus, zag de hele slaap al.
-        assert_eq!(seen.get(), 10_000_000);
-        assert_eq!(word.load(Relaxed), 10_000_000);
+        assert_eq!(seen.get(), 50_000_000);
+        assert_eq!(word.load(Relaxed), 50_000_000);
+    }
+
+    // Zonder deadline slaapt een secundaire in WFE tot er werk is of tot
+    // zijn app weggaat; geen ronde per 10 ms om dat te zien.
+    #[test]
+    fn a_secondary_without_a_timer_wakes_for_work_or_a_stop() {
+        let p = Page::new();
+        let ctrl = p.ctrl();
+        let mut s = CoreSleeper::new(ctrl, Fake::default(), 6);
+        let n = Cell::new(0u32);
+        s.sleep(0, None, &|| {
+            n.set(n.get() + 1);
+            n.get() > 5_000
+        });
+        // De eerste toets is die vóór de slaap; elke volgende na een WFE.
+        assert_eq!((s.idle().wfes, s.naps), (4_999, 1));
+        let n = Cell::new(0u32);
+        s.sleep(0, None, &|| {
+            n.set(n.get() + 1);
+            if n.get() == 3_000 {
+                ctrl.set(CTRL_KILL, 1);
+            }
+            false
+        });
+        assert_eq!((s.idle().wfes, s.naps), (4_999 + 2_998, 2));
+        assert!(s.app_gone());
     }
 
     /// De dvfs van de kern leest `CtrlIdle` als de idle-tijd van álle cores

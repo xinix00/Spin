@@ -23,7 +23,7 @@ pub const MAX_STORE_JOB: usize = 256;
 /// De grootste lijst namen in één antwoord aan de app: de historische
 /// grens van Go (`hopabi.MaxChunk`, 8 KiB). Een lijst die niet past, is een
 /// fout (een smallere prefix), nooit stil afgekapt.
-pub const MAX_STORE_LIST: usize = crate::hopabi::MAX_CHUNK;
+pub const MAX_STORE_LIST: usize = 8 << 10;
 /// De langste wachttijd van [`super::PrivOp::NextStore`] in ms: ruim onder
 /// de call-timeout van een client (10 s), zodat een lange wacht nooit een
 /// timeout wordt.

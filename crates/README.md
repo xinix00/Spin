@@ -25,11 +25,18 @@ Replica komt rechtstreeks uit de bron: de crates linken naar `../replica`
 patch van. Wijzigingen aan Replica gebeuren daar.
 
 De overige dependencies zijn vastgelegd in `.cargo/config.toml` en `Cargo.lock`
-en gevendord in `third-party/rust`, ongewijzigd van hun tags: HopOS v3.0.9, Hop
+en gevendord in `third-party/rust`, ongewijzigd van hun tags: HopOS v3.0.10, Hop
 v3.0.9, Lean v3.1.9 (`leanhttp`, `leanhttps`, `leantls`, dezelfde als `applib`)
 en Lean v3.1.10 (`leans3`, dezelfde als Replica). Lokale patches bestaan niet;
 een wijziging gaat naar de bron en komt terug als tag. Opnieuw vendoren:
 `cargo vendor third-party/rust` (de uitvoer is de inhoud van `.cargo/config.toml`).
+
+Eén schrijver per namespace bewaakt Replica's lease in de bucket
+(`<namespace>/lease`, `writer::claim`), op HopOS per tenant met een termijn van
+60 s en op de Mac van 300 s (de host uploadt inline). Wie de lease niet krijgt,
+wacht en logt `SPIN_REPLICA_LEASE_WAIT leader=…`; een herstart wacht zijn vorige
+leven af. Het onderhoud van elke seconde roept `Replica::renew` aan; verlies
+sluit de eigenaar. De oude lease op de lokale schijf is weg.
 
 ## Bouwen en controleren
 

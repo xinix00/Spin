@@ -3,8 +3,9 @@
 //!
 //! Een verzameling die in een lus groeit is een fout (handboek §6); wat hier
 //! staat groeit nooit. `BoundedVec<T, N>` is de basisvorm: een array met een
-//! lengte. Wie meer nodig heeft (een index-map, een set) bouwt het hierop en
-//! zet het hier neer.
+//! lengte. `Text<N>` is hetzelfde voor tekst, met `fmt::Write`. Wie meer
+//! nodig heeft (een index-map, een set) bouwt het hierop en zet het hier
+//! neer.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(
@@ -205,9 +206,96 @@ impl<T: Clone, const N: usize> Clone for BoundedVec<T, N> {
     }
 }
 
+/// Tekst van hooguit `N` bytes, op de stack of in een static:
+/// `fmt::Write` zonder allocatie.
+///
+/// Wat niet past, valt weg. Een `write_str` schrijft het langste stuk dat
+/// past, tot op een hele UTF-8-letter, en geeft dan `fmt::Error`; zo doen
+/// `RawFormatter` en `Formatter` het in Linux (`rust/kernel/str.rs`). Wie
+/// de afgekapte tekst wil, negeert de fout.
+///
+/// # Invariants
+///
+/// `buf[..len]` is geldige UTF-8 en `len <= N`.
+#[derive(Clone, Copy)]
+pub struct Text<const N: usize> {
+    buf: [u8; N],
+    len: usize,
+}
+
+impl<const N: usize> Text<N> {
+    /// Een lege tekst.
+    #[must_use]
+    pub const fn new() -> Self {
+        // INVARIANT: leeg is geldige UTF-8.
+        Self {
+            buf: [0; N],
+            len: 0,
+        }
+    }
+
+    /// De tekst.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        // Door de invariant altijd `Ok`.
+        core::str::from_utf8(self.as_bytes()).unwrap_or_default()
+    }
+
+    /// De tekst als bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.buf.get(..self.len).unwrap_or_default()
+    }
+
+    /// De lengte in bytes.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Leeg?
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl<const N: usize> fmt::Write for Text<N> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let take = s.floor_char_boundary(N - self.len);
+        let (Some(dst), Some(src)) = (
+            self.buf.get_mut(self.len..self.len + take),
+            s.as_bytes().get(..take),
+        ) else {
+            return Err(fmt::Error);
+        };
+        dst.copy_from_slice(src);
+        // INVARIANT: `take` eindigt op een lettergrens en past.
+        self.len += take;
+        if take == s.len() {
+            Ok(())
+        } else {
+            Err(fmt::Error)
+        }
+    }
+}
+
+impl<const N: usize> Default for Text<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> fmt::Debug for Text<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::fmt::Write as _;
     use std::rc::Rc;
 
     #[test]
@@ -254,5 +342,20 @@ mod tests {
         assert_eq!(Rc::strong_count(&rc), 3);
         drop(v);
         assert_eq!(Rc::strong_count(&rc), 1);
+    }
+
+    #[test]
+    fn text_cuts_on_a_letter_and_says_so() {
+        let mut t: Text<6> = Text::new();
+        assert_eq!(write!(t, "ab{}", 12), Ok(()));
+        assert_eq!(t.as_str(), "ab12");
+        // De é (twee bytes) past nog, de ë niet meer half.
+        assert!(t.write_str("\u{e9}\u{eb}").is_err());
+        assert_eq!(t.as_str(), "ab12\u{e9}");
+        assert_eq!(t.len(), 6);
+        assert!(t.write_str("x").is_err());
+        assert!(t.write_str("").is_ok());
+        assert_eq!(format!("{t:?}"), "\"ab12\u{e9}\"");
+        assert!(Text::<0>::new().is_empty());
     }
 }

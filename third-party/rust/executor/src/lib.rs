@@ -230,6 +230,27 @@ pub struct Executor<const TASKS: usize = 512, const TIMERS: usize = 256> {
     pub stats: Stats,
 }
 
+/// Het timerwiel van een executor als [`sync::Timer`]: de tijd van de
+/// binary (de kern, de USB-taak) en van de system-client van een app.
+#[derive(Copy, Clone)]
+pub struct ExecTimer<const TASKS: usize = 512, const TIMERS: usize = 256>(
+    pub &'static Executor<TASKS, TIMERS>,
+);
+
+impl<const TASKS: usize, const TIMERS: usize> sync::Timer for ExecTimer<TASKS, TIMERS> {
+    fn now(&self) -> u64 {
+        self.0.now()
+    }
+
+    fn sleep(&self, d: Duration) -> impl Future<Output = ()> {
+        self.0.after(d)
+    }
+
+    fn sleep_deferrable(&self, d: Duration) -> impl Future<Output = ()> {
+        self.0.after_deferrable(d)
+    }
+}
+
 impl<const TASKS: usize, const TIMERS: usize> Default for Executor<TASKS, TIMERS> {
     fn default() -> Self {
         Self::new()

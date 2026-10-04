@@ -355,12 +355,25 @@ fn slot_en_core_hebben_een_bewezen_bereik() {
     assert!(Core::new(SLOT_CAP + 1).is_none());
 }
 
+/// De getallen die de Go-kant hard noemt, en de inverse die de kern
+/// (de bron van een system-call) en de switch (de gateway) gebruiken.
 #[test]
 fn net_plan_is_deterministisch() {
     let s = Slot::new(3).unwrap();
     assert_eq!(Ip4(slot_ip4(s)).to_string(), "10.100.0.4");
     assert_eq!(Ip4(HOST_IP4).to_string(), "10.100.0.1");
     assert_eq!(slot_mac(s), [2, 0, 0, 0, 0, 3]);
+    assert_eq!(port_ip4(0), HOST_IP4);
+    assert_eq!(port_ip4(1), 0x0A64_0002);
+    assert_eq!(port_mac(0), HOST_MAC);
+    for i in 0..=SLOT_CAP {
+        assert_eq!(ip4_port(port_ip4(i)), Some(i));
+        if let Some(s) = Slot::new(i) {
+            assert_eq!((slot_ip4(s), slot_mac(s)), (port_ip4(i), port_mac(i)));
+        }
+    }
+    assert_eq!(ip4_port(HOST_IP4 - 1), None, ".0");
+    assert_eq!(ip4_port(0x0A65_0002), None, "ander subnet");
 }
 
 #[test]

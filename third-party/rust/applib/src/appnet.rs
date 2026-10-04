@@ -24,24 +24,19 @@
 //! de stack: een handvat met een deadline racet zijn op tegen een timer, en
 //! wie verliest ruimt op met `Drop`.
 //!
-//! Op verzoek (`LOGNET=1`, of [`log_via_system`]) gaat `log!` over een
-//! eigen verbinding naar de kern als `KindLog`, met de outbox als terugval;
-//! het paniekpad blijft altijd op de outbox.
-//!
 //! Een app die stopt, sluit eerst netjes ([`Net::shutdown`], via
 //! `App::shutdown`): elk open handvat dicht, FIN na de data, en de pomp
 //! draait door tot elke FIN bevestigd is of de grens verstrijkt. Daarvoor
 //! houdt de [`Net`] een vaste tabel bij van wat de app open heeft.
 //!
 //! Dit module bezit de stack van de app (na [`up`], te vinden via [`net`]),
-//! de tabel van open handvatten, de RX-bel en de log-verbinding; de ringen
+//! de tabel van open handvatten en de RX-bel; de ringen
 //! zelf zijn van de [`Nic`] die de pomp-taak bezit.
 
 use crate::app::App;
 use crate::clock;
-use crate::contract::{KIND_LOG, NET_MTU, NET_RING_DATA_CAP, SYS_HEADER_LEN};
+use crate::contract::{NET_MTU, NET_RING_DATA_CAP};
 use crate::log;
-use crate::log::LINE_MAX;
 use crate::net::{Nic, PUMP_EARLY, PUMP_TIMER, RxPoll, host_ip, mac_of, slot_ip, ws_shift_for};
 use crate::rt::{EXEC, Exec};
 use crate::sys::{self, ConnError};
@@ -340,11 +335,6 @@ pub fn up(app: &'static App) -> Result<&'static Net> {
         return Err(NetError::Spawn);
     }
     app.network_ready();
-    if app.env("LOGNET") == Some("1")
-        && let Err(e) = log_via_system(net)
-    {
-        log!("appnet: log link not started: {e} HOPOS_APPNET_LOGNET");
-    }
     let [a, b, c, d] = net.ip();
     // Hoe de frame-ringen kopiëren (zie `Nic::open`): op ijzer de eerste
     // vraag als de doorvoer van een app verandert.
@@ -390,7 +380,7 @@ enum Wake {
 pub struct Net {
     stack: RefCell<Stack>,
     exec: &'static Exec,
-    clock: fn() -> u64,
+    now: fn() -> u64,
     ip: [u8; 4],
     frame_len: usize,
     dns: Option<[u8; 4]>,
@@ -436,8 +426,8 @@ pub struct Drain {
 
 impl Net {
     /// Een stack met config `cfg` en zaad `seed`, met zijn timers op `exec`
-    /// en zijn tijd uit `clock` (dezelfde klok als die van `exec`).
-    pub fn new(cfg: Config, seed: u32, exec: &'static Exec, clock: fn() -> u64) -> Result<Self> {
+    /// en zijn tijd uit `now` (dezelfde klok als die van `exec`).
+    pub fn new(cfg: Config, seed: u32, exec: &'static Exec, now: fn() -> u64) -> Result<Self> {
         let stack = Stack::new(cfg, seed)?;
         let slots = open_slots_for(cfg.budget);
         let mut open = Vec::new();
@@ -451,7 +441,7 @@ impl Net {
             frame_len: stack.frame_len(),
             stack: RefCell::new(stack),
             exec,
-            clock,
+            now,
             dns: None,
             dns_seq: Cell::new(0),
             open: RefCell::new(open),
@@ -493,7 +483,7 @@ impl Net {
 
     /// Nu, in nanoseconden op de klok van de stack.
     fn now(&self) -> u64 {
-        (self.clock)()
+        (self.now)()
     }
 
     /// Leent de stack voor één synchrone op. De lening eindigt in deze
@@ -655,7 +645,7 @@ impl Net {
                         return;
                     };
                     if let Some(frame) = buf.get(..n) {
-                        let _ = nic.transmit_wait(frame, self.clock).await;
+                        let _ = nic.transmit_wait(frame, self.now).await;
                     }
                 }
             }
@@ -893,18 +883,6 @@ impl Net {
             return Ok(ip);
         }
         let server = self.dns.ok_or(NetError::Dns(DnsError::NoServer))?;
-        self.resolve_via(server, host).await
-    }
-
-    /// Vraagt `server` om het A-record van `host`: één vraag, wachten tot
-    /// [`DNS_TIMEOUT`], en na stilte één herhaling met een nieuw id.
-    ///
-    /// Een datagram van een ander adres, of met een verkeerd id of een
-    /// andere vraag, telt niet en de wacht gaat door: een laat antwoord op
-    /// de vorige poging of een gok van buiten maakt de vraag niet stuk. Een
-    /// echt antwoord dat nee zegt (NXDOMAIN, geen A, kapot) is meteen de
-    /// uitkomst; nog eens vragen verandert daar niets aan.
-    pub async fn resolve_via(&'static self, server: [u8; 4], host: &str) -> Result<[u8; 4]> {
         self.resolve_record(server, host, 1).await
     }
     /// Het AAAA-adres van een host, of het letterlijke IPv6-adres zelf.
@@ -919,6 +897,15 @@ impl Net {
     pub async fn resolve6_via(&'static self, server: [u8; 4], host: &str) -> Result<[u8; 16]> {
         self.resolve_record(server, host, 28).await
     }
+    /// Vraagt `server` om het record van soort `kind` (1 is A, 28 is AAAA)
+    /// van `host`: één vraag, wachten tot [`DNS_TIMEOUT`], en na stilte één
+    /// herhaling met een nieuw id.
+    ///
+    /// Een datagram van een ander adres, of met een verkeerd id of een
+    /// andere vraag, telt niet en de wacht gaat door: een laat antwoord op
+    /// de vorige poging of een gok van buiten maakt de vraag niet stuk. Een
+    /// echt antwoord dat nee zegt (NXDOMAIN, geen A, kapot) is meteen de
+    /// uitkomst; nog eens vragen verandert daar niets aan.
     async fn resolve_record<const N: usize>(
         &'static self,
         server: [u8; 4],
@@ -1104,10 +1091,9 @@ impl Net {
             .unwrap_or(false)
     }
 
-    /// Het net-afscheid van een app die stopt: niets nieuws meer open, de
-    /// log-verbinding en elk handvat uit de tabel dicht (FIN na de data),
-    /// en dan wachten tot de stack leeg is ([`Drain::drained`]) of `limit`
-    /// verstrijkt. De pomp draait intussen gewoon als eigen taak; hij zet
+    /// Het net-afscheid van een app die stopt: niets nieuws meer open, elk
+    /// handvat uit de tabel dicht (FIN na de data), en dan wachten tot de
+    /// stack leeg is ([`Drain::drained`]) of `limit` verstrijkt. De pomp draait intussen gewoon als eigen taak; hij zet
     /// de FIN's op de draad en neemt de ACK's aan.
     ///
     /// Waarom: `App::exit` parkeert de core, en wat dan nog in een
@@ -1117,7 +1103,6 @@ impl Net {
         let t0 = self.now();
         let deadline = t0.saturating_add(nanos(limit));
         self.closing.set(true);
-        close_log_link();
         let closed = self.close_all();
         let mut drained = self.drained();
         while !drained && self.now() < deadline {
@@ -1227,6 +1212,20 @@ impl TcpStream {
                 |st, w| st.tcp_register_read_waker(h, w),
             )
             .await
+    }
+
+    /// Leest precies `buf.len()` bytes. EOF ervoor is
+    /// [`StackError::Closed`]; de deadline van de stroom geldt voor het
+    /// geheel.
+    pub async fn read_exact(&mut self, mut buf: &mut [u8]) -> Result {
+        while !buf.is_empty() {
+            let n = self.read(buf).await?;
+            if n == 0 {
+                return Err(NetError::Stack(StackError::Closed));
+            }
+            buf = buf.get_mut(n..).unwrap_or_default();
+        }
+        Ok(())
     }
 
     /// Wacht tot een read niet zou blokkeren: er staan bytes klaar, of de
@@ -1519,7 +1518,8 @@ impl Drop for Udp6Socket {
 // ---- De system-API over een echte verbinding ----
 
 /// De system-client van een app met netstack.
-pub type SystemClient = sys::Client<SysDial, ExecTimer>;
+pub type SystemClient =
+    sys::Client<SysDial, ExecTimer<{ crate::rt::TASKS }, { crate::rt::TIMERS }>>;
 
 /// Vertaalt een netfout naar de drie transportfouten van de client: wat
 /// de client herhaalt (reset, dicht) tegen wat hij als weigering ziet.
@@ -1572,244 +1572,8 @@ impl sys::Dial for SysDial {
     }
 }
 
-/// De timer van de system-client: het timerwiel van de executor.
-pub struct ExecTimer(pub &'static Exec);
-
-impl sys::Timer for ExecTimer {
-    fn sleep(&self, d: Duration) -> impl Future<Output = ()> {
-        self.0.after(d)
-    }
-}
-
-// ---- Logregels over de system-verbinding ----
-
-/// Eén log-frame: de framekop en een regel van hooguit [`LINE_MAX`] bytes.
-const LOG_FRAME: usize = SYS_HEADER_LEN + LINE_MAX;
-
-/// Zo lang wacht de log-verbinding na een mislukte dial: een kern die echt
-/// weg is kost dan geen connect per regel (Go, 06-09).
-pub const LOG_RETRY: Duration = Duration::from_millis(500);
-
-/// De log-verbinding: een eigen TCP-verbinding naar de kern waarover
-/// `log!` zijn regels als `KindLog`-frames schrijft.
-///
-/// `log!` is synchroon en wacht nooit, dus hij schrijft alleen wat de
-/// zendring nu aanneemt. Een frame dat half past, laat zijn staart in
-/// `tail`; die moet eerst weg voor er een volgend frame op die verbinding
-/// mag, en zolang gaan nieuwe regels naar de outbox. De taak [`log_link`]
-/// verbindt, schrijft staarten weg en verbindt opnieuw na een fout.
-struct LogLink {
-    conn: Option<TcpStream>,
-    tail: [u8; LOG_FRAME],
-    tail_len: usize,
-}
-
-/// De log-verbinding van deze app; `None` is uit (de default).
-#[cfg(not(test))]
-static LOG_LINK: Local<RefCell<Option<LogLink>>> = Local::new(RefCell::new(None));
-
-/// De log-verbinding van deze app.
-#[cfg(not(test))]
-fn log_cell() -> &'static RefCell<Option<LogLink>> {
-    LOG_LINK.get()
-}
-
-/// In de host-tests één per testdraad: elke `log!` in elke test komt
-/// hierlangs, en een `Local` gedeeld over de draden van de testrunner zou
-/// zijn eigen belofte breken (en een regel van de ene test over de
-/// verbinding van de andere sturen).
-#[cfg(test)]
-fn log_cell() -> &'static RefCell<Option<LogLink>> {
-    std::thread_local! {
-        static CELL: &'static RefCell<Option<LogLink>> =
-            std::boxed::Box::leak(std::boxed::Box::new(RefCell::new(None)));
-    }
-    CELL.with(|c| *c)
-}
-
-/// Wekt [`log_link`]: een staart ligt klaar of de verbinding viel weg.
-static LOG_KICK: Signal = Signal::new();
-
-/// Zet de log-verbinding aan: vanaf de eerste geslaagde dial gaat `log!`
-/// over de system-verbinding, met de outbox als terugval.
-///
-/// Uit tenzij `LOGNET=1` in de env staat of de app dit aanroept. Waarom
-/// niet altijd: een regel in de zendring is pas bij de kern als de pomp
-/// hem verstuurd heeft. `App::shutdown` wacht daar nu op (tot 200 ms),
-/// maar `App::exit` en de paniek parkeren de core meteen, en de outbox
-/// heeft dat probleem niet.
-pub fn log_via_system(net: &'static Net) -> Result {
-    {
-        let mut link = log_cell().try_borrow_mut().map_err(|_| NetError::Busy)?;
-        if link.is_some() {
-            return Err(NetError::AlreadyUp);
-        }
-        *link = Some(LogLink {
-            conn: None,
-            tail: [0; LOG_FRAME],
-            tail_len: 0,
-        });
-    }
-    net.exec
-        .spawn(log_link(net, sys::ADDRESS))
-        .map_err(|_| NetError::Spawn)
-}
-
-/// Eén regel over de log-verbinding; `false` betekent: naar de outbox
-/// ermee (uit, nog niet verbonden, een staart onderweg, de zendring vol,
-/// of een fout, en die laatste sluit de verbinding).
-pub(crate) fn try_log(line: &[u8]) -> bool {
-    let Ok(mut slot) = log_cell().try_borrow_mut() else {
-        return false;
-    };
-    let Some(link) = slot.as_mut() else {
-        return false;
-    };
-    if link.tail_len > 0 {
-        return false;
-    }
-    let Some(conn) = link.conn.as_ref() else {
-        return false;
-    };
-    // Kop en regel in één buffer en één write: twee writes konden een kop
-    // zonder regel op de draad laten als de tweede niet meer paste.
-    let mut frame = [0u8; LOG_FRAME];
-    let len = SYS_HEADER_LEN + line.len();
-    let (Ok(len32), Some((head, body))) = (
-        u32::try_from(line.len()),
-        frame.get_mut(..len).map(|f| f.split_at_mut(SYS_HEADER_LEN)),
-    ) else {
-        return false;
-    };
-    head.copy_from_slice(&sys::frame_header(KIND_LOG, len32));
-    body.copy_from_slice(line);
-    let (net, h) = (conn.net, conn.h);
-    let now = net.now();
-    let out = frame.get(..len).unwrap_or_default();
-    match net.with(|st| st.tcp_write(h, out, now)) {
-        Ok(Ok(n)) => {
-            let rest = out.get(n..).unwrap_or_default();
-            if !rest.is_empty() {
-                if let Some(t) = link.tail.get_mut(..rest.len()) {
-                    t.copy_from_slice(rest);
-                }
-                link.tail_len = rest.len();
-                LOG_KICK.set();
-            }
-            true
-        }
-        Ok(Err(StackError::WouldBlock)) | Err(_) => false,
-        Ok(Err(_)) => {
-            link.conn = None;
-            LOG_KICK.set();
-            false
-        }
-    }
-}
-
-/// De taak achter de log-verbinding: verbinden naar `addr`, staarten
-/// wegschrijven, en na een fout opnieuw verbinden.
-async fn log_link(net: &'static Net, addr: ([u8; 4], u16)) {
-    loop {
-        let connected = match log_cell().try_borrow() {
-            // Weggehaald door een shutdown: deze taak is klaar.
-            Ok(l) if l.is_none() => return,
-            Ok(l) => l.as_ref().is_some_and(|l| l.conn.is_some()),
-            Err(_) => false,
-        };
-        if !connected {
-            match net
-                .tcp_connect_timeout(addr.0, addr.1, SYS_DIAL_TIMEOUT)
-                .await
-            {
-                Ok(c) => {
-                    if let Ok(mut slot) = log_cell().try_borrow_mut()
-                        && let Some(link) = slot.as_mut()
-                    {
-                        // Een staart hoorde bij de vorige verbinding.
-                        link.conn = Some(c);
-                        link.tail_len = 0;
-                    }
-                }
-                Err(_) => {
-                    net.exec.after(LOG_RETRY).await;
-                    continue;
-                }
-            }
-        }
-        flush_tail().await;
-        LOG_KICK.wait().await;
-    }
-}
-
-/// Haalt de log-verbinding weg voor een shutdown: een half verstuurde
-/// staart krijgt nog één kans in de zendring, dan gaat de verbinding dicht
-/// (FIN na de data) en schrijft `log!` weer naar de outbox. De taak
-/// [`log_link`] ziet de lege plek en stopt.
-fn close_log_link() {
-    let link = log_cell().try_borrow_mut().ok().and_then(|mut l| l.take());
-    LOG_KICK.set();
-    let Some(link) = link else {
-        return;
-    };
-    if let Some(conn) = link.conn.as_ref()
-        && link.tail_len > 0
-    {
-        let (net, h) = (conn.net, conn.h);
-        let now = net.now();
-        let tail = link.tail.get(..link.tail_len).unwrap_or_default();
-        // Wat nu niet past, is weg: de app stopt, en een half frame is
-        // voor de kern toch al een kapotte verbinding.
-        let _ = net.with(|st| st.tcp_write(h, tail, now));
-    }
-    // `Drop` van de `TcpStream` sluit hem.
-    drop(link);
-}
-
-/// Schrijft de staart van een half verstuurd log-frame weg. Een fout sluit
-/// de verbinding; de lus verbindt dan opnieuw.
-async fn flush_tail() {
-    poll_fn(|cx| {
-        let Ok(mut slot) = log_cell().try_borrow_mut() else {
-            return Poll::Ready(());
-        };
-        let Some(link) = slot.as_mut() else {
-            return Poll::Ready(());
-        };
-        let Some(conn) = link.conn.as_ref() else {
-            return Poll::Ready(());
-        };
-        if link.tail_len == 0 {
-            return Poll::Ready(());
-        }
-        let (net, h) = (conn.net, conn.h);
-        let now = net.now();
-        let tail = link.tail.get(..link.tail_len).unwrap_or_default();
-        let r = net.with(|st| match st.tcp_write(h, tail, now) {
-            Err(StackError::WouldBlock) => st.tcp_register_write_waker(h, cx.waker()).map(|()| 0),
-            other => other,
-        });
-        match r {
-            Ok(Ok(0)) => Poll::Pending,
-            Ok(Ok(n)) => {
-                link.tail.copy_within(n..link.tail_len, 0);
-                link.tail_len -= n;
-                if link.tail_len == 0 {
-                    Poll::Ready(())
-                } else {
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-            }
-            Ok(Err(_)) | Err(_) => {
-                link.conn = None;
-                LOG_KICK.set();
-                Poll::Ready(())
-            }
-        }
-    })
-    .await;
-}
+/// De timer van de system-client: het timerwiel van de executor van de app.
+pub use executor::ExecTimer;
 
 #[cfg(test)]
 mod tests;

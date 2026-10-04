@@ -218,10 +218,10 @@ mod tests {
 
     #[test]
     fn one_place_holds_one_and_never_spins() {
-        // De brievenbus van een `Ack`: twee resultaten zonder `try_recv`
-        // ertussen. Het tweede is vol, het eerste blijft, en een lege rij
-        // zegt daarna gewoon `None` (vóór 29-09 draaide die `try_recv` voor
-        // altijd).
+        // Een brievenbus van één plaats (tot 04-10 de `Ack` van de switch):
+        // twee resultaten zonder `try_recv` ertussen. Het tweede is vol, het
+        // eerste blijft, en een lege rij zegt daarna gewoon `None` (vóór
+        // 29-09 draaide die `try_recv` voor altijd).
         let mb: Mailbox<u32, 1> = Mailbox::new();
         assert_eq!(mb.try_send(1), Ok(()));
         assert_eq!(mb.try_send(2), Err(Full(2)));

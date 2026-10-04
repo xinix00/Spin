@@ -197,8 +197,8 @@ mod tests {
                 data: &data,
             };
             let len = hopabi::encode_resp(&mut resp, &r).unwrap();
-            self.rx
-                .extend_from_slice(&sys::frame_header(2, u32::try_from(len).unwrap()));
+            let fh = abi::systemapi::encode_header(abi::systemapi::Kind::Result, len).unwrap();
+            self.rx.extend_from_slice(&fh);
             self.rx.extend_from_slice(&resp[..len]);
         }
     }

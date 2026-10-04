@@ -33,9 +33,6 @@ pub static WRITTEN: AtomicU64 = AtomicU64::new(0);
 /// staat niets dat alloceert of wacht.
 pub struct Printk<'w> {
     out: Option<&'w mut Writer>,
-    /// Eerst de system-verbinding proberen (`KindLog`), met de outbox als
-    /// terugval. Nooit op het paniekpad: daar pompt niemand de stack meer.
-    net: bool,
     buf: [u8; LINE_MAX],
     n: usize,
 }
@@ -46,19 +43,6 @@ impl<'w> Printk<'w> {
     pub const fn new(out: Option<&'w mut Writer>) -> Self {
         Self {
             out,
-            net: false,
-            buf: [0; LINE_MAX],
-            n: 0,
-        }
-    }
-
-    /// Als [`Printk::new`], maar elke regel gaat eerst naar de
-    /// system-verbinding als [`crate::appnet`] die voor logs open heeft.
-    #[must_use]
-    pub const fn via_net(out: Option<&'w mut Writer>) -> Self {
-        Self {
-            out,
-            net: true,
             buf: [0; LINE_MAX],
             n: 0,
         }
@@ -88,10 +72,6 @@ impl<'w> Printk<'w> {
         let Some(line) = self.buf.get(..n).filter(|l| !l.is_empty()) else {
             return;
         };
-        if self.net && crate::appnet::try_log(line) {
-            WRITTEN.fetch_add(1, Relaxed);
-            return;
-        }
         match self.out.as_mut().map(|w| w.write(Kind::LOG, line)) {
             Some(Ok(was_empty)) => {
                 WRITTEN.fetch_add(1, Relaxed);
@@ -117,15 +97,10 @@ impl fmt::Write for Printk<'_> {
     }
 }
 
-/// Schrijft `args` als logregel(s) naar `out`, alleen de outbox.
+/// Schrijft `args` als logregel(s) naar `out`: de outbox. Het werk achter
+/// `log!`.
 pub fn emit_to(out: Option<&mut Writer>, args: fmt::Arguments<'_>) {
     write_lines(Printk::new(out), args);
-}
-
-/// Schrijft `args` als logregel(s): eerst de system-verbinding als die voor
-/// logs open is, anders `out`. Het werk achter `log!`.
-pub fn emit_via_net(out: Option<&mut Writer>, args: fmt::Arguments<'_>) {
-    write_lines(Printk::via_net(out), args);
 }
 
 fn write_lines(mut p: Printk<'_>, args: fmt::Arguments<'_>) {
@@ -135,9 +110,8 @@ fn write_lines(mut p: Printk<'_>, args: fmt::Arguments<'_>) {
     p.flush();
 }
 
-/// Schrijft `args` naar de kern: over de system-verbinding als
-/// [`crate::appnet`] die voor logs open heeft, anders naar de outbox. Vóór
-/// de main-schil het App zette, of als de outbox al geleend is (een
+/// Schrijft `args` naar de outbox van de kern. Vóór de main-schil het App
+/// zette, of als de outbox al geleend is (een
 /// `Display` die zelf logt, een paniek midden in een logregel), wordt het
 /// bericht gedropt en geteld.
 ///
@@ -151,20 +125,6 @@ pub fn emit(args: fmt::Arguments<'_>) {
     }
     match crate::rt::app() {
         Some(app) => app.log(args),
-        None => emit_to(None, args),
-    }
-}
-
-/// Als [`emit`], maar alleen de outbox: het paniekpad. Na een paniek pompt
-/// niemand de stack nog, dus een regel in de zendring van TCP is een regel
-/// die nooit aankomt.
-pub fn emit_outbox(args: fmt::Arguments<'_>) {
-    if !crate::smp::on_primary() {
-        DROPPED.fetch_add(1, Relaxed);
-        return;
-    }
-    match crate::rt::app() {
-        Some(app) => app.log_outbox(args),
         None => emit_to(None, args),
     }
 }

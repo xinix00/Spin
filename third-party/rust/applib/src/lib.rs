@@ -28,6 +28,8 @@
 //!   regel over de bron (`HOPOS_APP_RNG`).
 //! - [`smp`]: meer cores voor één app (`cores: N` in de jobspec): één
 //!   executor per core en [`smp::spawn_on`].
+//! - [`text`]: tekst schrijven zonder te groeien, en JSON-strings.
+//! - [`burn`]: de rekenburst van bench en vitals.
 //!
 //! - `codec` (feature `media`): de codec-client; een stream door de
 //!   hardwaredecoder zonder dat er een beeld over de verbinding gaat.
@@ -54,6 +56,7 @@ mod contract;
 
 pub mod app;
 pub mod appnet;
+pub mod burn;
 pub mod clock;
 #[cfg(feature = "media")]
 pub mod codec;
@@ -82,9 +85,10 @@ pub mod sys;
 pub mod tail;
 #[cfg(feature = "http")]
 pub mod tcp;
+pub mod text;
 
 pub use app::{App, AppError, Beat};
 pub use ctrl::{AppStatus, Ctrl, Env};
-pub use rt::{EXEC, Exec, app};
+pub use rt::{EXEC, Exec, app, park};
 pub use sleep::AppSleeper;
 pub use tail::{Tail, TailError, tail_of};

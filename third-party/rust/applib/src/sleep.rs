@@ -104,11 +104,19 @@ pub fn watch_rx(door: RxDoor) {
 pub(crate) static SECONDARY_IDLE: [AtomicU64; crate::smp::MAX_CORES] =
     [const { AtomicU64::new(0) }; crate::smp::MAX_CORES];
 
+/// De idle-rondes van elke secundaire core, zoals [`SECONDARY_IDLE`]: de
+/// primaire publiceert de som met zijn eigen rondes in `CtrlWakes`.
+pub(crate) static SECONDARY_WAKES: [AtomicU64; crate::smp::MAX_CORES] =
+    [const { AtomicU64::new(0) }; crate::smp::MAX_CORES];
+
+/// De som van een tabel per core.
+fn sum(words: &[AtomicU64]) -> u64 {
+    words.iter().fold(0, |a, t| a.wrapping_add(t.load(Relaxed)))
+}
+
 /// De som van [`SECONDARY_IDLE`].
 fn secondary_idle() -> u64 {
-    SECONDARY_IDLE
-        .iter()
-        .fold(0, |a, t| a.wrapping_add(t.load(Relaxed)))
+    sum(&SECONDARY_IDLE)
 }
 
 /// WFE's tot `woke()` of tot de teller `deadline` haalt; de tikken die ze
@@ -199,11 +207,12 @@ impl<I: Idle> AppSleeper<I> {
         true
     }
 
-    /// `CtrlIdle` en `CtrlWakes`: de idle-tijd van alle cores van de app
-    /// (deze plus [`SECONDARY_IDLE`]), de wekken van deze.
+    /// `CtrlIdle` en `CtrlWakes`: de idle-tijd en de rondes van alle cores
+    /// van de app (deze plus [`SECONDARY_IDLE`] en [`SECONDARY_WAKES`]).
     fn publish(&self) {
         let idle = self.idle_ticks.wrapping_add(secondary_idle());
-        self.ctrl.publish_idle(idle, self.wakes);
+        let wakes = self.wakes.wrapping_add(sum(&SECONDARY_WAKES));
+        self.ctrl.publish_idle(idle, wakes);
     }
 
     /// Ontwapent de deurbel na de slaap en belt als er iets ligt.

@@ -776,13 +776,43 @@ pub const HOST_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0];
 /// uiteenlopen; niemand hoeft het op de control-page te schrijven.
 #[must_use]
 pub const fn slot_ip4(slot: Slot) -> u32 {
-    HOST_IP4 + slot.0 as u32
+    port_ip4(slot.get())
 }
 
 /// De MAC van een slot: `02:00:00:00:00:<slot>`.
 #[must_use]
 pub const fn slot_mac(slot: Slot) -> [u8; 6] {
-    [0x02, 0, 0, 0, 0, slot.0]
+    port_mac(slot.get())
+}
+
+/// Het interne IPv4 van poort `i` van het slot-LAN: de kern is poort 0
+/// (.1), slot i is poort i (.(i+1)). De vorm van [`slot_ip4`] voor wie de
+/// kern als 0 telt: de switch (zijn poorten zijn 0..=`SLOT_CAP`) en een app
+/// die zijn slot als getal kent. De afkapping op één byte is die van het
+/// plan (`SLOT_CAP` past erin).
+#[must_use]
+pub const fn port_ip4(i: usize) -> u32 {
+    HOST_IP4 + (i & 0xff) as u32
+}
+
+/// De MAC van poort `i`: `02:00:00:00:00:<i>` (de kern is 0, [`HOST_MAC`]).
+#[must_use]
+pub const fn port_mac(i: usize) -> [u8; 6] {
+    [0x02, 0, 0, 0, 0, (i & 0xff) as u8]
+}
+
+/// De inverse van [`port_ip4`]: de poort achter een adres op het slot-LAN
+/// (0 is de kern), of `None` buiten het subnet en voor .0. Wie een app
+/// zoekt, toetst zelf `1..=max_slots`.
+#[must_use]
+pub const fn ip4_port(ip: u32) -> Option<usize> {
+    if ip >> (32 - NET_PREFIX) != HOST_IP4 >> (32 - NET_PREFIX) {
+        return None;
+    }
+    match (ip & 0xff) as usize {
+        0 => None,
+        h => Some(h - 1),
+    }
 }
 
 /// Een IPv4-adres uit het net-plan, met `Display` als dotted-quad.

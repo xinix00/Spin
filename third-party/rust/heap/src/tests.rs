@@ -1,10 +1,10 @@
 //! De heap op de host: over een gewone buffer, met na elke stap de
 //! invarianten van `State` via [`Heap::check`].
 
-use super::{Core, GlobalAlloc, HDR, Layout, MAX_ALIGN, MIN_BLOCK, Walk};
+use super::{CoreId, GlobalAlloc, HDR, Layout, MAX_ALIGN, MIN_BLOCK, Walk};
 type Heap = super::Heap<TestCore>;
 struct TestCore;
-impl Core for TestCore {
+impl CoreId for TestCore {
     fn id() -> u64 {
         std::thread_local! { static ID: u64 = {
             static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -311,7 +311,7 @@ fn concurrent_allocations_and_cross_thread_frees_keep_ownership() {
 #[test]
 fn reserved_core_identity_cannot_acquire_the_lock() {
     struct Reserved;
-    impl Core for Reserved {
+    impl CoreId for Reserved {
         fn id() -> u64 {
             u64::MAX
         }

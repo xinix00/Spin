@@ -12,24 +12,25 @@
 [package]
 edition = "2024"
 rust-version = "1.93"
-name = "netdev"
-version = "3.0.10"
+name = "discovery"
+version = "3.0.9"
 build = false
-publish = false
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Het contract tussen een NIC-driver en de rest: frames zenden en ontvangen, de MAC, het wek-signaal."
+description = "Nodes vinden op het LAN."
 readme = false
+license = "MIT"
+repository = "https://github.com/xinix00/hop"
 
 [lib]
-name = "netdev"
+name = "discovery"
 path = "src/lib.rs"
 
-[dependencies.sync]
-path = "../sync"
+[dependencies.types]
+path = "../types"
 
 [lints.clippy]
 as_ptr_cast_mut = "warn"

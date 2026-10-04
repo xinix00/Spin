@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.93"
 name = "sync"
-version = "3.0.9"
+version = "3.0.10"
 build = false
 publish = false
 autolib = false
@@ -21,12 +21,15 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "De concurrency-bouwstenen: Signal, Stop, spsc en mpsc, Local, select, yield_now."
+description = "De concurrency-bouwstenen: Signal, Stop, spsc en mpsc, Local, Doors, select, yield_now."
 readme = false
 
 [lib]
 name = "sync"
 path = "src/lib.rs"
+
+[dependencies.bounded]
+path = "../bounded"
 
 [lints.clippy]
 as_ptr_cast_mut = "warn"

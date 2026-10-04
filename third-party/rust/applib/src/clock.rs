@@ -56,6 +56,15 @@ pub fn hz() -> u64 {
     arch::counter_hz()
 }
 
+/// Het deel van `dt_ns` dat de core sliep, in procenten: `ticks` geslapen
+/// tikken van [`crate::Ctrl::idle_ticks`] op `hz`. Een teller die verder
+/// liep dan de wandklok (afronding, een tik over de grens) blijft op 100;
+/// een leeg interval deelt niet door 0.
+#[must_use]
+pub fn idle_pct(ticks: u64, hz: u64, dt_ns: u64) -> f64 {
+    (ticks_to_ns(ticks, hz) as f64 * 100.0 / dt_ns.max(1) as f64).min(100.0)
+}
+
 /// De langste slaap die een wektijd uitdrukt: een uur is "nooit" genoeg,
 /// een kick komt eerder. Geklemd omdat een onbegrensde deadline maal de
 /// frequentie overloopt tot een willekeurige wektijd (gemeten in de
@@ -131,6 +140,18 @@ mod tests {
             3_600_000_000_000
         );
         assert_eq!(ticks_to_ns(u64::MAX, 1), u64::MAX);
+    }
+
+    #[test]
+    fn idle_pct_is_the_slept_share_of_the_interval() {
+        // QEMU telt op 62,5 MHz: 5 s slaap in 10 s is de helft.
+        assert_eq!(idle_pct(312_500_000, 62_500_000, 10_000_000_000), 50.0);
+        // Op de M4 (1 GHz) is een tik een nanoseconde.
+        assert_eq!(idle_pct(9_900_000_000, 1_000_000_000, 10_000_000_000), 99.0);
+        // Tot op de nanoseconde, en afgekapt zoals de BURN-regel hem drukt.
+        assert_eq!(idle_pct(29, 1_000_000_000, 100) as u64, 29);
+        assert_eq!(idle_pct(u64::MAX, 1, 10), 100.0);
+        assert_eq!(idle_pct(0, 62_500_000, 0), 0.0);
         assert_eq!(ticks_to_ns(5, 0), 0);
     }
 

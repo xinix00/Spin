@@ -625,7 +625,7 @@ impl State {
 ///
 /// `st` wordt alleen aangeraakt binnen [`HeapLock::with`], door de core die
 /// `owner` van [`FREE`] naar zijn eigen id wisselde, tot hij hem terugzet.
-struct HeapLock<C: Core> {
+struct HeapLock<C: CoreId> {
     core: PhantomData<fn() -> C>,
     /// De MPIDR-affiniteit van de core die de staat heeft, of [`FREE`].
     owner: AtomicU64,
@@ -638,7 +638,7 @@ const FREE: u64 = u64::MAX;
 // SAFETY: door de invariant raakt precies één core tegelijk `st` aan; de
 // Acquire van de wissel en de Release van de vrijgave ordenen de
 // schrijvingen van de vorige houder vóór de lezingen van de volgende.
-unsafe impl<C: Core> Sync for HeapLock<C> {}
+unsafe impl<C: CoreId> Sync for HeapLock<C> {}
 
 /// De meetlat van het slot (§3.8): hoe vaak gepakt, hoe vaak er gewacht
 /// werd, en de langste wacht in lees-rondes.
@@ -659,7 +659,7 @@ static LOCK_CONTENDED: AtomicU64 = AtomicU64::new(0);
 static LOCK_LONGEST: AtomicU64 = AtomicU64::new(0);
 static LOCK_REENTERED: AtomicU64 = AtomicU64::new(0);
 
-impl<C: Core> HeapLock<C> {
+impl<C: CoreId> HeapLock<C> {
     const fn new(st: State) -> Self {
         Self {
             core: PhantomData,
@@ -703,17 +703,17 @@ impl<C: Core> HeapLock<C> {
 /// Levert de identiteit van de uitvoerende core, zonder allocatie of yield.
 /// Verschillende gelijktijdige cores moeten verschillende waarden teruggeven;
 /// `u64::MAX` is gereserveerd voor een vrij slot. ISR's mogen niet alloceren.
-pub trait Core {
+pub trait CoreId {
     /// Identiteit die tijdens de allocatie gelijk blijft.
     fn id() -> u64;
 }
 
 /// Vrije lijsten per klasse over één gebied; kern en apps delen deze implementatie.
-pub struct Heap<C: Core> {
+pub struct Heap<C: CoreId> {
     st: HeapLock<C>,
 }
 
-impl<C: Core> Heap<C> {
+impl<C: CoreId> Heap<C> {
     /// Een lege heap: elke allocatie faalt tot [`Heap::init`].
     #[must_use]
     pub const fn new() -> Self {
@@ -795,7 +795,7 @@ impl<C: Core> Heap<C> {
     }
 }
 
-impl<C: Core> Default for Heap<C> {
+impl<C: CoreId> Default for Heap<C> {
     fn default() -> Self {
         Self::new()
     }
@@ -806,7 +806,7 @@ impl<C: Core> Default for Heap<C> {
 // levend blok, want het komt uit een vrij blok dat uit zijn lijst gaat en
 // als bezet gemarkeerd wordt (de invarianten van `State`). `dealloc` geeft
 // alleen terug wat `alloc` gaf; dat is het contract van `GlobalAlloc`.
-unsafe impl<C: Core> GlobalAlloc for Heap<C> {
+unsafe impl<C: CoreId> GlobalAlloc for Heap<C> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         match self.reserve(layout.size(), layout.align()) {
             Some(p) => core::ptr::with_exposed_provenance_mut(p),

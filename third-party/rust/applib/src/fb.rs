@@ -31,15 +31,22 @@
 //! de map niet.
 
 use crate::App;
+use abi::glass::{FB_BASE, FB_BPP, FB_HEIGHT, FB_STRIDE, FB_SWAP, FB_WIDTH, INPUT_ADDR};
 use core::fmt;
+
+/// Eén invoergebeurtenis van de stroom: de vorm van het contract, die de
+/// kern ook schrijft.
+pub use abi::glass::Input;
 
 /// De IPA-basis van het glas in de kooi: het venster staat daar plus de
 /// offset in zijn 2 MB-blok.
 pub use abi::layout::FB_IPA;
 
-/// De langste invoerregel die de lezer bewaart. De langste regel van de
-/// kern (`gui_usbin::deliver::LINE_MAX`) is 96 bytes.
+/// De langste invoerregel die de lezer bewaart, met ruimte boven de
+/// langste regel van de kern ([`abi::glass::LINE_MAX`]).
 pub const LINE_CAP: usize = 128;
+
+const _: () = assert!(abi::glass::LINE_MAX < LINE_CAP);
 
 /// Waarom het glas of de invoer niet te gebruiken is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,12 +128,12 @@ impl Glass {
             u32::try_from(num(k)?).map_err(|_| FbError::Bad(k))
         };
         let g = Glass {
-            base: num("FB_BASE")?,
-            width: small("FB_WIDTH")?,
-            height: small("FB_HEIGHT")?,
-            stride: small("FB_STRIDE")?,
-            bpp: small("FB_BPP")?,
-            swap: env("FB_SWAP") == Some("1"),
+            base: num(FB_BASE)?,
+            width: small(FB_WIDTH)?,
+            height: small(FB_HEIGHT)?,
+            stride: small(FB_STRIDE)?,
+            bpp: small(FB_BPP)?,
+            swap: env(FB_SWAP) == Some("1"),
         };
         g.check()?;
         Ok(g)
@@ -175,20 +182,11 @@ impl Glass {
     }
 
     /// Het rauwe pixelwoord voor `rgb` (0x00RRGGBB) in het formaat van dit
-    /// glas: geruild bij `FB_SWAP`, r5g6b5 bij 16 bpp. Dezelfde regels als
-    /// de console van de kern (`driver_fb::Desc::encode`).
+    /// glas: de regel van het contract ([`abi::glass::encode`]), dezelfde
+    /// als de console van de kern.
     #[must_use]
     pub const fn encode(&self, rgb: u32) -> u32 {
-        let rgb = if self.swap {
-            rgb & 0xFF00_FF00 | (rgb & 0xFF) << 16 | (rgb >> 16) & 0xFF
-        } else {
-            rgb
-        };
-        if self.bpp == 16 {
-            let (r, g, b) = ((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
-            return (r >> 3) << 11 | (g >> 2) << 5 | (b >> 3);
-        }
-        rgb
+        abi::glass::encode(rgb, self.bpp, self.swap)
     }
 }
 
@@ -206,8 +204,8 @@ fn parse_u64(s: &str) -> Option<u64> {
 pub fn input_addr<'a>(
     env: impl Fn(&str) -> Option<&'a str>,
 ) -> Option<Result<([u8; 4], u16), FbError>> {
-    let v = env("INPUT_ADDR")?;
-    Some(crate::appnet::parse_addr(v).ok_or(FbError::Bad("INPUT_ADDR")))
+    let v = env(INPUT_ADDR)?;
+    Some(crate::appnet::parse_addr(v).ok_or(FbError::Bad(INPUT_ADDR)))
 }
 
 /// Hoe het venster op het glas staat na [`map`].
@@ -255,114 +253,6 @@ impl Glass {
             .saturating_add(PAGE - 1)
             & !(PAGE - 1);
         (lo, hi)
-    }
-}
-
-/// Eén invoergebeurtenis van de stroom, in de taal van de browser-KVM.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Input {
-    /// Een toets: de code van de KVM (een JavaScript-keycode) en neer/op.
-    Key {
-        /// De code.
-        code: i32,
-        /// Ingedrukt.
-        down: bool,
-    },
-    /// De cursor staat op `(x, y)` (absoluut, de kern klemt hem op het
-    /// scherm).
-    Move {
-        /// Horizontaal.
-        x: i32,
-        /// Verticaal.
-        y: i32,
-    },
-    /// Een muisknop op `(x, y)`.
-    Button {
-        /// 0 links, 1 midden, 2 rechts.
-        code: i32,
-        /// Ingedrukt.
-        down: bool,
-        /// Horizontaal.
-        x: i32,
-        /// Verticaal.
-        y: i32,
-    },
-    /// Het wiel: `v` klikken.
-    Wheel {
-        /// Klikken, negatief is naar boven.
-        v: i32,
-        /// Horizontaal.
-        x: i32,
-        /// Verticaal.
-        y: i32,
-    },
-    /// Een lege regel: de stroom leeft.
-    Keepalive,
-}
-
-impl Input {
-    /// Ontleedt één regel (zonder de newline). `None` voor wat geen van de
-    /// vier vormen is: een regel die de app niet begrijpt, slaat hij over.
-    #[must_use]
-    pub fn parse(line: &[u8]) -> Option<Input> {
-        let s = core::str::from_utf8(line).ok()?.trim();
-        if s.is_empty() {
-            return Some(Input::Keepalive);
-        }
-        let n = |k: &str| field_num(s, k);
-        let (x, y) = (n("x").unwrap_or(0), n("y").unwrap_or(0));
-        match field_str(s, "k")? {
-            "key" => Some(Input::Key {
-                code: n("c")?,
-                down: n("v")? != 0,
-            }),
-            "move" => Some(Input::Move {
-                x: n("x")?,
-                y: n("y")?,
-            }),
-            "btn" => Some(Input::Button {
-                code: n("c")?,
-                down: n("v")? != 0,
-                x,
-                y,
-            }),
-            "wheel" => Some(Input::Wheel { v: n("v")?, x, y }),
-            _ => None,
-        }
-    }
-}
-
-/// De waarde van `"k":"..."` in een plat JSON-object.
-fn field_str<'a>(s: &'a str, key: &str) -> Option<&'a str> {
-    let rest = after_key(s, key)?;
-    let rest = rest.strip_prefix('"')?;
-    rest.split_once('"').map(|(v, _)| v)
-}
-
-/// De waarde van `"k":123` in een plat JSON-object.
-fn field_num(s: &str, key: &str) -> Option<i32> {
-    let rest = after_key(s, key)?;
-    let end = rest
-        .char_indices()
-        .find(|&(i, c)| !(c.is_ascii_digit() || (i == 0 && c == '-')))
-        .map_or(rest.len(), |(i, _)| i);
-    rest.get(..end)?.parse().ok()
-}
-
-/// Wat er na `"key":` komt (spaties overgeslagen).
-fn after_key<'a>(s: &'a str, key: &str) -> Option<&'a str> {
-    let mut rest = s;
-    loop {
-        let at = rest.find('"')?;
-        rest = rest.get(at + 1..)?;
-        let (name, tail) = rest.split_once('"')?;
-        let tail = tail.trim_start();
-        if name == key
-            && let Some(v) = tail.strip_prefix(':')
-        {
-            return Some(v.trim_start());
-        }
-        rest = tail;
     }
 }
 

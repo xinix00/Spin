@@ -1,7 +1,6 @@
 //! Alleen boot vestigt de unieke SQLite-runtime en haar parkeerbare C-stack.
 use crate::platform::{Environment, Native, Random, failure, timestamp};
 mod catalog;
-mod lease;
 mod storage;
 mod tenancy;
 use applib::{App, EXEC, appnet, stacktask::Task};
@@ -127,7 +126,9 @@ async fn run(app: &'static App) -> Result {
     let secure = app
         .env("SPIN_PUBLIC_URL")
         .is_some_and(|s| s.starts_with("https://"));
-    lease::guard(app, net, root, || serve(app, net, root, port, secure)).await
+    // Eén schrijver per namespace bewaakt de S3-lease van Replica per tenant
+    // (storage::Owner::new); de oude lease op de lokale schijf is weg.
+    serve(app, net, root, port, secure).await
 }
 /// De meetlat van de boot-lus (handboek "De meetlat"): elke 30 s één regel
 /// met de tellers van de executor sinds de vorige regel, en een regel per

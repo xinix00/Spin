@@ -4,8 +4,8 @@ version = 4
 
 [[package]]
 name = "abi"
-version = "3.0.9"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.9#2e316e48c4b278c9162cafc4f8349fad08f8d229"
+version = "3.0.10"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.10#060282a7c49c6cc927536f66677e90e48bea49f5"
 dependencies = [
  "bounded",
  "dev",
@@ -56,8 +56,8 @@ dependencies = [
 
 [[package]]
 name = "applib"
-version = "3.0.9"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.9#2e316e48c4b278c9162cafc4f8349fad08f8d229"
+version = "3.0.10"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.10#060282a7c49c6cc927536f66677e90e48bea49f5"
 dependencies = [
  "abi",
  "bounded",
@@ -77,8 +77,8 @@ source = "git+https://github.com/xinix00/hop.git?tag=v3.0.9#a0130f207b58415e7c54
 
 [[package]]
 name = "bounded"
-version = "3.0.9"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.9#2e316e48c4b278c9162cafc4f8349fad08f8d229"
+version = "3.0.10"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.10#060282a7c49c6cc927536f66677e90e48bea49f5"
 
 [[package]]
 name = "cfg-if"
@@ -126,13 +126,21 @@ dependencies = [
 
 [[package]]
 name = "dev"
+version = "3.0.10"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.10#060282a7c49c6cc927536f66677e90e48bea49f5"
+
+[[package]]
+name = "discovery"
 version = "3.0.9"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.9#2e316e48c4b278c9162cafc4f8349fad08f8d229"
+source = "git+https://github.com/xinix00/hop.git?tag=v3.0.9#a0130f207b58415e7c541a1b23fca63f7d809214"
+dependencies = [
+ "types",
+]
 
 [[package]]
 name = "executor"
-version = "3.0.9"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.9#2e316e48c4b278c9162cafc4f8349fad08f8d229"
+version = "3.0.10"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.10#060282a7c49c6cc927536f66677e90e48bea49f5"
 dependencies = [
  "dev",
  "sync",
@@ -160,8 +168,8 @@ dependencies = [
 
 [[package]]
 name = "heap"
-version = "3.0.9"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.9#2e316e48c4b278c9162cafc4f8349fad08f8d229"
+version = "3.0.10"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.10#060282a7c49c6cc927536f66677e90e48bea49f5"
 
 [[package]]
 name = "inout"
@@ -218,8 +226,8 @@ dependencies = [
 
 [[package]]
 name = "netdev"
-version = "3.0.9"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.9#2e316e48c4b278c9162cafc4f8349fad08f8d229"
+version = "3.0.10"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.10#060282a7c49c6cc927536f66677e90e48bea49f5"
 dependencies = [
  "sync",
 ]
@@ -247,6 +255,7 @@ name = "replica-core"
 version = "0.1.0"
 dependencies = [
  "auth",
+ "discovery",
  "replica-sqlite",
  "types",
 ]
@@ -274,7 +283,7 @@ version = "0.1.0"
 
 [[package]]
 name = "spin-core"
-version = "3.0.9"
+version = "3.0.10"
 dependencies = [
  "auth",
  "miniz_oxide",
@@ -283,14 +292,14 @@ dependencies = [
 
 [[package]]
 name = "spin-domain"
-version = "3.0.9"
+version = "3.0.10"
 dependencies = [
  "types",
 ]
 
 [[package]]
 name = "spin-hopos"
-version = "3.0.9"
+version = "3.0.10"
 dependencies = [
  "applib",
  "leanhttp",
@@ -313,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "spin-host"
-version = "3.0.9"
+version = "3.0.10"
 dependencies = [
  "leanhttp",
  "leanhttps",
@@ -335,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "spin-persistence"
-version = "3.0.9"
+version = "3.0.10"
 dependencies = [
  "replica-sqlite",
  "spin-domain",
@@ -345,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "spin-runtime"
-version = "3.0.9"
+version = "3.0.10"
 dependencies = [
  "leanhttp",
  "spin-core",
@@ -356,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "spin-security"
-version = "3.0.9"
+version = "3.0.10"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -367,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "spin-server"
-version = "3.0.9"
+version = "3.0.10"
 dependencies = [
  "spin-core",
  "spin-domain",
@@ -377,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "spin-store"
-version = "3.0.9"
+version = "3.0.10"
 dependencies = [
  "spin-core",
  "spin-domain",
@@ -392,8 +401,11 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sync"
-version = "3.0.9"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.9#2e316e48c4b278c9162cafc4f8349fad08f8d229"
+version = "3.0.10"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.10#060282a7c49c6cc927536f66677e90e48bea49f5"
+dependencies = [
+ "bounded",
+]
 
 [[package]]
 name = "typenum"

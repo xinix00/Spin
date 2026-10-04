@@ -115,8 +115,9 @@ pub const CTRL_SMP_MAIR: u64 = 0xF8;
 /// Kern naar app: 1 als dit slot zijn core deelt; de idle-governor yieldt
 /// dan naar de switcher in plaats van WFE te slapen.
 pub const CTRL_SHARED: u64 = 0x100;
-/// App naar kern: het aantal idle-rondes. Bewust ongelezen (besluit Derek
-/// 06-08) tot een onverklaarbaar hoog cpu-percentage erom vraagt.
+/// App naar kern: het aantal idle-rondes, van alle cores van de app (zoals
+/// `CTRL_IDLE`). Bewust ongelezen (besluit Derek 06-08) tot een
+/// onverklaarbaar hoog cpu-percentage erom vraagt.
 pub const CTRL_WAKES: u64 = 0x108;
 /// App naar switcher: de wek-drempel van de doorbell (head | bit 63). Alleen
 /// wie de ring draint mag hem wapenen: anders maakt elke ARP-flood een app
@@ -410,9 +411,6 @@ const _: () = assert!(CTRL_SMP_MAIR + 8 <= crate::layout::CTX_LEN - crate::layou
 pub const VERSION: u8 = 1;
 /// De lengte van de kop van een request of response.
 pub const HDR_LEN: usize = 24;
-/// De historische mailboxgrens; nieuwe verbindingen begrenzen met
-/// [`crate::systemapi::MAX_IO_CHUNK`].
-pub const MAX_CHUNK: usize = 8 << 10;
 
 /// `stat(path)`: de maat (een map: 0, status OK).
 pub const OP_STAT: u8 = 1;
@@ -451,7 +449,8 @@ pub const OP_CODEC_OPEN: u8 = 14;
 pub const OP_CODEC_FEED: u8 = 15;
 /// Een lege beeldbuffer erin.
 pub const OP_CODEC_OFFER: u8 = 16;
-/// Nul of meer events.
+/// Nul of meer events. Met `n` > 0 wacht de kern tot er een is, hoogstens
+/// `n` ms (en een seconde); met `n` = 0 antwoordt hij meteen.
 pub const OP_CODEC_POLL: u8 = 17;
 /// Codec sluiten.
 pub const OP_CODEC_CLOSE: u8 = 18;
@@ -561,10 +560,6 @@ fn check_head(b: &[u8]) -> Result {
 
 /// Serialiseert een request in `dst`; geeft de lengte.
 pub fn encode_req(dst: &mut [u8], r: &Req<'_>) -> Result<usize> {
-    let plen = u16::try_from(r.path.len()).map_err(|_| Error::PayloadTooLarge {
-        len: r.path.len(),
-        max: u16::MAX as usize,
-    })?;
     let total = HDR_LEN + r.path.len() + r.data.len();
     if dst.len() < total {
         return Err(Error::Short {
@@ -572,11 +567,30 @@ pub fn encode_req(dst: &mut [u8], r: &Req<'_>) -> Result<usize> {
             need: total,
         });
     }
-    put_head(dst, r.op, plen, r.seq, r.off, r.n);
+    encode_req_head(dst, r)?;
     let (path, data) = dst[HDR_LEN..total].split_at_mut(r.path.len());
     path.copy_from_slice(r.path);
     data.copy_from_slice(r.data);
     Ok(total)
+}
+
+/// Schrijft alleen de kop van `r` in `dst[..HDR_LEN]`, met de padlengte van
+/// `r.path`; pad en data schrijft de aanroeper zelf erachter (applib zet ze
+/// rechtstreeks op de draad). Geeft [`HDR_LEN`]: zelfde draadvorm als
+/// [`encode_req`], zonder de kopie.
+pub fn encode_req_head(dst: &mut [u8], r: &Req<'_>) -> Result<usize> {
+    let plen = u16::try_from(r.path.len()).map_err(|_| Error::PayloadTooLarge {
+        len: r.path.len(),
+        max: u16::MAX as usize,
+    })?;
+    if dst.len() < HDR_LEN {
+        return Err(Error::Short {
+            len: dst.len(),
+            need: HDR_LEN,
+        });
+    }
+    put_head(dst, r.op, plen, r.seq, r.off, r.n);
+    Ok(HDR_LEN)
 }
 
 /// Parseert een request; pad en data lenen uit `b`.
@@ -676,6 +690,9 @@ mod tests {
         let n = encode_req(&mut buf, &r).unwrap();
         assert_eq!(n, HDR_LEN + 7 + 3);
         assert_eq!(decode_req(&buf[..n]).unwrap(), r);
+        let mut head = [0u8; HDR_LEN];
+        assert_eq!(encode_req_head(&mut head, &r), Ok(HDR_LEN));
+        assert_eq!(head[..], buf[..HDR_LEN]);
         assert!(matches!(
             decode_req(&buf[..HDR_LEN + 3]),
             Err(Error::Short { .. })
@@ -748,18 +765,42 @@ pub mod codec {
     /// De lengte van één [`Event`].
     pub const EVENT_LEN: usize = 64;
 
-    /// Event: niets.
-    pub const EVENT_NONE: u8 = 0;
-    /// De stream is herkend; maten en vlakken staan erin.
-    pub const EVENT_FORMAT: u8 = 1;
-    /// Een invoerbuffer is weer van de app.
-    pub const EVENT_CONSUMED: u8 = 2;
-    /// Een resultaat staat in de buffer.
-    pub const EVENT_PRODUCED: u8 = 3;
-    /// Einde van de stream.
-    pub const EVENT_DONE: u8 = 4;
-    /// De sessie is stuk.
-    pub const EVENT_FAULT: u8 = 5;
+    /// Het soort van een [`Event`]. Bewust NIET de nummering van
+    /// `driver-codec`: dit is een draadformaat, en dat verschuift niet als
+    /// er intern een soort bijkomt. De kern vertaalt expliciet.
+    #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+    #[repr(u8)]
+    pub enum Kind {
+        /// Niets (of een soort die deze kant nog niet kent).
+        #[default]
+        None = 0,
+        /// De stream is herkend: `width`, `height`, `pixel`, de vlakken, en
+        /// in `size` de minimale buffermaat en in `bytes` het aantal buffers.
+        Format = 1,
+        /// Een invoerbuffer is weer van de app.
+        Consumed = 2,
+        /// Een resultaat staat in de buffer; `bytes` 0 is "niet om te tonen".
+        Produced = 3,
+        /// De stream is af.
+        Done = 4,
+        /// De sessie is stuk: sluiten en opnieuw openen.
+        Fault = 5,
+    }
+
+    impl Kind {
+        /// Het soort van een rauw getal; onbekend is [`Kind::None`].
+        #[must_use]
+        pub const fn from_raw(v: u8) -> Kind {
+            match v {
+                1 => Kind::Format,
+                2 => Kind::Consumed,
+                3 => Kind::Produced,
+                4 => Kind::Done,
+                5 => Kind::Fault,
+                _ => Kind::None,
+            }
+        }
+    }
 
     fn short(b: &[u8], need: usize) -> Result {
         if b.len() < need {
@@ -897,14 +938,10 @@ pub mod codec {
     /// 40 stride[3] u16 | _ u16
     /// 48 plane[3] u32 | _ u32      (= 64)
     /// ```
-    ///
-    /// De soorten zijn bewust NIET de nummering van `driver-codec`: dit is
-    /// een draadformaat, en dat verschuift niet als er intern een soort
-    /// bijkomt. De kern vertaalt expliciet.
     #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
     pub struct Event {
-        /// `EVENT_*`.
-        pub kind: u8,
+        /// Het soort.
+        pub kind: Kind,
         /// Bij een bitstream-resultaat: een keyframe.
         pub key: bool,
         /// Bij Format: het pixelformaat.
@@ -936,7 +973,7 @@ pub mod codec {
                 need: EVENT_LEN,
             })?;
             b.fill(0);
-            b[0] = self.kind;
+            b[0] = self.kind as u8;
             b[1] = u8::from(self.key);
             b[2] = self.pixel;
             b[4..6].copy_from_slice(&self.width.to_le_bytes());
@@ -958,7 +995,7 @@ pub mod codec {
         pub fn decode(b: &[u8]) -> Result<Event> {
             short(b, EVENT_LEN)?;
             let mut e = Event {
-                kind: b[0],
+                kind: Kind::from_raw(b[0]),
                 key: b[1] != 0,
                 pixel: b[2],
                 width: le16(b, 4),
@@ -985,7 +1022,7 @@ pub mod codec {
         #[test]
         fn event_bytes_are_those_of_go() {
             let e = Event {
-                kind: EVENT_PRODUCED,
+                kind: Kind::Produced,
                 key: true,
                 pixel: 4,
                 width: 3840,
@@ -1007,6 +1044,16 @@ pub mod codec {
             assert_eq!(&b[60..64], &[0; 4]);
             assert_eq!(Event::decode(&b).unwrap(), e);
             assert!(Event::decode(&b[..63]).is_err());
+            for k in [
+                Kind::Format,
+                Kind::Consumed,
+                Kind::Produced,
+                Kind::Done,
+                Kind::Fault,
+            ] {
+                assert_eq!(Kind::from_raw(k as u8), k);
+            }
+            assert_eq!(Kind::from_raw(9), Kind::None, "een soort van later");
             assert!(e.encode(&mut [0u8; 10]).is_err());
         }
 

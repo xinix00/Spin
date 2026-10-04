@@ -27,11 +27,11 @@
 //! Dit module bezit de verbinding van de client; hij gaat met de client mee.
 
 use crate::contract::{
-    HOPABI_HDR_LEN, HOPABI_VERSION, KIND_CALL, KIND_LOG, KIND_RESULT, MAX_IO_CHUNK, MAX_PAYLOAD,
-    OP_LIST, OP_READ, OP_READ_MANY, OP_REMOVE, OP_STAT, OP_SYNC, OP_TRUNCATE, OP_WRITE,
-    STATUS_NOENT, STATUS_OK, SYS_HEADER_LEN, SYS_MAGIC, SYS_PORT, SYS_VERSION,
+    HOPABI_HDR_LEN, MAX_IO_CHUNK, MAX_PAYLOAD, OP_LIST, OP_READ, OP_READ_MANY, OP_REMOVE, OP_STAT,
+    OP_SYNC, OP_TRUNCATE, OP_WRITE, STATUS_NOENT, STATUS_OK, SYS_HEADER_LEN, SYS_PORT,
 };
 use abi::hopabi::many;
+use abi::systemapi::{Kind, decode_header, encode_header};
 use core::fmt;
 use core::future::Future;
 use core::time::Duration;
@@ -96,9 +96,22 @@ pub trait Dial {
 }
 
 /// De timer van de client (de executor van de app, of een nep in tests).
+///
+/// Alleen de slaap, en daarom niet [`sync::Timer`] van de kern en de
+/// drivers: de client heeft geen klok nodig, en Hop implementeert deze
+/// trait zelf (`hopos-runner::fake::NeverTimer`), dus een `now` erbij
+/// breekt de bouw van Hop tegen deze boom.
 pub trait Timer {
     /// Slaapt `d`.
     fn sleep(&self, d: Duration) -> impl Future<Output = ()>;
+}
+
+/// Elke [`sync::Timer`] (de executor van de app, [`crate::appnet::ExecTimer`])
+/// is een timer van de client.
+impl<T: sync::Timer> Timer for T {
+    fn sleep(&self, d: Duration) -> impl Future<Output = ()> {
+        sync::Timer::sleep(self, d)
+    }
 }
 
 /// Een foutmelding van de kern, afgekapt op een vaste maat.
@@ -229,18 +242,17 @@ impl<'a> Req<'a> {
         }
     }
 
-    /// De kop van 24 bytes: `ver u8 | op u8 | pathLen u16 | seq u32 | off u64 | n u64`.
-    #[must_use]
-    pub fn header(&self) -> [u8; HOPABI_HDR_LEN] {
-        let mut h = [0u8; HOPABI_HDR_LEN];
-        h[0] = HOPABI_VERSION;
-        h[1] = self.op;
-        let plen = u16::try_from(self.path.len()).unwrap_or(u16::MAX);
-        h[2..4].copy_from_slice(&plen.to_le_bytes());
-        h[4..8].copy_from_slice(&self.seq.to_le_bytes());
-        h[8..16].copy_from_slice(&self.off.to_le_bytes());
-        h[16..24].copy_from_slice(&self.n.to_le_bytes());
-        h
+    /// Dezelfde request in de vorm van het contract, voor de encoder van
+    /// `abi` (de kop van 24 bytes).
+    fn wire(&self) -> abi::hopabi::Req<'a> {
+        abi::hopabi::Req {
+            op: self.op,
+            seq: self.seq,
+            off: self.off,
+            n: self.n,
+            path: self.path.as_bytes(),
+            data: self.data,
+        }
     }
 
     /// De payloadlengte, of `TooLarge` als hij niet op de draad mag.
@@ -335,48 +347,16 @@ async fn land_many<C: Conn>(
     Ok(())
 }
 
-/// Leest een responskop van 24 bytes.
-pub fn decode_resp(h: &[u8; HOPABI_HDR_LEN]) -> Result<Resp> {
-    if h[0] != HOPABI_VERSION {
-        return Err(Error::Protocol("response version"));
-    }
-    let u16_at = |i: usize| u16::from_le_bytes([h[i], h[i + 1]]);
-    let u32_at = |i: usize| u32::from_le_bytes([h[i], h[i + 1], h[i + 2], h[i + 3]]);
-    let mut size = [0u8; 8];
-    size.copy_from_slice(&h[8..16]);
-    Ok(Resp {
-        op: h[1],
-        status: u16_at(2),
-        seq: u32_at(4),
-        size: u64::from_le_bytes(size),
+/// Een draadfout van de kern (de framekop of de responskop, door `abi`
+/// gelezen) als protocolfout van de client.
+fn protocol(e: abi::Error) -> Error {
+    Error::Protocol(match e {
+        abi::Error::BadMagic(_) => "bad magic",
+        abi::Error::BadVersion { .. } => "version",
+        abi::Error::PayloadTooLarge { .. } => "frame too large",
+        abi::Error::BadKind(_) => "unexpected frame",
+        _ => "header",
     })
-}
-
-/// De framekop van 12 bytes: `"HOPS" | ver | kind | 0 0 | len u32`.
-#[must_use]
-pub fn frame_header(kind: u8, len: u32) -> [u8; SYS_HEADER_LEN] {
-    let mut h = [0u8; SYS_HEADER_LEN];
-    h[0..4].copy_from_slice(&SYS_MAGIC.to_le_bytes());
-    h[4] = SYS_VERSION;
-    h[5] = kind;
-    h[8..12].copy_from_slice(&len.to_le_bytes());
-    h
-}
-
-/// Toetst een framekop en geeft (soort, lengte). De grootte wordt geweigerd
-/// vóór er één byte payload gelezen is.
-pub fn check_frame_header(h: &[u8; SYS_HEADER_LEN]) -> Result<(u8, usize)> {
-    if h[0..4] != SYS_MAGIC.to_le_bytes() {
-        return Err(Error::Protocol("bad magic"));
-    }
-    if h[4] != SYS_VERSION {
-        return Err(Error::Protocol("frame version"));
-    }
-    let n = u32::from_le_bytes([h[8], h[9], h[10], h[11]]) as usize;
-    if n > MAX_PAYLOAD {
-        return Err(Error::Protocol("frame too large"));
-    }
-    Ok((h[5], n))
 }
 
 async fn write_all<C: Conn>(c: &mut C, mut p: &[u8]) -> core::result::Result<(), ConnError> {
@@ -441,23 +421,32 @@ async fn exchange<C: Conn>(
     sink: &mut Sink<'_, '_>,
 ) -> core::result::Result<(Resp, usize), Attempt> {
     let len = req.payload_len().map_err(Attempt::fatal)?;
-    let len32 = u32::try_from(len).map_err(|_| Attempt::fatal(Error::Protocol("length")))?;
-    write_all(c, &frame_header(KIND_CALL, len32)).await?;
-    write_all(c, &req.header()).await?;
+    let fatal = |e| Attempt::fatal(protocol(e));
+    let fh = encode_header(Kind::Call, len).map_err(fatal)?;
+    let mut rh = [0u8; HOPABI_HDR_LEN];
+    abi::hopabi::encode_req_head(&mut rh, &req.wire()).map_err(fatal)?;
+    write_all(c, &fh).await?;
+    write_all(c, &rh).await?;
     write_all(c, req.path.as_bytes()).await?;
     write_all(c, req.data).await?;
 
     let mut fh = [0u8; SYS_HEADER_LEN];
     read_exact(c, &mut fh).await?;
-    let (kind, n) = check_frame_header(&fh).map_err(Attempt::fatal)?;
-    if kind != KIND_RESULT || n < HOPABI_HDR_LEN {
+    let h = decode_header(&fh).map_err(fatal)?;
+    let n = h.len;
+    if h.kind != Kind::Result || n < HOPABI_HDR_LEN {
         return Err(Attempt::fatal(Error::Protocol("unexpected frame")));
     }
-    let mut rh = [0u8; HOPABI_HDR_LEN];
     read_exact(c, &mut rh)
         .await
         .map_err(|e| Attempt::fatal(Error::Transport(e)))?;
-    let resp = decode_resp(&rh).map_err(Attempt::fatal)?;
+    let r = abi::hopabi::decode_resp(&rh).map_err(fatal)?;
+    let resp = Resp {
+        op: r.op,
+        status: r.status,
+        seq: r.seq,
+        size: r.size,
+    };
     let data = n - HOPABI_HDR_LEN;
     if resp.seq != req.seq {
         return Err(Attempt::fatal(Error::Protocol("response seq")));
@@ -631,33 +620,6 @@ impl<D: Dial, T: Timer> Client<D, T> {
         Ok(r.size)
     }
 
-    /// Eén SCSI-uitwisseling, zonder automatische herhaling. Een verloren
-    /// antwoord op een vendorcommando mag nooit dezelfde mutatie herhalen.
-    /// De aanroeper bezit beide scratchbuffers; het antwoord leent `rx`.
-    pub async fn device_command<'a>(
-        &mut self,
-        path: &str,
-        command: abi::hopabi::device::Command<'_>,
-        tx: &mut [u8],
-        rx: &'a mut [u8],
-    ) -> Result<abi::hopabi::device::Reply<'a>> {
-        use abi::hopabi::device::{RESULT_LEN, Reply};
-        if rx.len() < RESULT_LEN.saturating_add(command.in_len as usize) {
-            return Err(Error::Protocol("device response buffer"));
-        }
-        let n = command
-            .encode(tx, MAX_CHUNK)
-            .map_err(|_| Error::Protocol("device command bounds"))?;
-        let req = Req {
-            data: &tx[..n],
-            ..Req::path(abi::hopabi::OP_DEVICE_COMMAND, path)
-        };
-        let timeout = Duration::from_millis(u64::from(command.timeout_ms) + 2000);
-        let (_, n) = self.call_once(req, rx, timeout).await?;
-        Reply::decode(&rx[..n], command.in_len as usize, command.data_out.len())
-            .map_err(|_| Error::Protocol("device result bounds"))
-    }
-
     /// De grootte van een bestand (0 voor een map).
     pub async fn stat(&mut self, path: &str) -> Result<u64> {
         let (r, _) = self
@@ -804,15 +766,14 @@ impl<D: Dial, T: Timer> Client<D, T> {
     }
 
     /// Eén logregel over de verbinding (`KindLog`), zonder antwoord. Een
-    /// fout sluit de verbinding; de aanroeper valt terug op de outbox.
+    /// fout sluit de verbinding. `log!` gaat via de outbox; dit is de weg
+    /// van de Go-apps (`Logf` in de Go-SDK), en appspike toetst er de kern
+    /// mee.
     pub async fn log(&mut self, line: &[u8]) -> Result {
-        let len = u32::try_from(line.len())
-            .ok()
-            .filter(|&n| n as usize <= MAX_PAYLOAD)
-            .ok_or(Error::TooLarge {
-                len: line.len(),
-                max: MAX_PAYLOAD,
-            })?;
+        let fh = encode_header(Kind::Log, line.len()).map_err(|_| Error::TooLarge {
+            len: line.len(),
+            max: MAX_PAYLOAD,
+        })?;
         let Self {
             dial, timer, conn, ..
         } = self;
@@ -823,7 +784,7 @@ impl<D: Dial, T: Timer> Client<D, T> {
             return Err(Error::Transport(ConnError::Refused));
         };
         let send = async {
-            write_all(c, &frame_header(KIND_LOG, len)).await?;
+            write_all(c, &fh).await?;
             write_all(c, line).await
         };
         let r = match select(timer.sleep(Duration::from_millis(100)), send).await {
@@ -846,7 +807,7 @@ pub fn names(b: &[u8]) -> impl Iterator<Item = &str> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use core::pin::pin;
     use core::task::{Context, Poll, Waker};
@@ -930,14 +891,18 @@ mod tests {
         async fn sleep(&self, _: Duration) {}
     }
 
-    fn resp(seq: u32, status: u16, size: u64, data: &[u8]) -> Vec<u8> {
-        let mut p = vec![HOPABI_VERSION, 0];
-        p.extend_from_slice(&status.to_le_bytes());
-        p.extend_from_slice(&seq.to_le_bytes());
-        p.extend_from_slice(&size.to_le_bytes());
-        p.extend_from_slice(&[0; 8]);
-        p.extend_from_slice(data);
-        let mut f = frame_header(KIND_RESULT, p.len() as u32).to_vec();
+    /// Een antwoord-frame zoals de kern het schrijft: de encoders van `abi`.
+    pub(crate) fn resp(seq: u32, status: u16, size: u64, data: &[u8]) -> Vec<u8> {
+        let r = abi::hopabi::Resp {
+            op: 0,
+            status,
+            seq,
+            size,
+            data,
+        };
+        let mut p = vec![0u8; HOPABI_HDR_LEN + data.len()];
+        let n = abi::hopabi::encode_resp(&mut p, &r).unwrap();
+        let mut f = encode_header(Kind::Result, n).unwrap().to_vec();
         f.extend_from_slice(&p);
         f
     }
@@ -976,10 +941,10 @@ mod tests {
         // Framekop: "HOPS", versie 1, soort call, lengte 24 + pad.
         assert_eq!(&sent[0..4], b"HOPS");
         assert_eq!(sent[4], 1);
-        assert_eq!(sent[5], KIND_CALL);
+        assert_eq!(sent[5], Kind::Call as u8);
         assert_eq!(u32::from_le_bytes(sent[8..12].try_into().unwrap()), 24 + 12);
         // Requestkop: versie, op, padlengte, seq.
-        assert_eq!(sent[12], HOPABI_VERSION);
+        assert_eq!(sent[12], abi::hopabi::VERSION);
         assert_eq!(sent[13], OP_STAT);
         assert_eq!(u16::from_le_bytes([sent[14], sent[15]]), 12);
         assert_eq!(u32::from_le_bytes(sent[16..20].try_into().unwrap()), 1);
@@ -1116,7 +1081,7 @@ mod tests {
         let (mut c, s) = client(vec![Some(Vec::new())]);
         assert_eq!(block_on(c.log(b"hello")), Ok(()));
         let sent = &s.borrow().sent[0];
-        assert_eq!(sent[5], KIND_LOG);
+        assert_eq!(sent[5], Kind::Log as u8);
         assert_eq!(&sent[12..], b"hello");
     }
 

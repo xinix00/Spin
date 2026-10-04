@@ -22,6 +22,7 @@
 //! ```no_run
 //! use applib::codec::{Codec, Config, Direction, Event, Flags, Kind, Pixel, Session};
 //! use applib::sys::{Client, Dial, Result, Timer};
+//! use core::time::Duration;
 //!
 //! /// Eén hap HEVC op 1 MB in de partitie, twaalf beeldbuffers erachter.
 //! async fn decode<D: Dial, T: Timer>(c: &mut Client<D, T>, len: u64) -> Result {
@@ -36,7 +37,7 @@
 //!     s.feed(c, 1 << 20, 1 << 20, len, Flags::EOS, 0).await?;
 //!     let mut evs = [Event::default(); 32];
 //!     loop {
-//!         let n = s.poll(c, &mut evs).await?;
+//!         let n = s.poll(c, &mut evs, Duration::from_secs(1)).await?;
 //!         for e in evs.iter().take(n) {
 //!             match e.kind {
 //!                 // De maat is bekend: beeldbuffers van e.size aanbieden.
@@ -57,13 +58,14 @@
 
 use crate::contract::STATUS_OK;
 use crate::sys::{Client, Dial, Error, Req, Result, Timer};
-use abi::hopabi::codec::{
-    BufArgs, EVENT_CONSUMED, EVENT_DONE, EVENT_FAULT, EVENT_FORMAT, EVENT_LEN, EVENT_PRODUCED,
-    Event as Wire, FeedArgs, OpenArgs,
-};
+use abi::hopabi::codec::{BufArgs, EVENT_LEN, FeedArgs, OpenArgs};
 use abi::hopabi::{OP_CODEC_CLOSE, OP_CODEC_FEED, OP_CODEC_OFFER, OP_CODEC_OPEN, OP_CODEC_POLL};
 use core::time::Duration;
 pub use driver_codec::{Codec, Config, Direction, Flags, Pixel};
+
+/// Eén event en zijn soort: de vorm van het contract. `off` is de afstand
+/// vanaf `RamStart`, `pixel` het getal van [`Pixel`] (`Pixel::from_raw`).
+pub use abi::hopabi::codec::{Event, Kind};
 
 /// De timeout van een codec-call. Een open laadt firmware (een paar honderd
 /// KB van de NVMe); de rest is een beurt van de driver.
@@ -71,78 +73,6 @@ pub const CODEC_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Hoeveel events één poll hoogstens oplevert (de kern stopt bij 32).
 pub const MAX_EVENTS: usize = 32;
-
-/// Het soort event.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
-pub enum Kind {
-    /// Niets (of een soort die deze app nog niet kent).
-    #[default]
-    None,
-    /// De stream is herkend: `width`, `height`, `pixel`, de vlakken, en in
-    /// `size` de minimale buffermaat en in `bytes` het aantal buffers.
-    Format,
-    /// Een invoerbuffer is weer van de app.
-    Consumed,
-    /// Een resultaat staat in de buffer; `bytes` 0 is "niet om te tonen".
-    Produced,
-    /// De stream is af.
-    Done,
-    /// De sessie is stuk: sluiten en opnieuw openen.
-    Fault,
-}
-
-/// Eén event, in de termen van de app.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
-pub struct Event {
-    /// Het soort.
-    pub kind: Kind,
-    /// De buffer, als afstand vanaf `RamStart`.
-    pub off: u64,
-    /// De maat van de buffer; bij Format de minimale buffermaat.
-    pub size: u64,
-    /// Bruikbare bytes; bij Format het aantal buffers dat het ijzer wil.
-    pub bytes: u64,
-    /// De tag van de invoer (de tijdstempel van de app).
-    pub tag: u64,
-    /// Bij een bitstream-resultaat: een keyframe.
-    pub key: bool,
-    /// Het pixelformaat (Format en Produced).
-    pub pixel: Pixel,
-    /// Zichtbaar beeld.
-    pub width: u16,
-    /// Zichtbaar beeld.
-    pub height: u16,
-    /// Bytes per regel per vlak (0: het vlak bestaat niet).
-    pub stride: [u16; 3],
-    /// Het begin van elk vlak, vanaf het begin van de buffer.
-    pub plane: [u32; 3],
-}
-
-impl Event {
-    fn from_wire(w: &Wire) -> Event {
-        let kind = match w.kind {
-            EVENT_FORMAT => Kind::Format,
-            EVENT_CONSUMED => Kind::Consumed,
-            EVENT_PRODUCED => Kind::Produced,
-            EVENT_DONE => Kind::Done,
-            EVENT_FAULT => Kind::Fault,
-            _ => Kind::None,
-        };
-        Event {
-            kind,
-            off: w.off,
-            size: w.size,
-            bytes: w.bytes,
-            tag: w.tag,
-            key: w.key,
-            pixel: Pixel::from_raw(w.pixel),
-            width: w.width,
-            height: w.height,
-            stride: w.stride,
-            plane: w.plane,
-        }
-    }
-}
 
 /// Een open codec-sessie: het handvat van de kern.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -231,26 +161,30 @@ impl Session {
     }
 
     /// Haalt alles op wat klaarstaat (hoogstens `dst.len()` en
-    /// [`MAX_EVENTS`]); geeft het aantal.
+    /// [`MAX_EVENTS`]); geeft het aantal. Ligt er niets, dan wacht de kern
+    /// tot er iets is, hoogstens `wait` (en een seconde): de app slaapt op
+    /// het antwoord in plaats van zelf rond te kijken. `Duration::ZERO`
+    /// antwoordt meteen.
     pub async fn poll<D: Dial, T: Timer>(
         &self,
         c: &mut Client<D, T>,
         dst: &mut [Event],
+        wait: Duration,
     ) -> Result<usize> {
         let a = BufArgs {
             handle: self.handle,
         }
         .encode();
+        let ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
         let mut raw = [0u8; MAX_EVENTS * EVENT_LEN];
-        let (n, len) = call(c, OP_CODEC_POLL, 0, 0, &a, &mut raw).await?;
+        let (n, len) = call(c, OP_CODEC_POLL, 0, ms, &a, &mut raw).await?;
         let got = usize::try_from(n).unwrap_or(0).min(len / EVENT_LEN);
         let mut k = 0;
         for (i, d) in dst.iter_mut().enumerate().take(got) {
-            let w = raw
+            *d = raw
                 .get(i * EVENT_LEN..(i + 1) * EVENT_LEN)
-                .and_then(|b| Wire::decode(b).ok())
+                .and_then(|b| Event::decode(b).ok())
                 .ok_or(Error::Protocol("codec event"))?;
-            *d = Event::from_wire(&w);
             k += 1;
         }
         Ok(k)
@@ -275,8 +209,8 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::{HOPABI_VERSION, KIND_RESULT, SYS_HEADER_LEN};
-    use crate::sys::{Conn, ConnError, frame_header};
+    use crate::contract::SYS_HEADER_LEN;
+    use crate::sys::{Conn, ConnError};
     use core::future::Future;
     use core::pin::pin;
     use core::task::{Context, Poll, Waker};
@@ -345,14 +279,7 @@ mod tests {
     }
 
     fn answer(k: &Rc<RefCell<Kern>>, seq: u32, status: u16, size: u64, data: &[u8]) {
-        let mut p = vec![HOPABI_VERSION, 0];
-        p.extend_from_slice(&status.to_le_bytes());
-        p.extend_from_slice(&seq.to_le_bytes());
-        p.extend_from_slice(&size.to_le_bytes());
-        p.extend_from_slice(&[0; 8]);
-        p.extend_from_slice(data);
-        let mut f = frame_header(KIND_RESULT, p.len() as u32).to_vec();
-        f.extend_from_slice(&p);
+        let f = crate::sys::tests::resp(seq, status, size, data);
         k.borrow_mut().rx.extend(f);
     }
 
@@ -391,33 +318,43 @@ mod tests {
         assert_eq!((f.handle, f.flags, f.filled, f.tag), (7, 1, 100, 42));
 
         let mut w = [0u8; 2 * EVENT_LEN];
-        Wire {
-            kind: EVENT_FORMAT,
+        Event {
+            kind: Kind::Format,
             size: 24 << 20,
             bytes: 6,
             pixel: 4,
             width: 3840,
-            ..Wire::default()
+            ..Event::default()
         }
         .encode(&mut w[..EVENT_LEN])
         .unwrap();
-        Wire {
-            kind: EVENT_CONSUMED,
+        Event {
+            kind: Kind::Consumed,
             off: 1 << 20,
             size: 8192,
             tag: 42,
-            ..Wire::default()
+            ..Event::default()
         }
         .encode(&mut w[EVENT_LEN..])
         .unwrap();
+        k.borrow_mut().sent.clear();
         answer(&k, 3, 0, 2, &w);
         let mut evs = [Event::default(); 4];
-        assert_eq!(block_on(s.poll(&mut c, &mut evs)).unwrap(), 2);
+        assert_eq!(
+            block_on(s.poll(&mut c, &mut evs, Duration::from_millis(250))).unwrap(),
+            2
+        );
+        let (op, _, n, _) = last_req(&k);
+        assert_eq!(
+            (op, n),
+            (OP_CODEC_POLL, 250),
+            "the wait travels in n, in ms"
+        );
         assert_eq!(
             (evs[0].kind, evs[0].size, evs[0].bytes),
             (Kind::Format, 24 << 20, 6)
         );
-        assert_eq!(evs[0].pixel, Pixel::P010);
+        assert_eq!(Pixel::from_raw(evs[0].pixel), Pixel::P010);
         assert_eq!(
             (evs[1].kind, evs[1].off, evs[1].tag),
             (Kind::Consumed, 1 << 20, 42)

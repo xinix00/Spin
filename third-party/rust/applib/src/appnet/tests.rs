@@ -4,10 +4,10 @@
 //! close en de system-client door precies de code die op het slot draait.
 
 use super::*;
-use crate::contract::{HOPABI_HDR_LEN, HOPABI_VERSION, KIND_RESULT, OP_STAT, SYS_HEADER_LEN};
+use crate::contract::{HOPABI_HDR_LEN, OP_STAT, SYS_HEADER_LEN};
 use crate::ring::tests::Backing;
 use crate::ring::{Peek, Reader, Writer};
-use crate::sys::{check_frame_header, frame_header};
+use abi::systemapi::decode_header;
 use core::cell::Cell;
 use std::boxed::Box;
 
@@ -139,33 +139,19 @@ fn slot<T>() -> &'static RefCell<Option<T>> {
 async fn fake_kern(l: TcpListener, seen: &'static RefCell<Option<(u8, Vec<u8>, usize)>>) {
     let mut c = l.accept().await.unwrap();
     let mut fh = [0u8; SYS_HEADER_LEN];
-    read_exact(&mut c, &mut fh).await;
-    let (_, n) = check_frame_header(&fh).unwrap();
+    c.read_exact(&mut fh).await.unwrap();
+    let n = decode_header(&fh).unwrap().len;
     let mut req = vec![0u8; n];
-    read_exact(&mut c, &mut req).await;
+    c.read_exact(&mut req).await.unwrap();
     let op = req[1];
     let seq = u32::from_le_bytes(req[4..8].try_into().unwrap());
-    let mut resp = [0u8; HOPABI_HDR_LEN];
-    resp[0] = HOPABI_VERSION;
-    resp[1] = op;
-    resp[4..8].copy_from_slice(&seq.to_le_bytes());
-    resp[8..16].copy_from_slice(&4096u64.to_le_bytes());
-    c.write_all(&frame_header(KIND_RESULT, HOPABI_HDR_LEN as u32))
+    c.write_all(&crate::sys::tests::resp(seq, 0, 4096, &[]))
         .await
         .unwrap();
-    c.write_all(&resp).await.unwrap();
     // Na de call: de client sluit, en dat is EOF, geen reset.
     let mut rest = [0u8; 16];
     let eof = c.read(&mut rest).await.unwrap();
     *seen.borrow_mut() = Some((op, req[HOPABI_HDR_LEN..].to_vec(), eof));
-}
-
-async fn read_exact(c: &mut TcpStream, mut buf: &mut [u8]) {
-    while !buf.is_empty() {
-        let n = c.read(buf).await.unwrap();
-        assert!(n > 0, "EOF midden in een frame");
-        buf = &mut buf[n..];
-    }
 }
 
 #[test]
@@ -255,7 +241,7 @@ fn bulk_both_ways_then_close() {
             for r in 0..ROUNDS {
                 let out: Vec<u8> = (0..CHUNK).map(|i| (i * 7 + r) as u8).collect();
                 c.write_all(&out).await.unwrap();
-                read_exact(&mut c, &mut back).await;
+                c.read_exact(&mut back).await.unwrap();
                 ok &= back == out;
             }
             // Half dicht is hier heel dicht: close, en de echo sluit ook.
@@ -316,11 +302,11 @@ fn a_small_answer_carries_the_ack_in_the_same_frame() {
             let heads = || (up.head_pending().0, down.head_pending().0);
             // Eén rondreis warm: de handshake en zijn ACK's tellen niet.
             c.write_all(&msg).await.unwrap();
-            read_exact(&mut c, &mut msg).await;
+            c.read_exact(&mut msg).await.unwrap();
             let before = heads();
             for _ in 0..ROUNDS {
                 c.write_all(&msg).await.unwrap();
-                read_exact(&mut c, &mut msg).await;
+                c.read_exact(&mut msg).await.unwrap();
             }
             let after = heads();
             *result.borrow_mut() = Some((after.0 - before.0, after.1 - before.1));
@@ -606,53 +592,6 @@ fn transport_errors_map_to_what_the_client_retries() {
     assert_eq!(conn_error(NetError::NotUp), ConnError::Refused);
 }
 
-/// De log-verbinding: vóór de dial gaat een regel naar de outbox, daarna
-/// als `KindLog`-frame over TCP naar de kern. De enige test die de
-/// log-static aanraakt.
-#[test]
-fn log_lines_go_over_the_system_connection_once_it_is_up() {
-    use crate::contract::KIND_LOG;
-    let p = pair();
-    let l = p.kern.tcp_listen(sys::ADDRESS.1).unwrap();
-    let seen = slot();
-    p.exec
-        .spawn(async move {
-            let mut c = l.accept().await.unwrap();
-            let mut got = Vec::new();
-            for _ in 0..2 {
-                let mut fh = [0u8; SYS_HEADER_LEN];
-                read_exact(&mut c, &mut fh).await;
-                let (kind, n) = check_frame_header(&fh).unwrap();
-                let mut line = vec![0u8; n];
-                read_exact(&mut c, &mut line).await;
-                got.push((kind, line));
-            }
-            *seen.borrow_mut() = Some(got);
-        })
-        .unwrap();
-    assert!(!try_log(b"too early"), "uit is outbox");
-    log_via_system(p.app).unwrap();
-    assert_eq!(log_via_system(p.app), Err(NetError::AlreadyUp));
-    assert!(!try_log(b"still dialing"));
-    p.run_until(|| {
-        log_cell()
-            .try_borrow()
-            .is_ok_and(|l| l.as_ref().is_some_and(|l| l.conn.is_some()))
-    });
-    let written = crate::log::WRITTEN.load(Relaxed);
-    crate::log::emit_via_net(None, format_args!("slot {} up", 1));
-    assert!(crate::log::WRITTEN.load(Relaxed) > written);
-    assert!(try_log(b"second"));
-    p.run_until(|| seen.borrow().is_some());
-    assert_eq!(
-        seen.borrow_mut().take().unwrap(),
-        [
-            (KIND_LOG, b"slot 1 up".to_vec()),
-            (KIND_LOG, b"second".to_vec())
-        ]
-    );
-}
-
 // ---- Flush en het net-afscheid ----
 
 /// Een kern die één verbinding aanneemt en alles leest tot EOF.
@@ -879,7 +818,7 @@ fn resolve_against(answer: Answerer, host: &'static str) -> (Result<[u8; 4]>, us
     let t0 = now();
     p.exec
         .spawn(async move {
-            let r = app.resolve_via(HOST, host).await;
+            let r = app.resolve_record(HOST, host, 1).await;
             *got.borrow_mut() = Some((r, now()));
         })
         .unwrap();

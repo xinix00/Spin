@@ -5,7 +5,7 @@ pub use heap::{Corrupt, HDR, HeapStats, LockStats, MAX_ALIGN, Walk};
 /// De core-identiteit voor de app-allocator.
 #[doc(hidden)]
 pub struct AppCore;
-impl heap::Core for AppCore {
+impl heap::CoreId for AppCore {
     fn id() -> u64 {
         crate::arch::core_id()
     }

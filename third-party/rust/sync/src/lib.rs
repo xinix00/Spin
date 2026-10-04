@@ -11,10 +11,15 @@
 //! - [`spsc::Channel`]: één producer, één consument, vaste capaciteit.
 //! - [`mpsc::Mailbox`]: veel producers, één consument: de brievenbus van
 //!   een actor.
+//! - [`Oneshot`]: de antwoordplek van een verzoek aan een actor, met
+//!   [`oneshot::call`] (zend, wacht, neem het antwoord).
 //! - [`Local`]: een static die alleen de executor van één core aanraakt.
 //! - [`select`], [`yield_now`]: de twee lus-hulpjes uit de Go-vertaling.
-//! - [`Pool`]: een vaste set futures van één soort in één taak (een actor
-//!   met meerdere verzoeken in de lucht).
+//! - [`Timer`]: de klok en de slaap van een taak.
+//! - [`Futures`]: een vaste set futures van één soort in één taak (een
+//!   actor met meerdere verzoeken in de lucht).
+//! - [`Doors`]: een vaste pool werkers met één acceptor; wie vrijkomt,
+//!   wekt de acceptor.
 //!
 //! Wat hier NIET staat: een mutex. Zie het handboek §1 en §3.
 
@@ -29,25 +34,50 @@
     )
 )]
 
+pub mod doors;
+pub mod futures;
 pub mod local;
 pub mod mpsc;
-pub mod pool;
+pub mod oneshot;
 pub mod select;
 pub mod signal;
 pub mod spsc;
 pub mod stop;
 pub mod waker;
 
+pub use doors::Doors;
+pub use futures::Futures;
 pub use local::{Local, LocalCell};
-pub use pool::Pool;
+pub use oneshot::Oneshot;
 pub use select::{Either, select};
 pub use signal::Signal;
 pub use stop::Stop;
 pub use waker::AtomicWaker;
 
-/// De verzameling is vol; het element komt terug naar de zender.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Full<T>(pub T);
+/// De rij is vol; het element komt terug naar de zender. Hetzelfde type
+/// als een volle [`bounded::BoundedVec`].
+pub use bounded::Full;
+
+/// De tijd van een taak: de monotone klok en een slaap waarin de executor
+/// de andere taken draait.
+///
+/// Eén trait voor de kern (de lifecycle, de system-API, hopfs), de
+/// USB-drivers en de system-client van applib. De binary geeft het
+/// timerwiel van zijn executor (`executor::ExecTimer`), een test een klok
+/// die bij elke slaap vooruit springt, zodat de logica zonder
+/// `&'static Executor` test.
+pub trait Timer {
+    /// Monotone nanoseconden sinds boot.
+    fn now(&self) -> u64;
+    /// Slaap `d`.
+    fn sleep(&self, d: core::time::Duration) -> impl core::future::Future<Output = ()>;
+    /// Slaap `d`, maar wek er geen slapende core voor: de timer loopt af in
+    /// de eerste ronde na `d` (`Executor::after_deferrable`, Linux'
+    /// `TIMER_DEFERRABLE`). Zonder eigen vorm gewoon [`sleep`](Self::sleep).
+    fn sleep_deferrable(&self, d: core::time::Duration) -> impl core::future::Future<Output = ()> {
+        self.sleep(d)
+    }
+}
 
 /// Geeft de rest van de ronde aan de andere taken en komt daarna terug.
 ///

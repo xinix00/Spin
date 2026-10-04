@@ -37,7 +37,13 @@ pub(super) struct Owner<'a> {
     replica: Option<Replica>,
     bucket: Option<Bucket<'a>>,
     uploads: &'a Uploads,
+    /// `<namespace>/lease`: de schrijverlease van Replica in de bucket.
+    lease_key: String,
 }
+/// De schrijverlease: lang genoeg voor een onderhoudsbeurt van Replica op de
+/// eigenaar (compactie haalde 17 s op een trage lijn), Replica vernieuwt hem
+/// hoogstens eens per zesde en weigert writes een derde vóór het verlopen.
+const LEASE_TTL_MS: u64 = 60_000;
 enum Op<'a> {
     Usage,
     Load,
@@ -189,6 +195,7 @@ impl<'a> Owner<'a> {
         let mut replica = None;
         let mut bucket = None;
         let mut saved_namespace = String::new();
+        let mut lease_key = String::new();
         if replicating(app) {
             let client = s3_client(app)?;
             let env = |key| app.env(key).unwrap_or("").trim();
@@ -224,11 +231,42 @@ impl<'a> Owner<'a> {
             )
             .map_err(|_| spin_store::Error::Conflict("invalid Replica S3 configuration"))?;
             restore.total.set(snapshot_bytes(&mut remote, &namespace));
+            // Eén schrijver per namespace: wie de lease niet krijgt, wacht tot de
+            // vorige houder hem vrijgeeft of laat verlopen (een herstart van
+            // dezelfde node wacht zijn vorige leven af).
+            let key = spin_core::validation::text(format_args!("{namespace}/lease"))?;
+            let node = spin_core::validation::text(format_args!("hopos/{domain}"))?;
+            let writer = loop {
+                let now =
+                    crate::platform::timestamp(app).map_err(|_| spin_store::Error::Storage(10))?;
+                match replica_core::writer::claim(
+                    &mut backend,
+                    &mut remote.lease(&key, LEASE_TTL_MS),
+                    &node,
+                    LEASE_TTL_MS,
+                    time(&now)?,
+                )
+                .map_err(replica_error)?
+                {
+                    replica_core::writer::Role::Writer(writer) => break writer,
+                    replica_core::writer::Role::Reader { leader } => {
+                        applib::log!(
+                            "SPIN_REPLICA_LEASE_WAIT leader={}",
+                            leader.as_deref().unwrap_or("unknown")
+                        );
+                        wait.0
+                            .wait(applib::EXEC.get().after(core::time::Duration::from_secs(5)))
+                            .map_err(|_| spin_store::Error::Storage(10))?;
+                    }
+                }
+            };
+            lease_key = key;
             let now =
                 crate::platform::timestamp(app).map_err(|_| spin_store::Error::Storage(10))?;
             let owner = Replica::prepare(
                 &mut backend,
                 &mut remote,
+                writer,
                 config,
                 time(&now)?,
                 |storage, path| {
@@ -265,6 +303,7 @@ impl<'a> Owner<'a> {
             replica,
             bucket,
             uploads,
+            lease_key,
         })
     }
     fn execute(&mut self, op: Op<'_>) -> spin_store::Result<Reply> {
@@ -490,6 +529,15 @@ impl Persistence for Owner<'_> {
             return Ok(());
         };
         let now = time(now)?;
+        // Elke seconde: Replica schrijft hoogstens eens per zesde TTL. Een
+        // transportfout is nog geen verlies; pas na de deadline sluit de eigenaar.
+        if let Err(error) = replica.renew(&mut bucket.lease(&self.lease_key, LEASE_TTL_MS), now) {
+            applib::log!("SPIN_REPLICA_LEASE_FAILED error={error:?}");
+            if error == replica_core::Error::LeaseLost {
+                self.poisoned = true;
+                return Err(spin_store::Error::StorageUncertain(10));
+            }
+        }
         if let Some((pending, uploaded)) = self.uploads.take_done() {
             if replica
                 .finish(&mut self.backend, bucket, pending, uploaded, now)

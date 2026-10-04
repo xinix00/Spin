@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.93"
 name = "bounded"
-version = "3.0.9"
+version = "3.0.10"
 build = false
 publish = false
 autolib = false

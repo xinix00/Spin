@@ -12,11 +12,13 @@ use std::{
     time::{Duration, Instant},
 };
 /// Eén herbruikbare verbinding; Replica serialiseert zijn verzoeken.
-pub(crate) struct Network {
+/// SigV4-transport voor Replica over de host-TLS-dialer.
+pub struct Network {
     client: leanhttp::Client<Dial>,
     started: Instant,
 }
-pub(crate) struct Response {
+/// Een S3-antwoord met de hele body in het geheugen (Replica begrenst segmenten).
+pub struct Response {
     status: u16,
     reason: String,
     header: leanhttp::Header,
@@ -24,7 +26,8 @@ pub(crate) struct Response {
     offset: usize,
 }
 /// De host blokkeert de eigenaar-thread op de future; er is geen aparte C-stack.
-pub(crate) struct Block;
+/// Blokkeert op de host-executor waar Replica wacht.
+pub struct Block;
 impl Suspend for Block {
     fn wait<F: Future>(&self, future: F) -> Result<F::Output, Cancelled> {
         Ok(executor::block_on(future))

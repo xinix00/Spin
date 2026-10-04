@@ -228,6 +228,73 @@ pub unsafe fn cmp_slow(a: *const u8, b: *const u8, n: usize) -> i32 {
     r
 }
 
+/// De symbolen `memcpy`, `memcmp` en `bcmp` over de lussen hierboven, voor
+/// wie ze levert: `mem_symbols!(normal)` met `normal: fn() -> bool`, zijn
+/// eigen toets of zijn geheugen nu Normal is met de uitlijncontrole uit
+/// (applib: de stage-1 van de app, hopos: SCTLR van de core). Eén macro
+/// voor app en kern; alleen die toets verschilt.
+///
+/// Onze symbolen zijn sterk, die van `compiler_builtins` zwak: de linker
+/// kiest deze. `memmove` en `memset` blijven van `compiler_builtins`; ze
+/// zitten niet op een heet pad. `#[inline(never)]`: anders plakt LTO de lus
+/// in elke aanroeper, en het kernimage moet in zijn flipvenster passen.
+#[macro_export]
+macro_rules! mem_symbols {
+    ($normal:path) => {
+        /// `memcpy(3)`.
+        ///
+        /// # Safety
+        ///
+        /// Het contract van `memcpy`: twee geldige, niet-overlappende
+        /// bereiken.
+        #[unsafe(no_mangle)]
+        #[inline(never)]
+        pub(crate) unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+            // SAFETY: het contract van `memcpy`; het snelle pad alleen op
+            // Normal geheugen en vanaf 16 bytes.
+            unsafe {
+                if n >= 16 && $normal() {
+                    $crate::mem::copy_fast(dst, src, n);
+                } else {
+                    $crate::mem::copy_slow(dst, src, n);
+                }
+            }
+            dst
+        }
+
+        /// `memcmp(3)`.
+        ///
+        /// # Safety
+        ///
+        /// Het contract van `memcmp`: twee geldige bereiken van `n` bytes.
+        #[unsafe(no_mangle)]
+        #[inline(never)]
+        pub(crate) unsafe extern "C" fn memcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
+            // SAFETY: het contract van `memcmp`; het snelle pad alleen op
+            // Normal geheugen en vanaf 8 bytes.
+            unsafe {
+                if n >= 8 && $normal() {
+                    $crate::mem::cmp_fast(a, b, n)
+                } else {
+                    $crate::mem::cmp_slow(a, b, n)
+                }
+            }
+        }
+
+        /// `bcmp(3)`: LLVM maakt er een van een `memcmp` die alleen op nul
+        /// toetst.
+        ///
+        /// # Safety
+        ///
+        /// Als [`memcmp`].
+        #[unsafe(no_mangle)]
+        pub(crate) unsafe extern "C" fn bcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
+            // SAFETY: als `memcmp`.
+            unsafe { memcmp(a, b, n) }
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::{cmp_fast, cmp_slow, copy_fast, copy_slow};

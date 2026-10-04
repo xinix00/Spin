@@ -204,11 +204,11 @@ impl Rng {
         rng
     }
 
-    /// Een DRBG over de control-page `page`, met jitter uit `clock` (monotone
+    /// Een DRBG over de control-page `page`, met jitter uit `now` (monotone
     /// ns), zonder regel. Voor wie geen [`App`] heeft; [`Rng::open`] is de
     /// gewone weg.
     #[must_use]
-    pub fn with_page(page: Ctrl, clock: impl FnMut() -> u64) -> Self {
+    pub fn with_page(page: Ctrl, now: impl FnMut() -> u64) -> Self {
         let seed = read_seed(&page);
         let mut rng = Self::blank();
         rng.page = Some(page);
@@ -218,17 +218,17 @@ impl Rng {
             rng.origin = s.origin;
             wipe(&mut s.bytes);
         }
-        rng.harvest(clock, JITTER_ROUNDS);
+        rng.harvest(now, JITTER_ROUNDS);
         rng
     }
 
-    /// Een DRBG zonder page uit `seed` en jitter uit `clock`; de bron is
+    /// Een DRBG zonder page uit `seed` en jitter uit `now`; de bron is
     /// [`Origin::None`]. Voor tests en voor een app die zelf zaad heeft.
     #[must_use]
-    pub fn from_seed(seed: &[u8], clock: impl FnMut() -> u64) -> Self {
+    pub fn from_seed(seed: &[u8], now: impl FnMut() -> u64) -> Self {
         let mut rng = Self::blank();
         rng.absorb(seed);
-        rng.harvest(clock, JITTER_ROUNDS);
+        rng.harvest(now, JITTER_ROUNDS);
         rng
     }
 
@@ -338,21 +338,21 @@ impl Rng {
         }
     }
 
-    /// Meet `rounds` keer de duur van een ChaCha20-blok met `clock` en mengt
+    /// Meet `rounds` keer de duur van een ChaCha20-blok met `now` en mengt
     /// de tijden in, per vier: de jitter is de willekeur.
-    fn harvest(&mut self, mut clock: impl FnMut() -> u64, rounds: usize) {
+    fn harvest(&mut self, mut now: impl FnMut() -> u64, rounds: usize) {
         let mut buf = [0u8; 32];
-        let mut prev = clock();
+        let mut prev = now();
         let mut work = [0u32; 16];
         for i in 0..rounds {
             // Werk met een schommelende duur: een blok rekenen.
             work = block(&self.key, i as u32, [work[0], prev as u32, 0]);
-            let now = clock();
+            let t = now();
             let at = (i % 4) * 8;
             if let Some(slot) = buf.get_mut(at..at + 8) {
-                slot.copy_from_slice(&now.wrapping_sub(prev).to_le_bytes());
+                slot.copy_from_slice(&t.wrapping_sub(prev).to_le_bytes());
             }
-            prev = now;
+            prev = t;
             if i % 4 == 3 || i + 1 == rounds {
                 self.absorb(&buf);
             }

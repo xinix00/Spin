@@ -117,23 +117,75 @@ pub fn settings(env: impl Fn(&str) -> String) -> std::io::Result<Option<Settings
     }))
 }
 /// De S3-bucket over de host-TLS-dialer.
-pub fn bucket(client: leans3::Client) -> std::io::Result<impl Store> {
+pub type Bucket = replica_s3::S3<Network, Block>;
+/// De S3-bucket over de host-TLS-dialer.
+pub fn bucket(client: leans3::Client) -> std::io::Result<Bucket> {
     replica_s3::S3::new(client, Network::new(), Block)
         .map_err(|_| invalid("invalid Replica S3 configuration"))
+}
+/// Een bucket die ook de schrijverlease van Replica levert (`S3::lease`).
+pub trait Leased: Store {
+    /// De lease-backend voor één aanroep.
+    type Lease<'a>: replica_core::writer::Backend
+    where
+        Self: 'a;
+    /// De lease op `key` met termijn `ttl_ms`.
+    fn lease<'a>(&'a mut self, key: &'a str, ttl_ms: u64) -> Self::Lease<'a>;
+}
+impl Leased for Bucket {
+    type Lease<'a> = replica_s3::Lease<'a, Network, Block>;
+    fn lease<'a>(&'a mut self, key: &'a str, ttl_ms: u64) -> Self::Lease<'a> {
+        replica_s3::S3::lease(self, key, ttl_ms)
+    }
+}
+/// De lease van de host: ruim, want de host uploadt inline en vernieuwt pas
+/// na een beurt (de upload van een volledige snapshot kan minuten duren).
+pub const LEASE_TTL_MS: u64 = 300_000;
+/// `<namespace>/lease`, zoals op HopOS.
+pub fn lease_key(config: &Config) -> String {
+    format!("{}/lease", config.namespace)
 }
 fn now(timestamp: &Timestamp) -> replica_core::Result<Time> {
     Time::parse(timestamp.as_str())
 }
 /// Replica::prepare vóór SQLite opent: herstelt uit S3 als de namespace een
 /// generatie heeft en de lokale database ontbreekt of achterloopt.
-pub fn prepare<S: Store>(
+pub fn prepare<S: Leased>(
     files: &mut Files,
     heap: &mut [u64],
     store: &mut S,
     config: Config,
 ) -> std::io::Result<Replica> {
+    let key = lease_key(&config);
+    let node = format!(
+        "macos/{}",
+        std::env::var("HOSTNAME").unwrap_or_else(|_| "host".to_owned())
+    );
+    // Eén schrijver per namespace: wacht tot een andere houder (bijvoorbeeld
+    // HopOS) de lease vrijgeeft of laat verlopen.
+    let writer = loop {
+        let at = now(&crate::server::timestamp()?).map_err(|e| invalid(format_args!("{e:?}")))?;
+        match replica_core::writer::claim(
+            files,
+            &mut store.lease(&key, LEASE_TTL_MS),
+            &node,
+            LEASE_TTL_MS,
+            at,
+        )
+        .map_err(|e| invalid(format_args!("Replica lease failed: {e:?}")))?
+        {
+            replica_core::writer::Role::Writer(writer) => break writer,
+            replica_core::writer::Role::Reader { leader } => {
+                eprintln!(
+                    "SPIN_REPLICA_LEASE_WAIT leader={}",
+                    leader.as_deref().unwrap_or("unknown")
+                );
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+        }
+    };
     let at = now(&crate::server::timestamp()?).map_err(|e| invalid(format_args!("{e:?}")))?;
-    let replica = Replica::prepare(files, store, config, at, |storage, path| {
+    let replica = Replica::prepare(files, store, writer, config, at, |storage, path| {
         // SAFETY: Er draait nog geen andere SQLite-runtime; deze engine sluit
         // vóór Prepare verdergaat, en alles blijft op deze thread.
         let mut engine = unsafe { replica_sqlite::Engine::initialize(heap, storage) }?;
@@ -204,18 +256,20 @@ fn sql<B: Storage>(
     }
 }
 /// De gerepliceerde opslageigenaar; SQL is gesloten wanneer Replica een beurt krijgt.
-pub struct Owner<S: Store> {
+pub struct Owner<S: Leased> {
     heap: Vec<u64>,
     files: Files,
     cipher: Cipher,
     entropy: Random,
     replica: Replica,
     store: S,
+    lease_key: String,
     initialized: bool,
     poisoned: bool,
 }
-impl<S: Store> Owner<S> {
-    /// Neemt de voorbereide Replica, de bestanden en de SQLite-heap over.
+impl<S: Leased> Owner<S> {
+    /// Neemt de voorbereide Replica, de bestanden en de SQLite-heap over;
+    /// `lease_key` is dezelfde als bij [`prepare`] ([`lease_key`]).
     pub fn new(
         heap: Vec<u64>,
         files: Files,
@@ -223,6 +277,7 @@ impl<S: Store> Owner<S> {
         entropy: Random,
         replica: Replica,
         store: S,
+        lease_key: String,
     ) -> Self {
         Self {
             heap,
@@ -231,6 +286,7 @@ impl<S: Store> Owner<S> {
             entropy,
             replica,
             store,
+            lease_key,
             initialized: false,
             poisoned: false,
         }
@@ -271,7 +327,7 @@ impl<S: Store> Owner<S> {
         Ok(state)
     }
 }
-impl<S: Store> Persistence for Owner<S> {
+impl<S: Leased> Persistence for Owner<S> {
     fn storage_usage(&mut self) -> spin_store::Result<Option<spin_store::StorageUsage>> {
         use spin_domain::json::{Object, Value};
         let Reply::Usage(usage) = self.execute(Op::Usage)? else {
@@ -335,6 +391,16 @@ impl<S: Store> Persistence for Owner<S> {
             return Err(spin_store::Error::StorageUncertain(10));
         }
         let at = self::now(now).map_err(replica_error)?;
+        if let Err(error) = self
+            .replica
+            .renew(&mut self.store.lease(&self.lease_key, LEASE_TTL_MS), at)
+        {
+            eprintln!("SPIN_REPLICA_LEASE_FAILED error={error:?}");
+            if error == replica_core::Error::LeaseLost {
+                self.poisoned = true;
+                return Err(spin_store::Error::StorageUncertain(10));
+            }
+        }
         if let Some(synced) = self
             .replica
             .tick(&mut self.files, &mut self.store, at)

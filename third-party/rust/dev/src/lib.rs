@@ -19,7 +19,8 @@
 //!
 //! En de ene wachtlus van elke driver: [`poll_until`] (een register tot het
 //! goed staat, hoogstens zo lang) en [`delay`], op de klok die het board de
-//! driver geeft.
+//! driver geeft. Een console schrijft al vóór er een klok is en wacht met
+//! [`Stall`].
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(
@@ -37,6 +38,7 @@ pub mod mem;
 
 use core::cell::UnsafeCell;
 use core::ptr;
+use core::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 /// Een fysiek adres, zoals de layout het uitdeelt.
 ///
@@ -274,6 +276,98 @@ pub unsafe fn regs<R>(pa: Pa) -> &'static R {
     unsafe { &*(pa.as_usize() as *const R) }
 }
 
+/// Een registerblok als lezen en schrijven op een offset: de naad van een
+/// kleine driver die op de host tegen een nep-blok draait (rkrng, rng200).
+/// Op ijzer is het [`Mmio`].
+pub trait Io {
+    /// Leest het 32-bit-register op `off`.
+    fn read(&mut self, off: u64) -> u32;
+    /// Schrijft het 32-bit-register op `off`.
+    fn write(&mut self, off: u64, v: u32);
+}
+
+/// Een gemapt registerblok als [`Io`].
+pub struct Mmio {
+    base: Pa,
+}
+
+impl Mmio {
+    /// Het blok op `base`.
+    ///
+    /// # Safety
+    ///
+    /// `base` is een Device-gemapt registerblok dat zolang het programma
+    /// draait blijft bestaan, geklokt en uit reset (een ongeklokt blok kan
+    /// de bus vasthouden), en alleen de eigenaar van deze `Mmio` schrijft
+    /// erin.
+    #[must_use]
+    pub const unsafe fn new(base: Pa) -> Self {
+        Self { base }
+    }
+}
+
+impl Io for Mmio {
+    fn read(&mut self, off: u64) -> u32 {
+        read32(self.base.add(off))
+    }
+    fn write(&mut self, off: u64, v: u32) {
+        write32(self.base.add(off), v);
+    }
+}
+
+/// Een bump-allocator over `[next, end)`: geen free, alles wat eruit komt
+/// leeft zo lang als de eigenaar (een DMA-regio van een driver, een
+/// BAR-venster van het board). Rekent in adressen, raakt niets aan.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Bump {
+    next: u64,
+    end: u64,
+}
+
+impl Bump {
+    /// Het bereik `[base, base + size)`.
+    #[must_use]
+    pub const fn new(base: u64, size: u64) -> Self {
+        Self {
+            next: base,
+            end: base.saturating_add(size),
+        }
+    }
+
+    /// `size` bytes op een veelvoud van `align` (een macht van twee);
+    /// `None` als het niet past of `align` geen macht van twee is.
+    pub fn take(&mut self, size: u64, align: u64) -> Option<u64> {
+        if !align.is_power_of_two() {
+            return None;
+        }
+        let at = self.next.checked_next_multiple_of(align)?;
+        let end = at.checked_add(size)?;
+        if end > self.end {
+            return None;
+        }
+        self.next = end;
+        Some(at)
+    }
+
+    /// Het eerste vrije adres.
+    #[must_use]
+    pub const fn next(&self) -> u64 {
+        self.next
+    }
+
+    /// Het einde van het bereik.
+    #[must_use]
+    pub const fn end(&self) -> u64 {
+        self.end
+    }
+
+    /// Wat er nog vrij is.
+    #[must_use]
+    pub const fn left(&self) -> u64 {
+        self.end.saturating_sub(self.next)
+    }
+}
+
 /// Wacht tot `cond` waar is, hoogstens `ns` nanoseconden op de klok `now`
 /// (monotone nanoseconden, de klok die het board de driver gaf): Linux'
 /// `read_poll_timeout` uit include/linux/iopoll.h, spinnend. Geeft of
@@ -305,6 +399,62 @@ pub fn delay(now: fn() -> u64, ns: u64) {
     let end = now().saturating_add(ns);
     while now() < end {
         core::hint::spin_loop();
+    }
+}
+
+/// Het schrijfbeleid van een console (PL011, 16550, de dockchannel en de
+/// UART van de M4), één voor allemaal (Go `console.go`): wacht begrensd op
+/// ruimte; een byte die niet paste laat de lijn als gestokt staan, en dan
+/// krijgt elke volgende byte een klein budget tot er weer een past. Zo houdt
+/// een UART zonder klok of een FIFO zonder lezer de node niet op, en komt een
+/// lijn die terugkomt (een lezer die later aanhaakt) weer in beeld. Telt
+/// lezingen en niet de tijd: de console schrijft al vóór er een klok is.
+#[derive(Debug)]
+pub struct Stall {
+    stalled: AtomicBool,
+    wait: u32,
+    retry: u32,
+}
+
+impl Stall {
+    /// `wait` blikken per byte op een lijn die loopt, `retry` op een
+    /// gestokte.
+    #[must_use]
+    pub const fn new(wait: u32, retry: u32) -> Self {
+        Self {
+            stalled: AtomicBool::new(false),
+            wait,
+            retry,
+        }
+    }
+
+    /// Kijkt hoogstens het budget lang naar `ready` en doet dan `put`;
+    /// `false` = de byte viel en de lijn staat als gestokt.
+    pub fn put(&self, mut ready: impl FnMut() -> bool, put: impl FnOnce()) -> bool {
+        let budget = if self.is_stalled() {
+            self.retry
+        } else {
+            self.wait
+        };
+        if (0..budget).any(|_| ready()) {
+            put();
+            self.stalled.store(false, Relaxed);
+            return true;
+        }
+        self.stalled.store(true, Relaxed);
+        false
+    }
+
+    /// Staat de lijn als gestokt?
+    #[must_use]
+    pub fn is_stalled(&self) -> bool {
+        self.stalled.load(Relaxed)
+    }
+
+    /// Zet de stand, voor wie de lijn per schrijf opnieuw opbouwt (het
+    /// UEFI-board, met de stand in een eigen static).
+    pub fn set_stalled(&self, on: bool) {
+        self.stalled.store(on, Relaxed);
     }
 }
 
@@ -630,5 +780,46 @@ mod tests {
         b.ctrl.update(|v| v + 1);
         assert_eq!(read32(base), 8);
         assert_eq!(read64(base.add(8)), 9);
+    }
+
+    #[test]
+    fn bump_aligns_and_refuses_what_does_not_fit() {
+        let mut b = Bump::new(0x1010, 0x1000);
+        assert_eq!(b.take(0x100, 0x100), Some(0x1100));
+        assert_eq!(b.next(), 0x1200);
+        assert_eq!(b.take(8, 3), None, "alignment that is no power of two");
+        assert_eq!(b.take(u64::MAX, 16), None, "wrapped");
+        assert_eq!(b.take(0xe11, 1), None, "one byte too many");
+        assert_eq!(b.take(0xe10, 1), Some(0x1200));
+        assert_eq!(b.left(), 0);
+        let mut top = Bump::new(u64::MAX - 8, 8);
+        assert_eq!(top.take(1, 4096), None, "the alignment wraps");
+    }
+
+    #[test]
+    fn a_stalled_line_gets_a_small_budget_until_a_byte_fits() {
+        let s = Stall::new(100, 2);
+        let mut seen = 0;
+        assert!(!s.put(
+            || {
+                seen += 1;
+                false
+            },
+            || {}
+        ));
+        assert_eq!(seen, 100, "the full budget on a running line");
+        assert!(s.is_stalled());
+        seen = 0;
+        assert!(!s.put(
+            || {
+                seen += 1;
+                false
+            },
+            || {}
+        ));
+        assert_eq!(seen, 2, "the small one while stalled");
+        let mut put = false;
+        assert!(s.put(|| true, || put = true));
+        assert!(put && !s.is_stalled(), "a byte that fits clears the stall");
     }
 }

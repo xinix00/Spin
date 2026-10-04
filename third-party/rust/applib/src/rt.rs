@@ -58,6 +58,13 @@ pub fn app() -> Option<&'static App> {
     APP.get().get()
 }
 
+/// Blijft staan zonder iets te doen. Een app die klaar is of niet kon,
+/// stopt niet: Hop herstart een service die stopt. Geen timer en geen wek;
+/// de heartbeat en de rest van de app lopen gewoon door.
+pub async fn park() -> ! {
+    match core::future::pending::<core::convert::Infallible>().await {}
+}
+
 /// De stack onder de top van de RAM-declaratie. Daaronder houdt de heap op.
 pub const STACK_SIZE: u64 = 256 << 10;
 
@@ -479,8 +486,8 @@ mod panic {
         if !crate::smp::on_primary() {
             crate::smp::secondary_panicked();
         }
-        // Alleen de outbox: de stack wordt na dit punt niet meer gepompt.
-        crate::log::emit_outbox(format_args!("panic: {info} HOPOS_APP_PANIC"));
+        // De outbox: de stack wordt na dit punt niet meer gepompt.
+        crate::log::emit(format_args!("panic: {info} HOPOS_APP_PANIC"));
         match super::app() {
             Some(app) => app.exit(2),
             None => crate::arch::park_exit(),

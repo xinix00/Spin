@@ -1,6 +1,7 @@
 //! De gerepliceerde hosteigenaar publiceert naar een objectstore en een lege
 //! directory herstelt daaruit; een geheugenbucket vervangt S3.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+use replica_core::writer::{Backend, LeaseState, MemBackend, discovery};
 use replica_core::{
     local::Name,
     object::{Object, Store, StoreError},
@@ -8,7 +9,7 @@ use replica_core::{
 };
 use spin_domain::json::Value;
 use spin_host::{
-    replica::{Owner, prepare},
+    replica::{Leased, Owner, lease_key, prepare},
     storage::{Files, Random},
 };
 use spin_security::Cipher;
@@ -16,7 +17,28 @@ use spin_store::Persistence;
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 #[derive(Clone, Default)]
-struct Memory(Rc<RefCell<BTreeMap<String, Vec<u8>>>>);
+struct Memory(
+    Rc<RefCell<BTreeMap<String, Vec<u8>>>>,
+    Rc<RefCell<MemBackend>>,
+);
+struct MemLease(Rc<RefCell<MemBackend>>);
+impl Backend for MemLease {
+    fn read(&mut self) -> discovery::Result<(LeaseState, String)> {
+        self.0.borrow_mut().read()
+    }
+    fn write(&mut self, prev: &str, state: &LeaseState) -> discovery::Result<String> {
+        self.0.borrow_mut().write(prev, state)
+    }
+    fn delete(&mut self, handle: &str) -> discovery::Result {
+        self.0.borrow_mut().delete(handle)
+    }
+}
+impl Leased for Memory {
+    type Lease<'a> = MemLease;
+    fn lease<'a>(&'a mut self, _: &'a str, _: u64) -> MemLease {
+        MemLease(self.1.clone())
+    }
+}
 impl Store for Memory {
     fn put(&mut self, key: &str, bytes: &[u8]) -> Result<(), StoreError> {
         self.0.borrow_mut().insert(key.to_owned(), bytes.to_vec());
@@ -73,6 +95,7 @@ fn open(root: &std::path::Path, store: &Memory, key: [u8; 32]) -> Owner<Memory> 
         Random::open().unwrap(),
         replica,
         bucket,
+        lease_key(&config()),
     )
 }
 fn replication(owner: &mut Owner<Memory>) -> Value {
@@ -110,6 +133,8 @@ fn publishes_and_restores_an_empty_directory() {
             .keys()
             .any(|k| k.starts_with("test/local/"))
     );
+    // De vorige eigenaar is weg; zijn lease verloopt (hier: de lease-opslag leeg).
+    *store.1.borrow_mut() = MemBackend::new();
     // Een lege directory herstelt exact de gepubliceerde staterij.
     let mut owner = open(&base.join("b"), &store, [7; 32]);
     let status = replication(&mut owner);
@@ -118,6 +143,7 @@ fn publishes_and_restores_an_empty_directory() {
         Some(&Value::Bool(true))
     );
     drop(owner);
+    *store.1.borrow_mut() = MemBackend::new();
     let published = state_row(&base.join("a"));
     assert!(!published.is_empty());
     assert_eq!(state_row(&base.join("b")), published);

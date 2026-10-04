@@ -169,6 +169,7 @@ fn run() -> std::io::Result<()> {
         // Prepare vóór de sleutel: een herstelde database zonder sleutel weigert
         // dan te starten in plaats van een nieuwe sleutel te maken.
         let mut bucket = spin_host::replica::bucket(settings.client)?;
+        let lease_key = spin_host::replica::lease_key(&settings.config);
         let (busy, screen) = opening(&listener, &root)?;
         let prepared =
             spin_host::replica::prepare(&mut files, &mut heap, &mut bucket, settings.config);
@@ -176,8 +177,15 @@ fn run() -> std::io::Result<()> {
         let _ = screen.join();
         let replica = prepared?;
         let cipher = key(&root, &mut random)?;
-        let mut owner =
-            spin_host::replica::Owner::new(heap, files, cipher, Random::open()?, replica, bucket);
+        let mut owner = spin_host::replica::Owner::new(
+            heap,
+            files,
+            cipher,
+            Random::open()?,
+            replica,
+            bucket,
+            lease_key,
+        );
         let state = owner
             .load(|| {
                 random

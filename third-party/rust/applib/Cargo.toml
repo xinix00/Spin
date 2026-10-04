@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.93"
 name = "applib"
-version = "3.0.9"
+version = "3.0.10"
 build = "build.rs"
 publish = false
 autolib = false
