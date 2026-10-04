@@ -128,6 +128,19 @@ Go-data kan via de portable backup met de bijbehorende sleutel worden
 geïmporteerd. Een overname gebruikt de bestaande master key en Replica-lineage;
 onbewezen lokale data mag een bestaande remote replica niet vervangen.
 
+## Lokale server op een Mac
+
+`spin-server` (crates/host) draait zonder S3 als gewone ontwikkelserver. Met
+`SPIN_S3_ENDPOINT` gezet repliceert hij met Replica uit `../replica`, net als de
+HopOS-build: verplicht zijn dan ook `SPIN_S3_BUCKET`, `SPIN_S3_ACCESS_KEY`,
+`SPIN_S3_SECRET_KEY` en een eigen `SPIN_S3_PREFIX`. De prefix `spin` (en alles
+onder `spin/`) weigert hij: dat is de namespace van productie, en de Replica-lease
+ligt alleen op de lokale schijf, dus twee schrijvers in één namespace zou niets
+tegenhouden. De namespace is `<prefix>/<SPIN_DOMAIN>` (standaard `local`). Een
+lege map met alleen de master key herstelt zich uit S3; een bestaande database
+zonder Replica-marker weigert hij tenzij `SPIN_REPLICA_ADOPT_LOCAL=1`. De upload
+loopt inline: tijdens een sync wacht de server, wat voor een testserver volstaat.
+
 ## macOS-runner
 
 De runner gebruikt `SPIN_SERVER` en `SPIN_WORKER_TOKEN` of

@@ -68,7 +68,7 @@ fn run() -> std::io::Result<()> {
             }
             "--help" | "-h" => {
                 println!(
-                    "spin-server --addr 127.0.0.1:8080 --data-dir ./var/rust\nSPIN_MASTER_KEY or SPIN_MASTER_KEY_FILE supplies an existing encryption key."
+                    "spin-server --addr 127.0.0.1:8080 --data-dir ./var/rust\nSPIN_MASTER_KEY or SPIN_MASTER_KEY_FILE supplies an existing encryption key.\nSPIN_S3_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY/PREFIX enable Replica to S3 (prefix never \"spin\")."
                 );
                 return Ok(());
             }
@@ -89,11 +89,35 @@ fn run() -> std::io::Result<()> {
     let listener = TcpListener::bind(&addr)?;
     let mut files = Files::open(&root)?;
     let mut random = Random::open()?;
-    let cipher = key(&root, &mut random)?;
     let mut heap = Vec::new();
     heap.try_reserve_exact(spin_persistence::SQLITE_HEAP_BYTES / 8)
         .map_err(std::io::Error::other)?;
     heap.resize(spin_persistence::SQLITE_HEAP_BYTES / 8, 0_u64);
+    if let Some(settings) =
+        spin_host::replica::settings(|key| std::env::var(key).unwrap_or_default())?
+    {
+        // Prepare vóór de sleutel: een herstelde database zonder sleutel weigert
+        // dan te starten in plaats van een nieuwe sleutel te maken.
+        let mut bucket = spin_host::replica::bucket(settings.client)?;
+        let replica =
+            spin_host::replica::prepare(&mut files, &mut heap, &mut bucket, settings.config)?;
+        let cipher = key(&root, &mut random)?;
+        let mut owner =
+            spin_host::replica::Owner::new(heap, files, cipher, Random::open()?, replica, bucket);
+        let state = owner
+            .load(|| {
+                random
+                    .next("lgn")
+                    .map_err(|_| spin_security::Error::Entropy(-1))
+            })
+            .map_err(std::io::Error::other)?;
+        return serve(
+            listener,
+            spin_server::Server::new(spin_store::Store::new(state, owner)),
+            &mut random,
+        );
+    }
+    let cipher = key(&root, &mut random)?;
     // SAFETY: main initialiseert exact één SQLite-runtime vóór het netwerkwerk.
     // Alle calls en VFS-callbacks blijven op deze thread. De geleende heap en
     // opslag overleven server en verbinding; callbacks herintreden niet in SQLite.
@@ -111,7 +135,18 @@ fn run() -> std::io::Result<()> {
                 .map_err(|_| spin_security::Error::Entropy(-1))
         })
         .map_err(std::io::Error::other)?;
-    let mut server = spin_server::Server::new(spin_store::Store::new(state, persistence));
+    serve(
+        listener,
+        spin_server::Server::new(spin_store::Store::new(state, persistence)),
+        &mut random,
+    )
+}
+/// Dezelfde serverinrichting voor de lokale en de gerepliceerde opslag.
+fn serve<P: spin_store::Persistence>(
+    listener: TcpListener,
+    mut server: spin_server::Server<P>,
+    random: &mut Random,
+) -> std::io::Result<()> {
     server
         .set_internal_url(&std::env::var("SPIN_INTERNAL_URL").unwrap_or_default())
         .map_err(std::io::Error::other)?;
@@ -121,7 +156,7 @@ fn run() -> std::io::Result<()> {
     server
         .ensure_worker_token(
             &std::env::var("SPIN_WORKER_TOKEN").unwrap_or_default(),
-            &mut random,
+            random,
         )
         .map_err(std::io::Error::other)?;
     server
@@ -156,7 +191,7 @@ fn run() -> std::io::Result<()> {
     spin_host::server::serve(
         listener,
         &mut server,
-        &mut random,
+        random,
         secure,
         &AtomicBool::new(false),
     )

@@ -18,6 +18,10 @@ spin-security = { path = "../security" }
 spin-store = { path = "../store" }
 spin-persistence = { path = "../persistence" }
 replica-sqlite = { path = "../../../replica/sqlite" }
+replica-core = { path = "../../../replica/core" }
+replica-s3 = { path = "../../../replica/s3" }
+leans3 = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.10" }
+hop-types.workspace = true
 
 [lints]
 workspace = true

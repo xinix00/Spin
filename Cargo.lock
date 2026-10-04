@@ -317,8 +317,11 @@ version = "3.0.9"
 dependencies = [
  "leanhttp",
  "leanhttps",
+ "leans3",
  "leantls",
  "libc",
+ "replica-core",
+ "replica-s3",
  "replica-sqlite",
  "spin-core",
  "spin-domain",
@@ -327,6 +330,7 @@ dependencies = [
  "spin-security",
  "spin-server",
  "spin-store",
+ "types",
 ]
 
 [[package]]

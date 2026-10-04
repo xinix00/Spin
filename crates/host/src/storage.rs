@@ -93,6 +93,14 @@ impl Files {
                     | "spin.sqlite-journal"
                     | "spin-restore.sqlite"
                     | "spin-restore.sqlite-journal"
+                    // Replica-sidecars: marker, dirty logs, capture-spool en restore-scratch.
+                    | "spin.sqlite.replica"
+                    | "spin.sqlite.replica-dirty-a"
+                    | "spin.sqlite.replica-dirty-b"
+                    | "spin.sqlite.replica-capture"
+                    | "spin.sqlite.replica-restore-data"
+                    | "spin.sqlite.replica-restore-data-journal"
+                    | "spin.sqlite.replica-restoring"
             )
         {
             return Err(Error::CANNOT_OPEN);
