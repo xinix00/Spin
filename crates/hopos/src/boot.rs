@@ -8,6 +8,7 @@ use applib::{App, EXEC, appnet, stacktask::Task};
 use core::{
     future::{Future, poll_fn},
     pin::pin,
+    sync::atomic::Ordering::Relaxed,
     task::Poll,
     time::Duration,
 };
@@ -128,6 +129,62 @@ async fn run(app: &'static App) -> Result {
         .is_some_and(|s| s.starts_with("https://"));
     lease::guard(app, net, root, || serve(app, net, root, port, secure)).await
 }
+/// De meetlat van de boot-lus (handboek "De meetlat"): elke 30 s één regel
+/// met de tellers van de executor sinds de vorige regel, en een regel per
+/// ronde die langer dan 200 ms duurde. Op rondekorrel, zonder eigen timer:
+/// een stille core wordt voor een meetregel niet gewekt.
+struct Report {
+    /// Tijdstip van de volgende `SPIN_EXEC`-regel.
+    due: u64,
+    /// Standen bij de vorige regel: rounds, polls, sleeps, timer_overflows.
+    last: [u64; 4],
+}
+impl Report {
+    const INTERVAL: u64 = 30_000_000_000;
+    const SLOW: u64 = 200_000_000;
+    fn new() -> Self {
+        Self {
+            due: applib::clock::now_ns().saturating_add(Self::INTERVAL),
+            last: [0; 4],
+        }
+    }
+    /// Sluit de ronde die op `started` begon af.
+    fn round(&mut self, started: u64) {
+        let now = applib::clock::now_ns();
+        let busy = now.saturating_sub(started);
+        if busy > Self::SLOW {
+            applib::log!("SPIN_BOOT_SLOW ms={}", busy / 1_000_000);
+        }
+        if now < self.due {
+            return;
+        }
+        self.due = now.saturating_add(Self::INTERVAL);
+        let exec = EXEC.get();
+        let current = [
+            exec.stats.rounds.load(Relaxed),
+            exec.stats.polls.load(Relaxed),
+            exec.stats.sleeps.load(Relaxed),
+            exec.stats.timer_overflows.load(Relaxed),
+        ];
+        let delta = [
+            current[0].wrapping_sub(self.last[0]),
+            current[1].wrapping_sub(self.last[1]),
+            current[2].wrapping_sub(self.last[2]),
+            current[3].wrapping_sub(self.last[3]),
+        ];
+        self.last = current;
+        // `live_tasks` telt de slots met een taak; de boot-taak zelf is
+        // tijdens zijn poll even uit zijn slot en telt dus niet mee.
+        applib::log!(
+            "SPIN_EXEC rounds={} polls={} sleeps={} timer_overflows={} tasks={}",
+            delta[0],
+            delta[1],
+            delta[2],
+            delta[3],
+            exec.live_tasks()
+        );
+    }
+}
 async fn serve(
     app: &'static App,
     net: &'static appnet::Net,
@@ -187,25 +244,18 @@ async fn serve(
         "SPIN_LISTEN port={port} version={} platform=hopos",
         env!("CARGO_PKG_VERSION")
     );
+    // De tik van de lus: één timer voor alle sockets (conn.rs), de
+    // tenant-retries en de domeinontdekking; per ronde opnieuw gezet.
+    let mut tick = pin!(EXEC.get().after_deferrable(Duration::from_millis(10)));
+    let mut report = Report::new();
     loop {
-        // Een ronde komt op werk (sockets, eigenaren, de uploader) of op een
-        // deadline van de domeinontdekking; de 10 ms is een uitstelbare
-        // vangrail die een slapende core niet wekt.
-        let deadline = retry
-            .iter()
-            .copied()
-            .filter(|at| *at != 0)
-            .chain((!discovered && discovery_retry != 0).then_some(discovery_retry))
-            .min();
-        let mut tick = pin!(match deadline {
-            Some(at) => EXEC.get().until(at),
-            None => EXEC.get().after_deferrable(Duration::from_millis(10)),
-        });
         poll_fn(|cx| -> Poll<Result> {
+            let started = applib::clock::now_ns();
+            crate::conn::NEXT_DEADLINE.store(u64::MAX, Relaxed);
             if let Err(error) = transport.poll(&mut network, cx) {
                 return Poll::Ready(Err(error));
             }
-            let now = applib::clock::now_ns();
+            let now = started;
             if !discovered && now >= discovery_retry {
                 match discovery.as_mut().poll(cx) {
                     Poll::Ready(Ok(())) => discovered = true,
@@ -273,7 +323,25 @@ async fn serve(
             if let Err(error) = transport.poll(&mut network, cx) {
                 return Poll::Ready(Err(error));
             }
-            tick.as_mut().poll(cx).map(|()| Ok(()))
+            // Een ronde komt op werk (sockets, eigenaren, de uploader) of op
+            // de vroegste termijn: van een socket die deze ronde `Pending`
+            // gaf, een tenant-retry of de domeinontdekking; de 10 ms is een
+            // uitstelbare vangrail die een slapende core niet wekt.
+            let sockets = crate::conn::NEXT_DEADLINE.load(Relaxed);
+            let deadline = retry
+                .iter()
+                .copied()
+                .filter(|at| *at != 0)
+                .chain((!discovered && discovery_retry != 0).then_some(discovery_retry))
+                .chain((sockets != u64::MAX).then_some(sockets))
+                .min();
+            tick.set(match deadline {
+                Some(at) => EXEC.get().until(at),
+                None => EXEC.get().after_deferrable(Duration::from_millis(10)),
+            });
+            let outcome = tick.as_mut().poll(cx).map(|()| Ok(()));
+            report.round(started);
+            outcome
         })
         .await?;
         if spin_runtime::Platform::stopped(&network) {

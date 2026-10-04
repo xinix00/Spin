@@ -20,23 +20,23 @@ impl Pool {
             pending: core::array::from_fn(|_| None),
         }
     }
-    /// Of er een providerverzoek loopt; die vorderen alleen door pollen.
-    pub(crate) fn active(&self) -> bool {
-        self.pending.iter().any(Option::is_some)
-    }
+    /// Polt de lopende verzoeken met de deurbel van de eigenaar als waker
+    /// ([`crate::Mailbox::waker`]): bytes van een provider wekken hem, een
+    /// vloertimer is niet nodig.
     pub(crate) fn poll<H: Platform, P: Persistence>(
         &mut self,
         platform: &H,
         server: &mut Server<P>,
         now: &spin_domain::Timestamp,
         random: &mut impl Runtime,
+        waker: &Waker,
     ) -> Result {
         if let Err(error) = server.maintain_network(now, random) {
             H::log(format_args!(
                 "SPIN_PROVIDER_MAINTENANCE_FAILED error={error}"
             ));
         }
-        let mut context = Context::from_waker(Waker::noop());
+        let mut context = Context::from_waker(waker);
         for task in &mut self.pending {
             if let Some(pending) = task {
                 if let Poll::Ready((id, reply)) = pending.as_mut().poll(&mut context) {

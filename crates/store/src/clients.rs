@@ -432,15 +432,18 @@ impl<P: Persistence> Store<P> {
     pub fn composition(&self, id: &str) -> Result<&d::Composition> {
         self.state.compositions.get(id).ok_or(Error::NotFound)
     }
-    /// Een periodieke sweep vraagt uitsluitend de capsules met een live runtime op.
-    pub fn running_compositions(&self) -> Result<d::List<d::Composition>> {
-        let mut out = d::List::new();
-        for (_, c) in self
-            .state
+    /// Leent de capsules met een live runtime; een sweep die alleen leest, kopieert niets.
+    pub fn running_compositions_ref(&self) -> impl Iterator<Item = &d::Composition> {
+        self.state
             .compositions
             .iter()
-            .filter(|(_, c)| c.runtime.as_ref().is_some_and(|r| r.status != "stopped"))
-        {
+            .map(|(_, c)| c)
+            .filter(|c| c.runtime.as_ref().is_some_and(|r| r.status != "stopped"))
+    }
+    /// Een kopie voor aanroepers die tijdens de lus zelf de Store muteren.
+    pub fn running_compositions(&self) -> Result<d::List<d::Composition>> {
+        let mut out = d::List::new();
+        for c in self.running_compositions_ref() {
             out.push(c.try_clone()?)?;
         }
         Ok(out)

@@ -200,15 +200,22 @@ fn validate_headers(bytes: &[u8], expected: &str) -> std::io::Result<()> {
     let value = std::str::from_utf8(bytes).map_err(std::io::Error::other)?;
     let mut lines = value.split("\r\n");
     let first = lines.next().unwrap_or("");
-    if first
-        .split_whitespace()
-        .nth(1)
-        .is_some_and(|code| matches!(code, "401" | "403" | "409"))
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "runner authorization rejected; check the token and runner identity",
-        ));
+    // Alleen een geweigerd token is fataal; een bezette identiteit (409) komt
+    // na PONG_WAIT_MS vanzelf vrij en wordt door de runner-lus opnieuw geprobeerd.
+    match first.split_whitespace().nth(1) {
+        Some("401" | "403") => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "runner token rejected by the server; check SPIN_WORKER_TOKEN",
+            ));
+        }
+        Some("409") => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                "runner identity is already connected from another process",
+            ));
+        }
+        _ => {}
     }
     if !first.starts_with("HTTP/1.1 101 ") && first != "HTTP/1.1 101" {
         return Err(std::io::Error::other("runner WebSocket handshake rejected"));

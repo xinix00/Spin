@@ -146,17 +146,23 @@ pub(crate) async fn prefix<C: leanhttp::Conn>(
         length,
     ))
 }
-async fn request(
-    mail: &Mail,
+/// Het vaste deel van elk intern verzoek van één herstelverbinding.
+struct Lane<'a, K> {
+    mail: &'a Mail,
     index: usize,
-    template: &Input,
+    clock: K,
+    template: Input,
+}
+async fn request(
+    lane: &Lane<'_, impl Clock>,
     method: &str,
     path: &str,
     body: Vec<u8>,
     offset: Option<u64>,
 ) -> leanhttp::Result<Response> {
+    let (mail, index) = (lane.mail, lane.index);
     let mut headers = Vec::new();
-    for (key, value) in &template.headers {
+    for (key, value) in &lane.template.headers {
         if key.eq_ignore_ascii_case("Content-Length")
             || key.eq_ignore_ascii_case("X-Spin-Upload-Offset")
         {
@@ -185,12 +191,13 @@ async fn request(
         raw_query: String::new(),
         headers,
         body,
-        peer: template.peer.try_clone().map_err(http_alloc)?,
-        secure: template.secure,
+        peer: lane.template.peer.try_clone().map_err(http_alloc)?,
+        secure: lane.template.secure,
     };
     {
         let mut slots = mail.slots.0.borrow_mut();
         slots[index].routed = true;
+        slots[index].queued_ms = lane.clock.millis();
         slots[index].request = Some(input);
     }
     mail.nudge();
@@ -247,21 +254,26 @@ pub(crate) async fn serve<C: leanhttp::Conn, K: Clock>(
             try_string(value).map_err(http_alloc)?,
         ));
     }
-    let template = Input {
-        method: String::new(),
-        path: String::new(),
-        raw_query: String::new(),
-        headers,
-        body: Vec::new(),
-        peer: try_string(peer).map_err(http_alloc)?,
-        secure,
+    let lane = Lane {
+        mail,
+        index,
+        clock,
+        template: Input {
+            method: String::new(),
+            path: String::new(),
+            raw_query: String::new(),
+            headers,
+            body: Vec::new(),
+            peer: try_string(peer).map_err(http_alloc)?,
+            secure,
+        },
     };
     let body = spin_core::validation::text(format_args!(
         "{{\"kind\":\"restore\",\"name\":\"backup.zip\",\"size\":{size}}}"
     ))
     .map_err(http_alloc)?
     .into_bytes();
-    let created = request(mail, index, &template, "POST", "/api/uploads", body, None).await?;
+    let created = request(&lane, "POST", "/api/uploads", body, None).await?;
     let mut raw = exchange.hijack()?;
     if created.status != 201 {
         return response(&mut raw, &created).await;
@@ -296,19 +308,19 @@ pub(crate) async fn serve<C: leanhttp::Conn, K: Clock>(
         }
         .await;
         if let Err(error) = read {
-            let _ = request(mail, index, &template, "DELETE", &path, Vec::new(), None).await;
+            let _ = request(&lane, "DELETE", &path, Vec::new(), None).await;
             return Err(error);
         }
-        let uploaded = request(mail, index, &template, "PUT", &path, block, Some(offset)).await?;
+        let uploaded = request(&lane, "PUT", &path, block, Some(offset)).await?;
         if uploaded.status >= 400 {
-            let _ = request(mail, index, &template, "DELETE", &path, Vec::new(), None).await;
+            let _ = request(&lane, "DELETE", &path, Vec::new(), None).await;
             return response(&mut raw, &uploaded).await;
         }
         offset += count as u64;
     }
     let complete =
         spin_core::validation::text(format_args!("{path}/complete")).map_err(http_alloc)?;
-    let started = request(mail, index, &template, "POST", &complete, Vec::new(), None).await?;
+    let started = request(&lane, "POST", &complete, Vec::new(), None).await?;
     if started.status != 202 {
         return response(&mut raw, &started).await;
     }
@@ -332,16 +344,7 @@ pub(crate) async fn serve<C: leanhttp::Conn, K: Clock>(
     }
     let mut sent = 0;
     loop {
-        let status = request(
-            mail,
-            index,
-            &template,
-            "GET",
-            &status_path,
-            Vec::new(),
-            None,
-        )
-        .await?;
+        let status = request(&lane, "GET", &status_path, Vec::new(), None).await?;
         let value = Value::from_json(&status.body).map_err(http_alloc)?;
         let fields = value.as_object().ok_or(leanhttp::Error::BadTarget)?;
         let state = fields

@@ -2,7 +2,7 @@
 #![no_std]
 #![deny(unsafe_code)]
 extern crate alloc;
-use alloc::{string::String, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
 use core::{
     cell::{Cell, RefCell},
     task::{Context, Poll, Waker},
@@ -47,12 +47,23 @@ pub trait Platform {
     /// Vraagt de eigenaar te stoppen en alle sockettaken te droppen.
     fn stopped(&self) -> bool;
     /// Geeft netwerkpompen en andere platformtaken een ronde en laat de eigenaar
-    /// rusten tot [`Mailbox::nudge`] of een vloertimer; `busy` zegt dat er werk
-    /// ligt dat alleen door pollen vordert (wachtwoorden, uitgaande HTTP, een
-    /// staat-push), zodat het platform dan kort slaapt.
-    fn idle(&mut self, mail: &Mailbox, busy: bool) -> Result;
+    /// rusten tot [`Mailbox::nudge`] of tot `next`: meteen weer bij
+    /// [`Idle::Yield`] (gesneden CPU-werk ligt klaar), anders tot zijn
+    /// vroegste echte deadline (handboek apps.md: een timer is een deadline,
+    /// geen peiling).
+    fn idle(&mut self, mail: &Mailbox, next: Idle) -> Result;
     /// Schrijft één diagnostische regel zonder verzoekinhoud.
     fn log(message: core::fmt::Arguments<'_>);
+}
+/// Wanneer de eigenaar weer aan de beurt wil zijn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Idle {
+    /// Er ligt gesneden CPU-werk (een wachtwoordafleiding): één ronde aan de
+    /// buren geven en meteen terugkomen.
+    Yield,
+    /// Slapen tot de deurbel of tot dit tijdstip in milliseconden van
+    /// [`Clock`], de vroegste echte deadline van de eigenaar.
+    Until(u64),
 }
 fn boundary(error: impl core::fmt::Display) -> spin_server::Error {
     let _ = error;
@@ -75,6 +86,9 @@ struct Input {
 #[derive(Default)]
 pub(crate) struct Slot {
     request: Option<Input>,
+    /// Klokstand van de sockettaak toen hij `request` neerlegde: de wachttijd
+    /// in de rij is het verschil met de klok van de eigenaar als die hem pakt.
+    queued_ms: u64,
     response: Option<Response>,
     streaming: bool,
     next_chunk: bool,
@@ -102,10 +116,43 @@ pub struct Mailbox {
     slots: Local<RefCell<[Slot; CONNECTIONS]>>,
     health: Local<RefCell<Option<Response>>>,
     active: Cell<bool>,
-    /// De deurbel van de eigenaar: level-triggered en samengevoegd, tien
-    /// bellen in één idle zijn er één.
+    /// De deurbel van de eigenaar; in een Arc zodat hij ook als [`Waker`]
+    /// aan providertaken en de socketpomp mee kan.
+    bell: Arc<Nudge>,
+}
+/// De deurbel: level-triggered en samengevoegd, tien bellen in één idle zijn
+/// er één. Als [`Waker`] doet hij precies wat [`Mailbox::nudge`] doet, zodat
+/// bytes voor een providerverzoek de eigenaar wekken in plaats van een
+/// vloertimer.
+pub(crate) struct Nudge {
     nudged: Cell<bool>,
-    bell: Local<RefCell<Option<core::task::Waker>>>,
+    waker: RefCell<Option<Waker>>,
+}
+// SAFETY: `Waker::from(Arc<W>)` eist Send + Sync, maar de bel wordt alleen
+// aangeraakt door de eigenaar, zijn sockettaken en zijn providertaken, die
+// samen op één executor op één core draaien (de host: één thread); er is geen
+// tweede thread of core die hem kan zien.
+#[allow(unsafe_code)]
+unsafe impl Send for Nudge {}
+// SAFETY: zie hierboven.
+#[allow(unsafe_code)]
+unsafe impl Sync for Nudge {}
+impl Nudge {
+    fn ring(&self) {
+        self.nudged.set(true);
+        let waker = self.waker.borrow_mut().take();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+impl alloc::task::Wake for Nudge {
+    fn wake(self: Arc<Self>) {
+        self.ring();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.ring();
+    }
 }
 impl Default for Mailbox {
     fn default() -> Self {
@@ -113,8 +160,12 @@ impl Default for Mailbox {
             slots: Local(RefCell::new(core::array::from_fn(|_| Slot::default()))),
             health: Local(RefCell::new(None)),
             active: Cell::new(false),
-            nudged: Cell::new(false),
-            bell: Local(RefCell::new(None)),
+            // Arc::new breekt af bij geheugengebrek; dat is aanvaard, alleen
+            // hier bij de bouw van de ene mailbox per tenant, nooit per verzoek.
+            bell: Arc::new(Nudge {
+                nudged: Cell::new(false),
+                waker: RefCell::new(None),
+            }),
         }
     }
 }
@@ -123,19 +174,21 @@ impl Mailbox {
     /// platformtaak rondde werk af. De eigenaar verlaat zijn idle in de
     /// volgende ronde.
     pub fn nudge(&self) {
-        self.nudged.set(true);
-        if let Some(waker) = self.bell.0.borrow_mut().take() {
-            waker.wake();
-        }
+        self.bell.ring();
+    }
+    /// De deurbel als waker, voor futures die de eigenaar zelf polt
+    /// (providerverzoeken, de socketpomp): bytes bellen hem.
+    pub fn waker(&self) -> Waker {
+        Waker::from(self.bell.clone())
     }
     /// Wacht tot er gebeld is; een bel die tijdens het werk viel, wordt bij
     /// de volgende idle meteen gezien.
     pub fn nudged(&self) -> impl Future<Output = ()> + '_ {
         core::future::poll_fn(move |cx| {
-            if self.nudged.replace(false) {
+            if self.bell.nudged.replace(false) {
                 Poll::Ready(())
             } else {
-                *self.bell.0.borrow_mut() = Some(cx.waker().clone());
+                *self.bell.waker.borrow_mut() = Some(cx.waker().clone());
                 Poll::Pending
             }
         })
@@ -363,6 +416,7 @@ async fn connection<H: Platform>(
             {
                 let mut slots = mail.slots.0.borrow_mut();
                 slots[index].routed = true;
+                slots[index].queued_ms = clock.millis();
                 slots[index].request = Some(input);
             }
             mail.nudge();
@@ -477,6 +531,8 @@ fn serve_inner<P: Persistence, H: Platform>(
     mut pump: impl FnMut(&mut H, &mut Context<'_>) -> Result,
 ) -> Result {
     let clock = platform.clock();
+    let waker = mail.waker();
+    let mut meter = Meter::new(clock);
     let mut outgoing = outbound::Pool::new();
     mail.active.set(true);
     let mut passwords: Vec<Option<PasswordWork>> = Vec::new();
@@ -500,8 +556,11 @@ fn serve_inner<P: Persistence, H: Platform>(
     let mut maintained = clock.millis();
     let mut capsule_diagnosed = None;
     let mut health_updated = clock.millis();
-    let mut context = Context::from_waker(Waker::noop());
+    // De socketpomp en de providerpool pollen met de deurbel als waker: wat
+    // hen wekt, wekt de eigenaar.
+    let mut context = Context::from_waker(&waker);
     while !platform.stopped() {
+        meter.round();
         let now = platform.timestamp()?;
         let refresh_health = mail.health.0.borrow().is_none()
             || clock.millis().saturating_sub(health_updated) >= 1000;
@@ -523,20 +582,26 @@ fn serve_inner<P: Persistence, H: Platform>(
             *mail.health.0.borrow_mut() = Some(response);
             health_updated = clock.millis();
         }
+        meter.lap::<H>("health");
         if let Err(error) = server.maintain_restores(&now, runtime) {
             H::log(format_args!("SPIN_RESTORE_FAILED error={error}"));
         }
+        meter.lap::<H>("maintain_restores");
         if !server.backup_active() {
             if let Err(error) = server.maintain_operations(&now, runtime) {
                 H::log(format_args!("SPIN_OPERATION_FAILED error={error}"));
             }
-            outgoing.poll::<H, P>(&platform, server, &now, runtime)?;
+            meter.lap::<H>("maintain_operations");
+            outgoing.poll::<H, P>(&platform, server, &now, runtime, &waker)?;
+            meter.lap::<H>("outgoing");
             if let Err(error) = server.maintain_agents(&now, runtime) {
                 H::log(format_args!("SPIN_AGENT_MAINTENANCE_FAILED error={error}"));
             }
+            meter.lap::<H>("maintain_agents");
             if let Err(error) = server.maintain_uploads(&now) {
                 H::log(format_args!("SPIN_UPLOAD_MAINTENANCE_FAILED error={error}"));
             }
+            meter.lap::<H>("maintain_uploads");
         }
         let now_ms = clock.millis().saturating_sub(started);
         pump(&mut platform, &mut context)?;
@@ -570,8 +635,13 @@ fn serve_inner<P: Persistence, H: Platform>(
             }
         }
         for index in 0..CONNECTIONS {
-            let input = { mail.slots.0.borrow_mut()[index].request.take() };
-            if let Some(input) = input {
+            let input = {
+                let mut slots = mail.slots.0.borrow_mut();
+                let queued_ms = slots[index].queued_ms;
+                slots[index].request.take().map(|input| (input, queued_ms))
+            };
+            if let Some((input, queued_ms)) = input {
+                meter.queued::<H>(clock.millis().saturating_sub(queued_ms));
                 let mut headers = Vec::new();
                 headers
                     .try_reserve_exact(input.headers.len())
@@ -588,7 +658,9 @@ fn serve_inner<P: Persistence, H: Platform>(
                     peer: &input.peer,
                     secure: input.secure,
                 };
+                meter.mark();
                 let result = server.begin(request, &now, runtime);
+                meter.lap::<H>(route_class(&input.path));
                 if result.is_err() {
                     // Never include query strings, credentials or public share tokens.
                     let path = if input.path.starts_with("/api/jobs/")
@@ -718,6 +790,7 @@ fn serve_inner<P: Persistence, H: Platform>(
                 continue;
             }
             mail.slots.0.borrow_mut()[index].next_chunk = false;
+            meter.mark();
             match server.backup_chunk(wait, &now) {
                 Ok(Some(bytes)) => mail.slots.0.borrow_mut()[index].chunk = Some(bytes),
                 Ok(None) => {
@@ -732,12 +805,16 @@ fn serve_inner<P: Persistence, H: Platform>(
                     *backup = None;
                 }
             }
+            meter.lap::<H>("backup_chunk");
         }
         for (index, waiting) in uploads.iter_mut().enumerate() {
             let Some(wait) = waiting else {
                 continue;
             };
-            let response = match server.poll_upload(wait) {
+            meter.mark();
+            let polled = server.poll_upload(wait);
+            meter.lap::<H>("poll_upload");
+            let response = match polled {
                 Ok(None) => continue,
                 Ok(Some(response)) => Some(response),
                 Err(error) => make_response::<H>(Err(error)),
@@ -750,8 +827,10 @@ fn serve_inner<P: Persistence, H: Platform>(
             }
         }
         if server.backup_active() {
-            // De export stroomt per chunk op de deurbel van zijn socket; kort slapen.
-            platform.idle(mail, true)?;
+            // De export stroomt per chunk op de deurbel van zijn socket; de
+            // seconde is de bovengrens voor de health-cache.
+            meter.finish::<H>();
+            platform.idle(mail, Idle::Until(clock.millis().saturating_add(1000)))?;
             continue;
         }
         for (index, link) in terminals.iter().enumerate() {
@@ -769,11 +848,17 @@ fn serve_inner<P: Persistence, H: Platform>(
                 }
                 Ok(())
             })();
-            if let Err(error) = result
-                && server.terminal_error(link, &error).is_err()
-            {
-                mail.slots.0.borrow_mut()[index].close = Some(1008);
-                continue;
+            if let Err(error) = result {
+                H::log(format_args!(
+                    "SPIN_TERMINAL_REJECTED slot={index} error={error}"
+                ));
+                if server.terminal_error(link, &error).is_err() {
+                    H::log(format_args!(
+                        "SPIN_WS_CLOSED kind=terminal code=1008 error={error}"
+                    ));
+                    mail.slots.0.borrow_mut()[index].close = Some(1008);
+                    continue;
+                }
             }
             if mail.slots.0.borrow()[index].frame_bytes == 0 {
                 if let Some(json) = server.terminal_next(link) {
@@ -801,17 +886,27 @@ fn serve_inner<P: Persistence, H: Platform>(
             if mail.slots.0.borrow()[index].close.is_some() {
                 continue;
             }
-            if server.validate_chat(link, &now).is_err() {
+            if let Err(error) = server.validate_chat(link, &now) {
+                H::log(format_args!(
+                    "SPIN_WS_CLOSED kind=chat code=1008 error={error}"
+                ));
                 mail.slots.0.borrow_mut()[index].close = Some(1008);
                 continue;
             }
             let message = mail.slots.0.borrow_mut()[index].browser.take();
             if let Some(message) = message
                 && let Err(error) = server.chat_message(link, &message, &now)
-                && server.chat_error(link, &error).is_err()
             {
-                mail.slots.0.borrow_mut()[index].close = Some(1008);
-                continue;
+                H::log(format_args!(
+                    "SPIN_CHAT_REJECTED slot={index} error={error}"
+                ));
+                if server.chat_error(link, &error).is_err() {
+                    H::log(format_args!(
+                        "SPIN_WS_CLOSED kind=chat code=1008 error={error}"
+                    ));
+                    mail.slots.0.borrow_mut()[index].close = Some(1008);
+                    continue;
+                }
             }
             if mail.slots.0.borrow()[index].frame_bytes == 0 {
                 match server.chat_next(link) {
@@ -832,7 +927,12 @@ fn serve_inner<P: Persistence, H: Platform>(
                     Ok(None) if server.chat_done(link) => {
                         mail.slots.0.borrow_mut()[index].close = Some(1000)
                     }
-                    Err(_) => mail.slots.0.borrow_mut()[index].close = Some(1011),
+                    Err(error) => {
+                        H::log(format_args!(
+                            "SPIN_WS_CLOSED kind=chat code=1011 error={error}"
+                        ));
+                        mail.slots.0.borrow_mut()[index].close = Some(1011);
+                    }
                     _ => {}
                 }
             }
@@ -913,8 +1013,13 @@ fn serve_inner<P: Persistence, H: Platform>(
                         RunnerEvent::Attached { client, .. } => {
                             H::log(format_args!("SPIN_RUNNER_ATTACHED client={client}"))
                         }
-                        RunnerEvent::Response { response, .. } if !response.error.is_empty() => {
-                            H::log(format_args!("SPIN_RUNNER_REQUEST_FAILED"))
+                        RunnerEvent::Response { request, response }
+                            if !response.error.is_empty() =>
+                        {
+                            H::log(format_args!(
+                                "SPIN_RUNNER_REQUEST_FAILED id={} method={} error={}",
+                                request.id, request.method, response.error
+                            ));
                         }
                         _ => {}
                     }
@@ -940,8 +1045,19 @@ fn serve_inner<P: Persistence, H: Platform>(
                 Ok(())
             })();
             if let Err(error) = result {
-                H::log(format_args!("SPIN_RUNNER_CLOSED error={error}"));
-                mail.slots.0.borrow_mut()[index].close = Some(1008);
+                // 1008 alleen voor een geweigerde identiteit, 1012 als een
+                // nieuwere verbinding deze verving, 1011 voor al het andere.
+                let code = match error {
+                    spin_server::Error::Http(401 | 403, _) => 1008,
+                    spin_server::Error::Http(
+                        409,
+                        "runner identity is already connected from another process",
+                    ) => 1008,
+                    spin_server::Error::Http(409, "runner connection was replaced") => 1012,
+                    _ => 1011,
+                };
+                H::log(format_args!("SPIN_RUNNER_CLOSED code={code} error={error}"));
+                mail.slots.0.borrow_mut()[index].close = Some(code);
             }
         }
         // Hoogstens 4096 PBKDF2-rondes per actorronde, over alle logins samen.
@@ -951,9 +1067,10 @@ fn serve_inner<P: Persistence, H: Platform>(
             if password.as_mut().is_some_and(|work| work.step(rounds))
                 && let Some(work) = password.take()
             {
-                if let Some(response) =
-                    make_response::<H>(server.finish_password(work, &now, runtime))
-                {
+                meter.mark();
+                let finished = server.finish_password(work, &now, runtime);
+                meter.lap::<H>("finish_password");
+                if let Some(response) = make_response::<H>(finished) {
                     mail.slots.0.borrow_mut()[index].response = Some(response);
                 } else {
                     mail.slots.0.borrow_mut()[index].abort = true;
@@ -966,7 +1083,10 @@ fn serve_inner<P: Persistence, H: Platform>(
             };
             if clock.millis().saturating_sub(watch.checked) >= 3000 {
                 watch.checked = clock.millis();
-                if server.validate_watch(&watch.watch, &now).is_err() {
+                if let Err(error) = server.validate_watch(&watch.watch, &now) {
+                    H::log(format_args!(
+                        "SPIN_WS_CLOSED kind=watch code=1008 error={error}"
+                    ));
                     mail.slots.0.borrow_mut()[index].close = Some(1008);
                     continue;
                 }
@@ -976,28 +1096,44 @@ fn serve_inner<P: Persistence, H: Platform>(
                 && mail.slots.0.borrow()[index].frame_bytes == 0
                 && mail.slots.0.borrow()[index].close.is_none()
             {
-                match server.state_for_watch(&watch.watch, &now) {
-                    Ok(json) if json.len() <= MAX_STATE_FRAME => {
-                        match spin_core::websocket::encode(1, json.as_bytes(), None) {
-                            Ok(bytes) => {
-                                if queue_frame(
-                                    &mut mail.slots.0.borrow_mut(),
-                                    index,
-                                    Frame {
-                                        bytes,
-                                        ticket: None,
-                                    },
-                                ) {
-                                    watch.version = server.version();
-                                    watch.sent = clock.millis();
-                                }
+                meter.mark();
+                let (code, error) = match server.state_for_watch(&watch.watch, &now) {
+                    Ok(json) if json.len() > MAX_STATE_FRAME => {
+                        (1008, "state frame exceeds budget")
+                    }
+                    Ok(json) => match spin_core::websocket::encode(1, json.as_bytes(), None) {
+                        Ok(bytes) => {
+                            if queue_frame(
+                                &mut mail.slots.0.borrow_mut(),
+                                index,
+                                Frame {
+                                    bytes,
+                                    ticket: None,
+                                },
+                            ) {
+                                watch.version = server.version();
+                                watch.sent = clock.millis();
+                                meter.pushes += 1;
                             }
-                            Err(_) => mail.slots.0.borrow_mut()[index].close = Some(1011),
+                            (0, "")
                         }
+                        Err(_) => (1011, "state frame unavailable"),
+                    },
+                    Err(error) => {
+                        H::log(format_args!(
+                            "SPIN_WS_CLOSED kind=watch code=1008 error={error}"
+                        ));
+                        (1008, "")
                     }
-                    _ => {
-                        mail.slots.0.borrow_mut()[index].close = Some(1008);
+                };
+                meter.lap::<H>("watch_push");
+                if code != 0 {
+                    if !error.is_empty() {
+                        H::log(format_args!(
+                            "SPIN_WS_CLOSED kind=watch code={code} error={error}"
+                        ));
                     }
+                    mail.slots.0.borrow_mut()[index].close = Some(code);
                 }
             }
         }
@@ -1005,11 +1141,13 @@ fn serve_inner<P: Persistence, H: Platform>(
         // verzoek dat de eigenaar uit zijn rust belt, wacht niet op de opslagtelling
         // of de Replica-capture.
         if !server.backup_active() && clock.millis().saturating_sub(maintained) >= 1000 {
+            meter.mark();
             if let Err(error) = server.maintain_storage(&now) {
                 H::log(format_args!(
                     "SPIN_STORAGE_MAINTENANCE_FAILED error={error}"
                 ));
             }
+            meter.lap::<H>("maintain_storage");
             if let Err(error) = server.maintain_capsules(&now, runtime) {
                 H::log(format_args!(
                     "SPIN_CAPSULE_MAINTENANCE_FAILED error={error}"
@@ -1024,20 +1162,145 @@ fn serve_inner<P: Persistence, H: Platform>(
                     capsule_diagnosed = Some(clock.millis());
                 }
             }
+            // Wachtende capsules, weigeringen en gefaalde agents: de server vraagt
+            // zelf om zijn regels (hoogstens eens per minuut per geval).
+            if server.take_diagnostics_due() {
+                server.capsule_diagnostics(now.time().map_or(0, |time| time.0 / 1_000_000), H::log);
+                capsule_diagnosed = Some(clock.millis());
+            }
+            meter.lap::<H>("maintain_capsules");
             // A slow maintenance round must leave an interval for queued requests.
             maintained = clock.millis();
         }
-        // Alleen werk dat door pollen vordert houdt de eigenaar wakker; de rest
-        // komt met de deurbel of de vloertimer van het platform.
-        let busy = passwords.iter().any(Option::is_some)
-            || outgoing.active()
-            || watches
-                .iter()
-                .flatten()
-                .any(|watch| watch.version != server.version());
-        platform.idle(mail, busy)?;
+        // Alleen gesneden CPU-werk (een wachtwoordafleiding) vraagt meteen de
+        // volgende ronde; verder slaapt de eigenaar tot de deurbel of zijn
+        // vroegste echte deadline, hooguit een seconde verder: het onderhoud,
+        // de health-cache, en per watch de controle en de uitgestelde push.
+        let at = clock.millis();
+        let mut until = at
+            .saturating_add(1000)
+            .min(maintained.saturating_add(1000))
+            .min(health_updated.saturating_add(1000));
+        for watch in watches.iter().flatten() {
+            until = until.min(watch.checked.saturating_add(3000));
+            if watch.version != server.version() {
+                until = until.min(watch.sent.saturating_add(150));
+            }
+        }
+        let next = if passwords.iter().any(Option::is_some) || server.restore_active() {
+            Idle::Yield
+        } else {
+            Idle::Until(until)
+        };
+        meter.finish::<H>();
+        platform.idle(mail, next)?;
     }
     Ok(())
+}
+/// De redactieklasse van een pad, zonder query, token of id (dezelfde drie
+/// prefixen als `SPIN_REQUEST_CONTEXT`).
+fn route_class(path: &str) -> &'static str {
+    if path.starts_with("/api/jobs/") {
+        "/api/jobs/"
+    } else if path.starts_with("/api/sessions/") {
+        "/api/sessions/"
+    } else if path.starts_with("/api/workflow/mcp/") {
+        "/api/workflow/mcp/"
+    } else {
+        "[other route]"
+    }
+}
+/// Een stap of wachttijd vanaf deze duur krijgt zijn eigen regel.
+const SLOW_MS: u64 = 200;
+/// Meting van de eigenaar per taak (apps.md, "Meet per taak"): bezette tijd,
+/// de langste stap met naam en de langste wachttijd in de rij, elke 30 s één
+/// regel. Niets hierin alloceert.
+struct Meter<K: Clock> {
+    clock: K,
+    since: u64,
+    round_at: u64,
+    lap_at: u64,
+    busy_ms: u64,
+    rounds: u64,
+    requests: u64,
+    pushes: u64,
+    longest: (&'static str, u64),
+    queue_max_ms: u64,
+}
+impl<K: Clock> Meter<K> {
+    fn new(clock: K) -> Self {
+        let now = clock.millis();
+        Self {
+            clock,
+            since: now,
+            round_at: now,
+            lap_at: now,
+            busy_ms: 0,
+            rounds: 0,
+            requests: 0,
+            pushes: 0,
+            longest: ("", 0),
+            queue_max_ms: 0,
+        }
+    }
+    /// Begin van een ronde, direct na de idle.
+    fn round(&mut self) {
+        self.round_at = self.clock.millis();
+        self.lap_at = self.round_at;
+    }
+    /// Zet het beginpunt van de volgende stap.
+    fn mark(&mut self) {
+        self.lap_at = self.clock.millis();
+    }
+    /// Sluit de stap af die bij de laatste `mark` of `lap` begon.
+    fn lap<H: Platform>(&mut self, step: &'static str) {
+        let now = self.clock.millis();
+        let ms = now.saturating_sub(self.lap_at);
+        self.lap_at = now;
+        if ms > self.longest.1 {
+            self.longest = (step, ms);
+        }
+        if ms >= SLOW_MS {
+            H::log(format_args!("SPIN_OWNER_SLOW step={step} ms={ms}"));
+        }
+    }
+    /// Een verzoek lag `ms` in de rij voordat de eigenaar hem pakte.
+    fn queued<H: Platform>(&mut self, ms: u64) {
+        self.requests += 1;
+        self.queue_max_ms = self.queue_max_ms.max(ms);
+        if ms >= SLOW_MS {
+            H::log(format_args!("SPIN_OWNER_QUEUE ms={ms}"));
+        }
+    }
+    /// Einde van de ronde, vlak voor de idle: telt de bezette tijd en schrijft
+    /// elke 30 s de samenvatting.
+    fn finish<H: Platform>(&mut self) {
+        let now = self.clock.millis();
+        self.busy_ms = self
+            .busy_ms
+            .saturating_add(now.saturating_sub(self.round_at));
+        self.rounds += 1;
+        if now.saturating_sub(self.since) < 30_000 {
+            return;
+        }
+        H::log(format_args!(
+            "SPIN_OWNER_LOAD rounds={} requests={} pushes={} busy_ms={} longest={}:{} queue_max_ms={}",
+            self.rounds,
+            self.requests,
+            self.pushes,
+            self.busy_ms,
+            self.longest.0,
+            self.longest.1,
+            self.queue_max_ms
+        ));
+        self.since = now;
+        self.busy_ms = 0;
+        self.rounds = 0;
+        self.requests = 0;
+        self.pushes = 0;
+        self.longest = ("", 0);
+        self.queue_max_ms = 0;
+    }
 }
 
 pub(crate) fn response_head(response: &Response) -> leanhttp::Result<String> {

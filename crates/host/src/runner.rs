@@ -384,6 +384,37 @@ pub fn run(config: Config, docker: Docker, stop: &AtomicBool) -> std::io::Result
     }
     result
 }
+/// De eerste wachttijd na een verbroken verbinding.
+const RECONNECT_MIN: Duration = Duration::from_secs(1);
+/// De bovengrens van de verdubbelende wachttijd.
+const RECONNECT_MAX: Duration = Duration::from_secs(30);
+/// Een bezette identiteit komt na PONG_WAIT_MS (90 s) op de server vanzelf vrij.
+const IDENTITY_RETRY: Duration = Duration::from_secs(15);
+/// Vertaalt een close-frame van de server naar de reden voor de herverbind-lus:
+/// 1008 met een identiteitsreden is "bezet", 1012 is "vervangen", de rest is een breuk.
+fn close_error(body: &[u8]) -> std::io::Error {
+    let code = body
+        .get(..2)
+        .map(|b| u16::from_be_bytes([b[0], b[1]]))
+        .unwrap_or(1005);
+    let reason = body
+        .get(2..)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .unwrap_or("");
+    if code == 1008 && reason.contains("already connected") {
+        return std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "runner identity is already connected from another process",
+        );
+    }
+    std::io::Error::new(
+        std::io::ErrorKind::ConnectionAborted,
+        text(format_args!(
+            "server closed the runner socket ({code} {reason})"
+        ))
+        .unwrap_or_else(|_| String::new()),
+    )
+}
 fn run_owned(config: Config, docker: &Docker, stop: &AtomicBool) -> std::io::Result<()> {
     let apps = crate::apps::Config::new(config.env_dir, config.advertise_host)?;
     let archive = crate::blob_client::Client::new(&config.server, &config.token)?;
@@ -440,6 +471,8 @@ fn run_owned(config: Config, docker: &Docker, stop: &AtomicBool) -> std::io::Res
     let mut welcomed = false;
     let mut control: Option<(u8, Vec<u8>)> = None;
     let mut next_connect = Instant::now();
+    // Herverbinden begint bij 1 s en verdubbelt tot 30 s; een welkom zet het terug.
+    let mut backoff = RECONNECT_MIN;
     let mut ping_at = Instant::now();
     let mut dial_index = 0;
     let mut context = Context::from_waker(Waker::noop());
@@ -511,8 +544,12 @@ fn run_owned(config: Config, docker: &Docker, stop: &AtomicBool) -> std::io::Res
                     control = None;
                 }
                 Some(Err(error)) => {
-                    eprintln!("SPIN_RUNNER_CONNECT_FAILED error={error}");
-                    next_connect = Instant::now() + Duration::from_secs(1);
+                    eprintln!(
+                        "SPIN_RUNNER_CONNECT_FAILED error={error} reconnect_in_s={}",
+                        backoff.as_secs()
+                    );
+                    next_connect = Instant::now() + backoff;
+                    backoff = (backoff * 2).min(RECONNECT_MAX);
                 }
                 None => return Err(std::io::Error::other("runner dial produced no result")),
             }
@@ -535,9 +572,13 @@ fn run_owned(config: Config, docker: &Docker, stop: &AtomicBool) -> std::io::Res
                         connected.replace(Some(result));
                     })?);
                 }
-                Err(_) => next_connect = Instant::now() + Duration::from_secs(1),
+                Err(_) => {
+                    next_connect = Instant::now() + backoff;
+                    backoff = (backoff * 2).min(RECONNECT_MAX);
+                }
             }
         }
+        let was_welcomed = welcomed;
         let result = (|| -> std::io::Result<()> {
             let Some(connection) = &mut socket else {
                 return Ok(());
@@ -563,15 +604,7 @@ fn run_owned(config: Config, docker: &Docker, stop: &AtomicBool) -> std::io::Res
                         control = Some((10, data));
                     }
                     Event::Pong(_) => {}
-                    Event::Close(body) => {
-                        if body.get(..2) == Some(&1008u16.to_be_bytes()) {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::PermissionDenied,
-                                "runner rejected by server policy; check token and duplicate identity",
-                            ));
-                        }
-                        return Err(std::io::ErrorKind::ConnectionAborted.into());
-                    }
+                    Event::Close(body) => return Err(close_error(&body)),
                     Event::Text(value) => dispatch(
                         value.as_bytes(),
                         &mut welcomed,
@@ -618,12 +651,31 @@ fn run_owned(config: Config, docker: &Docker, stop: &AtomicBool) -> std::io::Res
             }
             Ok(())
         })();
+        if welcomed && !was_welcomed {
+            backoff = RECONNECT_MIN;
+        }
         if let Err(error) = result {
-            if error.kind() == std::io::ErrorKind::PermissionDenied {
-                return Err(error);
-            }
             socket = None;
-            next_connect = Instant::now() + Duration::from_secs(1);
+            match error.kind() {
+                // Alleen een geweigerd token stopt de runner; elke andere breuk kost
+                // bij afsluiten alle agent- en terminalprocessen, dus die herverbindt.
+                std::io::ErrorKind::PermissionDenied => return Err(error),
+                std::io::ErrorKind::AddrInUse => {
+                    eprintln!(
+                        "SPIN_RUNNER_IDENTITY_BUSY retry_s={}",
+                        IDENTITY_RETRY.as_secs()
+                    );
+                    next_connect = Instant::now() + IDENTITY_RETRY;
+                }
+                _ => {
+                    eprintln!(
+                        "SPIN_RUNNER_LINK_LOST error={error} reconnect_in_s={}",
+                        backoff.as_secs()
+                    );
+                    next_connect = Instant::now() + backoff;
+                    backoff = (backoff * 2).min(RECONNECT_MAX);
+                }
+            }
         }
         executor::idle();
     }
@@ -696,11 +748,13 @@ fn dispatch<'a>(
                 .contains("already connected from another process")
             {
                 return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
+                    std::io::ErrorKind::AddrInUse,
                     "runner identity is already connected from another process",
                 ));
             }
-            return Err(std::io::Error::other("runner welcome rejected"));
+            return Err(std::io::Error::other(
+                text(format_args!("runner welcome rejected: {}", request.error)).map_err(io)?,
+            ));
         }
         *welcomed = true;
         return Ok(());

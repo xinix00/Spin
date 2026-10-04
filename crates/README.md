@@ -148,6 +148,30 @@ Herhaalde opdrachten worden niet opnieuw uitgevoerd. Een geweigerde identiteit
 of token stopt de runner met een duidelijke fout. Bij afsluiten wordt een
 begrensde goodbye verstuurd en worden eigen processen opgeruimd.
 
+## Een goede buur op HopOS
+
+De lessen uit `hop-os/docs/apps.md` zijn op de port toegepast (04-10-2026):
+
+- Sockets houden geen executor-timer vast: `crates/hopos/src/conn.rs` bewaart
+  lees- en schrijftermijnen zelf en de boot-lus slaapt met één `until` op de
+  vroegste. Met 64 verbindingen en 32 timerplekken spinde de core anders stil.
+- De eigenaar slaapt tot zijn deurbel of zijn eerstvolgende echte deadline
+  (onderhoud 1 s, staat-push 150 ms, watch-controle 3 s), yieldt bij gesneden
+  rekenwerk (wachtwoorden, een lopend herstel) en pollt uitgaande HTTP met een
+  echte waker.
+- Eén geserialiseerde snapshot per staatversie voor alle browsers; de
+  opslagtelling eens per 30 s; de launch-sweep filtert oude pogingen met een
+  opzoeking vóór hij iets kloont.
+- Hartslagen: een tijdelijke weigering (1011/1012, identiteit bezet) stopt de
+  runner niet meer, herverbinden heeft een backoff van 1 tot 30 s, en de
+  starttimer van een agent loopt niet terwijl zijn runner los is.
+- De meetlat op de console: `SPIN_OWNER_LOAD`/`SPIN_OWNER_SLOW`/`SPIN_OWNER_QUEUE`
+  per eigenaar, `SPIN_EXEC` (met `timer_overflows`) en `SPIN_BOOT_SLOW` per
+  node, `SPIN_CAPSULE_WAITING`/`SPIN_RUNNER_REFUSED`/`SPIN_AGENT_FAILED`/
+  `SPIN_SESSION_WAITING_LOGIN` zodra iets wacht, naast de `HOPOS_SLOT_LOAD`
+  van de kern. Nog niet gedaan: de volledige kopie van de staat bij elke
+  mutatie (`Store::edit`, `encrypt_state`, één rij per document).
+
 ## Gecontroleerde functies
 
 - Native HTTP, authenticatie, CSRF, duurzame browsersessies, harde herstart,

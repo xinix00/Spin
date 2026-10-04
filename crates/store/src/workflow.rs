@@ -127,6 +127,31 @@ fn after(now: &Timestamp, seconds: u64) -> Result<Timestamp> {
     ))?)
 }
 impl<P: Persistence> Store<P> {
+    /// Voorcontrole van de launch-sweep zonder kopie: alleen de huidige poging van
+    /// de Job met een wachtende of lopende PhaseRun mag starten. Een Session van
+    /// een afgeronde Job valt hier af vóór `workflow_for_session` haar Job,
+    /// template en PhaseRun kopieert en alle deliverables en vragen afloopt.
+    pub fn is_current_phase_session(&self, session: &d::Session) -> bool {
+        let Some(job) = self.state.jobs.get(&session.job_id) else {
+            return false;
+        };
+        if job.current_phase_run_id != session.phase_run_id {
+            return false;
+        }
+        // Een huidige poging zonder fase-run is kapot; dat meldt de volledige
+        // weergave als fout, dus hier geen stille nee.
+        self.state
+            .phase_runs
+            .get(&session.phase_run_id)
+            .is_none_or(|run| {
+                run.session_id == session.id
+                    && run.job_id == job.id
+                    && matches!(
+                        run.status.as_str(),
+                        d::PHASE_RUN_QUEUED | d::PHASE_RUN_RUNNING
+                    )
+            })
+    }
     /// Leest workflowcontext zonder de Job naar een nieuwere template te verplaatsen.
     pub fn workflow_for_session(&self, id: &str) -> Result<WorkflowView> {
         let p = parts(&self.state, id)?;
@@ -507,5 +532,37 @@ impl<P: Persistence> Store<P> {
             }
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::Memory;
+    use core::cell::Cell;
+    use d::Wire;
+    #[test]
+    fn launch_precheck_accepts_only_the_current_queued_or_running_attempt() {
+        let state = PersistedState::from_json(
+            br#"{
+            "jobs":{"j":{"id":"j","status":"running","current_phase_run_id":"run2"}},
+            "sessions":{
+                "old":{"id":"old","job_id":"j","phase_run_id":"run1","status":"queued"},
+                "cur":{"id":"cur","job_id":"j","phase_run_id":"run2","status":"queued"},
+                "done":{"id":"done","job_id":"j","phase_run_id":"run2","status":"queued"},
+                "lost":{"id":"lost","job_id":"gone","phase_run_id":"run2","status":"queued"}},
+            "phase_runs":{
+                "run1":{"id":"run1","session_id":"old","job_id":"j","status":"accepted"},
+                "run2":{"id":"run2","session_id":"cur","job_id":"j","status":"queued"}}
+        }"#,
+        )
+        .unwrap();
+        let fail = Cell::new(false);
+        let store = Store::new(state, Memory(&fail));
+        let session = |id: &str| store.state.sessions.get(id).unwrap();
+        assert!(store.is_current_phase_session(session("cur")));
+        assert!(!store.is_current_phase_session(session("old")));
+        assert!(!store.is_current_phase_session(session("done")));
+        assert!(!store.is_current_phase_session(session("lost")));
     }
 }

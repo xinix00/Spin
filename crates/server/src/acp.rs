@@ -31,7 +31,7 @@ struct Initialize {
 pub(crate) struct Agent {
     pub(super) options_probe: bool,
     pub(super) options_done: bool,
-    session_id: String,
+    pub(super) session_id: String,
     composition: String,
     operator: String,
     pub(super) client: String,
@@ -42,6 +42,12 @@ pub(crate) struct Agent {
     pub(super) failure: String,
     saved: String,
     started_ms: u64,
+    /// Sinds wanneer de runner van deze agent los is (0 = verbonden); de pauze
+    /// telt niet mee voor de starttermijn van 45 s.
+    detached_ms: u64,
+    /// Wanneer `failure` voor het eerst werd gezet; de diagnose meldt het eenmalig.
+    pub(super) failed_ms: u64,
+    pub(super) failure_reported: bool,
     pub(super) closed: bool,
     launch: bool,
     queued: VecDeque<String>,
@@ -195,6 +201,9 @@ impl<P: Persistence> Server<P> {
                     queued: VecDeque::new(),
                     after_turn: false,
                     last_preserve_ms: 0,
+                    detached_ms: 0,
+                    failed_ms: 0,
+                    failure_reported: false,
                 },
             )?;
         }
@@ -324,9 +333,8 @@ impl<P: Persistence> Server<P> {
             .iter()
             .position(|peer| peer.client().id == capsule.client_id)
             .ok_or(Error::Http(409, "capsule runner is offline"))?;
-        if !self.runners[index].is_connected() {
-            return Err(Error::Http(409, "capsule runner is offline"));
-        }
+        // Een losse verbinding is geen fout: de peer bewaart de START_ENABLED-vraag
+        // in zijn outbox en speelt die af zodra de runner terug is.
         let mut artifact = String::new();
         let mut defaults = d::AgentSettings::default();
         for (_, id) in composition.slot_bindings.iter() {
@@ -415,6 +423,9 @@ impl<P: Persistence> Server<P> {
             queued: VecDeque::new(),
             after_turn: false,
             last_preserve_ms: 0,
+            detached_ms: 0,
+            failed_ms: 0,
+            failure_reported: false,
         };
         self.runners[index].adopt_stream(&agent.stream, false)?;
         if agent.initialize.is_some() {
@@ -513,6 +524,9 @@ impl<P: Persistence> Server<P> {
             queued: VecDeque::new(),
             after_turn: false,
             last_preserve_ms: 0,
+            detached_ms: 0,
+            failed_ms: 0,
+            failure_reported: false,
         };
         peer.adopt_stream(&agent.stream, false)?;
         if let Err(error) = peer.request(request) {
@@ -778,11 +792,31 @@ impl<P: Persistence> Server<P> {
             }) {
                 agent.failure = try_string("agent workspace was stopped or removed")?;
             }
-            if agent.initialize.is_some() && now_ms.saturating_sub(agent.started_ms) > 45_000 {
+            let connected = self
+                .runners
+                .iter()
+                .any(|p| p.client().id == agent.client && p.is_connected());
+            if !connected {
+                if agent.detached_ms == 0 {
+                    agent.detached_ms = now_ms;
+                }
+            } else if agent.detached_ms != 0 {
+                // De tijd zonder runner telt niet mee: de start- en antwoordtermijnen
+                // lopen pas weer vanaf de herverbinding.
+                let paused = now_ms.saturating_sub(agent.detached_ms);
+                if agent.started_ms != 0 {
+                    agent.started_ms = agent.started_ms.saturating_add(paused);
+                }
+                agent.detached_ms = 0;
+            }
+            if connected
+                && agent.initialize.is_some()
+                && now_ms.saturating_sub(agent.started_ms) > 45_000
+            {
                 agent.failure = try_string("ACP entrypoint start timed out")?;
             }
             if let Some(session) = &mut agent.session {
-                if let Err(error) = session.tick(now, now_ms) {
+                if connected && let Err(error) = session.tick(now, now_ms) {
                     agent.failure = text(format_args!("{error}"))?;
                 }
                 if agent.failure.is_empty()
@@ -930,6 +964,9 @@ impl<P: Persistence> Server<P> {
                 }
             }
             if !agent.failure.is_empty() {
+                if agent.failed_ms == 0 {
+                    agent.failed_ms = now_ms;
+                }
                 let stopping = self.store.composition(&agent.composition).is_ok_and(|c| {
                     c.runtime
                         .as_ref()

@@ -68,10 +68,18 @@ pub(crate) enum Action {
         composition: String,
         stamp: String,
     },
+    /// Geen opdracht aan een runner: een stap in de wachtrij waarvoor geen login
+    /// van `layer` vrij is. Alleen voor de UI en de diagnose; verdwijnt zodra de
+    /// stap start of niet meer in de wachtrij staat.
+    WaitLogin {
+        session: String,
+        layer: String,
+    },
 }
 impl Action {
     pub(crate) fn object(&self) -> &str {
         match self {
+            Self::WaitLogin { session, .. } => session,
             Self::Start { recording, .. }
             | Self::Execute { recording, .. }
             | Self::Seal { recording, .. }
@@ -113,7 +121,21 @@ pub(crate) struct Call {
     artifact: Option<d::Artifact>,
     waiting: Option<WireMessage>,
     detached: bool,
+    /// De runner die deze opdracht als laatste weigerde (vol of accepts=false).
+    refused_by: String,
+    /// Wanneer de diagnose dit wachten voor het laatst meldde (eens per 60 s).
+    reported_ms: u64,
 }
+impl Call {
+    /// Of de opdracht nog in de rij ligt en niet bij een runner.
+    pub(crate) fn queued(&self) -> bool {
+        !self.finished && self.waiting.is_some()
+    }
+}
+/// Vanaf deze wachttijd meldt de diagnose een opdracht die nog op een runner wacht.
+const WAIT_REPORT_AFTER_MS: u64 = 30_000;
+/// Een wachtende opdracht of een gefaalde agent wordt hoogstens eens per minuut gemeld.
+const WAIT_REPORT_EVERY_MS: u64 = 60_000;
 impl<P: Persistence> Server<P> {
     fn session_capsule_route(
         &mut self,
@@ -291,6 +313,8 @@ impl<P: Persistence> Server<P> {
             artifact: None,
             waiting: None,
             detached: false,
+            refused_by: String::new(),
+            reported_ms: 0,
         };
         let message = WireMessage {
             r#type: try_string(p::MESSAGE_REQUEST)?,
@@ -349,6 +373,14 @@ impl<P: Persistence> Server<P> {
             ));
         }
         for call in self.calls.iter().filter(|call| !call.finished) {
+            if let Action::WaitLogin { session, layer } = &call.action {
+                log(format_args!(
+                    "SPIN_SESSION_WAITING_LOGIN session={session} layer={layer} age_s={}",
+                    now_ms.saturating_sub(call.started.time().map_or(0, |t| t.0 / 1_000_000))
+                        / 1000
+                ));
+                continue;
+            }
             log(format_args!(
                 "SPIN_CAPSULE_PENDING object={} client={} queued={} method={}",
                 call.action.object(),
@@ -357,6 +389,32 @@ impl<P: Persistence> Server<P> {
                 call.waiting
                     .as_ref()
                     .map_or("dispatched", |m| m.method.as_str())
+            ));
+            if let Some(message) = &call.waiting {
+                log(format_args!(
+                    "SPIN_CAPSULE_WAITING object={} client={} age_s={} reason={}",
+                    call.action.object(),
+                    call.client,
+                    now_ms.saturating_sub(call.started.time().map_or(0, |t| t.0 / 1_000_000))
+                        / 1000,
+                    self.wait_reason(call)
+                ));
+                if !call.refused_by.is_empty() {
+                    log(format_args!(
+                        "SPIN_RUNNER_REFUSED client={} method={} retry_ms=5000",
+                        call.refused_by, message.method
+                    ));
+                }
+            }
+        }
+        for agent in self
+            .agents
+            .iter()
+            .filter(|a| a.failed_ms != 0 && now_ms.saturating_sub(a.failed_ms) < 120_000)
+        {
+            log(format_args!(
+                "SPIN_AGENT_FAILED session={} stream={} reason={}",
+                agent.session_id, agent.stream, agent.failure
             ));
         }
         let Ok(snapshot) = self.store.snapshot() else {
@@ -409,12 +467,107 @@ impl<P: Persistence> Server<P> {
             }
         }
     }
+    /// Waarom een opdracht in de rij nog niet bij een runner ligt.
+    pub(crate) fn wait_reason(&self, call: &Call) -> &'static str {
+        if !call.refused_by.is_empty() {
+            return "runner refused";
+        }
+        if call.client.is_empty() {
+            return "no runner available";
+        }
+        match self.runners.iter().find(|p| p.client().id == call.client) {
+            Some(peer) if !peer.is_connected() => "runner offline",
+            Some(_) => "runner refused",
+            None => "runner offline",
+        }
+    }
+    /// Markeert wat de diagnose moet melden en zegt of er iets nieuws is: een
+    /// opdracht die langer dan 30 s wacht of geweigerd is (eens per 60 s) en een
+    /// agent die faalde (eenmalig). De server heeft geen eigen logregel; het
+    /// resultaat van `maintain_capsules` laat de runtime `capsule_diagnostics` loggen.
+    fn note_waiting(&mut self, now_ms: u64) -> bool {
+        let mut due = false;
+        for call in self.calls.iter_mut().filter(|c| !c.finished) {
+            let waits = call.waiting.is_some() || matches!(call.action, Action::WaitLogin { .. });
+            let age = now_ms.saturating_sub(call.started.time().map_or(0, |t| t.0 / 1_000_000));
+            if waits
+                && (age >= WAIT_REPORT_AFTER_MS || !call.refused_by.is_empty())
+                && now_ms.saturating_sub(call.reported_ms) >= WAIT_REPORT_EVERY_MS
+            {
+                call.reported_ms = now_ms;
+                due = true;
+            }
+        }
+        for agent in self
+            .agents
+            .iter_mut()
+            .filter(|a| a.failed_ms != 0 && !a.failure_reported)
+        {
+            agent.failure_reported = true;
+            due = true;
+        }
+        due
+    }
+    /// Onthoudt dat een stap in de wachtrij op een login van `layer` wacht.
+    pub(crate) fn note_login_wait(
+        &mut self,
+        session: &str,
+        layer: &str,
+        now: &Timestamp,
+        runtime: &mut impl Runtime,
+    ) -> Result {
+        if session.is_empty() {
+            return Ok(());
+        }
+        if let Some(call) = self.calls.iter_mut().find(
+            |c| matches!(&c.action, Action::WaitLogin { session: s, layer: l } if s == session && l == layer),
+        ) {
+            call.updated = now.try_clone()?;
+            return Ok(());
+        }
+        self.forget_login_wait(session);
+        self.reserve_call(now)?;
+        let id = runtime.next("req")?;
+        self.calls.push(Call {
+            id: id.try_clone()?,
+            client: String::new(),
+            request_id: id,
+            start: None,
+            action: Action::WaitLogin {
+                session: try_string(session)?,
+                layer: try_string(layer)?,
+            },
+            started: now.try_clone()?,
+            updated: now.try_clone()?,
+            response: None,
+            finished: false,
+            error: false,
+            artifact: None,
+            waiting: None,
+            detached: false,
+            refused_by: String::new(),
+            reported_ms: 0,
+        });
+        self.display_changed();
+        Ok(())
+    }
+    /// De stap start of staat niet meer in de wachtrij: de login-wachtregel vervalt.
+    pub(crate) fn forget_login_wait(&mut self, session: &str) {
+        let before = self.calls.len();
+        self.calls
+            .retain(|c| !matches!(&c.action, Action::WaitLogin { session: s, .. } if s == session));
+        if self.calls.len() != before {
+            self.display_changed();
+        }
+    }
     /// Herstelt starts na een serverherstart, kiest een runner en begrenst de levensduur.
     /// De host roept dit periodiek aan; geen netwerk- of klok-I/O vindt hier plaats.
     pub fn maintain_capsules(&mut self, now: &Timestamp, runtime: &mut impl Runtime) -> Result {
         let time = now.time()?.0;
         for index in 0..self.calls.len() {
-            if self.calls[index].finished {
+            if self.calls[index].finished
+                || matches!(self.calls[index].action, Action::WaitLogin { .. })
+            {
                 continue;
             }
             if time.saturating_sub(self.calls[index].started.time()?.0) >= CALL_LIFETIME_NS {
@@ -468,9 +621,11 @@ impl<P: Persistence> Server<P> {
                 send_to_peer(peer, &mut self.calls[index], message, runtime)?;
                 self.calls[index].client = client;
                 self.calls[index].waiting = None;
+                self.calls[index].refused_by.clear();
                 self.display_changed();
             }
         }
+        let diagnostics_due = self.note_waiting(time / 1_000_000);
         self.retry_pending_stops(now, runtime)
             .map_err(|e| maintenance_context(e, "pending stop references missing data"))?;
         self.maintain_watches(now, runtime)
@@ -501,7 +656,16 @@ impl<P: Persistence> Server<P> {
             self.sweep_idle_capsules(now, runtime)
                 .map_err(|e| maintenance_context(e, "idle capsule references missing data"))?;
             let mut launch_error = None;
-            for session in self.store.snapshot()?.sessions.iter() {
+            let snapshot = self.store.snapshot()?;
+            // Een login-wachtregel hoort bij een stap die nog in de wachtrij staat.
+            let before = self.calls.len();
+            self.calls.retain(|c| {
+                !matches!(&c.action, Action::WaitLogin { session, .. } if !snapshot.sessions.iter().any(|s| s.id == *session && s.status == d::SESSION_QUEUED && !s.phase_run_id.is_empty()))
+            });
+            if self.calls.len() != before {
+                self.display_changed();
+            }
+            for session in snapshot.sessions.iter() {
                 if session.status == d::SESSION_QUEUED
                     && !session.phase_run_id.is_empty()
                     && let Err(error) = self.schedule_session(session, now, runtime)
@@ -518,7 +682,18 @@ impl<P: Persistence> Server<P> {
                 ));
             }
         }
+        if diagnostics_due {
+            // Geen storing: de server kan zelf niet loggen. De runtime leest deze
+            // vlag na elke onderhoudsronde en draait dan `capsule_diagnostics` met
+            // de SPIN_CAPSULE_WAITING-, SPIN_RUNNER_REFUSED-, SPIN_AGENT_FAILED- en
+            // SPIN_SESSION_WAITING_LOGIN-regels.
+            self.diagnostics_due = true;
+        }
         Ok(())
+    }
+    /// Of het onderhoud regels voor de console klaar heeft; één keer waar per aanvraag.
+    pub fn take_diagnostics_due(&mut self) -> bool {
+        core::mem::take(&mut self.diagnostics_due)
     }
     fn owner_recording(&self, id: &str, actor: &str) -> Result<d::Recording> {
         let recording = self.store.recording(id)?;
@@ -1117,6 +1292,8 @@ impl<P: Persistence> Server<P> {
             let accepts = p::AcceptsReply::from_value(payload)?;
             if !accepts.accepts {
                 self.calls[index].waiting = self.calls[index].start.take();
+                self.calls[index].refused_by = try_string(client)?;
+                self.calls[index].reported_ms = 0;
                 if !matches!(&self.calls[index].action, Action::Materialize(work) if work.pinned) {
                     self.calls[index].client.clear();
                 }
@@ -1156,6 +1333,8 @@ impl<P: Persistence> Server<P> {
             self.calls[index].start = None;
             self.calls[index].request_id = retry.id.try_clone()?;
             self.calls[index].waiting = Some(retry);
+            self.calls[index].refused_by = try_string(client)?;
+            self.calls[index].reported_ms = 0;
             if !matches!(&self.calls[index].action, Action::Materialize(work) if work.pinned) {
                 self.calls[index].client.clear();
             }
@@ -1261,6 +1440,7 @@ impl<P: Persistence> Server<P> {
                     Ok(response)
                 }
                 Action::Materialize(_) => Err(Error::Http(502, "capsule preparation failed")),
+                Action::WaitLogin { .. } => Err(Error::Http(500, "login wait has no runner call")),
                 Action::Workflow(_) => Err(Error::Http(502, "workflow operation failed")),
                 Action::Delivery(_) => Err(Error::Http(502, "deliverable operation failed")),
                 Action::Preserve(_) => Err(Error::Http(502, "workspace preservation failed")),

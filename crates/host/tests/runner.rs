@@ -591,8 +591,38 @@ esac
     });
 }
 
+/// Leest de handshake en antwoordt met een HTTP-status in plaats van de upgrade.
+fn reject(listener: &TcpListener, status: &str) {
+    let start = Instant::now();
+    let mut socket = loop {
+        match listener.accept() {
+            Ok((socket, _)) => break socket,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    && start.elapsed() < Duration::from_secs(8) =>
+            {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            Err(error) => panic!("runner accept: {error}"),
+        }
+    };
+    socket.set_nonblocking(false).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut header = Vec::new();
+    while !header.ends_with(b"\r\n\r\n") {
+        let mut byte = [0];
+        socket.read_exact(&mut byte).unwrap();
+        header.push(byte[0]);
+        assert!(header.len() <= 32768);
+    }
+    socket
+        .write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes())
+        .unwrap();
+}
 #[test]
-fn duplicate_identity_or_policy_rejection_stops_instead_of_reconnecting_forever() {
+fn only_a_rejected_token_stops_the_runner_a_busy_identity_waits_and_a_policy_close_reconnects() {
     let root = std::env::temp_dir().join(format!("spin-rust-rejection-{}", std::process::id()));
     std::fs::create_dir(&root).unwrap();
     let _directory = Directory(root.clone());
@@ -603,7 +633,7 @@ fn duplicate_identity_or_policy_rejection_stops_instead_of_reconnecting_forever(
     )
     .unwrap();
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-    for policy_close in [false, true] {
+    for case in ["token", "identity", "policy"] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let config = spin_host::runner::Config {
@@ -622,31 +652,55 @@ fn duplicate_identity_or_policy_rejection_stops_instead_of_reconnecting_forever(
         std::thread::scope(|scope| {
             let runner = scope.spawn(|| spin_host::runner::run(config, docker, &stop));
             let _stop = Stop(&stop);
+            if case == "token" {
+                // Een geweigerd token is de enige fatale afwijzing.
+                reject(&listener, "401 Unauthorized");
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !runner.is_finished() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert!(runner.is_finished(), "a 401 must stop the runner");
+                let error = runner
+                    .join()
+                    .unwrap()
+                    .expect_err("a rejected token terminates the runner");
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                return;
+            }
             let mut peer = Peer::accept(&listener);
             assert!(peer.read().is_supported_hello());
-            if policy_close {
+            if case == "policy" {
                 peer.socket
                     .write_all(&ws::encode(8, &1008u16.to_be_bytes(), None).unwrap())
                     .unwrap();
+                // Een beleidssluiting zonder identiteitsreden is een gewone breuk:
+                // de runner komt na de eerste backoff (1 s) terug.
+                let mut again = Peer::accept(&listener);
+                assert!(again.read().is_supported_hello());
             } else {
                 peer.send(&WireMessage {
                     r#type: "error".into(),
                     error: "runner identity is already connected from another process".into(),
                     ..Default::default()
                 });
+                // Een bezette identiteit wacht 15 s zonder te stoppen of eerder
+                // terug te komen; de oude claim verloopt op de server vanzelf.
+                let quiet = Instant::now() + Duration::from_millis(2500);
+                while Instant::now() < quiet {
+                    assert!(
+                        !runner.is_finished(),
+                        "identity in use must not stop the runner"
+                    );
+                    assert!(
+                        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                        "identity in use must not reconnect before the retry delay"
+                    );
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             }
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while !runner.is_finished() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            if !runner.is_finished() {
-                stop.store(true, Ordering::Relaxed);
-            }
-            let error = runner
-                .join()
-                .unwrap()
-                .expect_err("rejection must terminate the runner");
-            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            assert!(!runner.is_finished());
+            stop.store(true, Ordering::Relaxed);
+            runner.join().unwrap().unwrap();
         });
     }
 }

@@ -176,6 +176,9 @@ pub struct Server<P: Persistence> {
     attachment_stamps: Map<String>,
     storage_report: Value,
     storage_started: Option<d::Time>,
+    storage_checked: Option<d::Time>,
+    state_cache: Option<routes::StateCache>,
+    diagnostics_due: bool,
 }
 impl<P: Persistence> Server<P> {
     /// Neemt de geopende Store over vóór de listener start.
@@ -210,15 +213,33 @@ impl<P: Persistence> Server<P> {
             attachment_stamps: Map::new(),
             storage_report: Value::Null,
             storage_started: None,
+            storage_checked: None,
+            state_cache: None,
+            diagnostics_due: false,
         }
+    }
+    /// Of een herstel blok voor blok vordert; de eigenaar yieldt dan in plaats van te slapen.
+    pub fn restore_active(&self) -> bool {
+        self.restores.iter().any(|job| !job.done)
     }
     /// De platformadapter publiceert Replica-werk tussen app-opdrachten.
     pub fn maintain_storage(&mut self, now: &Timestamp) -> Result {
         let result = self.store.maintain(now);
-        self.refresh_storage(now)?;
+        // Eén afleiding per ronde; de telling en de opruiming delen haar.
+        let prunable = self.store.prunable_artifacts()?;
+        let time = now.time()?;
+        // De opslagtelling opent een eigen SQLite-engine en telt alle objecten;
+        // voor een statusregel is eens per dertig seconden genoeg.
+        if self
+            .storage_checked
+            .is_none_or(|checked| time.0.saturating_sub(checked.0) >= 30_000_000_000)
+        {
+            self.refresh_storage_with(now, prunable.len())?;
+            self.storage_checked = Some(time);
+        }
         result?;
         self.store.collect_blob_garbage()?;
-        self.prune_snapshot(now)
+        self.prune_first(prunable.first(), now)
     }
     /// De bevestigde staatversie is de trigger voor samengevoegde browserupdates.
     pub fn version(&self) -> u64 {
@@ -394,7 +415,7 @@ impl<P: Persistence> Server<P> {
     /// Iedere live stream verliest toegang zodra haar browsersessie is ingetrokken.
     pub fn state_for_watch(&mut self, watch: &StateWatch, now: &Timestamp) -> Result<String> {
         let (user, _) = self.store.authenticate_session(&watch.token_hash, now)?;
-        Ok(self.state_for(&user)?.to_json()?)
+        Ok(self.state_for(&user)?.0)
     }
     /// Controleert ook een stille verbinding op verlopen of ingetrokken autorisatie.
     pub fn validate_watch(&mut self, watch: &StateWatch, now: &Timestamp) -> Result {

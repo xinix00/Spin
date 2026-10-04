@@ -1,14 +1,13 @@
 //! Platformhandvatten bevatten geen appstaat; iedere RNG heeft zijn eigen staat.
 use alloc::string::String;
-use applib::{App, EXEC, appnet::TcpListener, stacktask::Suspender, tcp::TcpConn};
+use applib::{App, EXEC, appnet::TcpListener, stacktask::Suspender};
 use core::{
     future::Future,
     pin::pin,
     task::{Context, Poll},
-    time::Duration,
 };
 use spin_domain::{Time, Timestamp};
-use spin_runtime::{Clock, Platform};
+use spin_runtime::{Clock, Idle, Platform};
 use spin_security::Entropy;
 use spin_server::{Error, Result};
 
@@ -37,7 +36,7 @@ pub(crate) struct Native<'a> {
     pub(crate) wait: Option<&'a Suspender>,
 }
 impl Platform for Native<'_> {
-    type Connection = TcpConn;
+    type Connection = crate::conn::Conn;
     type Dial = crate::outbound::Dial;
     fn dial(&self) -> Result<Self::Dial> {
         Ok(crate::outbound::Dial {
@@ -46,7 +45,7 @@ impl Platform for Native<'_> {
         })
     }
     type Clock = Monotonic;
-    fn accept(&mut self, context: &mut Context<'_>) -> Result<Option<(TcpConn, String)>> {
+    fn accept(&mut self, context: &mut Context<'_>) -> Result<Option<(Self::Connection, String)>> {
         let Some(listener) = &mut self.listener else {
             return Ok(None);
         };
@@ -60,7 +59,7 @@ impl Platform for Native<'_> {
                     remote.ip[0], remote.ip[1], remote.ip[2], remote.ip[3]
                 ))
                 .map_err(failure)?;
-                Ok(Some((TcpConn::new(stream, EXEC.get()), peer)))
+                Ok(Some((crate::conn::Conn::new(stream), peer)))
             }
         }
     }
@@ -73,27 +72,42 @@ impl Platform for Native<'_> {
     fn stopped(&self) -> bool {
         self.app.ctrl().kill_requested()
     }
-    /// De eigenaar slaapt tot de deurbel of de vloer: 10 ms zolang er werk is
-    /// dat alleen door pollen vordert, anders één seconde (de cadans van zijn
-    /// onderhoud). Zo wekt een stille tenant de core niet honderd keer per
-    /// seconde (handboek §4: de meetlat is wekken per seconde).
-    fn idle(&mut self, mail: &spin_runtime::Mailbox, busy: bool) -> Result {
+    /// De eigenaar slaapt tot de deurbel of zijn eigen vroegste deadline
+    /// (apps.md: een timer is een deadline, geen peiling); bij gesneden
+    /// CPU-werk geeft hij één ronde aan de buren en komt meteen terug. Zo wekt
+    /// een stille tenant de core hooguit eens per seconde.
+    fn idle(&mut self, mail: &spin_runtime::Mailbox, next: Idle) -> Result {
         let wait = self
             .wait
             .ok_or(Error::Http(503, "transport has no application stack"))?;
-        let mut floor = pin!(
-            EXEC.get()
-                .after(Duration::from_millis(if busy { 10 } else { 1000 }))
-        );
-        let mut bell = pin!(mail.nudged());
-        wait.wait(core::future::poll_fn(|cx| {
-            if bell.as_mut().poll(cx).is_ready() || floor.as_mut().poll(cx).is_ready() {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
+        let result = match next {
+            Idle::Yield => {
+                // Hetzelfde als sync::yield_now, dat applib niet uitvoert: één
+                // keer Pending met de waker al gezet.
+                let mut yielded = false;
+                wait.wait(core::future::poll_fn(|cx| {
+                    if yielded {
+                        return Poll::Ready(());
+                    }
+                    yielded = true;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }))
             }
-        }))
-        .map_err(|_| Error::Http(503, "server cancelled"))
+            Idle::Until(millis) => {
+                // Monotonic is now_ns / 1_000_000, dus dit is de klok van de executor.
+                let mut floor = pin!(EXEC.get().until(millis.saturating_mul(1_000_000)));
+                let mut bell = pin!(mail.nudged());
+                wait.wait(core::future::poll_fn(|cx| {
+                    if bell.as_mut().poll(cx).is_ready() || floor.as_mut().poll(cx).is_ready() {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                }))
+            }
+        };
+        result.map_err(|_| Error::Http(503, "server cancelled"))
     }
     fn log(message: core::fmt::Arguments<'_>) {
         applib::log!("{message}");

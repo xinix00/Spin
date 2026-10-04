@@ -2,7 +2,7 @@
 use crate::{executor, net::Connection, storage::Random};
 use spin_domain::{Time, Timestamp};
 pub use spin_runtime::{CONNECTIONS, PASSWORD_TASKS};
-use spin_runtime::{Clock, Platform};
+use spin_runtime::{Clock, Idle, Platform};
 use spin_server::{Result, Server};
 use spin_store::Persistence;
 use std::{
@@ -72,7 +72,9 @@ impl Platform for Host<'_> {
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
-    fn idle(&mut self, _: &spin_runtime::Mailbox, _: bool) -> Result {
+    /// De host wacht op zijn eigen pollfd-ronde; de hint van de eigenaar
+    /// heeft hij niet nodig.
+    fn idle(&mut self, _: &spin_runtime::Mailbox, _: Idle) -> Result {
         executor::idle();
         Ok(())
     }

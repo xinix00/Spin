@@ -284,8 +284,12 @@ function connectACPChat(sessionID){
   const protocol=location.protocol==='https:'?'wss:':'ws:',socket=new WebSocket(`${protocol}//${location.host}/api/sessions/${encodeURIComponent(sessionID)}/acp`);chatState.socket=socket;
   socket.onopen=()=>{document.getElementById('chat-status').className='chat-live busy';document.getElementById('chat-status').innerHTML='<span class="dot"></span><span>ACP session starten…</span>';renderChatBusy();};
   socket.onmessage=message=>{try{handleACPEvent(JSON.parse(message.data));}catch(error){chatSystem(`Invalid ACP event: ${error.message||error}`,true);}};
-  socket.onerror=()=>{document.getElementById('chat-status').className='chat-live';document.getElementById('chat-status').innerHTML='<span class="dot"></span><span>connection error</span>';};
-  socket.onclose=()=>{if(chatState.socket!==socket)return;chatState.busy=false;renderChatBusy();document.getElementById('chat-status').className='chat-live';document.getElementById('chat-status').innerHTML='<span class="dot"></span><span>disconnected</span>';if(!chatState.manualClose&&document.getElementById('chat-dialog').open){clearTimeout(chatState.reconnectTimer);chatState.reconnectTimer=setTimeout(()=>connectACPChat(sessionID),1500);}};
+  // The browser never sees why an upgrade failed (no status, no body); a
+  // capsule that stopped or is stopping since the last snapshot is the one
+  // reason the client can tell apart from a real connection error.
+  const capsuleClosed=()=>{const session=byID(snapshot.sessions,sessionID),composition=byID(snapshot.compositions,session?.prepared_composition_id);return !composition?.runtime||composition.runtime.status==='stopped'||composition.runtime.stop_pending;};
+  socket.onerror=()=>{document.getElementById('chat-status').className='chat-live';document.getElementById('chat-status').innerHTML=`<span class="dot"></span><span>${capsuleClosed()?'Capsule gesloten':'connection error'}</span>`;};
+  socket.onclose=()=>{if(chatState.socket!==socket)return;chatState.busy=false;renderChatBusy();document.getElementById('chat-status').className='chat-live';document.getElementById('chat-status').innerHTML=`<span class="dot"></span><span>${capsuleClosed()?'Capsule gesloten':'disconnected'}</span>`;if(!chatState.manualClose&&document.getElementById('chat-dialog').open){clearTimeout(chatState.reconnectTimer);chatState.reconnectTimer=setTimeout(()=>connectACPChat(sessionID),1500);}};
 }
 function workflowSessionIsActive(sessionID){const session=byID(snapshot.sessions,sessionID);if(!session?.phase_run_id)return !!session;const job=byID(snapshot.jobs,session.job_id),run=byID(snapshot.phase_runs,session.phase_run_id);return job?.current_phase_run_id===session.phase_run_id&&['queued','running','pending'].includes(run?.status);}
 function openACPChat(sessionID){chatState.restartAllowed=sessionID;
@@ -661,8 +665,20 @@ function progressPercent(progress){return progress?.total?Math.floor((progress.c
 // retrying, being prepared on a runner, or still waiting for one.
 function preparationText(preparing,session){
   if(preparing?.failure){const since=preparing.failure.at?elapsedSince(preparing.failure.at):'';return {text:`Starten mislukt · ${preparing.failure.error} · probeert opnieuw${since?` · ${since} geleden`:''}`,failed:true};}
-  if(preparing){const client=byID(snapshot.clients,preparing.client_id||session?.client_id),since=preparing.started_at?elapsedSince(preparing.started_at):'',doing=progressText(preparing.progress);return {text:`${client?`Voorbereiden op ${client.name}`:'Runner zoeken'}${doing?` · ${doing}`:''}${since?` · ${since}`:''}`,failed:false};}
+  if(preparing){const client=byID(snapshot.clients,preparing.client_id||session?.client_id),since=preparing.started_at?elapsedSince(preparing.started_at):'',waiting=waitingText(preparing.waiting),doing=waiting||progressText(preparing.progress);return {text:`${waiting?(client?`Runner ${client.name}`:'In de wachtrij'):client?`Voorbereiden op ${client.name}`:'Runner zoeken'}${doing?` · ${doing}`:''}${since?` · ${since}`:''}`,failed:false};}
   return {text:session?.status==='queued'?'In de wachtrij · wacht op een runner':'Nog geen runner gekoppeld',failed:false};
+}
+// waitingText translates the server's wait reason (preparing[].waiting.reason)
+// so the queue says why a step has not started yet, not just that it waits.
+function waitingText(waiting){
+  const reason=waiting?.reason||'';
+  if(!reason)return '';
+  if(reason==='runner offline')return 'runner offline';
+  if(reason==='no runner available')return 'geen runner beschikbaar';
+  if(reason==='runner refused')return 'runner weigerde (vol)';
+  const login=reason.match(/^waiting for a login of (.+)$/);
+  if(login)return `wacht op een login van ${login[1]}`;
+  return reason;
 }
 // followingStartID guards the poller: one per recording, whether the browser
 // issued the command or found the recording starting after a reload.

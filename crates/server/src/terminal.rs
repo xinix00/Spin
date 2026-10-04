@@ -198,9 +198,8 @@ impl<P: Persistence> Server<P> {
                     "first terminal message must start a command",
                 ));
             }
-            if !peer.is_connected() {
-                return Err(Error::Http(409, "capsule runner is offline"));
-            }
+            // Een losse verbinding is geen fout: de peer bewaart de start in zijn
+            // outbox en speelt die af zodra de runner terug is.
             let id = runtime.next("req")?;
             let request = WireMessage {
                 version: p::PROTOCOL_VERSION,

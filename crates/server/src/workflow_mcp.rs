@@ -301,14 +301,25 @@ impl<P: Persistence> Server<P> {
             .unwrap_or("")
             .trim();
         let expected = self.store.workflow_token(session);
-        if expected.is_empty()
-            || token.is_empty()
+        // De runtime logt elke geweigerde aanvraag (SPIN_REQUEST_FAILED error=HTTP 401: ...);
+        // de tekst zegt of er nog een token voor de sessie bestaat, zodat een agent die
+        // na het sluiten of herplannen van zijn stap nog een MCP-call doet herkenbaar is.
+        if expected.is_empty() {
+            return Err(Error::Http(
+                401,
+                "invalid workflow token: no token is stored for this session (step closed, requeued or finished)",
+            ));
+        }
+        if token.is_empty()
             || !spin_security::constant_time_eq(
                 expected.as_bytes(),
                 spin_security::digest_hex(token.as_bytes())?.as_bytes(),
             )
         {
-            return Err(Error::Http(401, "invalid workflow token"));
+            return Err(Error::Http(
+                401,
+                "invalid workflow token: the token does not match the stored one (a newer agent owns this session)",
+            ));
         }
         if !request.header("Origin").trim().is_empty() {
             return Err(Error::Http(

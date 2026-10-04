@@ -3782,6 +3782,186 @@ fn accepted_step_releases_its_capsule_while_the_current_step_keeps_its_own() {
             .unwrap()
             .stop_pending
     };
-    assert!(stopping("cmp"), "the accepted step's capsule holds a login; it must stop");
+    assert!(
+        stopping("cmp"),
+        "the accepted step's capsule holds a login; it must stop"
+    );
     assert!(!stopping("cmp2"), "the current step keeps its capsule");
+}
+fn at(iso: &str) -> Timestamp {
+    Timestamp::from_json(alloc::format!("\"{iso}\"").as_bytes()).unwrap()
+}
+#[test]
+fn acp_start_timeout_pauses_while_the_runner_is_detached_and_the_failure_is_diagnosed() {
+    use d::protocol as p;
+    let state = PersistedState::from_json(br#"{
+        "users":{"user":{"id":"user","username":"derek"}},
+        "sessions":{"ses":{"id":"ses","operator":"derek","prepared_composition_id":"cmp"}},
+        "compositions":{"cmp":{"id":"cmp","operator":"derek","session_id":"ses","runtime":{"client_id":"client","container_id":"container","status":"ready"},"enabled":[{"name":"acp","command":"agent","transport":"stdio","protocol_version":1}]}}
+    }"#).unwrap();
+    let fail = Cell::new(false);
+    let mut server = Server::new(Store::new(state, Memory(&fail)));
+    let mut random = Random(10);
+    let now = time();
+    let mut peer = spin_core::runner::Peer::new(d::Client {
+        id: "client".into(),
+        ..Default::default()
+    });
+    let (generation, _) = peer.attach("runner", None, 0).unwrap();
+    server.runners.push(peer);
+    let Some(Outcome::Chat(_)) = server
+        .chat_route(
+            &req("GET", "/api/sessions/ses/acp", &[], b""),
+            "derek",
+            "token",
+            &now,
+            &mut random,
+        )
+        .unwrap()
+    else {
+        panic!("chat expected")
+    };
+    let (ticket, request) = server.runners[0].next(generation).unwrap().unwrap();
+    assert_eq!(request.method, p::METHOD_START_ENABLED);
+    server.runners[0].acknowledge(ticket);
+    // De runner valt weg vóór het antwoord op START_ENABLED; de 45 s staan stil
+    // vanaf de ronde waarin het onderhoud de losse verbinding ziet.
+    assert!(server.runners[0].detach(generation).unwrap());
+    server.maintain_agents(&now, &mut random).unwrap();
+    server
+        .maintain_agents(&at("2026-09-30T12:01:00Z"), &mut random)
+        .unwrap();
+    assert!(server.agents[0].failure.is_empty(), "detached time counted");
+    // Een losse runner is geen 409 meer: een tweede chat deelt dezelfde agent.
+    assert!(matches!(
+        server.chat_route(
+            &req("GET", "/api/sessions/ses/acp", &[], b""),
+            "derek",
+            "token",
+            &at("2026-09-30T12:01:00Z"),
+            &mut random,
+        ),
+        Ok(Some(Outcome::Chat(_)))
+    ));
+    assert_eq!(server.agents.len(), 1);
+    server.runners[0].attach("runner", None, 60_000).unwrap();
+    server
+        .maintain_agents(&at("2026-09-30T12:01:00Z"), &mut random)
+        .unwrap();
+    server
+        .maintain_agents(&at("2026-09-30T12:01:40Z"), &mut random)
+        .unwrap();
+    assert!(server.agents[0].failure.is_empty(), "40 s after reattach");
+    server
+        .maintain_agents(&at("2026-09-30T12:01:50Z"), &mut random)
+        .unwrap();
+    assert_eq!(server.agents[0].failure, "ACP entrypoint start timed out");
+    // De server logt niet zelf: het onderhoud meldt dat er diagnose te loggen is.
+    let later = at("2026-09-30T12:01:51Z");
+    let result = server.maintain_capsules(&later, &mut random);
+    assert!(
+        result.is_ok() && server.take_diagnostics_due(),
+        "{result:?} agents={} failed_ms={} reported={}",
+        server.agents.len(),
+        server.agents.first().map_or(0, |a| a.failed_ms),
+        server.agents.first().is_some_and(|a| a.failure_reported)
+    );
+    let mut lines = vec![];
+    server.capsule_diagnostics(later.time().unwrap().0 / 1_000_000, |line| {
+        lines.push(alloc::format!("{line}"))
+    });
+    assert!(
+        lines.iter().any(|line| line
+            == "SPIN_AGENT_FAILED session=ses stream=req-1 reason=ACP entrypoint start timed out"
+            || (line.starts_with("SPIN_AGENT_FAILED session=ses stream=")
+                && line.ends_with("reason=ACP entrypoint start timed out"))),
+        "{lines:?}"
+    );
+    // Eenmalig: de volgende ronde vraagt niet opnieuw om de regels.
+    server
+        .maintain_capsules(&at("2026-09-30T12:01:52Z"), &mut random)
+        .unwrap();
+    assert!(!server.take_diagnostics_due());
+}
+#[test]
+fn a_queued_capsule_start_reports_why_it_waits() {
+    let state = PersistedState::from_json(br#"{
+        "artifacts":{"env":{"id":"env","kind":"tool","name":"agent","scope":"global","profile":"default","enables":[{"name":"acp"},{"name":"git"}]}},
+        "git_repositories":{"repo":{"id":"repo","remote_url":"https://example.test/repo.git","default_ref":"main","credential_scope":"public"}},
+        "jobs":{"j":{"id":"j","owner":"derek","status":"active","git_repository_id":"repo","branch":"jobs/j/main"}}
+    }"#).unwrap();
+    let fail = Cell::new(false);
+    let mut server = Server::new(Store::new(state, Memory(&fail)));
+    let now = time();
+    let mut random = Random(33000);
+    let body = br#"{"environment_selector":"tool:agent","objective_delta":"Inspect the logs","run":false}"#;
+    let Some(Outcome::Response(response)) = server
+        .capsule_route(
+            &req("POST", "/api/jobs/j/sessions", &[], body),
+            "derek",
+            &now,
+            &mut random,
+        )
+        .unwrap()
+    else {
+        panic!()
+    };
+    let created = d::CreateJobSessionResponse::from_json(&response.body).unwrap();
+    let path =
+        spin_core::validation::text(format_args!("/api/sessions/{}/capsule", created.session.id))
+            .unwrap();
+    assert!(matches!(
+        server.capsule_route(&req("POST", &path, &[], b""), "derek", &now, &mut random),
+        Ok(Some(Outcome::Response(_)))
+    ));
+    // Zonder runner ligt de start in de rij; de UI ziet de reden meteen.
+    let state = server.preparation_state().unwrap().to_json().unwrap();
+    assert!(
+        state.contains(r#""waiting":{"reason":"no runner available","client_id":""}"#),
+        "{state}"
+    );
+    // Na 30 s wachten meldt het onderhoud dat de diagnose moet loggen, eens per minuut.
+    server.maintain_capsules(&now, &mut random).unwrap();
+    let later = at("2026-09-30T12:00:31Z");
+    server.maintain_capsules(&later, &mut random).unwrap();
+    assert!(server.take_diagnostics_due());
+    let mut lines = vec![];
+    server.capsule_diagnostics(later.time().unwrap().0 / 1_000_000, |line| {
+        lines.push(alloc::format!("{line}"))
+    });
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("SPIN_CAPSULE_WAITING object=")
+                && line.contains(" client= age_s=31 reason=no runner available")),
+        "{lines:?}"
+    );
+    server
+        .maintain_capsules(&at("2026-09-30T12:00:32Z"), &mut random)
+        .unwrap();
+    server
+        .maintain_capsules(&at("2026-09-30T12:01:31Z"), &mut random)
+        .unwrap();
+    assert!(server.take_diagnostics_due());
+    // Een stap die op een login wacht staat ook in de voorbereidingslijst, en
+    // verdwijnt zodra de stap niet meer in de wachtrij staat.
+    server
+        .note_login_wait("ses-x", "credential:claude-global", &now, &mut random)
+        .unwrap();
+    let state = server.preparation_state().unwrap().to_json().unwrap();
+    assert!(
+        state.contains(
+            r#""waiting":{"reason":"waiting for a login of credential:claude-global","layer":"credential:claude-global"}"#
+        ),
+        "{state}"
+    );
+    let _ = server.maintain_capsules(&at("2026-09-30T12:02:02Z"), &mut random);
+    assert!(
+        !server
+            .preparation_state()
+            .unwrap()
+            .to_json()
+            .unwrap()
+            .contains("credential:claude-global")
+    );
 }

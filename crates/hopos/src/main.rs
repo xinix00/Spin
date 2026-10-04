@@ -7,6 +7,8 @@ extern crate alloc;
 #[allow(unsafe_code)]
 mod boot;
 #[cfg(target_os = "none")]
+mod conn;
+#[cfg(target_os = "none")]
 mod outbound;
 #[cfg(target_os = "none")]
 mod platform;

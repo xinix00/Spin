@@ -3,6 +3,7 @@ use super::*;
 use crate::capsules::{Action, CapsuleWait};
 use alloc::vec::Vec;
 use d::{List, RawJson, WireMap, protocol as p, try_push, try_string};
+use spin_core::validation::text;
 use spin_store::Context;
 
 pub(crate) struct Placement {
@@ -59,17 +60,15 @@ impl<P: Persistence> Server<P> {
         ) {
             return Ok(());
         }
+        // Historical attempts can outlive their Job or template. Only the Job's
+        // current attempt may launch, as in the Go scheduler. Map lookups only:
+        // the 30 s sweep passes every queued session of every old Job here.
         if !session.phase_run_id.is_empty() {
-            // Historical attempts can outlive their Job or template. Only the
-            // Job's current attempt may launch, as in the Go scheduler.
-            let job = match self.store.job(&session.job_id) {
-                Ok(job) => job,
-                Err(spin_store::Error::NotFound) => return Ok(()),
-                Err(error) => return Err(error.into()),
-            };
-            if job.current_phase_run_id != session.phase_run_id {
+            if !self.store.is_current_phase_session(session) {
                 return Ok(());
             }
+            // Alleen voor de huidige poging de volledige weergave: een kapotte
+            // poging (sjabloon weg) blijft zo een gemelde fout, geen stille stop.
             let view = self.store.workflow_for_session(&session.id)?;
             if !matches!(
                 view.run.status.as_str(),
@@ -112,7 +111,7 @@ impl<P: Persistence> Server<P> {
             }
             return Ok(());
         }
-        let wait = self.begin_materialize(
+        match self.begin_materialize(
             d::UseRequest {
                 session_id: session.id.try_clone()?,
                 operator: session.operator.try_clone()?,
@@ -120,13 +119,49 @@ impl<P: Persistence> Server<P> {
             },
             now,
             random,
-        )?;
-        self.detach_capsule(wait);
+        ) {
+            Ok(wait) => self.detach_capsule(wait),
+            // Geen vrije login is geen storing: `prepare_materialize` heeft de
+            // wachtreden genoteerd en de volgende veegronde probeert het opnieuw.
+            Err(Error::Store(spin_store::Error::LoginsBusy)) => {}
+            Err(error) => return Err(error),
+        }
         Ok(())
     }
     pub(crate) fn preparation_state(&self) -> Result<Value> {
         let mut items = List::new();
         for (index, call) in self.calls.iter().enumerate() {
+            if let Action::WaitLogin { session, layer } = &call.action {
+                if self.calls.iter().any(|other| matches!(&other.action, Action::Materialize(work) if !other.finished && work.session == *session)) {
+                    continue;
+                }
+                items.push(http::object(&[
+                    ("session_id", Value::string(session)?),
+                    ("client_id", Value::string("")?),
+                    ("started_at", call.started.to_value()?),
+                    (
+                        "progress",
+                        http::object(&[
+                            ("stage", Value::string("login")?),
+                            ("message", Value::string("Wacht op een login")?),
+                            ("updated_at", call.updated.to_value()?),
+                        ])?,
+                    ),
+                    (
+                        "waiting",
+                        http::object(&[
+                            (
+                                "reason",
+                                Value::string(&text(format_args!(
+                                    "waiting for a login of {layer}"
+                                ))?)?,
+                            ),
+                            ("layer", Value::string(layer)?),
+                        ])?,
+                    ),
+                ])?)?;
+                continue;
+            }
             let Action::Materialize(work) = &call.action else {
                 continue;
             };
@@ -146,12 +181,28 @@ impl<P: Persistence> Server<P> {
                     ("updated_at", call.updated.to_value()?),
                 ])?
             };
-            items.push(http::object(&[
-                ("session_id", Value::string(&work.session)?),
-                ("client_id", Value::string(&call.client)?),
-                ("started_at", call.started.to_value()?),
+            let mut fields = Vec::new();
+            try_push(&mut fields, ("session_id", Value::string(&work.session)?))?;
+            try_push(&mut fields, ("client_id", Value::string(&call.client)?))?;
+            try_push(&mut fields, ("started_at", call.started.to_value()?))?;
+            try_push(
+                &mut fields,
                 (if call.error { "failure" } else { "progress" }, status),
-            ])?)?;
+            )?;
+            if call.queued() {
+                // De opdracht ligt nog niet bij een runner; de UI toont waarom.
+                try_push(
+                    &mut fields,
+                    (
+                        "waiting",
+                        http::object(&[
+                            ("reason", Value::string(self.wait_reason(call))?),
+                            ("client_id", Value::string(&call.client)?),
+                        ])?,
+                    ),
+                )?;
+            }
+            items.push(http::object(&fields)?)?;
         }
         Ok(items.to_value()?)
     }
@@ -337,9 +388,14 @@ impl<P: Persistence> Server<P> {
                     .hand_out_login(&composition.id, &target.key, target.exclusive, now)
                 {
                     Ok(_) | Err(spin_store::Error::NotFound) => {}
+                    Err(spin_store::Error::LoginsBusy) => {
+                        self.note_login_wait(&composition.session_id, &target.key, now, random)?;
+                        return Err(spin_store::Error::LoginsBusy.into());
+                    }
                     Err(error) => return Err(error.into()),
                 }
             }
+            self.forget_login_wait(&composition.session_id);
         }
         let authentication = match composition
             .git

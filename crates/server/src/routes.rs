@@ -1,26 +1,112 @@
 //! Duurzame API-opdrachten worden onder de ene Store-eigenaar uitgevoerd.
 use super::*;
 use spin_core::validation::text;
-use spin_domain::{List, try_string};
+use spin_domain::{List, json, try_push_str, try_string};
 use spin_store::{Context, Mutation};
+
+/// Het gebruikersonafhankelijke deel van het staatdocument, één keer per versie
+/// opgebouwd en door elke browser en elke `GET /api/state` van die versie gedeeld.
+/// De eigenaar is single-threaded: één serialisatie van het hele document kost
+/// hem honderden milliseconden, dus hij doet die niet per kijker.
+pub(crate) struct StateCache {
+    version: u64,
+    /// De gedeelde collecties en `recommendations` als JSON-leden, elk met een
+    /// komma ervoor: `,"jobs":[...],"sessions":[...]`.
+    shared: String,
+    // De vier collecties met een per-gebruiker filter blijven gesorteerde waarden.
+    artifacts: List<d::Artifact>,
+    recordings: List<d::Recording>,
+    mcp_servers: List<d::MCPServer>,
+    git_accounts: List<d::GitAccount>,
+}
+const USER_KEYS: [&str; 4] = ["artifacts", "recordings", "mcp_servers", "git_accounts"];
+
+/// Een al geserialiseerd staatdocument; `to_json` levert de tekst zonder hertolking.
+#[derive(Default)]
+pub(crate) struct StateDocument(pub(crate) String);
+impl Wire for StateDocument {
+    fn from_value(value: &Value) -> d::Fallible<Self> {
+        Ok(Self(json::to_string(value)?))
+    }
+    fn to_value(&self) -> d::Fallible<Value> {
+        json::parse_str(&self.0)
+    }
+    fn to_json(&self) -> d::Fallible<String> {
+        try_string(&self.0)
+    }
+}
+/// Schrijft `,"key":` als volgend lid van het object in opbouw.
+fn member(out: &mut String, key: &str) -> Result {
+    try_push_str(out, ",")?;
+    json::write_string(key, out)?;
+    Ok(try_push_str(out, ":")?)
+}
+/// Schrijft een JSON-array van de gegeven elementen zonder ze te kopiëren.
+fn array<'a, T: Wire + 'a>(out: &mut String, items: impl Iterator<Item = &'a T>) -> Result {
+    try_push_str(out, "[")?;
+    for (index, item) in items.enumerate() {
+        if index > 0 {
+            try_push_str(out, ",")?;
+        }
+        json::write(&item.to_value()?, out)?;
+    }
+    Ok(try_push_str(out, "]")?)
+}
 impl<P: Persistence> Server<P> {
-    pub(super) fn state_for(&self, user: &d::User) -> Result<Value> {
-        let mut state = self.store.snapshot()?;
-        state
-            .artifacts
-            .retain(|a| a.scope != d::SCOPE_USER || a.subject == user.username);
-        state.recordings.retain(|r| r.actor == user.username);
-        state.mcp_servers.retain(|s| s.operator == user.username);
-        state.git_accounts.retain(|a| {
-            a.credential_scope == d::CREDENTIAL_SCOPE_GLOBAL || a.operator == user.username
-        });
-        let mut recommendations = spin_core::orchestrator::recommend(&state)?;
+    /// Bouwt het gedeelde deel opnieuw zodra de versie (Store plus weergave) verschilt.
+    fn ensure_state_cache(&mut self) -> Result {
+        let version = self.version();
+        if self
+            .state_cache
+            .as_ref()
+            .is_some_and(|c| c.version == version)
+        {
+            return Ok(());
+        }
+        // Eerst het oude geheugen vrij, dan pas de nieuwe kopie van de staat.
+        self.state_cache = None;
+        let mut snapshot = self.store.snapshot()?;
+        let mut recommendations = spin_core::orchestrator::recommend(&snapshot)?;
         if recommendations.is_empty() {
             recommendations = List::new();
         }
-        let Value::Object(mut value) = state.to_value()? else {
+        let artifacts = core::mem::take(&mut snapshot.artifacts);
+        let recordings = core::mem::take(&mut snapshot.recordings);
+        let mcp_servers = core::mem::take(&mut snapshot.mcp_servers);
+        let git_accounts = core::mem::take(&mut snapshot.git_accounts);
+        let Value::Object(object) = snapshot.to_value()? else {
             return Err(Error::Http(500, "invalid snapshot"));
         };
+        drop(snapshot);
+        let mut shared = String::new();
+        for (key, value) in object.iter() {
+            if USER_KEYS.contains(&key) {
+                continue;
+            }
+            member(&mut shared, key)?;
+            json::write(value, &mut shared)?;
+        }
+        member(&mut shared, "recommendations")?;
+        json::write(&recommendations.to_value()?, &mut shared)?;
+        self.state_cache = Some(StateCache {
+            version,
+            shared,
+            artifacts,
+            recordings,
+            mcp_servers,
+            git_accounts,
+        });
+        Ok(())
+    }
+    fn state_cache(&mut self) -> Result<&StateCache> {
+        self.ensure_state_cache()?;
+        self.state_cache
+            .as_ref()
+            .ok_or(Error::Http(500, "state cache unavailable"))
+    }
+    /// Het staatdocument voor één gebruiker: de gedeelde tekst plus zijn eigen
+    /// artefacten, opnames, MCP-servers, git-accounts en de vluchtige velden.
+    pub(super) fn state_for(&mut self, user: &d::User) -> Result<StateDocument> {
         let public = d::PublicUser {
             id: user.id.try_clone()?,
             username: user.username.try_clone()?,
@@ -29,14 +115,50 @@ impl<P: Persistence> Server<P> {
             archived_at: user.archived_at.try_clone()?,
             created_at: user.created_at.try_clone()?,
         };
-        value.push("current_user", public.to_value()?)?;
-        value.push("version", Value::uint(self.version()))?;
-        value.push("recommendations", recommendations.to_value()?)?;
-        value.push("preparing", self.preparation_state()?)?;
-        value.push("git_oauth_providers", self.oauth_providers()?)?;
-        value.push("engine", self.runner_info()?.to_value()?)?;
-        value.push("storage", self.storage_report.try_clone()?)?;
-        Ok(Value::Object(value))
+        let volatile = [
+            ("version", Value::uint(self.version())),
+            ("preparing", self.preparation_state()?),
+            ("git_oauth_providers", self.oauth_providers()?),
+            ("engine", self.runner_info()?.to_value()?),
+            ("storage", self.storage_report.try_clone()?),
+        ];
+        let cache = self.state_cache()?;
+        let mut out = String::new();
+        out.try_reserve(cache.shared.len() + (64 << 10))
+            .map_err(|_| d::Error::OutOfMemory)?;
+        try_push_str(&mut out, "{\"current_user\":")?;
+        json::write(&public.to_value()?, &mut out)?;
+        try_push_str(&mut out, &cache.shared)?;
+        let me = user.username.as_str();
+        member(&mut out, "artifacts")?;
+        array(
+            &mut out,
+            cache
+                .artifacts
+                .iter()
+                .filter(|a| a.scope != d::SCOPE_USER || a.subject == me),
+        )?;
+        member(&mut out, "recordings")?;
+        array(&mut out, cache.recordings.iter().filter(|r| r.actor == me))?;
+        member(&mut out, "mcp_servers")?;
+        array(
+            &mut out,
+            cache.mcp_servers.iter().filter(|s| s.operator == me),
+        )?;
+        member(&mut out, "git_accounts")?;
+        array(
+            &mut out,
+            cache
+                .git_accounts
+                .iter()
+                .filter(|a| a.credential_scope == d::CREDENTIAL_SCOPE_GLOBAL || a.operator == me),
+        )?;
+        for (key, value) in &volatile {
+            member(&mut out, key)?;
+            json::write(value, &mut out)?;
+        }
+        try_push_str(&mut out, "}")?;
+        Ok(StateDocument(out))
     }
     pub(super) fn route(
         &mut self,
@@ -48,7 +170,11 @@ impl<P: Persistence> Server<P> {
         let operator = user.username.as_str();
         match (req.method, req.path) {
             ("GET", "/api/storage") => {
-                self.refresh_storage(now)?;
+                // Het rapport van de onderhoudsronde volstaat; alleen vóór de
+                // eerste ronde is er nog geen.
+                if self.storage_report.is_null() {
+                    self.refresh_storage(now)?;
+                }
                 return Response::json(200, &self.storage_report);
             }
             ("GET" | "POST", "/api/runners/token") => {
@@ -66,11 +192,26 @@ impl<P: Persistence> Server<P> {
                     &http::object(&[("token", Value::string(self.store.worker_token())?)])?,
                 );
             }
-            ("GET", "/api/state") => return Response::json(200, &self.state_for(&user)?),
+            ("GET", "/api/state") => {
+                // De tekst is al JSON; geen tweede kopie via `Response::json`.
+                let mut response = Response::empty(200)?;
+                response.header("Content-Type", "application/json")?;
+                response.body = self.state_for(&user)?.0.into_bytes();
+                return Ok(response);
+            }
             ("GET", "/api/artifacts") => {
-                let mut artifacts = self.store.snapshot()?.artifacts;
-                artifacts.retain(|a| a.scope != d::SCOPE_USER || a.subject == operator);
-                return Response::json(200, &artifacts);
+                let mut body = String::new();
+                array(
+                    &mut body,
+                    self.state_cache()?
+                        .artifacts
+                        .iter()
+                        .filter(|a| a.scope != d::SCOPE_USER || a.subject == operator),
+                )?;
+                let mut response = Response::empty(200)?;
+                response.header("Content-Type", "application/json")?;
+                response.body = body.into_bytes();
+                return Ok(response);
             }
             ("POST", "/api/jobs") => {
                 let mut value: d::CreateJobRequest = Self::decode(&req)?;
@@ -409,5 +550,76 @@ impl<P: Persistence> Server<P> {
             }
             _ => Err(Error::Http(404, "not found")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use d::state::PersistedState;
+    struct Memory;
+    impl Persistence for Memory {
+        fn save(&mut self, _: &PersistedState) -> spin_store::Result {
+            Ok(())
+        }
+    }
+    fn user(name: &str) -> d::User {
+        d::User {
+            id: try_string(name).unwrap(),
+            username: try_string(name).unwrap(),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn shared_state_is_serialised_once_per_version_and_user_parts_stay_private() {
+        let state = PersistedState::from_json(br#"{
+            "artifacts":{
+                "pub":{"id":"pub","kind":"tool","name":"shared","created_at":"2026-09-30T10:00:00Z"},
+                "a":{"id":"a","kind":"tool","name":"mine","scope":"user","subject":"anna","created_at":"2026-09-30T11:00:00Z"},
+                "b":{"id":"b","kind":"tool","name":"theirs","scope":"user","subject":"bram","created_at":"2026-09-30T12:00:00Z"}},
+            "recordings":{"r":{"id":"r","actor":"anna","started_at":"2026-09-30T12:00:00Z"}},
+            "mcp_servers":{"m":{"id":"m","operator":"bram","created_at":"2026-09-30T12:00:00Z"}},
+            "git_accounts":{
+                "g":{"id":"g","operator":"bram","provider":"github","login":"bram-gh","credential_scope":"user"},
+                "s":{"id":"s","operator":"bram","provider":"github","login":"shared-gh","credential_scope":"global"}},
+            "jobs":{"j":{"id":"j","title":"Job","status":"running","created_at":"2026-09-30T12:00:00Z"}}
+        }"#).unwrap();
+        let mut server = Server::new(Store::new(state, Memory));
+        let anna = server.state_for(&user("anna")).unwrap().to_json().unwrap();
+        let parsed = d::json::parse_str(&anna).unwrap();
+        let object = parsed.as_object().unwrap();
+        for key in [
+            "artifacts",
+            "recordings",
+            "mcp_servers",
+            "git_accounts",
+            "jobs",
+            "logins",
+            "recommendations",
+        ] {
+            assert!(object.get(key).unwrap().as_array().is_some(), "{key}");
+        }
+        assert!(anna.contains("\"mine\"") && anna.contains("\"shared\""));
+        assert!(!anna.contains("\"theirs\"") && !anna.contains("bram-gh"));
+        assert!(anna.contains("\"shared-gh\"") && anna.contains("\"actor\":\"anna\""));
+        assert!(anna.contains("\"mcp_servers\":[]"));
+        assert_eq!(object.get("version"), Some(&Value::uint(0)));
+        let bram = server.state_for(&user("bram")).unwrap().0;
+        assert!(bram.contains("\"theirs\"") && bram.contains("bram-gh"));
+        assert!(bram.contains("\"mcp_servers\":[{"));
+        assert!(!bram.contains("\"mine\"") && !bram.contains("\"actor\":\"anna\""));
+        // Dezelfde versie hergebruikt de gedeelde tekst letterlijk; een marker
+        // in de cache komt bij elke kijker terug zonder nieuwe serialisatie.
+        let cache = server.state_cache.as_mut().unwrap();
+        try_push_str(&mut cache.shared, ",\"marker\":true").unwrap();
+        let again = server.state_for(&user("anna")).unwrap().0;
+        assert!(again.contains("\"marker\":true"));
+        assert!(d::json::parse_str(&again).is_ok());
+        // Een nieuwe versie bouwt opnieuw op.
+        server.display_changed();
+        let fresh = server.state_for(&user("anna")).unwrap().0;
+        assert!(!fresh.contains("\"marker\""));
+        assert!(fresh.contains("\"version\":1"));
+        assert_eq!(server.state_cache.as_ref().unwrap().version, 1);
     }
 }
