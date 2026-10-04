@@ -32,10 +32,13 @@ een wijziging gaat naar de bron en komt terug als tag. Opnieuw vendoren:
 `cargo vendor third-party/rust` (de uitvoer is de inhoud van `.cargo/config.toml`).
 
 Eén schrijver per namespace bewaakt Replica's lease in de bucket
-(`<namespace>/lease`, `writer::claim`), op HopOS per tenant met een termijn van
-60 s en op de Mac van 300 s (de host uploadt inline). Wie de lease niet krijgt,
-wacht en logt `SPIN_REPLICA_LEASE_WAIT leader=…`; een herstart wacht zijn vorige
-leven af. Het onderhoud van elke seconde roept `Replica::renew` aan; verlies
+(`<namespace>/lease`, `writer::claim`), op HopOS en op de Mac met een termijn
+van 300 s. Replica weigert writes een derde vóór het verlopen, dus iedere
+ononderbroken stap op de eigenaar (prepare, de state laden, een onderhoudsbeurt)
+moet binnen 200 s passen; met 60 s verliep de lease in 3.0.10 al tijdens de
+boot. Wie de lease niet krijgt, wacht en logt `SPIN_REPLICA_LEASE_WAIT leader=…`;
+een herstart wacht zijn vorige leven af, hoogstens die 300 s. Het onderhoud van
+elke seconde en de stappen van de boot roepen `Replica::renew` aan; verlies
 sluit de eigenaar. De oude lease op de lokale schijf is weg.
 
 ## Bouwen en controleren

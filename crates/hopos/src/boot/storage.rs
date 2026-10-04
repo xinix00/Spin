@@ -40,10 +40,13 @@ pub(super) struct Owner<'a> {
     /// `<namespace>/lease`: de schrijverlease van Replica in de bucket.
     lease_key: String,
 }
-/// De schrijverlease: lang genoeg voor een onderhoudsbeurt van Replica op de
-/// eigenaar (compactie haalde 17 s op een trage lijn), Replica vernieuwt hem
-/// hoogstens eens per zesde en weigert writes een derde vóór het verlopen.
-const LEASE_TTL_MS: u64 = 60_000;
+/// De schrijverlease, gelijk aan die van de macOS-server. Replica vernieuwt
+/// hoogstens eens per zesde en weigert writes een derde vóór het verlopen, dus
+/// iedere ononderbroken stap op de eigenaar moet binnen 200 s passen: prepare,
+/// het laden van de state en een onderhoudsbeurt (de eerste na een herstel
+/// duurde op een Mac 166 s). Met 60 s verliep hij al tijdens de boot.
+/// Een herstart wacht de lease van zijn vorige leven af, hoogstens deze TTL.
+const LEASE_TTL_MS: u64 = 300_000;
 enum Op<'a> {
     Usage,
     Load,
@@ -343,6 +346,9 @@ impl<'a> Owner<'a> {
         &mut self,
         ids: impl FnMut() -> spin_security::Result<String>,
     ) -> spin_store::Result<PersistedState> {
+        // Prepare kan lang duren; geef het laden en opslaan elk een vers budget.
+        let now = self.clock()?;
+        self.renew(now)?;
         let Reply::State(bytes) = self.execute(Op::Load)? else {
             return Err(spin_store::Error::Storage(21));
         };
@@ -357,8 +363,38 @@ impl<'a> Owner<'a> {
         let mut state = self.cipher.decrypt_state(&sealed, ids)?;
         state.normalize_loaded()?;
         applib::log!("SPIN_STATE_DECRYPTED users={}", state.users.len());
+        let now = self.clock()?;
+        self.renew(now)?;
         self.save(&state)?;
         Ok(state)
+    }
+    /// Vernieuwt de schrijverlease; Replica schrijft hoogstens eens per zesde
+    /// TTL. Een transportfout is nog geen verlies; pas na de deadline sluit de
+    /// eigenaar. Elke seconde vanuit maintain, en tussen de stappen van de boot.
+    fn renew(&mut self, now: Time) -> spin_store::Result {
+        let (Some(replica), Some(bucket)) = (&mut self.replica, &mut self.bucket) else {
+            return Ok(());
+        };
+        if let Err(error) = replica.renew(&mut bucket.lease(&self.lease_key, LEASE_TTL_MS), now) {
+            applib::log!("SPIN_REPLICA_LEASE_FAILED error={error:?}");
+            if error == replica_core::Error::LeaseLost {
+                self.poisoned = true;
+                return Err(spin_store::Error::StorageUncertain(10));
+            }
+        }
+        Ok(())
+    }
+    /// De klok van de opslag, dezelfde waarmee Replica's VFS de deadline toetst.
+    fn clock(&mut self) -> spin_store::Result<Time> {
+        let ms = self
+            .backend
+            .unix_millis()
+            .map_err(|_| spin_store::Error::Storage(10))?;
+        Time::unix(
+            ms.div_euclid(1000),
+            (ms.rem_euclid(1000) * 1_000_000) as u32,
+        )
+        .map_err(replica_error)
     }
 }
 impl Persistence for Owner<'_> {
@@ -525,19 +561,11 @@ impl Persistence for Owner<'_> {
         if self.poisoned {
             return Err(spin_store::Error::StorageUncertain(10));
         }
+        let now = time(now)?;
+        self.renew(now)?;
         let (Some(replica), Some(bucket)) = (&mut self.replica, &mut self.bucket) else {
             return Ok(());
         };
-        let now = time(now)?;
-        // Elke seconde: Replica schrijft hoogstens eens per zesde TTL. Een
-        // transportfout is nog geen verlies; pas na de deadline sluit de eigenaar.
-        if let Err(error) = replica.renew(&mut bucket.lease(&self.lease_key, LEASE_TTL_MS), now) {
-            applib::log!("SPIN_REPLICA_LEASE_FAILED error={error:?}");
-            if error == replica_core::Error::LeaseLost {
-                self.poisoned = true;
-                return Err(spin_store::Error::StorageUncertain(10));
-            }
-        }
         if let Some((pending, uploaded)) = self.uploads.take_done() {
             if replica
                 .finish(&mut self.backend, bucket, pending, uploaded, now)
