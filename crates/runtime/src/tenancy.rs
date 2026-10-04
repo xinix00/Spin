@@ -230,7 +230,8 @@ impl Routing for Tenants {
         Ok(Route::Response(response))
     }
 }
-const OPENING_PAGE: &str = r#"<!doctype html><html lang="nl"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Spin wordt geopend</title><style>body{font:16px system-ui;background:#10151c;color:#e9edf1;display:grid;min-height:90vh;place-content:center}main{max-width:30em;padding:2em;border:1px solid #344050;border-radius:1em}</style><main><h1>Spin</h1><p id="status">Deze Spin wordt geopend…</p></main><script>async function poll(){try{let r=await fetch('/api/opening',{cache:'no-store'});let s=await r.json();if(s.opening===false&&!s.failure){location.reload();return}document.getElementById('status').textContent=s.failure||s.message||'Verbinden…'}catch(e){}setTimeout(poll,2000)}poll()</script></html>"#;
+/// De pagina die een Spin toont zolang hij opent; ook de macOS-server gebruikt hem.
+pub const OPENING_PAGE: &str = r#"<!doctype html><html lang="nl"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Spin wordt geopend</title><style>body{font:16px system-ui;background:#10151c;color:#e9edf1;display:grid;min-height:90vh;place-content:center}main{max-width:30em;padding:2em;border:1px solid #344050;border-radius:1em}</style><main><h1>Spin</h1><p id="status">Deze Spin wordt geopend…</p></main><script>async function poll(){try{let r=await fetch('/api/opening',{cache:'no-store'});if(!r.ok){location.reload();return}let s=await r.json();if(s.opening===false&&!s.failure){location.reload();return}document.getElementById('status').textContent=s.failure||s.message||'Verbinden…'}catch(e){}setTimeout(poll,2000)}poll()</script></html>"#;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]

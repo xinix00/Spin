@@ -5,11 +5,85 @@ use spin_store::IdSource;
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
-    sync::atomic::AtomicBool,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering::Relaxed},
+    },
+    time::Duration,
 };
+/// Zolang Replica herstelt, beantwoordt deze draad elke verbinding met het
+/// openingsscherm van de runtime: de poort is meteen open en de browser ziet
+/// hoeveel er al uit S3 binnen is, in plaats van een weigerende poort.
+fn opening(
+    listener: &TcpListener,
+    root: &Path,
+) -> std::io::Result<(Arc<AtomicBool>, std::thread::JoinHandle<()>)> {
+    let listener = listener.try_clone()?;
+    listener.set_nonblocking(true)?;
+    let busy = Arc::new(AtomicBool::new(true));
+    let flag = busy.clone();
+    let scratch = root.join("spin.sqlite.replica-restore-data");
+    let handle = std::thread::spawn(move || {
+        while flag.load(Relaxed) {
+            match listener.accept() {
+                Ok((socket, _)) => {
+                    let _ = answer_opening(socket, &scratch);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(50))
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(200)),
+            }
+        }
+    });
+    Ok((busy, handle))
+}
+/// Eén antwoord: JSON voor `/api/opening`, `/api/*` en `/healthz`, anders de pagina.
+fn answer_opening(mut socket: TcpStream, scratch: &Path) -> std::io::Result<()> {
+    socket.set_nonblocking(false)?;
+    socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+    socket.set_write_timeout(Some(Duration::from_secs(2)))?;
+    let mut request = [0u8; 2048];
+    let n = socket.read(&mut request)?;
+    let head = std::str::from_utf8(request.get(..n).unwrap_or_default()).unwrap_or("");
+    let path = head.split_whitespace().nth(1).unwrap_or("/");
+    let path = path.split('?').next().unwrap_or("/");
+    let done = spin_host::s3::DOWNLOADED.load(Relaxed);
+    // De scratchkopie krijgt meteen haar eindgrootte; zolang ze ontbreekt, wordt
+    // het herstelplan nog gelezen.
+    let total = std::fs::metadata(scratch).map_or(0, |m| m.len());
+    let message = if total > 0 {
+        format!(
+            "Herstellen uit S3: {:.1} van {:.1} GB",
+            done as f64 / 1e9,
+            total as f64 / 1e9
+        )
+    } else {
+        "Verbinden met S3".to_owned()
+    };
+    let json = format!(
+        r#"{{"opening":true,"stage":"restore","message":"{message}","failure":"","downloaded_bytes":{done},"total_bytes":{total}}}"#
+    );
+    let (status, kind, body) = if path == "/api/opening" {
+        ("200 OK", "application/json", json)
+    } else if path.starts_with("/api/") || path == "/healthz" {
+        ("503 Service Unavailable", "application/json", json)
+    } else {
+        (
+            "503 Service Unavailable",
+            "text/html; charset=utf-8",
+            spin_runtime::tenancy::OPENING_PAGE.to_owned(),
+        )
+    };
+    write!(
+        socket,
+        "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nRetry-After: 2\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
 fn key(root: &Path, random: &mut Random) -> std::io::Result<Cipher> {
     if let Ok(value) = std::env::var("SPIN_MASTER_KEY")
         && !value.trim().is_empty()
@@ -99,8 +173,12 @@ fn run() -> std::io::Result<()> {
         // Prepare vóór de sleutel: een herstelde database zonder sleutel weigert
         // dan te starten in plaats van een nieuwe sleutel te maken.
         let mut bucket = spin_host::replica::bucket(settings.client)?;
-        let replica =
-            spin_host::replica::prepare(&mut files, &mut heap, &mut bucket, settings.config)?;
+        let (busy, screen) = opening(&listener, &root)?;
+        let prepared =
+            spin_host::replica::prepare(&mut files, &mut heap, &mut bucket, settings.config);
+        busy.store(false, Relaxed);
+        let _ = screen.join();
+        let replica = prepared?;
         let cipher = key(&root, &mut random)?;
         let mut owner =
             spin_host::replica::Owner::new(heap, files, cipher, Random::open()?, replica, bucket);

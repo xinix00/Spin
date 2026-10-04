@@ -10,7 +10,7 @@ mod outbound;
 /// Optionele Replica-replicatie naar S3, alleen met SPIN_S3_ENDPOINT.
 #[allow(unsafe_code)]
 pub mod replica;
-mod s3;
+pub mod s3;
 /// De HTTP-hostruntime met een vaste pool en één Store-eigenaar.
 pub mod server;
 

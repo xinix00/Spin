@@ -1,5 +1,8 @@
 //! SigV4 van Replica/Lean over de host-TLS-dialer, zonder redirects; spiegel van hopos/s3.rs.
 use crate::{executor, outbound::Dial};
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+/// Bytes die van S3 binnenkwamen; het openingsscherm toont ze tijdens een herstel.
+pub static DOWNLOADED: AtomicU64 = AtomicU64::new(0);
 use leans3::IoError;
 use replica_sqlite::asynchronous::{Cancelled, Suspend};
 use std::{
@@ -125,6 +128,7 @@ impl Network {
                 eprintln!("SPIN_S3_HTTP_STATUS status={}", inner.status);
             }
             let body = inner.read_to_end(replica_core::segment::MAX_BYTES).await?;
+            DOWNLOADED.fetch_add(body.len() as u64, Relaxed);
             let response = Response {
                 status: inner.status,
                 reason: std::mem::take(&mut inner.reason),
