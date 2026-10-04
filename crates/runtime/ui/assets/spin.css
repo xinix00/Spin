@@ -268,7 +268,11 @@
   .tag.disabled-tag,.warning-text,.warning,.error { color: var(--red); }
   .status-busy { color: var(--accent-light); } .status-pending { color: var(--amber); }
   .session-presence { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-size: 11px; }
-  .session-presence.offline { color: var(--muted); } .session-presence.preparing { color: var(--amber); }
+  .session-presence.offline { color: var(--muted); }
+  /* Laden met tekst zoals haasstyle's statusline: de gedeelde ring (.t-spinner)
+     met een rustig label ernaast, gecentreerd, nooit in een signaalkleur. */
+  .statusline { display: flex; align-items: center; gap: 8px; color: var(--muted); font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .statusline > .t-spinner { flex: 0 0 16px; }
 
   /* Files and attachments retain content on a quiet layer. */
   .attachments-pane { padding: 16px; border-bottom: 1px solid var(--line); }
