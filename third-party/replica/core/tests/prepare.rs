@@ -6,9 +6,10 @@ use replica_core::{
     local::{self, Name},
     manifest::{Manifest, Part},
     marker::{self, LocalMarker, Marker},
-    object::StoreError,
+    object::{self, StoreError},
     prepare::{self, Options, Reason},
-    replication, segment,
+    replication::{self, Batch},
+    restore, segment,
     time::Time,
     tracking::Tracking,
 };
@@ -191,31 +192,121 @@ fn remote_generation_replaces_only_a_clean_older_database() {
     }
 }
 #[test]
-fn restart_adopts_accepted_commit_and_keeps_dirty_superset() {
-    let mut fs = Fs::default();
-    let (mut marker, mut tracking) = local(&mut fs, true);
-    write(&mut fs, &mut marker, &mut tracking, 9);
-    let mut bucket = Bucket::default();
-    remote(&mut bucket, OLD, 1, 2);
-    remote(&mut bucket, OLD, 2, 9);
-    let mut cold = fs.cold();
-    let mut prepared = prepare::run(
-        &mut cold,
-        &mut bucket,
-        options(&destination(), false),
-        |_, _| panic!("must continue local lineage"),
-    )
-    .unwrap();
-    assert_eq!(prepared.marker.value.sequence, 2);
-    assert_eq!(prepared.tracking.pending().unwrap(), [2]);
-    assert!(!prepared.marker.value.clean);
-    write(&mut cold, &mut prepared.marker, &mut prepared.tracking, 8);
-    assert!(
-        !LocalMarker::load(&mut cold, Name::new("db").unwrap())
-            .unwrap()
-            .value
-            .clean
-    );
+fn snapshot_fallback_keeps_local_writes_and_can_retry_an_unknown_commit() {
+    for (remote_ahead, broken_log) in [(true, false), (true, true), (false, true)] {
+        for restart in [false, true] {
+            for accepted in [false, true] {
+                let mut fs = Fs::default();
+                let (mut marker, mut tracking) = local(&mut fs, true);
+                write(&mut fs, &mut marker, &mut tracking, 9);
+                write(&mut fs, &mut marker, &mut tracking, 8);
+                if broken_log {
+                    for suffix in [".replica-dirty-a", ".replica-dirty-b"] {
+                        local::write(
+                            &mut fs,
+                            &Name::new("db").unwrap().suffix(suffix).unwrap(),
+                            b"broken",
+                        )
+                        .unwrap();
+                    }
+                }
+                let mut bucket = Bucket::default();
+                remote(&mut bucket, OLD, 1, 2);
+                if remote_ahead {
+                    remote(&mut bucket, OLD, 2, 9);
+                }
+                let mut cold = fs.cold();
+                let mut prepared = prepare::run(
+                    &mut cold,
+                    &mut bucket,
+                    options(&destination(), false),
+                    |_, _| panic!("must continue local lineage"),
+                )
+                .unwrap();
+                assert_eq!(prepared.reason, Reason::NewSnapshot);
+                assert!(!prepared.marker.value.complete);
+                assert!(prepared.marker.value.previous.is_empty());
+                write(&mut cold, &mut prepared.marker, &mut prepared.tracking, 7);
+                let source = cold.cold().data("db").unwrap().to_vec();
+                bucket.fail_put_match = Some("snapshot".into());
+                bucket.fail_before_put = !accepted;
+                bucket.get_error = Some(StoreError::Transport);
+                assert!(
+                    Batch::capture(
+                        &mut cold,
+                        Name::new("db").unwrap(),
+                        &prepared.tracking,
+                        &prepared.marker,
+                        65536
+                    )
+                    .unwrap()
+                    .unwrap()
+                    .publish(
+                        &mut cold,
+                        &mut bucket,
+                        NS,
+                        &mut prepared.marker,
+                        &mut prepared.tracking,
+                        at(21)
+                    )
+                    .is_err()
+                );
+                assert_eq!(prepared.marker.value.uncertain, 1);
+                bucket.fail_put_match = None;
+                bucket.get_error = None;
+                if restart {
+                    cold = cold.cold();
+                    prepared = prepare::run(
+                        &mut cold,
+                        &mut bucket,
+                        options(&destination(), false),
+                        |_, _| panic!("local writes must survive the retry"),
+                    )
+                    .unwrap();
+                } else {
+                    replication::resolve(&mut cold, &mut bucket, NS, &mut prepared.marker).unwrap();
+                }
+                Batch::capture(
+                    &mut cold,
+                    Name::new("db").unwrap(),
+                    &prepared.tracking,
+                    &prepared.marker,
+                    65536,
+                )
+                .unwrap()
+                .unwrap()
+                .publish(
+                    &mut cold,
+                    &mut bucket,
+                    NS,
+                    &mut prepared.marker,
+                    &mut prepared.tracking,
+                    at(22),
+                )
+                .unwrap();
+                assert!(prepared.marker.value.complete && prepared.marker.value.clean);
+                assert_eq!(cold.cold().data("db").unwrap(), source);
+                let prefix =
+                    replication::generation_prefix(NS, &prepared.marker.value.generation).unwrap();
+                let layout = object::layout(&mut bucket, &prefix).unwrap();
+                let mut restored = Fs::default();
+                restore::stage(
+                    &mut restored,
+                    &mut bucket,
+                    &layout,
+                    None,
+                    Name::new("copy").unwrap(),
+                    100,
+                )
+                .unwrap()
+                .verify(&mut restored, |_, _| Ok(()))
+                .unwrap()
+                .publish(&mut restored, &prepared.marker.value.generation)
+                .unwrap();
+                assert_eq!(restored.cold().data("copy").unwrap(), source);
+            }
+        }
+    }
 }
 #[test]
 fn clean_resume_invalidates_marker_before_the_next_write() {

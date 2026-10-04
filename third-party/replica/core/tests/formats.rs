@@ -78,6 +78,41 @@ fn dirty_header_and_append_match_go_and_choose_conservatively() {
     assert!(dirty::select(Some(DIRTY), Some(&broken), GEN, 7).is_err());
     assert!(dirty::select(None, None, GEN, 7).is_err());
 }
+
+#[test]
+fn equal_sequence_logs_require_a_proven_append_superset() {
+    let mut short = dirty::header(GEN, 7).unwrap();
+    short.extend_from_slice(&dirty::record(2));
+    let mut long = short.clone();
+    long.extend_from_slice(&dirty::record(3));
+    for (a, b) in [(&short, &long), (&long, &short)] {
+        assert_eq!(
+            dirty::select(Some(a), Some(b), GEN, 7)
+                .unwrap()
+                .pages()
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
+    }
+    // Een afgebroken laatste append telt niet als een complete dirty pagina.
+    let mut partial = short.clone();
+    partial.extend_from_slice(&dirty::record(3)[..4]);
+    assert_eq!(
+        dirty::select(Some(&partial), Some(&long), GEN, 7)
+            .unwrap()
+            .pages()
+            .collect::<Vec<_>>(),
+        [2, 3]
+    );
+    let mut conflicting = dirty::header(GEN, 7).unwrap();
+    conflicting.extend_from_slice(&dirty::record(4));
+    for (a, b) in [(&short, &conflicting), (&conflicting, &short)] {
+        assert!(matches!(
+            dirty::select(Some(a), Some(b), GEN, 7),
+            Err(Error::Corrupt)
+        ));
+    }
+}
 #[test]
 fn go_manifests_exact_and_parts_not_visible_without_valid_commit() {
     for fixture in [MAN, WIN] {

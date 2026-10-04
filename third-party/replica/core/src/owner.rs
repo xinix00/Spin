@@ -290,8 +290,10 @@ impl Replica {
     fn invalidate<B: Storage>(&mut self, b: &mut B, damaged: bool) -> Result {
         let old = &self.prepared.marker.value;
         let mut marker = Marker::new(&self.config.destination, "", Time::ZERO)?;
-        // Een onvoltooide repair blijft bewijzen welke gepubliceerde generatie van ons is.
-        marker.repair_from = string(if damaged && old.complete {
+        // Behoud herkomstbewijs, ook bij onbetrouwbare lokale tracking. Deze
+        // generatie is geen fallback, maar current mag tijdens de nieuwe
+        // snapshotpoging nog naar haar wijzen.
+        marker.repair_from = string(if old.complete {
             &old.generation
         } else {
             &old.repair_from
@@ -421,13 +423,16 @@ impl Replica {
                 Ok(report) => report,
                 Err(e) => return Err(self.archive_error(b, e)),
             };
-            result.expired_objects = maintenance::generations(
+            result.expired_objects = match maintenance::generations(
                 store,
                 &self.config.namespace,
                 &self.prepared.marker.value.generation,
                 now,
                 self.config.retention,
-            )?;
+            ) {
+                Ok(removed) => removed,
+                Err(e) => return Err(self.archive_error(b, e)),
+            };
         }
         Ok(result)
     }

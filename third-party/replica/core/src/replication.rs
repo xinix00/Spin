@@ -16,6 +16,7 @@ use replica_sqlite::Storage;
 /// Een capture blijft aan precies één generatie en voorganger gekoppeld.
 pub struct Batch {
     capture: Capture,
+    id: [u8; 16],
     generation: String,
     previous_sequence: u64,
 }
@@ -79,8 +80,13 @@ impl Batch {
         if capture.is_empty() {
             return Ok(None);
         }
+        // Een retry kan dezelfde generatie en voorganger hebben. Eigen entropie
+        // bindt staged/uploaded ook dan aan precies deze capture.
+        let mut id = [0u8; 16];
+        b.random(&mut id)?;
         Ok(Some(Self {
             capture,
+            id,
             generation,
             previous_sequence: local.value.sequence,
         }))
@@ -110,6 +116,7 @@ impl Batch {
             &object::key(&attempt, "/")?,
         )?;
         Ok(Staged {
+            batch_id: self.id,
             namespace: string(namespace)?,
             prefix,
             data_prefix,
@@ -124,7 +131,11 @@ impl Batch {
         store: &mut S,
         staged: &Staged,
     ) -> Result<Uploaded> {
+        if staged.batch_id != self.id {
+            return Err(Error::State);
+        }
         Ok(Uploaded {
+            batch_id: self.id,
             namespace: string(&staged.namespace)?,
             prefix: string(&staged.prefix)?,
             parts: self.capture.upload(b, store, &staged.data_prefix)?,
@@ -142,7 +153,11 @@ impl Batch {
         now: Time,
     ) -> Result {
         self.check(local)?;
+        if uploaded.batch_id != self.id {
+            return Err(Error::State);
+        }
         let Uploaded {
+            batch_id: _,
             namespace,
             prefix,
             parts,
@@ -237,12 +252,14 @@ impl Batch {
 }
 /// De objectsleutels van één publicatiepoging, gekozen vóór de upload van de delen.
 pub struct Staged {
+    batch_id: [u8; 16],
     namespace: String,
     prefix: String,
     data_prefix: String,
 }
 /// De geüploade delen van één capture; het manifest volgt in [`Batch::finish`].
 pub struct Uploaded {
+    batch_id: [u8; 16],
     namespace: String,
     prefix: String,
     parts: Vec<Part>,
@@ -286,11 +303,12 @@ pub fn resolve<B: Storage, S: Store>(
                 let current = core::str::from_utf8(&bytes)
                     .map_err(|_| Error::Corrupt)?
                     .trim();
-                if local
-                    .value
-                    .previous
-                    .first()
-                    .is_some_and(|p| p.generation == current)
+                if (!local.value.repair_from.is_empty() && local.value.repair_from == current)
+                    || local
+                        .value
+                        .previous
+                        .first()
+                        .is_some_and(|p| p.generation == current)
                 {
                     None
                 } else {

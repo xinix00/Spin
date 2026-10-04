@@ -163,3 +163,29 @@ fn deleting_the_main_database_requires_stopping_its_owner() {
     assert!(v.remove(c"db", true).is_err());
     assert_eq!(b.cold().data("db").unwrap(), before);
 }
+
+#[test]
+fn repeated_cold_recovery_keeps_writes_after_the_previous_recovery() {
+    let mut b = Fs::default();
+    let mut t = Tracking::new(Name::new("db").unwrap(), 100).unwrap();
+    write(&mut t, &mut b, 0, &header());
+    t.acknowledge(&mut b, "generation", 1, t.revision(), true)
+        .unwrap();
+    for page in 2..=5 {
+        let mut cold = b.cold();
+        let mut recovered = Tracking::new(Name::new("db").unwrap(), 100).unwrap();
+        recovered.recover(&mut cold, "generation", 1, 512).unwrap();
+        assert_eq!(recovered.pending().unwrap(), (2..page).collect::<Vec<_>>());
+        write(
+            &mut recovered,
+            &mut cold,
+            u64::from(page - 1) * 512,
+            &[7; 512],
+        );
+        b = cold;
+    }
+    let mut cold = b.cold();
+    let mut recovered = Tracking::new(Name::new("db").unwrap(), 100).unwrap();
+    recovered.recover(&mut cold, "generation", 1, 512).unwrap();
+    assert_eq!(recovered.pending().unwrap(), [2, 3, 4, 5]);
+}

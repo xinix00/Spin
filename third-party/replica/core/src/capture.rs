@@ -6,8 +6,7 @@ use crate::{
     local::{File, Name},
     manifest::{MAX_PARTS, Part},
     object::{self, Store},
-    reserve,
-    segment::{self, Segment},
+    reserve, segment,
     tracking::Tracking,
 };
 use alloc::vec::Vec;
@@ -232,10 +231,10 @@ impl Capture {
             let mut source = File::open(b, &self.spool, false)?;
             source.read(chunk.offset, &mut bytes)?;
             source.close()?;
+            // encode valideerde het segment; de hash bewijst dat de spool gelijk bleef.
             if hash(&bytes) != chunk.hash {
                 return Err(Error::Corrupt);
             }
-            Segment::decode(&bytes)?;
             let mut name = *b"000000.seg";
             let mut n = i + 1;
             for b in name[..6].iter_mut().rev() {

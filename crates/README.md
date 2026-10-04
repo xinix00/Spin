@@ -20,8 +20,9 @@ SQLite-opslag; `server` de HTTP-routes en app-eigenaar. Deze crates gebruiken
 de native boot en platformadapters. `host` levert de macOS-runner en een
 lokale server die alleen voor integratietests bedoeld is.
 
-Replica wordt hergebruikt uit `third-party/replica`; `SOURCE.json` vermeldt
-de herkomst, oorspronkelijke hashes en lokale patches;
+Replica wordt hergebruikt uit `third-party/replica` (snapshot van 04-10-2026:
+upstream 9da2578 plus de vereenvoudigde prepare zonder dirty-log-herstel);
+`SOURCE.json` vermeldt de herkomst, oorspronkelijke hashes en lokale patches;
 de manifestgrenzen zijn verruimd voor bestaande productiedatabases (16 MiB JSON,
 32.768 delen). De Hop-types-parser heeft daarvoor een expliciet bytebudget;
 het standaardbudget voor HTTP-JSON blijft 1 MiB. De C-bronnen zijn ongewijzigd.

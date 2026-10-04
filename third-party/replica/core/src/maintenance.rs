@@ -182,6 +182,9 @@ pub fn run<B: Storage, S: Store>(
     }
     let prefix = replication::generation_prefix(namespace, &local.value.generation)?;
     let mut layout = object::layout(store, &prefix)?;
+    if layout.plan(None)?.last().map(|m| m.sequence) != Some(local.value.sequence) {
+        return Err(Error::Gap);
+    }
     let mut report = Report::default();
     for level in 1..=schedule.levels.len() as u32 {
         for (start, end) in schedule.elapsed(&layout, level, now)? {
@@ -272,7 +275,7 @@ pub fn generations<S: Store>(
         return Err(Error::State);
     }
     marker::generation_time(keep)?;
-    let current = store.get(&object::key(namespace, "/current")?, 255)?;
+    let current = object::committed(store, &object::key(namespace, "/current")?, 255)?;
     if core::str::from_utf8(&current)
         .map_err(|_| Error::Corrupt)?
         .trim()

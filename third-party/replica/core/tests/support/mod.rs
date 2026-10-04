@@ -2,7 +2,7 @@
 use replica_core::object::{Object, Store, StoreError};
 use replica_sqlite::{Error, FileId, OpenFlags, Result, Storage};
 use std::{collections::BTreeMap, ffi::CStr};
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Bucket {
     pub data: BTreeMap<String, Vec<u8>>,
     pub put_reply_lost: bool,

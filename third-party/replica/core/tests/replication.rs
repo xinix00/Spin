@@ -29,6 +29,30 @@ fn marker() -> LocalMarker {
     )
     .unwrap()
 }
+
+#[test]
+fn resolving_an_unknown_snapshot_requires_nonempty_ownership_proof() {
+    for current in [b"".as_slice(), b"20260930T123456Z-foreign".as_slice()] {
+        for proof in ["", "20260930T123456Z-ours"] {
+            let mut fs = Fs::default();
+            let mut store = Bucket::default();
+            let mut local = marker();
+            replication::renew(&mut fs, &mut local, now(0)).unwrap();
+            local.value.uncertain = 1;
+            local.value.repair_from = proof.into();
+            local.save(&mut fs).unwrap();
+            let before = local.value.duplicate().unwrap();
+            let files = fs.stable.clone();
+            store.data.insert(format!("{NS}/current"), current.to_vec());
+            assert!(matches!(
+                replication::resolve(&mut fs, &mut store, NS, &mut local),
+                Err(Error::State)
+            ));
+            assert_eq!(local.value, before);
+            assert_eq!(fs.stable, files);
+        }
+    }
+}
 #[test]
 fn native_sqlite_replication_pipeline_with_concurrent_changes_and_unknown_commits() {
     let mut fs = Fs::default();

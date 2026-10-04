@@ -55,10 +55,6 @@ struct Tip {
     generation: String,
     layout: Layout,
     sequence: u64,
-    at: Time,
-    size: u64,
-    page_size: u32,
-    bytes: u64,
 }
 fn tip<S: Store>(store: &mut S, namespace: &str, generation: String) -> Result<Tip> {
     let prefix = replication::generation_prefix(namespace, &generation)?;
@@ -67,18 +63,10 @@ fn tip<S: Store>(store: &mut S, namespace: &str, generation: String) -> Result<T
     let last = plan.last().ok_or(Error::Corrupt)?;
     let part = last.parts.last().ok_or(Error::Corrupt)?;
     let bytes = object::committed(store, &part.key, part.size as usize)?;
-    let segment = part.read(&bytes)?;
-    let total = plan
-        .iter()
-        .flat_map(|m| m.parts.iter())
-        .try_fold(0u64, |n, p| n.checked_add(p.size).ok_or(Error::Limit))?;
+    part.read(&bytes)?;
     let out = Tip {
         generation,
         sequence: last.sequence,
-        at: last.at,
-        size: segment.database_size(),
-        page_size: segment.page_size(),
-        bytes: total,
         layout,
     };
     Ok(out)
@@ -206,6 +194,9 @@ pub fn run<B: Storage, S: Store>(
     if local.value.destination != options.destination {
         return fresh(b, &options, "", Reason::DestinationChanged);
     }
+    if current.is_none() && local.value.complete {
+        return fresh(b, &options, &local.value.generation, Reason::Repair);
+    }
     let remote = match current {
         Some(generation) => {
             let ours =
@@ -221,52 +212,18 @@ pub fn run<B: Storage, S: Store>(
         None => None,
     };
     if let Some(tip) = &remote {
+        if local.value.generation == tip.generation && local.value.sequence > tip.sequence {
+            // Een ontbrekende staart heeft nog steeds een geldig herstelplan,
+            // maar mist eerder bevestigde writes uit onze lokale database.
+            return fresh(b, &options, &tip.generation, Reason::Repair);
+        }
         if !local.value.complete && local.value.repair_from == tip.generation {
             return fresh(b, &options, &tip.generation, Reason::Repair);
         }
         if local.value.generation == tip.generation && local.value.sequence < tip.sequence {
-            // Een gecommit manifest waarvan de lokale marker achterbleef. Het
-            // oude log blijft een superset van alle lokale veranderingen.
-            let mut tracking = Tracking::new(options.path, options.page_limit)?;
-            let page_size = if local.value.page_size != 0 {
-                local.value.page_size
-            } else {
-                tip.page_size
-            };
-            let mut recovered =
-                tracking.recover(b, &local.value.generation, local.value.sequence, page_size);
-            if matches!(recovered, Err(Error::Corrupt | Error::Limit))
-                && let Some(old) = local.value.previous.first()
-            {
-                tracking = Tracking::new(options.path, options.page_limit)?;
-                recovered = tracking.recover(b, &old.generation, old.sequence, old.page_size);
-            }
-            match recovered {
-                Ok(()) => {}
-                Err(Error::Corrupt | Error::Limit) => {
-                    return fresh(b, &options, "", Reason::NewSnapshot);
-                }
-                Err(e) => return Err(e),
-            }
-            local.value.sequence = tip.sequence;
-            local.value.at = tip.at;
-            local.value.size = tip.size;
-            local.value.page_size = tip.page_size;
-            local.value.bytes = local.value.bytes.max(tip.bytes);
-            local.value.sealed_at = local.value.sealed_at.max(tip.layout.frontier());
-            local.value.complete = true;
-            local.value.clean = false;
-            local.value.previous.clear();
-            local.value.repair_from.clear();
-            local.value.uncertain = 0;
-            local.save(b)?;
-            tracking.committed(b, &local.value.generation, local.value.sequence, 0, false)?;
-            learn_counter(b, options.path, &mut tracking)?;
-            return Ok(Prepared {
-                marker: local,
-                tracking,
-                reason: Reason::Continued,
-            });
+            // Manifest gecommit, lokale marker achtergebleven: publiceer de
+            // lokale bron opnieuw zonder afhankelijkheid van het oude dirty log.
+            return fresh(b, &options, &tip.generation, Reason::NewSnapshot);
         }
         if !local.value.repair_from.is_empty() {
             return Err(Error::Unproven);
@@ -315,7 +272,9 @@ pub fn run<B: Storage, S: Store>(
                 local.value.page_size,
             )?;
         }
-        Err(Error::Corrupt | Error::Limit) => return fresh(b, &options, "", Reason::NewSnapshot),
+        Err(Error::Corrupt | Error::Limit) => {
+            return fresh(b, &options, &local.value.generation, Reason::NewSnapshot);
+        }
         Err(e) => return Err(e),
     }
     if !tracking.pending()?.is_empty() {

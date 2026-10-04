@@ -39,7 +39,7 @@ pub struct Marker {
     pub started_at: Time,
     /// Nul of één vorige marker; Vec maakt allocatie faalbaar zonder unsafe Box.
     pub previous: Vec<Marker>,
-    /// Bewijs van de beschadigde generatie, nooit een fallback naar die generatie.
+    /// Herkomstbewijs na invalidatie, nooit een fallback naar die generatie.
     pub repair_from: String,
     /// Een uitgezonden manifest waarvan de PUT-uitkomst nog moet worden opgehelderd.
     pub uncertain: u64,

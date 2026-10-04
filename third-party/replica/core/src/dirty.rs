@@ -74,6 +74,7 @@ pub fn record(page: u32) -> [u8; 8] {
     out
 }
 /// Beide bestanden worden getoetst; kies hoogste sequence die niet voorbij de marker ligt.
+/// Bij gelijke sequences mag alleen een bewezen langere appendreeks winnen.
 pub fn select<'a>(
     a: Option<&'a [u8]>,
     b: Option<&'a [u8]>,
@@ -89,7 +90,20 @@ pub fn select<'a>(
         if log.sequence > sequence {
             return Err(Error::Corrupt);
         }
-        if best.as_ref().is_none_or(|old| log.sequence > old.sequence) {
+        if let Some(old) = &best
+            && log.sequence == old.sequence
+        {
+            // Recover herschrijft zonder sequenceverhoging. Latere appends
+            // mogen dan niet door het oudere, kortere log worden verborgen.
+            let old_records = &old.records[..old.records.len() / 8 * 8];
+            let records = &log.records[..log.records.len() / 8 * 8];
+            if records.starts_with(old_records) {
+                best = Some(log);
+            } else if !old_records.starts_with(records) {
+                // Zonder bewezen superset moet Prepare een snapshot kiezen.
+                return Err(Error::Corrupt);
+            }
+        } else if best.as_ref().is_none_or(|old| log.sequence > old.sequence) {
             best = Some(log);
         }
     }

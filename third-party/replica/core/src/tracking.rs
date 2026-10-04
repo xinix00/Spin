@@ -282,8 +282,11 @@ impl Tracking {
         self.put_back(&pages)?;
         // Bewaar de gekozen kant als de nieuwe rewrite onderweg faalt.
         self.journal.active = if a.as_deref().is_some_and(|bytes| {
-            dirty::Log::decode(bytes)
-                .is_ok_and(|l| l.generation == generation && l.sequence == log.sequence)
+            dirty::Log::decode(bytes).is_ok_and(|l| {
+                l.generation == generation
+                    && l.sequence == log.sequence
+                    && l.pages().eq(log.pages())
+            })
         }) {
             Some(0)
         } else {
