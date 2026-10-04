@@ -283,7 +283,7 @@ version = "0.1.0"
 
 [[package]]
 name = "spin-core"
-version = "3.0.12"
+version = "3.0.13"
 dependencies = [
  "auth",
  "miniz_oxide",
@@ -292,14 +292,14 @@ dependencies = [
 
 [[package]]
 name = "spin-domain"
-version = "3.0.12"
+version = "3.0.13"
 dependencies = [
  "types",
 ]
 
 [[package]]
 name = "spin-hopos"
-version = "3.0.12"
+version = "3.0.13"
 dependencies = [
  "applib",
  "leanhttp",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "spin-host"
-version = "3.0.12"
+version = "3.0.13"
 dependencies = [
  "leanhttp",
  "leanhttps",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "spin-persistence"
-version = "3.0.12"
+version = "3.0.13"
 dependencies = [
  "replica-sqlite",
  "spin-domain",
@@ -354,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "spin-runtime"
-version = "3.0.12"
+version = "3.0.13"
 dependencies = [
  "leanhttp",
  "spin-core",
@@ -365,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "spin-security"
-version = "3.0.12"
+version = "3.0.13"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "spin-server"
-version = "3.0.12"
+version = "3.0.13"
 dependencies = [
  "spin-core",
  "spin-domain",
@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "spin-store"
-version = "3.0.12"
+version = "3.0.13"
 dependencies = [
  "spin-core",
  "spin-domain",

@@ -1208,7 +1208,8 @@ function sessionPresenceHTML(session){if(!session)return '';
 function assigneeOptions(job){const users=(snapshot.users||[]).filter(user=>!user.archived_at).map(user=>user.username);const names=[...new Set([jobAssignee(job),job.owner,currentOperator(),...users].filter(Boolean))];return names.map(name=>{const user=(snapshot.users||[]).find(item=>item.username===name);return `<option value="${esc(name)}" ${name===jobAssignee(job)?'selected':''}>${esc(user?.display_name||name)}</option>`;}).join('');}
 function renderJobs(){
   const root=document.getElementById('jobs'),open=snapshot.jobs.filter(job=>!jobIsClosed(job)),closed=snapshot.jobs.filter(jobIsClosed),mine=open.filter(job=>jobAssignee(job)===currentOperator()),query=jobStateFilter==='closed'?jobSearch.trim().toLowerCase():'',jobs=(jobStateFilter==='closed'?closed:jobStateFilter==='all'?open:mine).filter(job=>jobMatchesSearch(job,query));
-  document.getElementById('job-count-mine').textContent=mine.length;document.getElementById('job-count-all').textContent=open.length;document.getElementById('job-count-closed').textContent=closed.length;
+  document.getElementById('job-count-mine').textContent=mine.length;document.getElementById('job-count-all').textContent=open.length;document.getElementById('job-count-closed').textContent=snapshot.closed_jobs??closed.length;ensureJobHistory();
+  if(!jobs.length&&jobStateFilter==='closed'&&(jobHistory.loading||jobHistory.stale)){root.innerHTML='<div class="empty t-empty">Gesloten Jobs laden…</div>';return;}
   if(!jobs.length){root.innerHTML=`<div class="empty t-empty">${query?`Geen gesloten Job met “${esc(jobSearch.trim())}” in naam, referentie of branch.`:jobStateFilter==='closed'?'Nog geen afgeronde of gesloten Jobs.':jobStateFilter==='mine'?'Niets ligt bij jou. Kijk onder Alle, of start een nieuwe Job.':'Geen open Jobs. Start een nieuwe Job zodra er werk klaarstaat.'}</div>`;return;}
   const cards=jobs.map(job=>{
     const sessions=snapshot.sessions.filter(session=>session.job_id===job.id),repository=byID(snapshot.git_repositories,job.git_repository_id),template=jobTemplate(job),runs=snapshot.phase_runs.filter(run=>run.job_id===job.id),hasComparisonWorkspace=Boolean(job.branch);
@@ -1244,7 +1245,8 @@ function renderJobs(){
   });
   const bind=()=>{bindDetailStates(root);bindActionButtons(root);bindACPButtons(root);bindDeliverables(root);bindQuestionButtons(root);bindResultButtons(root);bindAppPanels(root);
   root.querySelectorAll('[data-assign-job]').forEach(select=>select.onchange=async()=>{try{await api(`/api/jobs/${encodeURIComponent(select.dataset.assignJob)}/assignee`,{method:'PUT',body:JSON.stringify({assignee:select.value})});await refresh(true);}catch(error){showError(error);await refresh(true);}});};
-  root._afterPatch=bind;if(patchKeyed(root,cards))bind();root.querySelectorAll('[data-job-changes]').forEach(button=>button.onclick=()=>openJobChanges(button));root.querySelectorAll('[data-adopt-template]').forEach(button=>button.onclick=()=>openAdoptTemplate(button.dataset.adoptTemplate));root.querySelectorAll('[data-job-environment]').forEach(button=>button.onclick=()=>openJobEnvironment(button.dataset.jobEnvironment));root.querySelectorAll('[data-close-capsule]').forEach(button=>button.onclick=()=>closeSessionCapsule(button.dataset.closeCapsule));root.querySelectorAll('[data-add-job-attachment]').forEach(button=>{button.onclick=()=>chooseJobAttachments(button.dataset.addJobAttachment);bindDropTarget(button.closest('.job'),files=>{attachmentTargetJobID=button.dataset.addJobAttachment;addAttachmentsToJob(files.filter(attachmentFileAccepted));},'drop-over');});root.querySelectorAll('[data-close-job]').forEach(button=>button.onclick=()=>closeJob(button));root.querySelectorAll('[data-fork-job]').forEach(button=>button.onclick=()=>openJobFork(button.dataset.forkJob));root.querySelectorAll('[data-remove-job]').forEach(button=>button.onclick=()=>removeJob(button.dataset.removeJob));root.querySelectorAll('[data-retry-session]').forEach(button=>button.onclick=()=>retrySession(button));
+  if(jobStateFilter==='closed'&&jobHistory.loaded<jobHistory.total)cards.push({key:'job-history-more',html:`<div class="job-history-more"><button class="small-button t-action" data-job-history-more>${jobHistory.loading?'Laden…':`Meer laden · ${jobHistory.loaded} van ${jobHistory.total}`}</button></div>`});
+  root._afterPatch=bind;if(patchKeyed(root,cards))bind();const more=root.querySelector('[data-job-history-more]');if(more)more.onclick=()=>{more.disabled=true;loadJobHistory(false);};root.querySelectorAll('[data-job-changes]').forEach(button=>button.onclick=()=>openJobChanges(button));root.querySelectorAll('[data-adopt-template]').forEach(button=>button.onclick=()=>openAdoptTemplate(button.dataset.adoptTemplate));root.querySelectorAll('[data-job-environment]').forEach(button=>button.onclick=()=>openJobEnvironment(button.dataset.jobEnvironment));root.querySelectorAll('[data-close-capsule]').forEach(button=>button.onclick=()=>closeSessionCapsule(button.dataset.closeCapsule));root.querySelectorAll('[data-add-job-attachment]').forEach(button=>{button.onclick=()=>chooseJobAttachments(button.dataset.addJobAttachment);bindDropTarget(button.closest('.job'),files=>{attachmentTargetJobID=button.dataset.addJobAttachment;addAttachmentsToJob(files.filter(attachmentFileAccepted));},'drop-over');});root.querySelectorAll('[data-close-job]').forEach(button=>button.onclick=()=>closeJob(button));root.querySelectorAll('[data-fork-job]').forEach(button=>button.onclick=()=>openJobFork(button.dataset.forkJob));root.querySelectorAll('[data-remove-job]').forEach(button=>button.onclick=()=>removeJob(button.dataset.removeJob));root.querySelectorAll('[data-retry-session]').forEach(button=>button.onclick=()=>retrySession(button));
 }
 
 // The test-app panel reads live status from the runner while it is open
@@ -1664,11 +1666,39 @@ function applyDelta(delta){
     const list=(next[key]||[]).slice(),index=new Map(list.map((item,i)=>[item.id,i]));let added=false;
     for(const item of change.upsert||[]){const at=index.get(item.id);if(at===undefined){list.push(item);added=true;}else list[at]=item;}
     const gone=new Set(change.remove||[]);next[key]=gone.size?list.filter(item=>!gone.has(item.id)):list;
+    if(key==='jobs'&&gone.size)jobHistory.stale=true;
     if(added)sortSnapshot(key,next[key]);
   }
   for(const key of ['current_user','logins','recommendations','preparing','git_oauth_providers','engine','storage'])if(key in delta)next[key]=delta[key];
   next.version=Math.max(delta.version||0,snapshot.version||0);
   applyState(next,false);
+}
+// Gesloten Jobs staan niet in de live state: ze komen per pagina, met alles
+// wat erbij hoort, en worden bij iedere state bijgemengd.
+const jobHistory={collections:{},loaded:0,total:0,query:null,loading:false,stale:true,timer:null};
+function mergeHistory(next){
+  for(const [key,items] of Object.entries(jobHistory.collections)){
+    if(!Array.isArray(next[key])||!items.length)continue;
+    const ids=new Set(next[key].map(item=>item.id)),extra=items.filter(item=>!ids.has(item.id));
+    if(extra.length){next[key]=next[key].concat(extra);sortSnapshot(key,next[key]);}
+  }
+}
+async function loadJobHistory(reset){
+  const query=jobSearch.trim();if(jobHistory.loading)return;jobHistory.loading=true;
+  try{
+    const page=await api(`/api/jobs/history?offset=${reset?0:jobHistory.loaded}&limit=25&q=${encodeURIComponent(query)}`);
+    if(reset){jobHistory.collections={};jobHistory.loaded=0;}
+    for(const key of snapshotCollections)if(Array.isArray(page[key])&&page[key].length)jobHistory.collections[key]=(jobHistory.collections[key]||[]).concat(page[key]);
+    jobHistory.loaded+=(page.jobs||[]).length;jobHistory.total=page.total||0;jobHistory.query=query;jobHistory.stale=false;
+  }catch(error){showError(error);jobHistory.query=query;jobHistory.stale=false;}
+  finally{jobHistory.loading=false;}
+  applyState({...snapshot},true);
+}
+// Bij het tabblad of een nieuwe zoekterm de eerste pagina (opnieuw) halen.
+function ensureJobHistory(){
+  if(jobStateFilter!=='closed'||jobHistory.loading)return;
+  if(!jobHistory.stale&&jobHistory.query===jobSearch.trim())return;
+  clearTimeout(jobHistory.timer);jobHistory.timer=setTimeout(()=>loadJobHistory(true),jobHistory.query===null?0:250);
 }
 function connectStateStream(){
   stateStream.stopped=false;clearTimeout(stateStream.timer);if(stateStream.socket&&[WebSocket.OPEN,WebSocket.CONNECTING].includes(stateStream.socket.readyState))return;
@@ -1685,6 +1715,7 @@ function stopStateStream(){stateStream.stopped=true;clearTimeout(stateStream.tim
 function applyState(next,force){
     snapshotCollections.forEach(key=>{if(!Array.isArray(next[key]))next[key]=[];});
     if(!force&&next.version&&snapshot.version&&next.version<snapshot.version)return;
+    mergeHistory(next);
     snapshot=next;
     if(next.current_user){authState.user=next.current_user;document.getElementById('current-user').textContent=`${next.current_user.display_name||next.current_user.username} · ${next.current_user.role}`;}
     // Background polling must not erase a half-written form.

@@ -95,11 +95,8 @@ impl<P: Persistence> Server<P> {
         }
         // Eerst het oude geheugen vrij, dan pas de nieuwe kopie van de staat.
         self.state_cache = None;
-        let mut snapshot = self.store.snapshot()?;
-        let mut recommendations = spin_core::orchestrator::recommend(&snapshot)?;
-        if recommendations.is_empty() {
-            recommendations = List::new();
-        }
+        let recommendations = self.recommendations()?;
+        let mut snapshot = self.store.live_snapshot()?;
         let artifacts = core::mem::take(&mut snapshot.artifacts);
         let recordings = core::mem::take(&mut snapshot.recordings);
         let mcp_servers = core::mem::take(&mut snapshot.mcp_servers);
@@ -117,7 +114,7 @@ impl<P: Persistence> Server<P> {
             json::write(value, &mut shared)?;
         }
         member(&mut shared, "recommendations")?;
-        json::write(&recommendations.to_value()?, &mut shared)?;
+        json::write(&recommendations, &mut shared)?;
         self.state_cache = Some(StateCache {
             version,
             shared,
@@ -135,9 +132,13 @@ impl<P: Persistence> Server<P> {
             .ok_or(Error::Http(500, "state cache unavailable"))
     }
     /// De vluchtige velden die elk document en elke delta meekrijgt.
-    fn volatile(&mut self) -> Result<[(&'static str, Value); 5]> {
+    fn volatile(&mut self) -> Result<[(&'static str, Value); 6]> {
         Ok([
             ("version", Value::uint(self.version())),
+            (
+                "closed_jobs",
+                Value::uint(self.store.closed_job_count() as u64),
+            ),
             ("preparing", self.preparation_state()?),
             ("git_oauth_providers", self.oauth_providers()?),
             ("engine", self.runner_info()?.to_value()?),
@@ -312,6 +313,19 @@ impl<P: Persistence> Server<P> {
                     200,
                     &http::object(&[("token", Value::string(self.store.worker_token())?)])?,
                 );
+            }
+            ("GET", "/api/jobs/history") => {
+                // Gesloten jobs staan niet in de live state; de browser haalt
+                // ze per pagina op, met alles wat erbij hoort.
+                let offset = req.query("offset")?.parse().unwrap_or(0);
+                let limit = req.query("limit")?.parse().unwrap_or(25).clamp(1, 100);
+                let (total, page) = self.store.closed_jobs(&req.query("q")?, offset, limit)?;
+                let Value::Object(mut object) = page.to_value()? else {
+                    return Err(Error::Http(500, "invalid history page"));
+                };
+                object.push("total", Value::uint(total as u64))?;
+                object.push("offset", Value::uint(offset as u64))?;
+                return Response::json(200, &Value::Object(object));
             }
             ("GET", "/api/state") => {
                 // De tekst is al JSON; geen tweede kopie via `Response::json`.

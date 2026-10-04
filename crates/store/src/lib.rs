@@ -32,6 +32,7 @@ mod users;
 /// Workflowhistorie en state-overgangen onder de Store-eigenaar.
 pub mod workflow;
 pub use logins::layer_key;
+pub use snapshot::job_is_closed;
 
 /// De fout van een Store-opdracht.
 #[derive(Debug, PartialEq)]
