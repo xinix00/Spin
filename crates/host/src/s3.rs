@@ -131,7 +131,11 @@ impl Network {
                 eprintln!("SPIN_S3_HTTP_STATUS status={}", inner.status);
             }
             let body = inner.read_to_end(replica_core::segment::MAX_BYTES).await?;
-            DOWNLOADED.fetch_add(body.len() as u64, Relaxed);
+            // Alleen data-delen tellen: manifests, current en de lease lezen
+            // bij elke start, en dat is geen herstel.
+            if request.target.contains("/data/") {
+                DOWNLOADED.fetch_add(body.len() as u64, Relaxed);
+            }
             let response = Response {
                 status: inner.status,
                 reason: std::mem::take(&mut inner.reason),

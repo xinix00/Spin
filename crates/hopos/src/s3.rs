@@ -110,7 +110,13 @@ impl Network {
             }
             // Keep this read future across Pending, including partial chunk headers.
             let body = inner.read_to_end(replica_core::segment::MAX_BYTES).await?;
-            if let Some(restore) = &self.1 {
+            // Alleen data-delen tellen: manifests, current en de lease lezen
+            // bij elke start, en dat is geen herstel.
+            if let Some(restore) = self
+                .1
+                .as_ref()
+                .filter(|_| request.target.contains("/data/"))
+            {
                 restore
                     .downloaded
                     .set(restore.downloaded.get().saturating_add(body.len() as u64));
