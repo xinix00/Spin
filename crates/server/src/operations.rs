@@ -147,6 +147,7 @@ impl<P: Persistence> Server<P> {
                 return Err(Error::Http(400, "restart note exceeds 4000 bytes"));
             }
             self.agent_start_failures.remove(id);
+            self.prepare_failures.remove(id);
             (
                 view.job.id,
                 try_string(id)?,

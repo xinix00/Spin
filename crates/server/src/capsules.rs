@@ -1392,7 +1392,19 @@ impl<P: Persistence> Server<P> {
         }
         // De Go-engine behandelt de watcher als best effort: geplaatste logins en
         // een bruikbare capsule blijven bruikbaar als deze optimalisatie faalt.
-        if matches!(&self.calls[index].action, Action::Materialize(work) if message.error.is_empty() || work.watching())
+        if let Action::Materialize(work) = &self.calls[index].action
+            && !message.error.is_empty()
+            && work.reading()
+        {
+            crate::note(
+                &mut self.notes,
+                format_args!(
+                    "SPIN_LOGIN_CAPTURE_FAILED composition={} session={} error={}",
+                    work.id, work.session, message.error
+                ),
+            );
+        }
+        if matches!(&self.calls[index].action, Action::Materialize(work) if message.error.is_empty() || work.watching() || work.reading())
         {
             match self.advance_materialize(index, client, payload, now, runtime) {
                 Ok(None) => return Ok(true),

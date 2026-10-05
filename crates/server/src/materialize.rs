@@ -6,6 +6,8 @@ use d::{List, RawJson, WireMap, protocol as p, try_push, try_string};
 use spin_core::validation::text;
 use spin_store::Context;
 
+/// Zoveel mislukte voorbereidingen achtereen zetten een workflowstap opzij.
+const PREPARE_ATTEMPTS: i64 = 3;
 pub(crate) struct Placement {
     pub(crate) id: String,
     pub(crate) session: String,
@@ -44,6 +46,20 @@ enum Phase {
 impl Placement {
     pub(crate) fn watching(&self) -> bool {
         self.phase == Phase::Watch
+    }
+    /// De login-uitlezing uit de laag: mislukt die, dan draait de laag zonder login.
+    pub(crate) fn reading(&self) -> bool {
+        self.phase == Phase::Read
+    }
+    fn phase_name(&self) -> &'static str {
+        match self.phase {
+            Phase::Build => "build",
+            Phase::Read => "read_login",
+            Phase::Write => "write_login",
+            Phase::Watch => "watch",
+            Phase::Content => "content",
+            Phase::Cleanup => "cleanup",
+        }
     }
 }
 impl<P: Persistence> Server<P> {
@@ -498,7 +514,13 @@ impl<P: Persistence> Server<P> {
                     .finish_composition(&work.id, &work.actor, capsule, now)?;
             }
             Phase::Read => {
-                let files = WireMap::<d::Bytes>::from_value(payload)?;
+                // Een mislukte uitlezing (te groot, runnerfout) kost geen capsule:
+                // de laag draait dan zonder login, zoals een laag zonder logins.
+                let files = if payload.is_null() {
+                    WireMap::new()
+                } else {
+                    WireMap::<d::Bytes>::from_value(payload)?
+                };
                 if !files.is_empty() {
                     let target = work
                         .targets
@@ -720,6 +742,43 @@ impl<P: Persistence> Server<P> {
             return Ok(false);
         }
         work.failure = try_string(reason)?;
+        crate::note(
+            &mut self.notes,
+            format_args!(
+                "SPIN_CAPSULE_PREPARE_FAILED composition={} session={} phase={} reason={reason}",
+                work.id,
+                work.session,
+                work.phase_name()
+            ),
+        );
+        // Drie mislukte voorbereidingen achtereen zetten een workflowstap opzij, in
+        // plaats van elke 30 s een nieuwe capsule van een minuut (05-10: 14 op rij).
+        if !work.session.is_empty() {
+            let failures = self
+                .prepare_failures
+                .get(&work.session)
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(1);
+            let session = work.session.try_clone()?;
+            if failures >= PREPARE_ATTEMPTS {
+                self.prepare_failures.remove(&session);
+                let parked = self.store.park_workflow_phase(&session, reason, now);
+                if parked.is_ok() {
+                    crate::note(
+                        &mut self.notes,
+                        format_args!(
+                            "SPIN_CAPSULE_PREPARE_PARKED session={session} attempts={failures}"
+                        ),
+                    );
+                }
+            } else {
+                self.prepare_failures.insert(session, failures)?;
+            }
+        }
+        let Action::Materialize(work) = &mut self.calls[index].action else {
+            return Ok(false);
+        };
         let Some(mut capsule) = work.runtime.as_ref().map(TryClone::try_clone).transpose()? else {
             self.store.discard_composition(&work.id, &work.actor, now)?;
             return Ok(false);

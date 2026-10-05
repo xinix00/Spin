@@ -360,6 +360,7 @@ async fn build(
     ))
     .map_err(io)?;
     let cleanup = docker.track_cleanup(&target).map_err(io)?;
+    let mut steps = Steps::new("BUILD", &composition.id);
     remove(docker, &target).await;
     control(
         docker,
@@ -384,6 +385,7 @@ async fn build(
         ],
     )
     .await?;
+    steps.step("base_container");
     let result = async {
         for (index, step) in plan.steps.iter().enumerate() {
             if step.full {
@@ -424,12 +426,16 @@ async fn build(
                     source_cleanup.complete();
                 }
                 result?;
+                steps.step("full_layer");
             } else {
-                let mut layer =
-                    top_layer(&mut save(docker, &step.artifact.snapshot.r#ref).await?).await?;
+                let mut saved = save(docker, &step.artifact.snapshot.r#ref).await?;
+                steps.step("save");
+                let mut layer = top_layer(&mut saved).await?;
+                steps.step("top_layer");
                 let (mut diff, deletions) = filter(&mut layer, true, None).await?;
                 delete_paths(docker, &target, &deletions).await?;
                 copy_into(docker, &target, &mut diff).await?;
+                steps.step("apply_layer");
             }
         }
         control(
@@ -448,6 +454,7 @@ async fn build(
             ],
         )
         .await?;
+        steps.step("commit");
         Ok(image)
     }
     .await;

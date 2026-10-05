@@ -321,7 +321,9 @@ async fn invoke(
         }
         p::METHOD_READ_TRACKED => {
             let value = p::TrackedFilesPayload::from_value(payload)?;
-            Ok(docker
+            let started = Instant::now();
+            let paths = value.paths.len();
+            let result = docker
                 .read_tracked_files(
                     &mut executor,
                     &value.runtime,
@@ -330,8 +332,26 @@ async fn invoke(
                         excludes: value.excludes,
                     },
                 )
-                .await?
-                .to_value()?)
+                .await;
+            // Wat een login-uitlezing kost: aantal en bytes, of de reden dat het niet lukte.
+            match &result {
+                Ok(files) => eprintln!(
+                    "SPIN_TRACKED_READ container={} paths={paths} files={} bytes={} ms={}",
+                    value.runtime.container_id,
+                    files.len(),
+                    files
+                        .iter()
+                        .map(|(_, data)| data.0.as_ref().map_or(0, Vec::len))
+                        .sum::<usize>(),
+                    started.elapsed().as_millis()
+                ),
+                Err(error) => eprintln!(
+                    "SPIN_TRACKED_READ_FAILED container={} paths={paths} ms={} error={error}",
+                    value.runtime.container_id,
+                    started.elapsed().as_millis()
+                ),
+            }
+            Ok(result?.to_value()?)
         }
         p::METHOD_WRITE_TRACKED => {
             let value = p::TrackedFilesPayload::from_value(payload)?;
