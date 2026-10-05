@@ -15,6 +15,8 @@ mod platform;
 #[cfg(target_os = "none")]
 mod s3;
 #[cfg(target_os = "none")]
+mod trace;
+#[cfg(target_os = "none")]
 applib::main!(boot::main);
 #[cfg(not(target_os = "none"))]
 fn main() {

@@ -10,9 +10,43 @@ use spin_core::{
 };
 use spin_domain::{self as d, TryClone, Wire, try_push, try_push_str, try_string};
 use std::io::{Read, Seek, SeekFrom};
+use std::time::Instant;
 mod transfer;
 pub(crate) use transfer::{export, import};
 type Result<T> = std::io::Result<T>;
+/// De stappen van een seal, laagbewerking of export in de runnerlog (stderr):
+/// `SPIN_<WAT>_STEP id= step= ms= total_ms=`, zodat een trage of hangende
+/// stap bij naam te vinden is.
+pub(crate) struct Steps<'a> {
+    what: &'static str,
+    id: &'a str,
+    started: Instant,
+    last: Instant,
+}
+impl<'a> Steps<'a> {
+    pub(crate) fn new(what: &'static str, id: &'a str) -> Self {
+        let now = Instant::now();
+        eprintln!("SPIN_{what}_BEGIN id={id}");
+        Self {
+            what,
+            id,
+            started: now,
+            last: now,
+        }
+    }
+    /// Sluit de stap af die bij de vorige stap (of het begin) begon.
+    pub(crate) fn step(&mut self, step: &str) {
+        let now = Instant::now();
+        eprintln!(
+            "SPIN_{}_STEP id={} step={step} ms={} total_ms={}",
+            self.what,
+            self.id,
+            now.duration_since(self.last).as_millis(),
+            now.duration_since(self.started).as_millis()
+        );
+        self.last = now;
+    }
+}
 fn io(error: impl std::error::Error + Send + Sync + 'static) -> std::io::Error {
     std::io::Error::other(error)
 }
@@ -650,14 +684,21 @@ async fn clean_layer(
     recording: &str,
     rebase: bool,
 ) -> Result<d::LayerContents> {
-    let mut layer = top_layer(&mut save(docker, tag).await?).await?;
+    let mut steps = Steps::new("LAYER", recording);
+    let mut saved = save(docker, tag).await?;
+    steps.step("save");
+    let mut layer = top_layer(&mut saved).await?;
+    steps.step("top_layer");
     let (mut diff, deletions) = filter(&mut layer, true, None).await?;
+    steps.step("filter");
     let (entries, hashes) = diff_entries(&mut diff).await?;
+    steps.step("hash_entries");
     let parent_hashes = if parent.is_empty() || hashes.is_empty() {
         d::Map::new()
     } else {
         hashes_in_image(docker, parent, &hashes).await?
     };
+    steps.step("parent_hashes");
     let mut dropped = d::Map::new();
     let mut total = d::ContentTotal::default();
     let mut kept = Vec::new();
@@ -681,6 +722,7 @@ async fn clean_layer(
     if !dropped.is_empty() || rebase {
         let (mut filtered, _) = filter(&mut diff, false, Some(&dropped)).await?;
         rebuild(docker, tag, parent, recording, &mut filtered, &deletions).await?;
+        steps.step("rebuild");
     }
     Ok(contents)
 }
@@ -735,7 +777,9 @@ pub(crate) async fn seal(docker: &Docker, recording: &d::Recording) -> Result<d:
         spin_core::docker::safe_name(&recording.id).map_err(io)?
     ))
     .map_err(io)?;
+    let mut steps = Steps::new("SEAL", &recording.id);
     let _ = control(docker, &["exec", &runtime.container_id, "sh", "-c", "rm -rf /root/.npm/_cacache /root/.cache/pip /root/.cache/go-build /tmp/* /var/cache/apk/* 2>/dev/null; true"]).await;
+    steps.step("cleanup");
     let rebase = !runtime.parent_ref.is_empty();
     let parent = if rebase {
         runtime.parent_ref.try_clone().map_err(io)?
@@ -755,6 +799,7 @@ pub(crate) async fn seal(docker: &Docker, recording: &d::Recording) -> Result<d:
             Err(_) => runtime.base_ref.try_clone().map_err(io)?,
         }
     };
+    steps.step("parent");
     let committed = control(
         docker,
         &[
@@ -769,6 +814,7 @@ pub(crate) async fn seal(docker: &Docker, recording: &d::Recording) -> Result<d:
         ],
     )
     .await;
+    steps.step("commit");
     let mut contents = None;
     if let Err(error) = committed {
         if control(docker, &["image", "inspect", "--format", "{{.Id}}", &tag])
@@ -787,11 +833,15 @@ pub(crate) async fn seal(docker: &Docker, recording: &d::Recording) -> Result<d:
             Err(error) => eprintln!("SPIN_SEAL_FULL_DIFF error={error}"),
         }
     }
+    steps.step("clean_layer");
     let digest = control(docker, &["image", "inspect", "--format", "{{.Id}}", &tag]).await?;
     let root_fs = root_fs(docker, &tag).await?;
+    steps.step("inspect");
     let content = content_identity(docker, &tag, &parent).await?;
+    steps.step("content_identity");
     let delta = parent.starts_with("spin/artifact:");
     remove(docker, &runtime.container_id).await;
+    steps.step("remove_container");
     Ok(d::CapsuleSnapshot {
         driver: try_string("docker").map_err(io)?,
         r#ref: tag,

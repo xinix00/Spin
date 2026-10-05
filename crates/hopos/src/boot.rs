@@ -347,10 +347,21 @@ async fn serve(
                 let now_ms = applib::clock::now_ns() / 1_000_000;
                 for index in 0..spin_runtime::tenancy::TENANTS {
                     let mail = tenants.mailbox(index);
-                    let (phase, since) = mail.phase();
+                    let (phase, since, running) = mail.phase();
                     let ms = now_ms.saturating_sub(since);
                     if mail.active() && ms >= 5_000 {
-                        applib::log!("SPIN_OWNER_PHASE slot={index} phase={phase} ms={ms}");
+                        // running=: deze stap loopt al zo lang; after=: hij is
+                        // klaar en de eigenaar hangt in wat erna komt.
+                        let state = if running { "running" } else { "after" };
+                        let detail = mail.phase_detail();
+                        let storage = crate::trace::owner();
+                        applib::log!(
+                            "SPIN_OWNER_PHASE slot={index} {state}={phase} route={detail} ms={ms} storage={} storage_ms={} uploader={} uploader_ms={}",
+                            storage.0,
+                            now_ms.saturating_sub(storage.1),
+                            crate::trace::uploader().0,
+                            now_ms.saturating_sub(crate::trace::uploader().1)
+                        );
                     }
                 }
             }

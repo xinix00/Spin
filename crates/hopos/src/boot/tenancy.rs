@@ -106,7 +106,9 @@ pub(super) fn owner<'a>(
                         .map_err(|_| Error::Http(503, "replica upload cancelled"))?;
                     let mut backend = storage::Backend::new(files, &wait, database);
                     let started = applib::clock::now_ns();
+                    let step = crate::trace::uploader_step(crate::trace::Step::UploadParts);
                     let result = pending.upload(&mut backend, &mut remote);
+                    drop(step);
                     applib::log!(
                         "SPIN_REPLICA_UPLOADED domain={tag} ok={} ms={}",
                         result.is_ok(),

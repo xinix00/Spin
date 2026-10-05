@@ -252,6 +252,7 @@ impl<'a> Owner<'a> {
             // dezelfde node wacht zijn vorige leven af).
             let key = spin_core::validation::text(format_args!("{namespace}/lease"))?;
             let node = spin_core::validation::text(format_args!("hopos/{domain}"))?;
+            let claim = crate::trace::owner_step(crate::trace::Step::LeaseClaim);
             let writer = loop {
                 let now =
                     crate::platform::timestamp(app).map_err(|_| spin_store::Error::Storage(10))?;
@@ -288,6 +289,8 @@ impl<'a> Owner<'a> {
             lease_key = key;
             let now =
                 crate::platform::timestamp(app).map_err(|_| spin_store::Error::Storage(10))?;
+            drop(claim);
+            let _prepare = crate::trace::owner_step(crate::trace::Step::Prepare);
             let owner = Replica::prepare(
                 &mut backend,
                 &mut remote,
@@ -333,6 +336,15 @@ impl<'a> Owner<'a> {
         })
     }
     fn execute(&mut self, op: Op<'_>) -> spin_store::Result<Reply> {
+        let _step = crate::trace::owner_step(match &op {
+            Op::Usage => crate::trace::Step::SqlUsage,
+            Op::Load => crate::trace::Step::SqlLoad,
+            Op::Save(_) => crate::trace::Step::SqlSave,
+            Op::Replace(_) => crate::trace::Step::SqlReplace,
+            Op::Blob(_) => crate::trace::Step::SqlBlob,
+            Op::Purge => crate::trace::Step::SqlPurge,
+            Op::Restore(_) => crate::trace::Step::SqlRestore,
+        });
         if self.exporting.is_some() {
             return Err(spin_store::Error::Conflict(
                 "database writes paused for backup",
@@ -405,7 +417,10 @@ impl<'a> Owner<'a> {
         let (Some(replica), Some(bucket)) = (&mut self.replica, &mut self.bucket) else {
             return Ok(());
         };
-        if let Err(error) = replica.renew(&mut bucket.lease(&self.lease_key, LEASE_TTL_MS), now) {
+        let renew = crate::trace::owner_step(crate::trace::Step::Renew);
+        let renewed = replica.renew(&mut bucket.lease(&self.lease_key, LEASE_TTL_MS), now);
+        drop(renew);
+        if let Err(error) = renewed {
             applib::log!("SPIN_REPLICA_LEASE_FAILED error={error:?}");
             if error == replica_core::Error::LeaseLost {
                 self.poisoned = true;
@@ -617,6 +632,7 @@ impl Persistence for Owner<'_> {
             return Ok(());
         };
         if let Some((pending, uploaded)) = self.uploads.take_done() {
+            let _finish = crate::trace::owner_step(crate::trace::Step::Finish);
             if replica
                 .finish(&mut self.backend, bucket, pending, uploaded, now)
                 .map_err(replica_error)?
@@ -629,10 +645,10 @@ impl Persistence for Owner<'_> {
         if self.uploads.busy() {
             return Ok(());
         }
-        if let Some(pending) = replica
-            .begin(&mut self.backend, bucket, now)
-            .map_err(replica_error)?
-        {
+        let capture = crate::trace::owner_step(crate::trace::Step::BeginCapture);
+        let begun = replica.begin(&mut self.backend, bucket, now);
+        drop(capture);
+        if let Some(pending) = begun.map_err(replica_error)? {
             let database = self.backend.location().clone();
             self.uploads.start(pending, database);
         }

@@ -124,7 +124,9 @@ pub struct Mailbox {
     /// Waar de eigenaar is: de laatst afgeronde stap (of `idle`, `woke`,
     /// `request`) en sinds wanneer (ms, de klok van de eigenaar). De boot-schil
     /// logt een eigenaar die lang in één fase blijft.
-    phase: Cell<(&'static str, u64)>,
+    phase: Cell<(&'static str, u64, bool)>,
+    /// Bij een verzoek: methode en route met ids als `:id`.
+    detail: RefCell<String>,
 }
 /// Hoeveel van een herstel uit S3 binnen is: de bytes die de S3-verbinding van
 /// de eigenaar ontving, en het verwachte totaal (de snapshot in de bucket).
@@ -185,14 +187,20 @@ impl Default for Mailbox {
                 waker: RefCell::new(None),
             }),
             restore: alloc::rc::Rc::new(Restore::default()),
-            phase: Cell::new(("start", 0)),
+            phase: Cell::new(("start", 0, true)),
+            detail: RefCell::new(String::new()),
         }
     }
 }
 impl Mailbox {
-    /// De fase van de eigenaar en sinds wanneer (ms).
-    pub fn phase(&self) -> (&'static str, u64) {
+    /// De fase van de eigenaar, sinds wanneer (ms), en of die stap nog loopt
+    /// (`false`: hij is klaar en de eigenaar zit in wat erna komt).
+    pub fn phase(&self) -> (&'static str, u64, bool) {
         self.phase.get()
+    }
+    /// Bij een verzoek: welke (methode en route, ids als `:id`).
+    pub fn phase_detail(&self) -> String {
+        self.detail.borrow().clone()
     }
     /// De voortgangsteller van een herstel; de opslag van de eigenaar telt erin.
     pub fn restore(&self) -> alloc::rc::Rc<Restore> {
@@ -560,7 +568,7 @@ fn serve_inner<P: Persistence, H: Platform>(
 ) -> Result {
     let clock = platform.clock();
     let waker = mail.waker();
-    let mut meter = Meter::new(clock, &mail.phase);
+    let mut meter = Meter::new(clock, &mail.phase, &mail.detail);
     let mut outgoing = outbound::Pool::new();
     mail.active.set(true);
     let mut passwords: Vec<Option<PasswordWork>> = Vec::new();
@@ -700,9 +708,9 @@ fn serve_inner<P: Persistence, H: Platform>(
                     peer: &input.peer,
                     secure: input.secure,
                 };
-                meter.mark();
+                meter.mark_request(&route_label(&input.method, &input.path));
                 let result = server.begin(request, &now, runtime);
-                meter.lap::<H>(route_class(&input.path));
+                meter.lap::<H>("request");
                 if result.is_err() {
                     // Never include query strings, credentials or public share tokens.
                     let path = if input.path.starts_with("/api/jobs/")
@@ -832,7 +840,7 @@ fn serve_inner<P: Persistence, H: Platform>(
                 continue;
             }
             mail.slots.0.borrow_mut()[index].next_chunk = false;
-            meter.mark();
+            meter.mark("backup_chunk");
             match server.backup_chunk(wait, &now) {
                 Ok(Some(bytes)) => mail.slots.0.borrow_mut()[index].chunk = Some(bytes),
                 Ok(None) => {
@@ -853,7 +861,7 @@ fn serve_inner<P: Persistence, H: Platform>(
             let Some(wait) = waiting else {
                 continue;
             };
-            meter.mark();
+            meter.mark("poll_upload");
             let polled = server.poll_upload(wait);
             meter.lap::<H>("poll_upload");
             let response = match polled {
@@ -1109,7 +1117,7 @@ fn serve_inner<P: Persistence, H: Platform>(
             if password.as_mut().is_some_and(|work| work.step(rounds))
                 && let Some(work) = password.take()
             {
-                meter.mark();
+                meter.mark("finish_password");
                 let finished = server.finish_password(work, &now, runtime);
                 meter.lap::<H>("finish_password");
                 if let Some(response) = make_response::<H>(finished) {
@@ -1138,7 +1146,7 @@ fn serve_inner<P: Persistence, H: Platform>(
                 && mail.slots.0.borrow()[index].frame_bytes == 0
                 && mail.slots.0.borrow()[index].close.is_none()
             {
-                meter.mark();
+                meter.mark("watch_push");
                 let (code, error) = match server.state_for_watch(&mut watch.watch, &now) {
                     Ok(json) if json.len() > MAX_STATE_FRAME => {
                         (1008, "state frame exceeds budget")
@@ -1183,7 +1191,7 @@ fn serve_inner<P: Persistence, H: Platform>(
         // verzoek dat de eigenaar uit zijn rust belt, wacht niet op de opslagtelling
         // of de Replica-capture.
         if !server.backup_active() && clock.millis().saturating_sub(maintained) >= 1000 {
-            meter.mark();
+            meter.mark("maintain_storage");
             // Een capture houdt de eigenaar seconden vast; terwijl een browser
             // bezig is, wacht hij, maar nooit langer dan 30 s (de lease).
             let at = clock.millis();
@@ -1262,18 +1270,25 @@ fn serve_inner<P: Persistence, H: Platform>(
     }
     Ok(())
 }
-/// De redactieklasse van een pad, zonder query, token of id (dezelfde drie
-/// prefixen als `SPIN_REQUEST_CONTEXT`).
-fn route_class(path: &str) -> &'static str {
-    if path.starts_with("/api/jobs/") {
-        "/api/jobs/"
-    } else if path.starts_with("/api/sessions/") {
-        "/api/sessions/"
-    } else if path.starts_with("/api/workflow/mcp/") {
-        "/api/workflow/mcp/"
-    } else {
-        "[other route]"
+/// Methode en pad voor de log, zonder query en met elk id- of tokenachtig
+/// segment als `:id`: alleen korte segmenten van kleine letters en `-` blijven.
+fn route_label(method: &str, path: &str) -> String {
+    let mut out = String::new();
+    let _ = out.try_reserve(method.len() + path.len().min(96) + 1);
+    out.push_str(method);
+    out.push(' ');
+    for segment in path.split('/').skip(1).take(8) {
+        out.push('/');
+        if !segment.is_empty()
+            && segment.len() <= 24
+            && segment.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
+        {
+            out.push_str(segment);
+        } else if !segment.is_empty() {
+            out.push_str(":id");
+        }
     }
+    out
 }
 /// Laagdata en uploads: bulk, die wacht op de interface.
 fn bulk(path: &str) -> bool {
@@ -1325,7 +1340,8 @@ const SLOW_MS: u64 = 200;
 /// regel. Niets hierin alloceert.
 struct Meter<'m, K: Clock> {
     clock: K,
-    phase: &'m Cell<(&'static str, u64)>,
+    phase: &'m Cell<(&'static str, u64, bool)>,
+    detail: &'m RefCell<String>,
     since: u64,
     round_at: u64,
     lap_at: u64,
@@ -1337,11 +1353,16 @@ struct Meter<'m, K: Clock> {
     queue_max_ms: u64,
 }
 impl<'m, K: Clock> Meter<'m, K> {
-    fn new(clock: K, phase: &'m Cell<(&'static str, u64)>) -> Self {
+    fn new(
+        clock: K,
+        phase: &'m Cell<(&'static str, u64, bool)>,
+        detail: &'m RefCell<String>,
+    ) -> Self {
         let now = clock.millis();
         Self {
             clock,
             phase,
+            detail,
             since: now,
             round_at: now,
             lap_at: now,
@@ -1357,25 +1378,42 @@ impl<'m, K: Clock> Meter<'m, K> {
     fn round(&mut self) {
         self.round_at = self.clock.millis();
         self.lap_at = self.round_at;
-        self.phase.set(("woke", self.round_at));
+        self.phase.set(("woke", self.round_at, true));
     }
-    /// Zet het beginpunt van de volgende stap.
-    fn mark(&mut self) {
+    /// Zet het beginpunt van de volgende stap en noemt hem.
+    fn mark(&mut self, step: &'static str) {
         self.lap_at = self.clock.millis();
-        self.phase.set(("request", self.lap_at));
+        self.phase.set((step, self.lap_at, true));
+        self.detail.borrow_mut().clear();
+    }
+    /// Het beginpunt van een verzoek, met zijn label voor de fasregel.
+    fn mark_request(&mut self, label: &str) {
+        self.mark("request");
+        let mut detail = self.detail.borrow_mut();
+        if detail.try_reserve(label.len()).is_ok() {
+            detail.push_str(label);
+        }
     }
     /// Sluit de stap af die bij de laatste `mark` of `lap` begon.
     fn lap<H: Platform>(&mut self, step: &'static str) {
         let now = self.clock.millis();
         let ms = now.saturating_sub(self.lap_at);
         self.lap_at = now;
-        self.phase.set((step, now));
+        self.phase.set((step, now, false));
         if ms > self.longest.1 {
             self.longest = (step, ms);
         }
         if ms >= SLOW_MS {
-            H::log(format_args!("SPIN_OWNER_SLOW step={step} ms={ms}"));
+            let detail = self.detail.borrow();
+            if detail.is_empty() {
+                H::log(format_args!("SPIN_OWNER_SLOW step={step} ms={ms}"));
+            } else {
+                H::log(format_args!(
+                    "SPIN_OWNER_SLOW step={step} route={detail} ms={ms}"
+                ));
+            }
         }
+        self.detail.borrow_mut().clear();
     }
     /// Een verzoek lag `ms` in de rij voordat de eigenaar hem pakte.
     fn queued<H: Platform>(&mut self, ms: u64) {
@@ -1389,7 +1427,7 @@ impl<'m, K: Clock> Meter<'m, K> {
     /// elke 30 s de samenvatting.
     fn finish<H: Platform>(&mut self) {
         let now = self.clock.millis();
-        self.phase.set(("idle", now));
+        self.phase.set(("idle", now, true));
         self.busy_ms = self
             .busy_ms
             .saturating_add(now.saturating_sub(self.round_at));

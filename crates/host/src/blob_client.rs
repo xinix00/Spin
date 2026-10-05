@@ -139,7 +139,19 @@ impl Client {
         let pause_until = Instant::now() + Duration::from_secs(1800);
         let mut attempt = 0;
         loop {
+            let started = Instant::now();
             let result = self.request(method, path, body, offset).await;
+            if attempt > 0 || started.elapsed() >= Duration::from_secs(5) || result.is_err() {
+                eprintln!(
+                    "SPIN_BLOB_REQUEST method={method} offset={} attempt={attempt} ms={} result={}",
+                    offset.unwrap_or(0),
+                    started.elapsed().as_millis(),
+                    match &result {
+                        Ok(reply) => text(format_args!("{}", reply.status)).unwrap_or_default(),
+                        Err(error) => text(format_args!("{error}")).unwrap_or_default(),
+                    }
+                );
+            }
             if let Ok(reply) = &result {
                 if reply.status < 500 {
                     return result;
@@ -167,6 +179,8 @@ impl Client {
         if size == 0 || size > crate::archive::FILE_LIMIT {
             return Err(io("invalid archive size"));
         }
+        let started = Instant::now();
+        eprintln!("SPIN_UPLOAD_BEGIN kind={kind} name={name} bytes={size}");
         let mut meta = Object::new();
         for (key, value) in [
             ("kind", Value::string(kind).map_err(io)?),
@@ -198,6 +212,10 @@ impl Client {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| io("upload has no id"))?;
         let path = text(format_args!("/api/uploads/{}", segment(id)?)).map_err(io)?;
+        eprintln!(
+            "SPIN_UPLOAD_CREATED id={id} ms={}",
+            started.elapsed().as_millis()
+        );
         let result = async {
             let chunk_size = field(&status, "chunk_size")
                 .as_i64()
@@ -220,9 +238,21 @@ impl Client {
                 if field(&status, "offset").as_i64().unwrap_or(-1) < (offset + n as u64) as i64 {
                     return Err(io("upload did not commit chunk"));
                 }
+                if (offset + n as u64) / (64 << 20) != offset / (64 << 20) {
+                    let ms = started.elapsed().as_millis().max(1);
+                    eprintln!(
+                        "SPIN_UPLOAD_PROGRESS id={id} bytes={} of={size} ms={ms} mb_s={}",
+                        offset + n as u64,
+                        u128::from(offset + n as u64) / 1000 / ms
+                    );
+                }
                 offset += n as u64;
                 executor::next_round().await;
             }
+            eprintln!(
+                "SPIN_UPLOAD_COMPLETING id={id} ms={}",
+                started.elapsed().as_millis()
+            );
             let finish = text(format_args!("{path}/complete")).map_err(io)?;
             let reply = self.retry("POST", &finish, &[], None).await?;
             if reply.status != 200 {
@@ -235,8 +265,18 @@ impl Client {
             Ok(result)
         }
         .await;
-        if result.is_err() {
-            let _ = self.request("DELETE", &path, &[], None).await;
+        match &result {
+            Ok(_) => eprintln!(
+                "SPIN_UPLOAD_DONE id={id} bytes={size} ms={}",
+                started.elapsed().as_millis()
+            ),
+            Err(error) => {
+                eprintln!(
+                    "SPIN_UPLOAD_FAILED id={id} ms={} error={error}",
+                    started.elapsed().as_millis()
+                );
+                let _ = self.request("DELETE", &path, &[], None).await;
+            }
         }
         result
     }

@@ -90,17 +90,25 @@ async fn delta_archive(layer: &mut Temporary, note: &Note) -> Result<Temporary> 
 }
 pub(crate) async fn export(docker: &Docker, snapshot: &d::CapsuleSnapshot) -> Result<Temporary> {
     validate(snapshot)?;
+    let mut steps = super::Steps::new("EXPORT", &snapshot.r#ref);
     let mut saved = save(docker, &snapshot.r#ref).await?;
+    steps.step("save");
     if !snapshot.delta || snapshot.parent_ref.is_empty() {
-        return saved.gzip(false).await;
+        let archive = saved.gzip(false).await;
+        steps.step("gzip");
+        return archive;
     }
     let mut layer = top_layer(&mut saved).await?;
+    steps.step("top_layer");
     let note = Note {
         parent: snapshot.parent_ref.try_clone().map_err(io)?,
         content: snapshot.content.try_clone().map_err(io)?,
         layer: layer_hash(&mut layer).await?,
     };
-    delta_archive(&mut layer, &note).await
+    steps.step("layer_hash");
+    let archive = delta_archive(&mut layer, &note).await;
+    steps.step("delta_archive");
+    archive
 }
 async fn read_note(archive: &mut Temporary) -> Result<Option<Note>> {
     let mut reader = Reader::new(&mut archive.file)?;
