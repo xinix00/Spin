@@ -195,9 +195,28 @@ impl<P: Persistence> Server<P> {
                     ("at", call.updated.to_value()?),
                 ])?
             } else {
+                // De runner meldt zijn stap (lagen stapelen 2/5, capsule starten);
+                // zonder melding blijft het de vaste tekst.
+                let progress = &call.progress;
                 http::object(&[
-                    ("stage", Value::string("prepare")?),
-                    ("message", Value::string("Werkomgeving voorbereiden")?),
+                    (
+                        "stage",
+                        Value::string(if progress.stage.is_empty() {
+                            "prepare"
+                        } else {
+                            &progress.stage
+                        })?,
+                    ),
+                    (
+                        "message",
+                        Value::string(if progress.message.is_empty() {
+                            "Werkomgeving voorbereiden"
+                        } else {
+                            &progress.message
+                        })?,
+                    ),
+                    ("current", progress.current.to_value()?),
+                    ("total", progress.total.to_value()?),
                     ("updated_at", call.updated.to_value()?),
                 ])?
             };

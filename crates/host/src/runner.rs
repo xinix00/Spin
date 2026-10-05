@@ -202,10 +202,12 @@ async fn invoke(
                         .map_err(engine_io)?;
                 }
             }
-            Ok(crate::images::start_recording(docker, &value)
-                .await
-                .map_err(engine_io)?
-                .to_value()?)
+            Ok(
+                crate::images::start_recording(docker, &value, Progress::of(&request.id))
+                    .await
+                    .map_err(engine_io)?
+                    .to_value()?,
+            )
         }
         p::METHOD_MATERIALIZE => {
             let value = p::MaterializePayload::from_value(payload)?;
@@ -222,10 +224,12 @@ async fn invoke(
                 .ensure(docker, &value.composition, &value.artifacts)
                 .await
                 .map_err(engine_io)?;
-            Ok(crate::images::materialize(docker, &value)
-                .await
-                .map_err(engine_io)?
-                .to_value()?)
+            Ok(
+                crate::images::materialize(docker, &value, Progress::of(&request.id))
+                    .await
+                    .map_err(engine_io)?
+                    .to_value()?,
+            )
         }
         p::METHOD_SEAL => {
             let value = p::RecordingPayload::from_value(payload)?;

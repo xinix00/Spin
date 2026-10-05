@@ -351,6 +351,7 @@ async fn build(
     docker: &Docker,
     composition: &d::Composition,
     plan: spin_core::layers::LayerPlan<'_>,
+    progress: Progress<'_>,
 ) -> Result<String> {
     let target =
         spin_core::docker::runtime_name("spin-compose-build", &composition.id).map_err(io)?;
@@ -386,8 +387,11 @@ async fn build(
     )
     .await?;
     steps.step("base_container");
+    let total = u64::try_from(plan.steps.len()).unwrap_or(u64::MAX);
     let result = async {
         for (index, step) in plan.steps.iter().enumerate() {
+            let done = u64::try_from(index).unwrap_or(u64::MAX);
+            progress.report("build", "lagen stapelen", done, total);
             if step.full {
                 let source = spin_core::docker::runtime_name(
                     "spin-compose-source",
@@ -454,6 +458,7 @@ async fn build(
             ],
         )
         .await?;
+        progress.report("build", "image vastleggen", total, total);
         steps.step("commit");
         Ok(image)
     }
@@ -467,6 +472,7 @@ async fn selected(
     docker: &Docker,
     composition: &d::Composition,
     artifacts: &[d::Artifact],
+    progress: Progress<'_>,
 ) -> Result<(d::CapsuleSnapshot, bool)> {
     let plan = spin_core::layers::plan_layers(composition, artifacts).map_err(io)?;
     if plan.steps.is_empty() {
@@ -475,7 +481,7 @@ async fn selected(
     Ok((
         d::CapsuleSnapshot {
             driver: try_string("docker").map_err(io)?,
-            r#ref: build(docker, composition, plan).await?,
+            r#ref: build(docker, composition, plan, progress).await?,
             restorable: true,
             ..Default::default()
         },
@@ -485,8 +491,11 @@ async fn selected(
 pub(crate) async fn materialize(
     docker: &Docker,
     value: &d::protocol::MaterializePayload,
+    progress: Progress<'_>,
 ) -> Result<d::CapsuleRuntime> {
-    let (snapshot, ephemeral) = selected(docker, &value.composition, &value.artifacts).await?;
+    let (snapshot, ephemeral) =
+        selected(docker, &value.composition, &value.artifacts, progress).await?;
+    progress.report("start", "capsule starten", 0, 0);
     let result = docker
         .materialize_snapshot(
             &mut DockerExecutor,
@@ -504,6 +513,7 @@ pub(crate) async fn materialize(
 pub(crate) async fn start_recording(
     docker: &Docker,
     value: &d::protocol::StartRecordingPayload,
+    progress: Progress<'_>,
 ) -> Result<d::CapsuleRuntime> {
     let Some(stack) = value
         .stack
@@ -536,7 +546,7 @@ pub(crate) async fn start_recording(
         layers: stack.layers.try_clone().map_err(io)?,
         ..Default::default()
     };
-    let (snapshot, ephemeral) = selected(docker, &composition, &stack.artifacts).await?;
+    let (snapshot, ephemeral) = selected(docker, &composition, &stack.artifacts, progress).await?;
     let mut base = parent.try_clone().map_err(io)?;
     base.snapshot.r#ref = snapshot.r#ref.try_clone().map_err(io)?;
     let result = docker

@@ -656,14 +656,14 @@ function showNotice(text){showBanner(text,'notice');}
 // One vocabulary for everything that starts on a runner: a recording, a
 // Session's capsule, the chat waiting for it. The stage names come from the
 // runner; the words are here, once.
-const startStages={prepare:'voorbereiden',parents:'basisimage naar runner',load:'image laden op de runner',start:'capsule starten',done:'klaar'};
+const startStages={prepare:'voorbereiden',build:'lagen stapelen',parents:'basisimage naar runner',load:'image laden op de runner',start:'capsule starten',done:'klaar'};
 function progressText(progress){if(!progress)return '';const stage=startStages[progress.stage]||progress.stage||'starten',bytes=progressPercent(progress)===null?'':` · ${formatBytes(progress.current||0)} / ${formatBytes(progress.total)} (${progressPercent(progress)}%)`;return `${stage}${bytes}${progress.message&&!progress.total?` · ${progress.message}`:''}`;}
 function startProgressText(start){return `Starten · ${progressText(start)||'starten'}`;}
 // progressPercent is the whole-number percentage of a progress with a total, else null.
 function progressPercent(progress){return progress?.total?Math.floor((progress.current||0)/progress.total*100):null;}
 // preparationStep names what the runner is doing once: its own message
 // ("Werkomgeving voorbereiden"), or the stage with bytes while downloading.
-function preparationStep(progress){if(!progress)return 'voorbereiden';const percent=progressPercent(progress);if(percent!==null)return `${startStages[progress.stage]||progress.stage||'voorbereiden'} · ${formatBytes(progress.current||0)} / ${formatBytes(progress.total)} (${percent}%)`;return progress.message||startStages[progress.stage]||progress.stage||'voorbereiden';}
+function preparationStep(progress){if(!progress)return 'voorbereiden';if(progress.stage==='build'&&progress.total)return `lagen stapelen · ${progress.current||0}/${progress.total}`;const percent=progressPercent(progress);if(percent!==null)return `${startStages[progress.stage]||progress.stage||'voorbereiden'} · ${formatBytes(progress.current||0)} / ${formatBytes(progress.total)} (${percent}%)`;return progress.message||startStages[progress.stage]||progress.stage||'voorbereiden';}
 // preparationText says where a Session's capsule stands: failed and
 // retrying, being prepared on a runner, or still waiting for one.
 function preparationText(preparing,session){

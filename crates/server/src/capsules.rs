@@ -126,7 +126,7 @@ pub(crate) struct Call {
     /// Wanneer de diagnose dit wachten voor het laatst meldde (eens per 60 s).
     reported_ms: u64,
     /// De laatste stand die de runner van dit verzoek meldde (stage, message, bytes).
-    progress: d::SealStatus,
+    pub(crate) progress: d::SealStatus,
 }
 impl Call {
     /// Of de opdracht nog in de rij ligt en niet bij een runner.
@@ -578,7 +578,11 @@ impl<P: Persistence> Server<P> {
             {
                 continue;
             }
-            if time.saturating_sub(self.calls[index].started.time()?.0) >= CALL_LIFETIME_NS {
+            // Vanaf de laatste activiteit (uitdelen, voortgang, antwoord), niet vanaf
+            // het aanmaken: een stap die eerst minuten op een login wachtte, kreeg
+            // anders geen volle termijn meer voor het bouwen (05-10: drie keer
+            // "runner operation timed out" na 60-120 s bouwen, stap geparkeerd).
+            if time.saturating_sub(self.calls[index].updated.time()?.0) >= CALL_LIFETIME_NS {
                 let id = self.calls[index].request_id.try_clone()?;
                 let client = self.calls[index].client.try_clone()?;
                 if let Some(peer) = self.runners.iter_mut().find(|p| p.client().id == client) {
