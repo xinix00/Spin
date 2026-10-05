@@ -8,11 +8,26 @@ use core::{
     future::poll_fn,
     task::{Poll, Waker},
 };
-use replica_core::{owner::Pending, replication::Uploaded};
+use replica_core::{
+    owner::{Maintenance, Pending, Synced},
+    replication::Uploaded,
+};
 
-/// Een capture met de databasenaam van zijn spool, en na afloop het resultaat.
-pub(in crate::boot) type Job = (Pending, super::backend::Location);
-type Outcome = (Pending, replica_core::Result<Uploaded>);
+/// Werk voor de uploader: de delen van een capture, of een onderhoudsbeurt.
+// Er is hoogstens één taak tegelijk; een box zou alleen een allocatie toevoegen.
+#[allow(clippy::large_enum_variant)]
+pub(in crate::boot) enum Work {
+    Upload(Pending),
+    Maintain(Maintenance),
+}
+/// Het werk met de plek van de database van zijn tenant.
+pub(in crate::boot) type Job = (Work, super::backend::Location);
+/// Het resultaat dat de eigenaar afrondt.
+#[allow(clippy::large_enum_variant)]
+pub(in crate::boot) enum Outcome {
+    Upload(Pending, replica_core::Result<Uploaded>),
+    Maintain(replica_core::Result<Synced>),
+}
 /// Het overdrachtspunt tussen de eigenaar en zijn uploader; beide draaien op
 /// dezelfde kern, dus RefCell volstaat.
 pub(in crate::boot) struct Uploads {
@@ -37,9 +52,9 @@ impl Uploads {
         self.busy.set(false);
     }
     /// De eigenaar geeft een capture af en wekt de uploader.
-    pub(in crate::boot) fn start(&self, pending: Pending, database: super::backend::Location) {
+    pub(in crate::boot) fn start(&self, work: Work, database: super::backend::Location) {
         self.busy.set(true);
-        *self.job.borrow_mut() = Some((pending, database));
+        *self.job.borrow_mut() = Some((work, database));
         if let Some(waker) = self.waker.borrow_mut().take() {
             waker.wake();
         }
@@ -68,7 +83,7 @@ impl Uploads {
         .await
     }
     /// De uploader levert het resultaat af; de eigenaar rondt af bij zijn volgende onderhoud.
-    pub(in crate::boot) fn done(&self, pending: Pending, result: replica_core::Result<Uploaded>) {
-        *self.done.borrow_mut() = Some((pending, result));
+    pub(in crate::boot) fn done(&self, outcome: Outcome) {
+        *self.done.borrow_mut() = Some(outcome);
     }
 }

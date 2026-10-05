@@ -17,7 +17,7 @@ mod backend;
 mod restore;
 mod upload;
 pub(super) use backend::{Arena, Backend, FilesPool, Location};
-pub(super) use upload::Uploads;
+pub(super) use upload::{Outcome, Uploads, Work};
 
 pub(super) type Bucket<'a> = replica_s3::S3<Network, Wait<'a>>;
 pub(super) struct Owner<'a> {
@@ -239,6 +239,8 @@ impl<'a> Owner<'a> {
             config.generation = duration(env("SPIN_REPLICA_GENERATION"), 7 * 86400)?;
             config.retention = duration(env("SPIN_REPLICA_RETENTION"), 28 * 86400)?;
             config.adopt_local = env("SPIN_REPLICA_ADOPT_LOCAL") == "1";
+            // Compactie en opruimen als losse taak op de uploader, nooit op de eigenaar.
+            config.background_maintenance = true;
             // Replica opent zelf de verbindingen voor een parallel herstel;
             // iedere stroom telt mee op de openingspagina.
             let counted = restore.clone();
@@ -637,25 +639,28 @@ impl Persistence for Owner<'_> {
         let (Some(replica), Some(bucket)) = (&mut self.replica, &mut self.bucket) else {
             return Ok(());
         };
-        if let Some((pending, uploaded)) = self.uploads.take_done() {
-            let _finish = crate::trace::owner_step(crate::trace::Step::Finish);
-            let synced = replica
-                .finish(&mut self.backend, bucket, pending, uploaded, now)
-                .map_err(replica_error)?;
-            // Wat Replica's onderhoud binnen deze afronding deed.
-            if synced.maintenance.merged > 0
-                || synced.maintenance.pruned > 0
-                || synced.expired_objects > 0
-            {
-                applib::log!(
-                    "SPIN_REPLICA_MAINTENANCE merged={} pruned={} expired_objects={}",
-                    synced.maintenance.merged,
-                    synced.maintenance.pruned,
-                    synced.expired_objects
-                );
-            }
-            if synced.published {
-                applib::log!("SPIN_REPLICA_SYNCED");
+        if let Some(outcome) = self.uploads.take_done() {
+            match outcome {
+                Outcome::Upload(pending, uploaded) => {
+                    let _finish = crate::trace::owner_step(crate::trace::Step::Finish);
+                    let synced = replica
+                        .finish(&mut self.backend, bucket, pending, uploaded, now)
+                        .map_err(replica_error)?;
+                    if synced.published {
+                        applib::log!("SPIN_REPLICA_SYNCED");
+                    }
+                }
+                Outcome::Maintain(result) => {
+                    let synced = replica
+                        .maintenance_finish(&mut self.backend, result)
+                        .map_err(replica_error)?;
+                    applib::log!(
+                        "SPIN_REPLICA_MAINTENANCE merged={} pruned={} expired_objects={}",
+                        synced.maintenance.merged,
+                        synced.maintenance.pruned,
+                        synced.expired_objects
+                    );
+                }
             }
             return Ok(());
         }
@@ -668,7 +673,14 @@ impl Persistence for Owner<'_> {
         if let Some(pending) = begun.map_err(replica_error)? {
             applib::log!("SPIN_REPLICA_CAPTURE pages={}", pending.pages());
             let database = self.backend.location().clone();
-            self.uploads.start(pending, database);
+            self.uploads.start(Work::Upload(pending), database);
+        } else if let Some(job) = replica
+            .maintenance_begin(&mut self.backend, now)
+            .map_err(replica_error)?
+        {
+            // Niets te uploaden: het onderhoud draait op de uploader, nooit hier.
+            let database = self.backend.location().clone();
+            self.uploads.start(Work::Maintain(job), database);
         }
         Ok(())
     }

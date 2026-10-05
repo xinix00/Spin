@@ -101,20 +101,36 @@ pub(super) fn owner<'a>(
                 let mut remote = storage::Bucket::new(client, crate::s3::network, Wait(s))
                     .map_err(|_| Error::Http(503, "invalid Replica S3 configuration"))?;
                 loop {
-                    let (pending, database) = s
+                    let (work, database) = s
                         .wait(uploads.next())
                         .map_err(|_| Error::Http(503, "replica upload cancelled"))?;
                     let mut backend = storage::Backend::new(files, &wait, database);
                     let started = applib::clock::now_ns();
-                    let step = crate::trace::uploader_step(crate::trace::Step::UploadParts);
-                    let result = pending.upload(&mut backend, &mut remote);
-                    drop(step);
-                    applib::log!(
-                        "SPIN_REPLICA_UPLOADED domain={tag} ok={} ms={}",
-                        result.is_ok(),
-                        applib::clock::now_ns().saturating_sub(started) / 1_000_000
-                    );
-                    uploads.done(pending, result);
+                    match work {
+                        storage::Work::Upload(pending) => {
+                            let step = crate::trace::uploader_step(crate::trace::Step::UploadParts);
+                            let result = pending.upload(&mut backend, &mut remote);
+                            drop(step);
+                            applib::log!(
+                                "SPIN_REPLICA_UPLOADED domain={tag} ok={} ms={}",
+                                result.is_ok(),
+                                applib::clock::now_ns().saturating_sub(started) / 1_000_000
+                            );
+                            uploads.done(storage::Outcome::Upload(pending, result));
+                        }
+                        // Compactie en opruimen naast de eigenaar: alleen S3.
+                        storage::Work::Maintain(job) => {
+                            let step = crate::trace::uploader_step(crate::trace::Step::Maintenance);
+                            let result = job.run(&mut backend, &mut remote);
+                            drop(step);
+                            applib::log!(
+                                "SPIN_REPLICA_MAINTAINED domain={tag} ok={} ms={}",
+                                result.is_ok(),
+                                applib::clock::now_ns().saturating_sub(started) / 1_000_000
+                            );
+                            uploads.done(storage::Outcome::Maintain(result));
+                        }
+                    }
                     mail.nudge();
                 }
             })

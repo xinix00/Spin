@@ -20,8 +20,9 @@ pub(crate) enum Step {
     SqlPurge,
     SqlRestore,
     UploadParts,
+    Maintenance,
 }
-const NAMES: [&str; 14] = [
+const NAMES: [&str; 15] = [
     "idle",
     "lease_claim",
     "prepare",
@@ -36,6 +37,7 @@ const NAMES: [&str; 14] = [
     "sql_purge",
     "sql_restore",
     "upload_parts",
+    "maintenance",
 ];
 pub(crate) struct Slot {
     step: AtomicUsize,
