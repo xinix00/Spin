@@ -1,5 +1,5 @@
 //! Begrensde HTTP-overdrachten; het archief en de verbinding hebben één eigenaar.
-use crate::{archive::Temporary, client_net, executor, images, runner_socket};
+use crate::{archive::Temporary, client_net, executor, images, progress::Progress, runner_socket};
 use spin_core::{docker::Docker, validation::text};
 use spin_domain::{
     self as d, TryClone, Wire,
@@ -174,6 +174,7 @@ impl Client {
         name: &str,
         snapshot: Option<&d::CapsuleSnapshot>,
         file: &mut Temporary,
+        progress: Progress<'_>,
     ) -> Result<p::ArchiveResult> {
         let size = file.file.metadata()?.len();
         if size == 0 || size > crate::archive::FILE_LIMIT {
@@ -247,6 +248,7 @@ impl Client {
                     );
                 }
                 offset += n as u64;
+                progress.report("upload", "", offset, size);
                 executor::next_round().await;
             }
             eprintln!(
@@ -284,10 +286,17 @@ impl Client {
         &self,
         docker: &Docker,
         snapshot: &d::CapsuleSnapshot,
+        progress: Progress<'_>,
     ) -> Result<p::ArchiveResult> {
-        let mut file = images::export(docker, snapshot).await?;
-        self.upload("snapshot", &snapshot.r#ref, Some(snapshot), &mut file)
-            .await
+        let mut file = images::export(docker, snapshot, progress).await?;
+        self.upload(
+            "snapshot",
+            &snapshot.r#ref,
+            Some(snapshot),
+            &mut file,
+            progress,
+        )
+        .await
     }
     pub(crate) async fn download(
         &self,
@@ -496,7 +505,13 @@ mod tests {
                 file.file.write_all(&vec![b'a'; CHUNK]).unwrap();
                 file.file.write_all(b"end").unwrap();
                 let result = client
-                    .upload("bundle", "test", None, &mut file)
+                    .upload(
+                        "bundle",
+                        "test",
+                        None,
+                        &mut file,
+                        crate::progress::Progress::NONE,
+                    )
                     .await
                     .unwrap();
                 assert_eq!(result.size, 1_048_579);

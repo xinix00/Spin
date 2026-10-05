@@ -2,6 +2,7 @@
 use crate::{
     archive::{self, Reader, Temporary},
     process::{self, DockerExecutor},
+    progress::Progress,
 };
 use spin_core::{
     archive as tar,
@@ -9,6 +10,7 @@ use spin_core::{
     validation::text,
 };
 use spin_domain::{self as d, TryClone, Wire, try_push, try_push_str, try_string};
+use std::cell::RefCell;
 use std::io::{Read, Seek, SeekFrom};
 use std::time::Instant;
 mod transfer;
@@ -49,6 +51,20 @@ impl<'a> Steps<'a> {
 }
 fn io(error: impl std::error::Error + Send + Sync + 'static) -> std::io::Error {
     std::io::Error::other(error)
+}
+/// De bovenste laag van de laatst verzegelde image met haar hash. Seal haalt hem
+/// één keer uit `docker save`; de export van precies die image gebruikt hem op.
+struct Top {
+    image: String,
+    layer: Temporary,
+    hash: String,
+}
+thread_local! {
+    static TOP: RefCell<Option<Top>> = const { RefCell::new(None) };
+}
+/// Neemt de bewaarde laag mee wanneer `image` (een image-Id) dezelfde is.
+fn take_top(image: &str) -> Option<Top> {
+    TOP.with_borrow_mut(|top| top.take().filter(|top| top.image == image))
 }
 async fn control(docker: &Docker, args: &[&str]) -> Result<String> {
     docker.control(&mut DockerExecutor, args).await.map_err(io)
@@ -222,8 +238,7 @@ async fn image_identity(docker: &Docker, image: &str) -> Result<String> {
     }
     root_fs(docker, image).await
 }
-async fn content_identity(docker: &Docker, image: &str, parent: &str) -> Result<String> {
-    let layer = layer_hash(&mut top_layer(&mut save(docker, image).await?).await?).await?;
+async fn content_identity(docker: &Docker, layer: &str, parent: &str) -> Result<String> {
     let parent = image_identity(docker, parent).await?;
     let value = text(format_args!("spin-layer\n{parent}\n{layer}")).map_err(io)?;
     text(format_args!(
@@ -677,18 +692,22 @@ async fn rebuild(
     }
     result
 }
+/// Geeft ook de bovenste laag terug wanneer de image niet opnieuw gebouwd is.
 async fn clean_layer(
     docker: &Docker,
     tag: &str,
     parent: &str,
     recording: &str,
     rebase: bool,
-) -> Result<d::LayerContents> {
+    progress: Progress<'_>,
+) -> Result<(d::LayerContents, Option<Temporary>)> {
     let mut steps = Steps::new("LAYER", recording);
+    progress.report("clean", "laag uitlezen", 0, 0);
     let mut saved = save(docker, tag).await?;
     steps.step("save");
     let mut layer = top_layer(&mut saved).await?;
     steps.step("top_layer");
+    progress.report("clean", "bestanden vergelijken", 0, 0);
     let (mut diff, deletions) = filter(&mut layer, true, None).await?;
     steps.step("filter");
     let (entries, hashes) = diff_entries(&mut diff).await?;
@@ -720,11 +739,13 @@ async fn clean_layer(
     let mut contents = tar::summarize(&kept).map_err(io)?;
     contents.dropped_identical = total;
     if !dropped.is_empty() || rebase {
+        progress.report("clean", "laag opnieuw bouwen", 0, 0);
         let (mut filtered, _) = filter(&mut diff, false, Some(&dropped)).await?;
         rebuild(docker, tag, parent, recording, &mut filtered, &deletions).await?;
         steps.step("rebuild");
+        return Ok((contents, None));
     }
-    Ok(contents)
+    Ok((contents, Some(layer)))
 }
 async fn extends(docker: &Docker, image: &str, parent: &str) -> bool {
     let result = async {
@@ -766,7 +787,11 @@ async fn extends(docker: &Docker, image: &str, parent: &str) -> bool {
     result.unwrap_or(false)
 }
 /// Commit, opschonen, content-identiteit en pas daarna de opnamecontainer verwijderen.
-pub(crate) async fn seal(docker: &Docker, recording: &d::Recording) -> Result<d::CapsuleSnapshot> {
+pub(crate) async fn seal(
+    docker: &Docker,
+    recording: &d::Recording,
+    progress: Progress<'_>,
+) -> Result<d::CapsuleSnapshot> {
     let runtime = recording
         .runtime
         .as_ref()
@@ -800,6 +825,7 @@ pub(crate) async fn seal(docker: &Docker, recording: &d::Recording) -> Result<d:
         }
     };
     steps.step("parent");
+    progress.report("commit", "container vastleggen", 0, 0);
     let committed = control(
         docker,
         &[
@@ -816,6 +842,7 @@ pub(crate) async fn seal(docker: &Docker, recording: &d::Recording) -> Result<d:
     .await;
     steps.step("commit");
     let mut contents = None;
+    let mut top = None;
     if let Err(error) = committed {
         if control(docker, &["image", "inspect", "--format", "{{.Id}}", &tag])
             .await
@@ -824,11 +851,15 @@ pub(crate) async fn seal(docker: &Docker, recording: &d::Recording) -> Result<d:
             return Err(error);
         }
         if rebase && !extends(docker, &tag, &parent).await {
-            contents = Some(clean_layer(docker, &tag, &parent, &recording.id, true).await?);
+            contents = Some(
+                clean_layer(docker, &tag, &parent, &recording.id, true, progress)
+                    .await?
+                    .0,
+            );
         }
     } else {
-        match clean_layer(docker, &tag, &parent, &recording.id, rebase).await {
-            Ok(value) => contents = Some(value),
+        match clean_layer(docker, &tag, &parent, &recording.id, rebase, progress).await {
+            Ok((value, layer)) => (contents, top) = (Some(value), layer),
             Err(error) if rebase => return Err(error),
             Err(error) => eprintln!("SPIN_SEAL_FULL_DIFF error={error}"),
         }
@@ -837,11 +868,27 @@ pub(crate) async fn seal(docker: &Docker, recording: &d::Recording) -> Result<d:
     let digest = control(docker, &["image", "inspect", "--format", "{{.Id}}", &tag]).await?;
     let root_fs = root_fs(docker, &tag).await?;
     steps.step("inspect");
-    let content = content_identity(docker, &tag, &parent).await?;
+    progress.report("identity", "inhoud vaststellen", 0, 0);
+    let mut layer = match top {
+        Some(layer) => layer,
+        None => top_layer(&mut save(docker, &tag).await?).await?,
+    };
+    let hash = layer_hash(&mut layer).await?;
+    let content = content_identity(docker, &hash, &parent).await?;
     steps.step("content_identity");
     let delta = parent.starts_with("spin/artifact:");
     remove(docker, &runtime.container_id).await;
     steps.step("remove_container");
+    // Alleen een delta-export gebruikt de laag; anders blijft hij niet op schijf staan.
+    TOP.set(if delta {
+        Some(Top {
+            image: digest.try_clone().map_err(io)?,
+            layer,
+            hash,
+        })
+    } else {
+        None
+    });
     Ok(d::CapsuleSnapshot {
         driver: try_string("docker").map_err(io)?,
         r#ref: tag,

@@ -165,7 +165,10 @@ impl<'a> Streams<'a> {
                 let mail = self.mail;
                 let docker = self.docker;
                 State::Working(executor::task(async move {
-                    let result = images::export(docker, &payload.snapshot).await.map(Some);
+                    let result =
+                        images::export(docker, &payload.snapshot, crate::progress::Progress::NONE)
+                            .await
+                            .map(Some);
                     mail.0.borrow_mut()[index] = Some(result);
                 })?)
             };

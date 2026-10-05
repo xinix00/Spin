@@ -62,6 +62,8 @@ pub const METHOD_READ_TRACKED: &str = "files.read";
 pub const METHOD_WATCH_TRACKED: &str = "files.watch";
 /// Protocolwaarde uit de Go-specificatie.
 pub const METHOD_TRACKED_CHANGED: &str = "files.changed";
+/// Event: de laatste stand van een lang verzoek (opslaan, archiveren, uploaden).
+pub const METHOD_PROGRESS: &str = "progress";
 /// Protocolwaarde uit de Go-specificatie.
 pub const METHOD_BUNDLE_DELIVERABLE: &str = "deliverable.bundle";
 /// Protocolwaarde uit de Go-specificatie.

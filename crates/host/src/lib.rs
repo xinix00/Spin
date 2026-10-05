@@ -22,6 +22,7 @@ mod client_net;
 mod images;
 /// Niet-blokkerende stdio en eigendom van hostprocessen.
 pub mod process;
+mod progress;
 #[allow(unsafe_code)]
 mod pty;
 /// De hostrunner bezit RPC-taken en houdt ze levend tijdens reconnects.

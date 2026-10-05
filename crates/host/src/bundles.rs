@@ -79,7 +79,15 @@ pub(crate) async fn create(
         .rsplit('/')
         .next()
         .unwrap_or("bundle");
-    let saved = client.upload("bundle", name, None, &mut zip).await?;
+    let saved = client
+        .upload(
+            "bundle",
+            name,
+            None,
+            &mut zip,
+            crate::progress::Progress::NONE,
+        )
+        .await?;
     let entry = if !folder {
         first
     } else if index {

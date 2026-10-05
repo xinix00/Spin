@@ -125,6 +125,8 @@ pub(crate) struct Call {
     refused_by: String,
     /// Wanneer de diagnose dit wachten voor het laatst meldde (eens per 60 s).
     reported_ms: u64,
+    /// De laatste stand die de runner van dit verzoek meldde (stage, message, bytes).
+    progress: d::SealStatus,
 }
 impl Call {
     /// Of de opdracht nog in de rij ligt en niet bij een runner.
@@ -313,6 +315,7 @@ impl<P: Persistence> Server<P> {
             artifact: None,
             waiting: None,
             detached: false,
+            progress: d::SealStatus::default(),
             refused_by: String::new(),
             reported_ms: 0,
         };
@@ -545,6 +548,7 @@ impl<P: Persistence> Server<P> {
             artifact: None,
             waiting: None,
             detached: false,
+            progress: d::SealStatus::default(),
             refused_by: String::new(),
             reported_ms: 0,
         });
@@ -1039,18 +1043,30 @@ impl<P: Persistence> Server<P> {
         } else {
             ""
         };
-        if matches!(call.action, Action::Seal { .. }) {
+        if let Action::Seal { snapshot, .. } = &call.action {
+            let progress = &call.progress;
+            let stage = if call.finished {
+                state
+            } else if !progress.stage.is_empty() {
+                &progress.stage
+            } else if snapshot.is_some() {
+                "archive"
+            } else {
+                "commit"
+            };
             Response::json(
                 code,
                 &d::SealStatus {
                     recording_id: try_string(call.action.object())?,
                     status: try_string(state)?,
-                    stage: try_string(if call.finished { state } else { "commit" })?,
+                    stage: try_string(stage)?,
+                    message: try_string(if call.finished { "" } else { &progress.message })?,
+                    current: if call.finished { 0 } else { progress.current },
+                    total: if call.finished { 0 } else { progress.total },
                     error: try_string(error)?,
                     artifact: call.artifact.try_clone()?,
                     started_at: call.started.try_clone()?,
                     updated_at: call.updated.try_clone()?,
-                    ..Default::default()
                 },
             )
         } else {
@@ -1072,6 +1088,29 @@ impl<P: Persistence> Server<P> {
                 },
             )
         }
+    }
+    /// Bewaart de laatste stand die een runner van een lopend verzoek meldt.
+    pub(crate) fn capsule_progress(
+        &mut self,
+        client: &str,
+        message: &WireMessage,
+        now: &Timestamp,
+    ) -> Result {
+        let Some(call) = self
+            .calls
+            .iter_mut()
+            .find(|c| c.request_id == message.id && c.client == client && !c.finished)
+        else {
+            return Ok(());
+        };
+        let Ok(progress) =
+            d::SealStatus::from_value(message.payload.0.as_ref().unwrap_or(&Value::Null))
+        else {
+            return Ok(());
+        };
+        call.progress = progress;
+        call.updated = now.try_clone()?;
+        Ok(())
     }
     /// De host vraagt alleen of zijn antwoord klaar is; de Store-lening leeft niet over een await.
     pub fn poll_capsule(
@@ -1400,6 +1439,7 @@ impl<P: Persistence> Server<P> {
                 .ok_or(Error::Http(503, "runner disappeared"))?
                 .request(request)?;
             self.calls[index].request_id = id;
+            self.calls[index].progress = d::SealStatus::default();
             if let Action::Seal {
                 snapshot: saved, ..
             } = &mut self.calls[index].action

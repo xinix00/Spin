@@ -309,6 +309,10 @@ impl<P: Persistence> Server<P> {
                 }
                 None => Ok(RunnerEvent::Ignored),
             },
+            p::MESSAGE_EVENT if message.method == p::METHOD_PROGRESS => {
+                self.capsule_progress(&binding.client, &message, now)?;
+                Ok(RunnerEvent::Ignored)
+            }
             p::MESSAGE_EVENT if message.method == p::METHOD_TRACKED_CHANGED => {
                 if let Some(payload) = message.payload.0.as_ref() {
                     if message.error.is_empty() {

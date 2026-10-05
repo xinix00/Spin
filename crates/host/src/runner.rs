@@ -2,6 +2,7 @@
 use crate::{
     executor,
     process::DockerExecutor,
+    progress::Progress,
     runner_socket::{self, Socket},
     storage::Random,
 };
@@ -228,10 +229,12 @@ async fn invoke(
         }
         p::METHOD_SEAL => {
             let value = p::RecordingPayload::from_value(payload)?;
-            Ok(crate::images::seal(docker, &value.recording)
-                .await
-                .map_err(engine_io)?
-                .to_value()?)
+            Ok(
+                crate::images::seal(docker, &value.recording, Progress::of(&request.id))
+                    .await
+                    .map_err(engine_io)?
+                    .to_value()?,
+            )
         }
         p::METHOD_INJECT_ATTACHMENTS => {
             let value = p::InjectAttachmentsPayload::from_value(payload)?;
@@ -257,7 +260,7 @@ async fn invoke(
         p::METHOD_ARCHIVE_SNAPSHOT => {
             let value = p::SnapshotPayload::from_value(payload)?;
             Ok(archive
-                .archive(docker, &value.snapshot)
+                .archive(docker, &value.snapshot, Progress::of(&request.id))
                 .await
                 .map_err(engine_io)?
                 .to_value()?)
@@ -489,6 +492,7 @@ fn run_owned(config: Config, docker: &Docker, stop: &AtomicBool) -> std::io::Res
         if event_sent {
             watch_mail.event.replace(None);
         }
+        crate::progress::flush(|event| owner.enqueue(event)).map_err(io)?;
         for index in 0..OPERATIONS {
             if let Some(id) = &ids[index]
                 && owner.cancelled(id)

@@ -713,7 +713,7 @@ async function followStart(start){
 // recorder panel; the console shows the same numbers as a progress line.
 let sealState=null;
 // Saving a layer speaks the same way as starting one: stage, bytes, percentage.
-const sealStages={commit:'committen',archive:'archiveren',finish:'vastleggen',done:'klaar'};
+const sealStages={commit:'committen',clean:'opschonen',identity:'controleren',archive:'archiveren',upload:'uploaden',finish:'vastleggen',done:'klaar'};
 function sealProgressText(seal){return `Opslaan · ${progressText({...seal,stage:sealStages[seal.stage]||seal.stage||'opslaan'})||'opslaan'}`;}
 async function followSeal(seal){
   sealState=seal;renderRecording();

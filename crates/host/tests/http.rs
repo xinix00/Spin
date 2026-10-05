@@ -532,6 +532,39 @@ fn drive_capsule(
             spin_domain::protocol::SnapshotPayload::from_value(archive.payload.0.as_ref().unwrap())
                 .unwrap()
                 .snapshot;
+        // De runner meldt de stand van het archiveren; de sealstatus toont hem.
+        runner_send(
+            runner,
+            &spin_domain::protocol::WireMessage {
+                r#type: "event".into(),
+                method: "progress".into(),
+                id: archive.id.clone(),
+                payload: spin_domain::RawJson(Some(
+                    spin_domain::SealStatus {
+                        stage: "upload".into(),
+                        current: 5,
+                        total: 10,
+                        ..Default::default()
+                    }
+                    .to_value()
+                    .unwrap(),
+                )),
+                ..Default::default()
+            }
+            .to_json()
+            .unwrap(),
+        );
+        let status = path.replace("/end", "/seal");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let reply = call(server, "GET", &status, headers, "");
+            let seal = spin_domain::SealStatus::from_json(reply.body.as_bytes()).unwrap();
+            if seal.stage == "upload" {
+                assert_eq!((seal.current, seal.total), (5, 10));
+                break;
+            }
+            assert!(Instant::now() < deadline, "progress never reached {status}");
+        }
         runner_send(
             runner,
             &spin_domain::protocol::WireMessage {

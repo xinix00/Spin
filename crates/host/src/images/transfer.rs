@@ -88,24 +88,47 @@ async fn delta_archive(layer: &mut Temporary, note: &Note) -> Result<Temporary> 
     archive::finish(&mut result.file)?;
     result.gzip(false).await
 }
-pub(crate) async fn export(docker: &Docker, snapshot: &d::CapsuleSnapshot) -> Result<Temporary> {
+pub(crate) async fn export(
+    docker: &Docker,
+    snapshot: &d::CapsuleSnapshot,
+    progress: Progress<'_>,
+) -> Result<Temporary> {
     validate(snapshot)?;
     let mut steps = super::Steps::new("EXPORT", &snapshot.r#ref);
-    let mut saved = save(docker, &snapshot.r#ref).await?;
-    steps.step("save");
+    progress.report("archive", "image uitlezen", 0, 0);
     if !snapshot.delta || snapshot.parent_ref.is_empty() {
+        let mut saved = save(docker, &snapshot.r#ref).await?;
+        steps.step("save");
+        progress.report("archive", "inpakken", 0, 0);
         let archive = saved.gzip(false).await;
         steps.step("gzip");
         return archive;
     }
-    let mut layer = top_layer(&mut saved).await?;
-    steps.step("top_layer");
+    // De seal heeft deze laag al uitgelezen zolang de tag nog naar dezelfde image wijst.
+    let image = control(
+        docker,
+        &["image", "inspect", "--format", "{{.Id}}", &snapshot.r#ref],
+    )
+    .await?;
+    let (mut layer, hash) = match super::take_top(&image) {
+        Some(top) => {
+            steps.step("sealed_layer");
+            (top.layer, top.hash)
+        }
+        None => {
+            let mut layer = top_layer(&mut save(docker, &snapshot.r#ref).await?).await?;
+            steps.step("top_layer");
+            let hash = layer_hash(&mut layer).await?;
+            steps.step("layer_hash");
+            (layer, hash)
+        }
+    };
     let note = Note {
         parent: snapshot.parent_ref.try_clone().map_err(io)?,
         content: snapshot.content.try_clone().map_err(io)?,
-        layer: layer_hash(&mut layer).await?,
+        layer: hash,
     };
-    steps.step("layer_hash");
+    progress.report("archive", "inpakken", 0, 0);
     let archive = delta_archive(&mut layer, &note).await;
     steps.step("delta_archive");
     archive
