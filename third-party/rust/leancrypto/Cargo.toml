@@ -12,21 +12,21 @@
 [package]
 edition = "2024"
 rust-version = "1.93"
-name = "auth"
-version = "3.0.9"
+name = "leancrypto"
+version = "3.1.12"
 build = false
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "De HMAC-verzoekauthenticatie (X-Hop-Auth): ondertekenen, toetsen, de tijdvenster-regels."
+description = "De primitieven die meer dan één crate nodig heeft: SHA-256/512, HMAC en HKDF, AES-128-GCM en constant-time."
 readme = false
 license = "MIT"
-repository = "https://github.com/xinix00/hop"
+repository = "https://github.com/xinix00/lean"
 
 [lib]
-name = "auth"
+name = "leancrypto"
 path = "src/lib.rs"
 
 [dependencies]

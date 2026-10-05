@@ -1,5 +1,9 @@
 //! Hostschil voor integratietests van dezelfde native serverruntime.
-use crate::{executor, net::Connection, storage::Random};
+use crate::{
+    executor,
+    net::{self, Connection},
+    storage::Random,
+};
 use spin_domain::{Time, Timestamp};
 pub use spin_runtime::{CONNECTIONS, PASSWORD_TASKS};
 use spin_runtime::{Clock, Idle, Platform};
@@ -42,12 +46,12 @@ impl Platform for Host<'_> {
     type Connection = Connection;
     type Dial = crate::outbound::Dial;
     fn dial(&self) -> Result<Self::Dial> {
-        Ok(crate::outbound::dial())
+        Ok(crate::outbound::Dial::new())
     }
     type Clock = HostClock;
     fn accept(&mut self, _: &mut Context<'_>) -> Result<Option<(Connection, String)>> {
         match self.listener.accept() {
-            Ok((socket, address)) => match Connection::new(socket) {
+            Ok((socket, address)) => match net::connection(socket) {
                 Ok(connection) => Ok(Some((
                     connection,
                     spin_core::validation::text(format_args!("{}", address.ip()))

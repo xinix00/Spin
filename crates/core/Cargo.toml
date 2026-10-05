@@ -7,7 +7,8 @@ publish.workspace = true
 
 [dependencies]
 spin-domain = { path = "../domain" }
-hop-auth.workspace = true
+leancrypto = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.12" }
+leanbase64 = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.12" }
 miniz_oxide = { version = "=0.8.9", default-features = false }
 
 [lints]

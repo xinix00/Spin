@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.93"
 name = "applib"
-version = "3.0.12"
+version = "3.0.13"
 build = "build.rs"
 publish = false
 autolib = false
@@ -54,12 +54,12 @@ path = "../heap"
 
 [dependencies.leanhttp]
 git = "https://github.com/xinix00/lean.git"
-tag = "v3.1.11"
+tag = "v3.1.12"
 optional = true
 
 [dependencies.leannet]
 git = "https://github.com/xinix00/lean.git"
-tag = "v3.1.11"
+tag = "v3.1.12"
 features = ["ipv6"]
 
 [dependencies.netdev]

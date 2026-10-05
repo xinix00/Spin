@@ -5,7 +5,8 @@
 extern crate alloc;
 use aes_gcm::{Aes256Gcm, KeyInit, aead::AeadInPlace};
 use alloc::{string::String, vec::Vec};
-pub use hop_auth::{Sha256, constant_time_eq, sha256};
+use leancrypto::hmac::HmacSha256;
+pub use leancrypto::{ct::eq as constant_time_eq, sha256::Sha256};
 use spin_domain::{self as d, Wire, try_push_str, try_string};
 use zeroize::Zeroize;
 
@@ -156,16 +157,15 @@ impl Cipher {
     }
 }
 
-/// Base64 op de bestaande draad; de eigenaar reserveert de kopie faalbaar.
+/// SHA-256 in één keer.
+pub fn sha256(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes)
+}
+/// Standaard-base64 (`+/`) op de bestaande draad, met of zonder `=`-padding.
 pub fn encode_base64(bytes: &[u8], padded: bool) -> Result<String> {
-    let mut copy = Vec::new();
-    copy.try_reserve_exact(bytes.len())
+    let mut out = leanbase64::STANDARD
+        .encode(bytes)
         .map_err(|_| d::Error::OutOfMemory)?;
-    copy.extend_from_slice(bytes);
-    let value = d::Bytes(Some(copy)).to_value()?;
-    let d::json::Value::String(mut out) = value else {
-        return Err(Error::Payload);
-    };
     if !padded {
         while out.ends_with('=') {
             out.pop();
@@ -173,7 +173,14 @@ pub fn encode_base64(bytes: &[u8], padded: bool) -> Result<String> {
     }
     Ok(out)
 }
+/// URL-base64 (`-_`, zonder padding): tokens en de PKCE-challenge.
+pub fn encode_base64_url(bytes: &[u8]) -> Result<String> {
+    Ok(leanbase64::URL
+        .encode(bytes)
+        .map_err(|_| d::Error::OutOfMemory)?)
+}
 /// Leest het raw of gepadde standaardalfabet; andere alfabetten zijn ongeldig.
+/// Het decoderen is dat van [`d::Bytes`] (leanbase64), met dezelfde fouten.
 pub fn decode_base64(encoded: &str) -> Result<Vec<u8>> {
     let mut padded = try_string(encoded)?;
     let count = encoded
@@ -193,51 +200,27 @@ pub fn decode_base64(encoded: &str) -> Result<Vec<u8>> {
 }
 
 /// PBKDF2-HMAC-SHA256 als hervatbare CPU-taak, zonder allocatie per ronde.
+/// De HMAC is die van leancrypto; de toestand na de sleutel wordt per ronde
+/// gekloond, dus elke ronde kost twee compressies, zoals eerder.
 pub struct PasswordDeriver {
-    inner: Sha256,
-    outer: Sha256,
+    mac: HmacSha256,
     value: [u8; 32],
     result: [u8; 32],
     remaining: u32,
 }
 impl PasswordDeriver {
-    /// Bereidt de eerste ronde en de herbruikbare HMAC-prefixen voor.
+    /// Bereidt de eerste ronde en de herbruikbare HMAC-sleutel voor.
     pub fn new(password: &[u8], salt: &[u8], iterations: u32) -> Result<Self> {
         if iterations == 0 || iterations > MAX_PASSWORD_ITERATIONS {
             return Err(Error::Payload);
         }
-        let mut key = [0; 64];
-        if password.len() > 64 {
-            key.get_mut(..32)
-                .ok_or(Error::Payload)?
-                .copy_from_slice(&sha256(password));
-        } else {
-            key.get_mut(..password.len())
-                .ok_or(Error::Payload)?
-                .copy_from_slice(password);
-        }
-        let mut inner_pad = [0; 64];
-        let mut outer_pad = [0; 64];
-        for ((i, o), k) in inner_pad.iter_mut().zip(outer_pad.iter_mut()).zip(key) {
-            *i = k ^ 0x36;
-            *o = k ^ 0x5c;
-        }
-        let mut inner = Sha256::new();
-        inner.update(&inner_pad);
-        let mut outer = Sha256::new();
-        outer.update(&outer_pad);
-        key.zeroize();
-        inner_pad.zeroize();
-        outer_pad.zeroize();
-        let mut first = inner.clone();
+        let mac = HmacSha256::new(password);
+        let mut first = mac.clone();
         first.update(salt);
         first.update(&1u32.to_be_bytes());
-        let mut last = outer.clone();
-        last.update(&first.finish());
-        let value = last.finish();
+        let value = first.finish();
         Ok(Self {
-            inner,
-            outer,
+            mac,
             value,
             result: value,
             remaining: iterations - 1,
@@ -246,11 +229,9 @@ impl PasswordDeriver {
     /// Voert hoogstens `rounds` rondes uit, waarna de executor weer kan lopen.
     pub fn step(&mut self, rounds: u32) -> bool {
         for _ in 0..rounds.min(self.remaining) {
-            let mut inner = self.inner.clone();
-            inner.update(&self.value);
-            let mut outer = self.outer.clone();
-            outer.update(&inner.finish());
-            self.value = outer.finish();
+            let mut round = self.mac.clone();
+            round.update(&self.value);
+            self.value = round.finish();
             for (result, value) in self.result.iter_mut().zip(self.value) {
                 *result ^= value;
             }

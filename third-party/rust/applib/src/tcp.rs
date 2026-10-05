@@ -136,23 +136,80 @@ impl<S: Stream> TcpConn<S> {
 
 /// Verbindingen voor leanhttp over de stack van de app: de naam via de
 /// DNS-server uit de env (een adres meteen), dan TCP met termijn `connect`.
+/// Wat er misging, staat in [`Dialer::last_error`].
 pub struct Dialer {
-    /// De executor waar de termijnen van de verbinding op lopen.
-    pub exec: &'static Exec,
-    /// Hoe lang het opzetten van de verbinding mag duren.
-    pub connect: Duration,
+    exec: &'static Exec,
+    connect: Duration,
+    last_error: Option<DialError>,
+}
+
+/// Waarom een [`Dialer`] geen verbinding kreeg, voor de logregel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialError {
+    /// De naam kon niet worden opgezocht.
+    Resolve(NetError),
+    /// Het adres nam de verbinding niet aan.
+    Connect {
+        /// Het opgezochte adres.
+        ip: [u8; 4],
+        /// De poort.
+        port: u16,
+        /// Waarom niet.
+        error: NetError,
+    },
+}
+
+impl core::fmt::Display for DialError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Resolve(e) => write!(f, "resolve: {e}"),
+            Self::Connect { ip, port, error } => {
+                let [a, b, c, d] = ip;
+                write!(f, "connect {a}.{b}.{c}.{d}:{port}: {error}")
+            }
+        }
+    }
+}
+
+impl Dialer {
+    /// Een dialer op de executor `exec`, met `connect` om te verbinden.
+    pub fn new(exec: &'static Exec, connect: Duration) -> Self {
+        Self {
+            exec,
+            connect,
+            last_error: None,
+        }
+    }
+
+    /// Waarom de laatste dial mislukte, als dat zo was.
+    pub fn last_error(&self) -> Option<DialError> {
+        self.last_error
+    }
 }
 
 impl Dial for Dialer {
     type Conn = TcpConn;
 
     async fn dial(&mut self, t: Target<'_>) -> leanhttp::Result<TcpConn> {
-        let ip = crate::appnet::resolve(t.host)
-            .await
-            .map_err(|_| leanhttp::Error::Connect)?;
-        let s = TcpStream::connect_timeout(ip, t.port, self.connect)
-            .await
-            .map_err(|_| leanhttp::Error::Connect)?;
+        let ip = match crate::appnet::resolve(t.host).await {
+            Ok(ip) => ip,
+            Err(e) => {
+                self.last_error = Some(DialError::Resolve(e));
+                return Err(leanhttp::Error::Connect);
+            }
+        };
+        let s = match TcpStream::connect_timeout(ip, t.port, self.connect).await {
+            Ok(s) => s,
+            Err(error) => {
+                self.last_error = Some(DialError::Connect {
+                    ip,
+                    port: t.port,
+                    error,
+                });
+                return Err(leanhttp::Error::Connect);
+            }
+        };
+        self.last_error = None;
         Ok(TcpConn::new(s, self.exec))
     }
 }

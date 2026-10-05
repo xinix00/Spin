@@ -4,11 +4,12 @@ version = 4
 
 [[package]]
 name = "abi"
-version = "3.0.12"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.12#bc3316d83cb91336237189d92b970e78c3c6f37c"
+version = "3.0.13"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.13#ba0006d2159b0dcf4e51fa787cd0b11defe8cc25"
 dependencies = [
  "bounded",
  "dev",
+ "leancrypto",
 ]
 
 [[package]]
@@ -56,8 +57,8 @@ dependencies = [
 
 [[package]]
 name = "applib"
-version = "3.0.12"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.12#bc3316d83cb91336237189d92b970e78c3c6f37c"
+version = "3.0.13"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.13#ba0006d2159b0dcf4e51fa787cd0b11defe8cc25"
 dependencies = [
  "abi",
  "bounded",
@@ -71,14 +72,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "auth"
-version = "3.0.9"
-source = "git+https://github.com/xinix00/hop.git?tag=v3.0.9#a0130f207b58415e7c541a1b23fca63f7d809214"
-
-[[package]]
 name = "bounded"
-version = "3.0.12"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.12#bc3316d83cb91336237189d92b970e78c3c6f37c"
+version = "3.0.13"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.13#ba0006d2159b0dcf4e51fa787cd0b11defe8cc25"
 
 [[package]]
 name = "cfg-if"
@@ -126,8 +122,8 @@ dependencies = [
 
 [[package]]
 name = "dev"
-version = "3.0.12"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.12#bc3316d83cb91336237189d92b970e78c3c6f37c"
+version = "3.0.13"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.13#ba0006d2159b0dcf4e51fa787cd0b11defe8cc25"
 
 [[package]]
 name = "discovery"
@@ -139,8 +135,8 @@ dependencies = [
 
 [[package]]
 name = "executor"
-version = "3.0.12"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.12#bc3316d83cb91336237189d92b970e78c3c6f37c"
+version = "3.0.13"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.13#ba0006d2159b0dcf4e51fa787cd0b11defe8cc25"
 dependencies = [
  "dev",
  "sync",
@@ -168,8 +164,8 @@ dependencies = [
 
 [[package]]
 name = "heap"
-version = "3.0.12"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.12#bc3316d83cb91336237189d92b970e78c3c6f37c"
+version = "3.0.13"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.13#ba0006d2159b0dcf4e51fa787cd0b11defe8cc25"
 
 [[package]]
 name = "inout"
@@ -181,14 +177,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "leanbase64"
+version = "3.1.12"
+source = "git+https://github.com/xinix00/lean.git?tag=v3.1.12#30dfbd73743a57b59ad42ed0258b7e3c10d04b20"
+
+[[package]]
+name = "leancrypto"
+version = "3.1.12"
+source = "git+https://github.com/xinix00/lean.git?tag=v3.1.12#30dfbd73743a57b59ad42ed0258b7e3c10d04b20"
+
+[[package]]
 name = "leanhttp"
-version = "3.1.11"
-source = "git+https://github.com/xinix00/lean.git?tag=v3.1.11#42c771f935c47d7819d157e956d94796d4fb44a1"
+version = "3.1.12"
+source = "git+https://github.com/xinix00/lean.git?tag=v3.1.12#30dfbd73743a57b59ad42ed0258b7e3c10d04b20"
 
 [[package]]
 name = "leanhttps"
-version = "3.1.11"
-source = "git+https://github.com/xinix00/lean.git?tag=v3.1.11#42c771f935c47d7819d157e956d94796d4fb44a1"
+version = "3.1.12"
+source = "git+https://github.com/xinix00/lean.git?tag=v3.1.12#30dfbd73743a57b59ad42ed0258b7e3c10d04b20"
 dependencies = [
  "leanhttp",
  "leantls",
@@ -196,18 +202,21 @@ dependencies = [
 
 [[package]]
 name = "leannet"
-version = "3.1.11"
-source = "git+https://github.com/xinix00/lean.git?tag=v3.1.11#42c771f935c47d7819d157e956d94796d4fb44a1"
+version = "3.1.12"
+source = "git+https://github.com/xinix00/lean.git?tag=v3.1.12#30dfbd73743a57b59ad42ed0258b7e3c10d04b20"
 
 [[package]]
 name = "leans3"
-version = "3.1.11"
-source = "git+https://github.com/xinix00/lean.git?tag=v3.1.11#42c771f935c47d7819d157e956d94796d4fb44a1"
+version = "3.1.12"
+source = "git+https://github.com/xinix00/lean.git?tag=v3.1.12#30dfbd73743a57b59ad42ed0258b7e3c10d04b20"
+dependencies = [
+ "leancrypto",
+]
 
 [[package]]
 name = "leans3http"
-version = "3.1.11"
-source = "git+https://github.com/xinix00/lean.git?tag=v3.1.11#42c771f935c47d7819d157e956d94796d4fb44a1"
+version = "3.1.12"
+source = "git+https://github.com/xinix00/lean.git?tag=v3.1.12#30dfbd73743a57b59ad42ed0258b7e3c10d04b20"
 dependencies = [
  "leanhttp",
  "leans3",
@@ -215,8 +224,11 @@ dependencies = [
 
 [[package]]
 name = "leantls"
-version = "3.1.11"
-source = "git+https://github.com/xinix00/lean.git?tag=v3.1.11#42c771f935c47d7819d157e956d94796d4fb44a1"
+version = "3.1.12"
+source = "git+https://github.com/xinix00/lean.git?tag=v3.1.12#30dfbd73743a57b59ad42ed0258b7e3c10d04b20"
+dependencies = [
+ "leancrypto",
+]
 
 [[package]]
 name = "libc"
@@ -235,8 +247,8 @@ dependencies = [
 
 [[package]]
 name = "netdev"
-version = "3.0.12"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.12#bc3316d83cb91336237189d92b970e78c3c6f37c"
+version = "3.0.13"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.13#ba0006d2159b0dcf4e51fa787cd0b11defe8cc25"
 dependencies = [
  "sync",
 ]
@@ -263,8 +275,8 @@ dependencies = [
 name = "replica-core"
 version = "0.1.0"
 dependencies = [
- "auth",
  "discovery",
+ "leancrypto",
  "replica-sqlite",
  "types",
 ]
@@ -292,23 +304,25 @@ version = "0.1.0"
 
 [[package]]
 name = "spin-core"
-version = "3.0.21"
+version = "3.0.22"
 dependencies = [
- "auth",
+ "leanbase64",
+ "leancrypto",
  "miniz_oxide",
  "spin-domain",
 ]
 
 [[package]]
 name = "spin-domain"
-version = "3.0.21"
+version = "3.0.22"
 dependencies = [
+ "leanbase64",
  "types",
 ]
 
 [[package]]
 name = "spin-hopos"
-version = "3.0.21"
+version = "3.0.22"
 dependencies = [
  "applib",
  "leanhttp",
@@ -332,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "spin-host"
-version = "3.0.21"
+version = "3.0.22"
 dependencies = [
  "leanhttp",
  "leanhttps",
@@ -355,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "spin-persistence"
-version = "3.0.21"
+version = "3.0.22"
 dependencies = [
  "replica-sqlite",
  "spin-domain",
@@ -365,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "spin-runtime"
-version = "3.0.21"
+version = "3.0.22"
 dependencies = [
  "leanhttp",
  "spin-core",
@@ -376,18 +390,19 @@ dependencies = [
 
 [[package]]
 name = "spin-security"
-version = "3.0.21"
+version = "3.0.22"
 dependencies = [
  "aes",
  "aes-gcm",
- "auth",
+ "leanbase64",
+ "leancrypto",
  "spin-domain",
  "zeroize",
 ]
 
 [[package]]
 name = "spin-server"
-version = "3.0.21"
+version = "3.0.22"
 dependencies = [
  "spin-core",
  "spin-domain",
@@ -397,7 +412,7 @@ dependencies = [
 
 [[package]]
 name = "spin-store"
-version = "3.0.21"
+version = "3.0.22"
 dependencies = [
  "spin-core",
  "spin-domain",
@@ -412,8 +427,8 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sync"
-version = "3.0.12"
-source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.12#bc3316d83cb91336237189d92b970e78c3c6f37c"
+version = "3.0.13"
+source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.13#ba0006d2159b0dcf4e51fa787cd0b11defe8cc25"
 dependencies = [
  "bounded",
 ]

@@ -10,9 +10,10 @@ use std::{
 };
 /// Bytes die van S3 binnenkwamen; het openingsscherm toont ze tijdens een herstel.
 pub static DOWNLOADED: AtomicU64 = AtomicU64::new(0);
-/// Eén S3-verbinding; termijnen, herkansingen en de body-grens zijn die van Lean.
+/// Eén S3-verbinding; termijnen en herkansingen zijn die van Lean, de body stroomt.
 pub type Network = leans3http::Http<outbound::Dial, Clock>;
 /// De monotone klok van de host.
+#[derive(Clone, Copy)]
 pub struct Clock(Instant);
 impl leans3http::Clock for Clock {
     fn now(&self) -> Duration {
@@ -25,7 +26,7 @@ impl leans3http::Clock for Clock {
 /// Een verbinding die de data-delen in [`DOWNLOADED`] telt. Manifests,
 /// current en de lease lezen bij elke start, en dat is geen herstel.
 pub(crate) fn network() -> Network {
-    leans3http::Http::new(outbound::dial(), Clock(Instant::now())).observe(|target, bytes| {
+    leans3http::Http::new(outbound::Dial::new(), Clock(Instant::now())).observe(|target, bytes| {
         if target.contains("/data/") {
             DOWNLOADED.fetch_add(bytes as u64, Relaxed);
         }

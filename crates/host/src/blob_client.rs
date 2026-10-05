@@ -8,7 +8,6 @@ use spin_domain::{
 };
 use std::{
     io::{Read, Write},
-    net::{SocketAddr, TcpStream, ToSocketAddrs},
     time::{Duration, Instant},
 };
 type Result<T> = std::io::Result<T>;
@@ -39,7 +38,6 @@ pub(crate) struct Client {
     endpoint: runner_socket::Endpoint,
     base: String,
     authorization: String,
-    addresses: Vec<SocketAddr>,
 }
 struct Reply {
     status: u16,
@@ -57,21 +55,10 @@ impl Client {
         ))
         .map_err(io)?;
         let authorization = text(format_args!("Bearer {token}")).map_err(io)?;
-        let mut addresses = Vec::new();
-        for address in (endpoint.host.as_str(), endpoint.port)
-            .to_socket_addrs()?
-            .take(16)
-        {
-            d::try_push(&mut addresses, address).map_err(io)?;
-        }
-        if addresses.is_empty() {
-            return Err(io("server has no addresses"));
-        }
         Ok(Self {
             endpoint,
             base,
             authorization,
-            addresses,
         })
     }
     async fn request(
@@ -81,19 +68,7 @@ impl Client {
         body: &[u8],
         offset: Option<u64>,
     ) -> Result<Reply> {
-        let mut socket = None;
-        for address in &self.addresses {
-            match TcpStream::connect_timeout(address, Duration::from_millis(500)) {
-                Ok(s) => {
-                    socket = Some(s);
-                    break;
-                }
-                Err(_) => executor::next_round().await,
-            }
-        }
-        let socket = socket.ok_or_else(|| io("cannot connect to archive server"))?;
         let connection = client_net::connect(
-            socket,
             &self.endpoint.host,
             self.endpoint.port,
             self.endpoint.encrypted,
@@ -406,7 +381,7 @@ async fn wait(delay: Duration) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
-    use std::net::TcpListener;
+    use std::net::{TcpListener, TcpStream};
     fn receive(listener: &TcpListener) -> (TcpStream, String, Vec<u8>) {
         let (mut socket, _) = listener.accept().unwrap();
         socket

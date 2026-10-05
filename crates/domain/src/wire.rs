@@ -458,86 +458,39 @@ macro_rules! model {
     };
 }
 
-const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
 impl Wire for Bytes {
+    /// Go's `StdEncoding`: `+/` met `=`-padding (leanbase64 `STANDARD`, strikt).
+    /// Regeleinden worden overgeslagen, zoals Go's decoder dat doet.
     fn from_value(v: &Value) -> Fallible<Self> {
         if v.is_null() {
             return Ok(Self::default());
         }
         let text = v.as_str().ok_or_else(|| wrong("base64"))?;
-        let mut buf = Vec::new();
-        buf.try_reserve_exact(text.len())
-            .map_err(|_| Error::OutOfMemory)?;
-        for c in text.bytes().filter(|c| *c != b'\r' && *c != b'\n') {
-            buf.push(c);
-        }
-        if buf.len() % 4 != 0 {
-            return Err(wrong("base64"));
-        }
         let mut out = Vec::new();
-        out.try_reserve_exact(buf.len() / 4 * 3)
-            .map_err(|_| Error::OutOfMemory)?;
-        let count = buf.len() / 4;
-        for (i, group) in buf.chunks_exact(4).enumerate() {
-            let mut n = 0u32;
-            let mut pad = 0;
-            for &c in group {
-                n <<= 6;
-                if c == b'=' {
-                    pad += 1;
-                } else {
-                    if pad != 0 {
-                        return Err(wrong("base64"));
-                    }
-                    n |= BASE64
-                        .iter()
-                        .position(|b| *b == c)
-                        .ok_or_else(|| wrong("base64"))? as u32;
-                }
-            }
-            if pad > 2 || (pad != 0 && i + 1 != count) {
-                return Err(wrong("base64"));
-            }
-            out.push((n >> 16) as u8);
-            if pad < 2 {
-                out.push((n >> 8) as u8);
-            }
-            if pad < 1 {
-                out.push(n as u8);
-            }
+        let decoded = if text.contains(['\r', '\n']) {
+            let mut buf = Vec::new();
+            buf.try_reserve_exact(text.len())
+                .map_err(|_| Error::OutOfMemory)?;
+            buf.extend(text.bytes().filter(|c| *c != b'\r' && *c != b'\n'));
+            leanbase64::STANDARD.decode_to(&buf, &mut out)
+        } else {
+            leanbase64::STANDARD.decode_to(text.as_bytes(), &mut out)
+        };
+        match decoded {
+            Ok(()) => Ok(Self(Some(out))),
+            Err(leanbase64::Error::OutOfMemory) => Err(Error::OutOfMemory),
+            Err(_) => Err(wrong("base64")),
         }
-        Ok(Self(Some(out)))
     }
     fn to_value(&self) -> Fallible<Value> {
         let Some(bytes) = &self.0 else {
             return Ok(Value::Null);
         };
-        let mut out = String::new();
-        let len = bytes
-            .len()
-            .div_ceil(3)
-            .checked_mul(4)
-            .ok_or(Error::OutOfMemory)?;
-        out.try_reserve_exact(len).map_err(|_| Error::OutOfMemory)?;
-        for group in bytes.chunks(3) {
-            let a = u32::from(group.first().copied().unwrap_or_default());
-            let b = u32::from(group.get(1).copied().unwrap_or_default());
-            let c = u32::from(group.get(2).copied().unwrap_or_default());
-            let n = a << 16 | b << 8 | c;
-            for shift in [18, 12, 6, 0] {
-                let symbol = if (shift == 6 && group.len() < 2) || (shift == 0 && group.len() < 3) {
-                    b'='
-                } else {
-                    BASE64
-                        .get(((n >> shift) & 63) as usize)
-                        .copied()
-                        .ok_or_else(|| wrong("base64 index"))?
-                };
-                out.push(char::from(symbol));
-            }
-        }
-        Ok(Value::String(out))
+        Ok(Value::String(
+            leanbase64::STANDARD
+                .encode(bytes)
+                .map_err(|_| Error::OutOfMemory)?,
+        ))
     }
     fn is_empty(&self) -> bool {
         self.0.as_ref().is_none_or(Vec::is_empty)

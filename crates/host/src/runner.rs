@@ -19,7 +19,6 @@ use spin_domain::{
 };
 use std::{
     cell::{Cell, RefCell},
-    net::{SocketAddr, TcpStream, ToSocketAddrs},
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
@@ -418,18 +417,9 @@ fn close_error(body: &[u8]) -> std::io::Error {
 fn run_owned(config: Config, docker: &Docker, stop: &AtomicBool) -> std::io::Result<()> {
     let apps = crate::apps::Config::new(config.env_dir, config.advertise_host)?;
     let archive = crate::blob_client::Client::new(&config.server, &config.token)?;
+    // Iedere verbindingspoging zoekt de naam opnieuw op en probeert hoogstens
+    // zestien adressen, elk 500 ms (`client_net::connect`).
     let endpoint = runner_socket::endpoint(&config.server)?;
-    // Resolutie is bootwerk; de lus probeert hoogstens zestien bekende adressen.
-    let mut addresses: Vec<SocketAddr> = Vec::new();
-    for address in (endpoint.host.as_str(), endpoint.port)
-        .to_socket_addrs()?
-        .take(16)
-    {
-        d::try_push(&mut addresses, address).map_err(io)?;
-    }
-    if addresses.is_empty() {
-        return Err(std::io::Error::other("runner server has no addresses"));
-    }
     let mut random = Random::open()?;
     let engine = executor::block_on(docker.probe(&mut DockerExecutor)).map_err(io)?;
     let mut hello = WireMessage {
@@ -474,7 +464,6 @@ fn run_owned(config: Config, docker: &Docker, stop: &AtomicBool) -> std::io::Res
     // Herverbinden begint bij 1 s en verdubbelt tot 30 s; een welkom zet het terug.
     let mut backoff = RECONNECT_MIN;
     let mut ping_at = Instant::now();
-    let mut dial_index = 0;
     let mut context = Context::from_waker(Waker::noop());
     let mut cleanup: Option<executor::Task<'_>> = None;
     let mut cleanup_at = Instant::now();
@@ -555,28 +544,18 @@ fn run_owned(config: Config, docker: &Docker, stop: &AtomicBool) -> std::io::Res
             }
         }
         if socket.is_none() && connecting.is_none() && Instant::now() >= next_connect {
-            let address = addresses[dial_index % addresses.len()];
-            dial_index = dial_index.wrapping_add(1);
-            match TcpStream::connect_timeout(&address, Duration::from_millis(500)) {
-                Ok(stream) => {
-                    let endpoint = &endpoint;
-                    let token = &config.token;
-                    let connected = &connected;
-                    connecting = Some(executor::task(async move {
-                        let result = match Socket::connect(stream, endpoint, token).await {
-                            Ok(socket) => {
-                                Ok((socket, docker.live_capsules(&mut DockerExecutor).await.ok()))
-                            }
-                            Err(error) => Err(error),
-                        };
-                        connected.replace(Some(result));
-                    })?);
-                }
-                Err(_) => {
-                    next_connect = Instant::now() + backoff;
-                    backoff = (backoff * 2).min(RECONNECT_MAX);
-                }
-            }
+            let endpoint = &endpoint;
+            let token = &config.token;
+            let connected = &connected;
+            connecting = Some(executor::task(async move {
+                let result = match Socket::connect(endpoint, token).await {
+                    Ok(socket) => {
+                        Ok((socket, docker.live_capsules(&mut DockerExecutor).await.ok()))
+                    }
+                    Err(error) => Err(error),
+                };
+                connected.replace(Some(result));
+            })?);
         }
         let was_welcomed = welcomed;
         let result = (|| -> std::io::Result<()> {

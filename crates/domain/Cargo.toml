@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 hop-types.workspace = true
+leanbase64 = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.12" }
 
 [lints]
 workspace = true

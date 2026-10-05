@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.93"
 name = "abi"
-version = "3.0.12"
+version = "3.0.13"
 build = false
 publish = false
 autolib = false
@@ -33,6 +33,10 @@ path = "../bounded"
 
 [dependencies.dev]
 path = "../dev"
+
+[dependencies.leancrypto]
+git = "https://github.com/xinix00/lean.git"
+tag = "v3.1.12"
 
 [lints.clippy]
 as_ptr_cast_mut = "warn"

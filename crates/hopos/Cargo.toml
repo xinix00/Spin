@@ -10,13 +10,13 @@ name = "spin-hopos-server"
 path = "src/main.rs"
 
 [target.'cfg(target_os = "none")'.dependencies]
-leanhttp = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.11" }
-leanhttps = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.11", features = ["mozilla-roots"] }
-leantls = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.11" }
-applib = { git = "https://github.com/xinix00/HopOS.git", tag = "v3.0.12", features = ["http"] }
+leanhttp = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.12" }
+leanhttps = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.12", features = ["mozilla-roots"] }
+leantls = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.12" }
+applib = { git = "https://github.com/xinix00/HopOS.git", tag = "v3.0.13", features = ["http"] }
 hop-types.workspace = true
-leans3 = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.11" }
-leans3http = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.11" }
+leans3 = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.12" }
+leans3http = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.12" }
 replica-core = { path = "../../../replica/core" }
 replica-s3 = { path = "../../../replica/s3" }
 spin-runtime = { path = "../runtime" }

@@ -25,12 +25,17 @@ Replica komt rechtstreeks uit de bron: de crates linken naar `../replica`
 patch van. Wijzigingen aan Replica gebeuren daar.
 
 De overige dependencies zijn vastgelegd in `.cargo/config.toml` en `Cargo.lock`
-en gevendord in `third-party/rust`, ongewijzigd van hun tags: HopOS v3.0.12, Hop
-v3.0.9 en Lean v3.1.11, één versie voor Spin, `applib` en Replica. Het uitgaande
+en gevendord in `third-party/rust`, ongewijzigd van hun tags: HopOS v3.0.13, Hop
+v3.0.9 en Lean v3.1.12, één versie voor Spin, `applib` en Replica. Het uitgaande
 netwerk is van Lean: `leanhttps::WebDial` (TLS met ketenverificatie tegen
 `leantls::MOZILLA_ROOTS`) over de kale TCP-dial van het platform (`applib::tcp::Dialer`
-op HopOS, std op de Mac), en voor S3 `leans3http::Http` met zijn termijnen en
-herkansingen; Spin levert alleen klok, entropie, de voortgangsteller en logregels.
+op HopOS, `leanhttp::host::TcpDial` op de Mac, met de pollronde van de host-executor
+als reactor), en voor S3 `leans3http::Http` met zijn termijnen en herkansingen; de
+body stroomt. Spin levert alleen klok, entropie, de voortgangsteller en logregels
+(`SPIN_OUTBOUND_FAILED … reason=resolve: …`/`connect ip:port: …`/`tls: …`).
+SHA-1 (WebSocket-accept), SHA-256, HMAC (PBKDF2) en constant-time vergelijken zijn
+van `leancrypto`, base64 van `leanbase64`; alleen AES-256-GCM van de bestaande
+`enc:v1`-state blijft RustCrypto, omdat Lean alleen AES-128 heeft.
 Lokale patches bestaan niet;
 een wijziging gaat naar de bron en komt terug als tag. Opnieuw vendoren:
 `cargo vendor third-party/rust` (de uitvoer is de inhoud van `.cargo/config.toml`).

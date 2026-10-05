@@ -1,7 +1,7 @@
 //! Cookieauthenticatie, CSRF en begrensde wachtwoordtaken zonder Store-lening.
 use super::*;
 use spin_core::validation::text;
-use spin_domain::{Time, try_push_str, try_string};
+use spin_domain::{Time, try_string};
 use spin_security::{
     MAX_PASSWORD_ITERATIONS, PASSWORD_ITERATIONS, PasswordDeriver, constant_time_eq, decode_base64,
     digest_hex, encode_base64,
@@ -91,18 +91,7 @@ pub(super) fn check_csrf(req: &Request<'_>, session: &d::AuthSession) -> Result 
 pub(crate) fn token(runtime: &mut impl Runtime) -> Result<String> {
     let mut bytes = [0; 32];
     runtime.fill(&mut bytes)?;
-    let raw = encode_base64(&bytes, false)?;
-    let mut value = String::new();
-    for c in raw.chars() {
-        let c = match c {
-            '+' => '-',
-            '/' => '_',
-            other => other,
-        };
-        let mut buf = [0; 4];
-        try_push_str(&mut value, c.encode_utf8(&mut buf))?;
-    }
-    Ok(value)
+    Ok(spin_security::encode_base64_url(&bytes)?)
 }
 fn password_work(
     password: &str,

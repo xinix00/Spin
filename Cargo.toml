@@ -3,13 +3,12 @@ resolver = "3"
 members = ["crates/domain", "crates/core", "crates/store", "crates/security", "crates/persistence", "crates/host", "crates/server", "crates/runtime", "crates/hopos"]
 
 [workspace.package]
-version = "3.0.21"
+version = "3.0.22"
 edition = "2024"
 rust-version = "1.93"
 publish = false
 
 [workspace.dependencies]
-hop-auth = { package = "auth", git = "https://github.com/xinix00/hop.git", tag = "v3.0.9" }
 hop-types = { package = "types", git = "https://github.com/xinix00/hop.git", tag = "v3.0.9" }
 
 [workspace.lints.rust]

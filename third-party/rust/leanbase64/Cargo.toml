@@ -12,21 +12,24 @@
 [package]
 edition = "2024"
 rust-version = "1.93"
-name = "bounded"
-version = "3.0.13"
+name = "leanbase64"
+version = "3.1.12"
 build = false
-publish = false
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Begrensde verzamelingen met vaste capaciteit; vol is een Result, geen abort."
+description = "Base64 (RFC 4648): het standaardalfabet met padding en het URL-alfabet zonder, strikt gedecodeerd."
 readme = false
+license = "MIT"
+repository = "https://github.com/xinix00/lean"
 
 [lib]
-name = "bounded"
+name = "leanbase64"
 path = "src/lib.rs"
+
+[dependencies]
 
 [lints.clippy]
 as_ptr_cast_mut = "warn"

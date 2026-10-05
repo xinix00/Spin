@@ -1,13 +1,11 @@
 //! De uitgaande socket blijft niet-blokkerend, ook tijdens de TLS-handshake.
-//! TLS, ketenverificatie en de Mozilla-wortels zijn van Lean (`WebDial`);
-//! hier staan alleen de wandklok en de entropie van de host.
+//! TCP, TLS, ketenverificatie en de Mozilla-wortels zijn van Lean
+//! (`leanhttp::host`, `WebDial`); hier staan alleen de wandklok en de
+//! entropie van de host, en de fouttekst voor de logregels.
 use crate::{net::Connection, storage::Random};
 use leanhttp::Dial;
 use spin_security::Entropy;
-use std::{
-    net::TcpStream,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Een uitgaande verbinding: kaal voor `http://`, TLS voor `https://`.
 pub(crate) type Transport = leanhttps::Link<Connection>;
@@ -31,52 +29,31 @@ fn entropy() -> Option<leantls::Entropy> {
         [0; leantls::Entropy::LEN],
     )))
 }
-/// Maakt van een socket die de aanroeper al verbond (hij kiest zelf zijn
-/// adres en termijn) een webverbinding naar `host`.
-pub(crate) async fn connect(
-    socket: TcpStream,
-    host: &str,
-    port: u16,
-    encrypted: bool,
-) -> std::io::Result<Transport> {
-    secure(
-        web(Ready(Some(Connection::new(socket)?))),
-        host,
-        port,
-        encrypted,
-    )
-    .await
-}
-async fn secure<D: Dial<Conn = Connection>>(
-    mut web: leanhttps::WebDial<
-        D,
-        impl FnMut() -> Option<u64>,
-        impl FnMut() -> Option<leantls::Entropy>,
-    >,
-    host: &str,
-    port: u16,
-    encrypted: bool,
-) -> std::io::Result<Transport> {
+/// Een webverbinding naar `host:port` over de dial van de host: iedere
+/// naam opnieuw opgezocht, ieder adres 500 ms, hoogstens zestien adressen.
+/// De fout noemt de stap ("resolve: …", "connect ip:port: …", "tls: …").
+pub(crate) async fn connect(host: &str, port: u16, encrypted: bool) -> std::io::Result<Transport> {
+    let mut dial = crate::outbound::Dial::new();
     let target = leanhttp::Target {
         https: encrypted,
         host,
         port,
     };
-    web.dial(target)
-        .await
-        .map_err(|failure| error((failure, web.last_error())))
-}
-/// Eén al verbonden socket als dialer van precies één verbinding.
-struct Ready(Option<Connection>);
-impl Dial for Ready {
-    type Conn = Connection;
-    async fn dial(&mut self, _: leanhttp::Target<'_>) -> leanhttp::Result<Connection> {
-        self.0.take().ok_or(leanhttp::Error::Connect)
+    match dial.dial(target).await {
+        Ok(transport) => Ok(transport),
+        Err(error) => Err(dial.failure(error)),
     }
 }
 
 pub(crate) fn error(value: impl std::fmt::Debug) -> std::io::Error {
     match spin_core::validation::text(format_args!("network: {value:?}")) {
+        Ok(message) => std::io::Error::other(message),
+        Err(_) => std::io::Error::from(std::io::ErrorKind::OutOfMemory),
+    }
+}
+/// Als [`error`], met de leesbare tekst van `value`.
+pub(crate) fn reason(value: impl std::fmt::Display) -> std::io::Error {
+    match spin_core::validation::text(format_args!("network: {value}")) {
         Ok(message) => std::io::Error::other(message),
         Err(_) => std::io::Error::from(std::io::ErrorKind::OutOfMemory),
     }
@@ -89,10 +66,37 @@ mod tests {
     use spin_store::IdSource;
     use std::{
         io::{BufRead, BufReader},
+        net::TcpStream,
         path::PathBuf,
         process::{Child, Command, Stdio},
         time::{Duration, Instant},
     };
+    /// Eén al verbonden socket als dialer: de testnaam bestaat niet in DNS.
+    struct Ready(Option<Connection>);
+    impl Dial for Ready {
+        type Conn = Connection;
+        async fn dial(&mut self, _: leanhttp::Target<'_>) -> leanhttp::Result<Connection> {
+            self.0.take().ok_or(leanhttp::Error::Connect)
+        }
+    }
+    async fn secure<D: Dial<Conn = Connection>>(
+        mut web: leanhttps::WebDial<
+            D,
+            impl FnMut() -> Option<u64>,
+            impl FnMut() -> Option<leantls::Entropy>,
+        >,
+        host: &str,
+        port: u16,
+    ) -> std::io::Result<Transport> {
+        let target = leanhttp::Target {
+            https: true,
+            host,
+            port,
+        };
+        web.dial(target)
+            .await
+            .map_err(|failure| error((failure, web.last_error())))
+    }
     struct Peer(Child, PathBuf);
     impl Drop for Peer {
         fn drop(&mut self) {
@@ -101,8 +105,9 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.1);
         }
     }
-    /// De host-socket onder Lean's TLS: keten en naam tegen een testwortel,
-    /// meerdere records heen en terug over de niet-blokkerende verbinding.
+    /// De host-socket (Lean's `TcpConn` op de executor-reactor) onder Lean's
+    /// TLS: keten en naam tegen een testwortel, meerdere records heen en terug
+    /// over de niet-blokkerende verbinding.
     #[test]
     fn tls_transport_checks_chain_name_and_flushes_multiple_records() {
         let data = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -138,10 +143,10 @@ mod tests {
         let root: &'static [u8] =
             Vec::leak(std::fs::read(data.join("chain/ecdsa-root.der")).unwrap());
         let test = |name: &'static str| {
-            let raw = Connection::new(TcpStream::connect(address).unwrap()).unwrap();
+            let raw = crate::net::connection(TcpStream::connect(address).unwrap()).unwrap();
             let web =
                 leanhttps::WebDial::new(Ready(Some(raw)), root, || Some(1_790_640_000), entropy);
-            secure(web, name, port, true)
+            secure(web, name, port)
         };
         crate::executor::block_on(async {
             let mut transport = test("leantls.test").await.unwrap();
@@ -180,15 +185,30 @@ mod tests {
             drop(transport);
             assert!(test("wrong.example").await.is_err());
             // De Mozilla-wortels kennen de testwortel niet.
+            let raw = crate::net::connection(TcpStream::connect(address).unwrap()).unwrap();
             assert!(
-                connect(
-                    TcpStream::connect(address).unwrap(),
-                    "leantls.test",
-                    port,
-                    true
-                )
+                secure(web(Ready(Some(raw))), "leantls.test", port)
+                    .await
+                    .is_err()
+            );
+            // De echte dial noemt de stap die faalde.
+            let refused = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let closed = refused.local_addr().unwrap().port();
+            drop(refused);
+            let failure = connect("127.0.0.1", closed, false).await.err().unwrap();
+            assert!(
+                failure
+                    .to_string()
+                    .starts_with(&format!("network: connect 127.0.0.1:{closed}:")),
+                "{failure}"
+            );
+            let failure = connect("does-not-exist.invalid", 443, true)
                 .await
-                .is_err()
+                .err()
+                .unwrap();
+            assert!(
+                failure.to_string().starts_with("network: resolve:"),
+                "{failure}"
             );
         });
     }

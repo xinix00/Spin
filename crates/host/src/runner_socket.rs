@@ -5,10 +5,9 @@ use spin_core::{
     validation::text,
     websocket::{self as ws, Decoder, Event, Role},
 };
-use spin_domain::{Bytes, Wire, try_string};
+use spin_domain::try_string;
 use spin_security::Entropy;
 use std::{
-    net::TcpStream,
     task::{Context, Poll},
     time::{Duration, Instant},
 };
@@ -31,11 +30,7 @@ pub(crate) struct Socket {
     touched: Instant,
 }
 impl Socket {
-    pub(crate) async fn connect(
-        socket: TcpStream,
-        endpoint: &Endpoint,
-        token: &str,
-    ) -> std::io::Result<Self> {
+    pub(crate) async fn connect(endpoint: &Endpoint, token: &str) -> std::io::Result<Self> {
         let host = endpoint.authority.as_str();
         let path = endpoint.path.as_str();
         if host.is_empty()
@@ -48,19 +43,13 @@ impl Socket {
             return Err(std::io::Error::other("invalid runner endpoint or token"));
         }
         let socket =
-            crate::client_net::connect(socket, &endpoint.host, endpoint.port, endpoint.encrypted)
-                .await?;
+            crate::client_net::connect(&endpoint.host, endpoint.port, endpoint.encrypted).await?;
         let mut random = Random::open()?;
         let mut nonce = Vec::new();
         nonce.try_reserve_exact(16).map_err(std::io::Error::other)?;
         nonce.resize(16, 0);
         random.fill(&mut nonce).map_err(std::io::Error::other)?;
-        let value = Bytes(Some(nonce))
-            .to_value()
-            .map_err(std::io::Error::other)?;
-        let key = value
-            .as_str()
-            .ok_or_else(|| std::io::Error::other("invalid client nonce"))?;
+        let key = &spin_security::encode_base64(&nonce, true).map_err(std::io::Error::other)?;
         let request = text(format_args!("GET {path} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {key}\r\nAuthorization: Bearer {token}\r\n\r\n")).map_err(std::io::Error::other)?;
         Ok(Self {
             socket,

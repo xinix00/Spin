@@ -89,7 +89,7 @@ pub(super) fn digest(value: &str) -> Result<String> {
     encoded
         .try_reserve_exact(24)
         .map_err(|_| d::Error::OutOfMemory)?;
-    for byte in &hop_auth::sha256(value.as_bytes())[..12] {
+    for byte in &leancrypto::sha256::Sha256::digest(value.as_bytes())[..12] {
         use core::fmt::Write;
         write!(&mut encoded, "{byte:02x}").map_err(|_| d::Error::OutOfMemory)?;
     }

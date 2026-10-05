@@ -1,10 +1,11 @@
 //! Replica's S3 over Lean: `leans3http::Http` boven de webdialer, op de klok
-//! van applib. Termijnen, herkansingen en de body-grens zijn die van Lean.
+//! van applib. Termijnen en herkansingen zijn die van Lean; de body stroomt.
 use crate::outbound::Dial;
 use alloc::rc::Rc;
 use core::{future::Future, time::Duration};
 pub(crate) type Network = leans3http::Http<Dial, Clock>;
 /// De monotone klok en het timerwiel van de app.
+#[derive(Clone, Copy)]
 pub(crate) struct Clock;
 impl leans3http::Clock for Clock {
     fn now(&self) -> Duration {

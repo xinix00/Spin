@@ -330,22 +330,7 @@ impl<P: Persistence> Server<P> {
             let state = auth::token(random)?;
             let verifier = auth::token(random)?;
             let hash = spin_security::sha256(verifier.as_bytes());
-            let mut challenge = spin_security::encode_base64(&hash, false)?;
-            // De bron is ASCII en de vervangingen veranderen de lengte niet.
-            let bytes = challenge.into_bytes();
-            let mut urlsafe = Vec::new();
-            urlsafe
-                .try_reserve_exact(bytes.len())
-                .map_err(|_| d::Error::OutOfMemory)?;
-            for byte in bytes {
-                urlsafe.push(match byte {
-                    b'+' => b'-',
-                    b'/' => b'_',
-                    other => other,
-                });
-            }
-            challenge = String::from_utf8(urlsafe)
-                .map_err(|_| Error::Http(500, "invalid PKCE encoding"))?;
+            let challenge = spin_security::encode_base64_url(&hash)?;
             let base = if self.public_url.is_empty() {
                 let host = req.header("Host");
                 if host.is_empty()

@@ -1,6 +1,6 @@
 //! RFC 6455-framing met expliciete rollen, berichtlimiet en fragmentlevensloop.
 use alloc::{string::String, vec::Vec};
-use spin_domain::{self as d, Bytes, Wire, json::Value};
+use spin_domain as d;
 /// Een ongeldige peer sluit zijn eigen verbinding, nooit de actor.
 #[derive(Debug, PartialEq)]
 pub enum Error {
@@ -31,78 +31,23 @@ impl core::fmt::Display for Error {
 impl core::error::Error for Error {}
 /// Resultaat van een handshake of framebewerking.
 pub type Result<T = ()> = core::result::Result<T, Error>;
-fn base64(bytes: &[u8]) -> Result<String> {
-    let mut out = Vec::new();
-    out.try_reserve_exact(bytes.len())
-        .map_err(|_| d::Error::OutOfMemory)?;
-    out.extend_from_slice(bytes);
-    match Bytes(Some(out)).to_value()? {
-        Value::String(s) => Ok(s),
-        _ => Err(Error::Protocol),
-    }
-}
 /// Berekent Sec-WebSocket-Accept voor een canonieke 16-byte clientnonce.
 /// SHA-1 wordt uitsluitend gebruikt voor de door RFC 6455 vereiste handshake.
 pub fn accept(key: &str) -> Result<String> {
-    if key.len() != 24 {
+    // leanbase64 decodeert strikt: één tekst per nonce, dus geen omweg terug.
+    let canonical = key.len() == 24
+        && leanbase64::STANDARD
+            .decode(key.as_bytes())
+            .is_ok_and(|nonce| nonce.len() == 16);
+    if !canonical {
         return Err(Error::Protocol);
     }
-    let decoded = Bytes::from_value(&Value::string(key)?)?
-        .0
-        .ok_or(Error::Protocol)?;
-    if decoded.len() != 16 || base64(&decoded)? != key {
-        return Err(Error::Protocol);
-    }
-    // De invoer is exact 24 noncebytes + 36 GUID-bytes, dus twee SHA-1-blokken.
-    let mut blocks = [0_u8; 128];
-    blocks[..24].copy_from_slice(key.as_bytes());
-    blocks[24..60].copy_from_slice(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-    blocks[60] = 0x80;
-    blocks[120..].copy_from_slice(&480_u64.to_be_bytes());
-    let mut h = [
-        0x67452301_u32,
-        0xefcdab89,
-        0x98badcfe,
-        0x10325476,
-        0xc3d2e1f0,
-    ];
-    for block in blocks.chunks_exact(64) {
-        let mut w = [0_u32; 80];
-        for (out, bytes) in w.iter_mut().zip(block.chunks_exact(4)) {
-            *out = u32::from_be_bytes(bytes.try_into().map_err(|_| Error::Protocol)?);
-        }
-        for i in 16..80 {
-            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
-        }
-        let [mut a, mut b, mut c, mut e0, mut e] = h;
-        for (i, word) in w.into_iter().enumerate() {
-            let (f, k) = match i {
-                0..=19 => ((b & c) | ((!b) & e0), 0x5a827999),
-                20..=39 => (b ^ c ^ e0, 0x6ed9eba1),
-                40..=59 => ((b & c) | (b & e0) | (c & e0), 0x8f1bbcdc),
-                _ => (b ^ c ^ e0, 0xca62c1d6),
-            };
-            let next = a
-                .rotate_left(5)
-                .wrapping_add(f)
-                .wrapping_add(e)
-                .wrapping_add(k)
-                .wrapping_add(word);
-            e = e0;
-            e0 = c;
-            c = b.rotate_left(30);
-            b = a;
-            a = next;
-        }
-        for (out, value) in h.iter_mut().zip([a, b, c, e0, e]) {
-            *out = out.wrapping_add(value);
-        }
-    }
-    let mut hash = [0; 20];
-    for (bytes, value) in hash.chunks_exact_mut(4).zip(h) {
-        bytes.copy_from_slice(&value.to_be_bytes());
-    }
-    base64(&hash)
+    let mut hash = leancrypto::sha1::Sha1::new();
+    hash.update(key.as_bytes());
+    hash.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    leanbase64::STANDARD
+        .encode(&hash.finish())
+        .map_err(|_| Error::Data(d::Error::OutOfMemory))
 }
 /// De lokale rol bepaalt of binnenkomende frames een masker moeten dragen.
 #[derive(Clone, Copy)]
@@ -355,6 +300,10 @@ mod tests {
             "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
         );
         assert!(accept("not-a-websocket-key").is_err());
+        // Niet-canoniek (ongebruikte bits gezet) of geen 16 bytes: geweigerd.
+        assert!(accept("dGhlIHNhbXBsZSBub25jZR==").is_err());
+        assert!(accept("dGhlIHNhbXBsZSBub25jZQ").is_err());
+        assert!(accept("dGhlIHNhbXBsZSBub25jZWE=").is_err());
         let bytes = [
             0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58,
         ];

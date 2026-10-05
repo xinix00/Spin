@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.93"
 name = "sync"
-version = "3.0.12"
+version = "3.0.13"
 build = false
 publish = false
 autolib = false
