@@ -4049,7 +4049,7 @@ fn state_stream_sends_the_document_once_then_only_changed_entities() {
     );
 }
 #[test]
-fn agent_options_of_a_credential_layer_need_a_login() {
+fn agent_options_of_a_credential_layer_without_logins_use_the_layer() {
     let fail = Cell::new(false);
     let state = PersistedState::from_json(br#"{"artifacts":{
         "tool":{"id":"tool","kind":"tool","name":"agent","scope":"global","profile":"default","enables":[{"name":"acp","command":"agent","protocol_version":1}]},
@@ -4059,7 +4059,7 @@ fn agent_options_of_a_credential_layer_need_a_login() {
     let mut server = Server::new(Store::new(state, Memory(&fail)));
     let now = time();
     let mut random = Random(16000);
-    // Geen login in de pool: geen probe zonder credentials.
+    // Geen login in de pool: de probe draait op de laag zoals hij is.
     assert_eq!(
         server
             .options_route(
@@ -4073,19 +4073,14 @@ fn agent_options_of_a_credential_layer_need_a_login() {
             .status,
         202
     );
-    let options = server
+    let error = server
         .store
         .artifact("tool")
         .unwrap()
         .agent_options
         .as_ref()
-        .unwrap()
-        .try_clone()
-        .unwrap();
-    assert!(options.error.contains("no login"), "{}", options.error);
-    assert!(server.options.is_empty());
-    assert!(
-        server.store.snapshot().unwrap().compositions.is_empty(),
-        "de capsule zonder login is weer weg"
-    );
+        .map(|o| o.error.try_clone().unwrap())
+        .unwrap_or_default();
+    assert!(error.is_empty(), "{error}");
+    assert_eq!(server.store.snapshot().unwrap().compositions.len(), 1);
 }

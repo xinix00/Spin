@@ -390,17 +390,7 @@ impl<P: Persistence> Server<P> {
                     .store
                     .hand_out_login(&composition.id, &target.key, target.exclusive, now)
                 {
-                    // De opties van een credential-laag komen alleen met een
-                    // login; anders bewaart de probe de opties van een
-                    // niet-ingelogde agent.
-                    Err(spin_store::Error::NotFound)
-                        if target.exclusive && !composition.probe_artifact_id.is_empty() =>
-                    {
-                        return Err(Error::Http(
-                            409,
-                            "no login for this credential layer; capture a login first",
-                        ));
-                    }
+                    // Zonder login draait de laag zoals hij is, ook voor een opties-probe.
                     Ok(_) | Err(spin_store::Error::NotFound) => {}
                     Err(spin_store::Error::LoginsBusy) => {
                         self.note_login_wait(&composition.session_id, &target.key, now, random)?;
