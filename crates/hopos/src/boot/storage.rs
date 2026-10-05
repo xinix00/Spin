@@ -666,6 +666,7 @@ impl Persistence for Owner<'_> {
         let begun = replica.begin(&mut self.backend, bucket, now);
         drop(capture);
         if let Some(pending) = begun.map_err(replica_error)? {
+            applib::log!("SPIN_REPLICA_CAPTURE pages={}", pending.pages());
             let database = self.backend.location().clone();
             self.uploads.start(pending, database);
         }
