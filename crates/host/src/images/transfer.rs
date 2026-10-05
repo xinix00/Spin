@@ -309,6 +309,16 @@ async fn import_delta(
     if control(docker, &["rm", "-f", &target]).await.is_ok() {
         lease.complete();
     }
+    if result.is_ok()
+        && let Ok(image) = control(
+            docker,
+            &["image", "inspect", "--format", "{{.Id}}", &snapshot.r#ref],
+        )
+        .await
+    {
+        // De laag zoals hij binnenkwam (met whiteouts): precies wat een build nodig heeft.
+        super::remember_layer(&image, &mut layer).await;
+    }
     result
 }
 

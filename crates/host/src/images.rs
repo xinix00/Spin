@@ -66,6 +66,71 @@ thread_local! {
 fn take_top(image: &str) -> Option<Top> {
     TOP.with_borrow_mut(|top| top.take().filter(|top| top.image == image))
 }
+/// Zoveel lagen bewaart de runner op schijf; de oudste gaan eruit.
+const LAYER_CACHE_ENTRIES: usize = 64;
+/// De bovenste laag van een laag-image op schijf, per image-Id. Een image
+/// verandert nooit, dus één keer uit Docker halen (seal, import of de eerste
+/// build) volstaat; `docker save` van de hele stapel kostte per laag 50-70 s
+/// (05-10, vijf builds tegelijk: 4-5 minuten per werkomgeving).
+fn layer_cache_path(image: &str) -> Result<std::path::PathBuf> {
+    let id = image.strip_prefix("sha256:").unwrap_or(image);
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(std::io::Error::other("image id is not a cache key"));
+    }
+    Ok(std::env::temp_dir()
+        .join("spin-layers")
+        .join(text(format_args!("{id}.tar")).map_err(io)?))
+}
+async fn cached_layer(image: &str) -> Result<Option<Temporary>> {
+    let path = layer_cache_path(image)?;
+    let mut file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let size = file.metadata()?.len();
+    let mut layer = Temporary::new()?;
+    archive::copy_range(&mut file, &mut layer.file, 0, size).await?;
+    layer.rewind()?;
+    Ok(Some(layer))
+}
+/// Best effort: een cache die niet schrijft, kost alleen de volgende `docker save`.
+async fn remember_layer(image: &str, layer: &mut Temporary) {
+    let result = async {
+        let path = layer_cache_path(image)?;
+        let dir = path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("layer cache has no directory"))?;
+        std::fs::create_dir_all(dir)?;
+        let part = path.with_extension("part");
+        {
+            let mut out = std::fs::File::create(&part)?;
+            let size = layer.file.metadata()?.len();
+            archive::copy_range(&mut layer.file, &mut out, 0, size).await?;
+            out.sync_all()?;
+        }
+        std::fs::rename(&part, &path)?;
+        layer.rewind()?;
+        let mut entries = Vec::new();
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let modified = entry.metadata()?.modified()?;
+            try_push(&mut entries, (modified, entry.path())).map_err(io)?;
+        }
+        entries.sort();
+        for (_, old) in entries
+            .iter()
+            .take(entries.len().saturating_sub(LAYER_CACHE_ENTRIES))
+        {
+            let _ = std::fs::remove_file(old);
+        }
+        Ok::<_, std::io::Error>(())
+    }
+    .await;
+    if let Err(error) = result {
+        eprintln!("SPIN_LAYER_CACHE_SKIP image={image} error={error}");
+    }
+}
 async fn control(docker: &Docker, args: &[&str]) -> Result<String> {
     docker.control(&mut DockerExecutor, args).await.map_err(io)
 }
@@ -432,10 +497,31 @@ async fn build(
                 result?;
                 steps.step("full_layer");
             } else {
-                let mut saved = save(docker, &step.artifact.snapshot.r#ref).await?;
-                steps.step("save");
-                let mut layer = top_layer(&mut saved).await?;
-                steps.step("top_layer");
+                let image = control(
+                    docker,
+                    &[
+                        "image",
+                        "inspect",
+                        "--format",
+                        "{{.Id}}",
+                        &step.artifact.snapshot.r#ref,
+                    ],
+                )
+                .await?;
+                let mut layer = match cached_layer(&image).await? {
+                    Some(layer) => {
+                        steps.step("cached_layer");
+                        layer
+                    }
+                    None => {
+                        let mut saved = save(docker, &step.artifact.snapshot.r#ref).await?;
+                        steps.step("save");
+                        let mut layer = top_layer(&mut saved).await?;
+                        steps.step("top_layer");
+                        remember_layer(&image, &mut layer).await;
+                        layer
+                    }
+                };
                 let (mut diff, deletions) = filter(&mut layer, true, None).await?;
                 delete_paths(docker, &target, &deletions).await?;
                 copy_into(docker, &target, &mut diff).await?;
@@ -1048,6 +1134,9 @@ pub(crate) async fn seal(
     let delta = parent.starts_with("spin/artifact:");
     remove(docker, &runtime.container_id).await;
     steps.step("remove_container");
+    if delta {
+        remember_layer(&digest, &mut layer).await;
+    }
     // Alleen een delta-export gebruikt de laag; anders blijft hij niet op schijf staan.
     TOP.set(if delta {
         Some(Top {
@@ -1131,6 +1220,30 @@ mod tests {
     }
     fn expected() -> d::json::Value {
         d::json::parse(include_str!("../tests/fixtures/archive/expected.json").as_bytes()).unwrap()
+    }
+    #[test]
+    fn the_layer_cache_round_trips_and_keeps_the_newest_entries() {
+        crate::executor::block_on(async {
+            let image = alloc_id("cachetest");
+            assert!(cached_layer(&image).await.unwrap().is_none());
+            let mut layer = spool(b"layer bytes that stand in for a tar");
+            remember_layer(&image, &mut layer).await;
+            let mut again = cached_layer(&image).await.unwrap().unwrap();
+            let mut bytes = Vec::new();
+            again.file.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"layer bytes that stand in for a tar");
+            // De laag zelf is na het bewaren weer leesbaar vanaf het begin.
+            let mut original = Vec::new();
+            layer.file.read_to_end(&mut original).unwrap();
+            assert_eq!(original, bytes);
+            assert!(layer_cache_path("sha256:../x").is_err());
+            std::fs::remove_file(layer_cache_path(&image).unwrap()).unwrap();
+        });
+    }
+    /// Een cache-sleutel die alleen in deze test voorkomt (hex, 64 tekens).
+    fn alloc_id(seed: &str) -> String {
+        let digest = spin_security::sha256(seed.as_bytes());
+        format!("sha256:{}", hex(&digest).unwrap())
     }
     #[test]
     fn sealed_layers_carry_their_whiteouts_to_the_importer() {
