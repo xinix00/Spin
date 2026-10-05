@@ -149,8 +149,18 @@ impl<P: Persistence> Server<P> {
                     return Err(error);
                 }
                 Ok(Some(response)) if response.status >= 400 => {
-                    self.options[index].failure =
-                        Some(try_string("agent probe capsule operation failed")?);
+                    // De reden van de capsule (runner, login, plaats) hoort in de melding.
+                    let reason = Value::from_json(&response.body).ok();
+                    let reason = reason
+                        .as_ref()
+                        .and_then(|v| v.as_object())
+                        .and_then(|o| o.get("error"))
+                        .and_then(|e| e.as_str())
+                        .unwrap_or("");
+                    self.options[index].failure = Some(spin_core::validation::text(format_args!(
+                        "agent probe capsule operation failed ({}): {reason}",
+                        response.status
+                    ))?);
                     self.options[index].stopping = true;
                 }
                 Ok(Some(_)) => {}

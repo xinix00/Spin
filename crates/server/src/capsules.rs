@@ -1550,6 +1550,11 @@ impl<P: Persistence> Server<P> {
         let failed = result.is_err();
         let response = match result {
             Ok(response) => response,
+            // De runner kent de echte reden; die gaat mee in plaats van een vaste tekst.
+            Err(_) if !message.error.is_empty() => Response::json(
+                502,
+                &http::object(&[("error", Value::string(&message.error)?)])?,
+            )?,
             Err(error) => error.response()?,
         };
         self.calls[index].updated = now.try_clone()?;
