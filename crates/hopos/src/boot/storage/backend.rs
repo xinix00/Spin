@@ -97,6 +97,28 @@ impl FilesPool {
             )
             .map_err(crate::platform::failure)
     }
+    /// Verwijdert een bestand in de root als het er is.
+    pub(in crate::boot) fn remove(&self, wait: &Wait<'_>, name: &str) -> spin_server::Result {
+        if !self.exists(wait, name)? {
+            return Ok(());
+        }
+        let name = replica_core::local::Name::new(name)
+            .map_err(|_| spin_server::Error::Http(500, "invalid file name"))?;
+        let mut loan = self.take(wait).map_err(crate::platform::failure)?;
+        let mut bridge = Bridge::new(
+            loan.files
+                .as_mut()
+                .ok_or(spin_server::Error::Http(503, "files unavailable"))?,
+            wait,
+        );
+        bridge
+            .remove(
+                name.cstr()
+                    .map_err(|_| spin_server::Error::Http(500, "invalid file name"))?,
+                false,
+            )
+            .map_err(crate::platform::failure)
+    }
     pub(in crate::boot) fn new(files: Files<'static, Environment>) -> Self {
         Self {
             files: RefCell::new(Some(files)),
@@ -159,10 +181,20 @@ impl Drop for FileLoan<'_> {
         }
     }
 }
+/// Waar de bestanden van een tenant staan.
+#[derive(Clone)]
+pub(in crate::boot) enum Location {
+    /// Het oude model: los in de root, `spin-<hash>.sqlite` met de sidecars
+    /// ernaast. Alleen nog voor een database zonder replicatie (of van Go).
+    Root(String),
+    /// Een eigen map per tenant: SQLite en Replica kiezen er zelf hun namen
+    /// in (ook tijdelijke bestanden); de map is de afscherming.
+    Dir(String),
+}
 pub(in crate::boot) struct Backend<'a> {
     files: &'a FilesPool,
     pub(in crate::boot) wait: &'a Wait<'a>,
-    database: String,
+    location: Location,
     written: u64,
     /// Welk soort bestand achter een open FileId zit, voor de schrijfteller.
     kinds: [(u32, usize); 16],
@@ -185,28 +217,48 @@ fn kind(name: &str) -> usize {
     }
 }
 impl<'a> Backend<'a> {
-    pub(in crate::boot) fn new(files: &'a FilesPool, wait: &'a Wait<'a>, database: String) -> Self {
+    pub(in crate::boot) fn new(
+        files: &'a FilesPool,
+        wait: &'a Wait<'a>,
+        location: Location,
+    ) -> Self {
         Self {
             files,
             wait,
-            database,
+            location,
             written: 0,
             kinds: [(u32::MAX, 4); 16],
             per_kind: [0; 5],
         }
     }
-    /// De databasenaam waaronder ook de Replica-spool en -markers staan.
-    pub(in crate::boot) fn database(&self) -> &str {
-        &self.database
+    /// Waar deze tenant zijn database, Replica-spool en markers heeft.
+    pub(in crate::boot) fn location(&self) -> &Location {
+        &self.location
     }
     fn name(&self, name: &CStr) -> replica_sqlite::Result<Name> {
         let name = name.to_str().map_err(|_| replica_sqlite::Error::TEXT)?;
-        let suffix = if let Some(suffix) = name.strip_prefix("spin.sqlite") {
-            spin_core::validation::text(format_args!("{}{suffix}", self.database))
-        } else if let Some(suffix) = name.strip_prefix("spin-restore") {
-            spin_core::validation::text(format_args!("{}.restore{suffix}", self.database))
-        } else {
-            return Err(replica_sqlite::Error::CANNOT_OPEN);
+        let suffix = match &self.location {
+            // Eén naam, nooit een pad: alles blijft in de map van de tenant.
+            Location::Dir(dir) => {
+                if name.is_empty() || name.contains('/') || name.starts_with('.') {
+                    return Err(replica_sqlite::Error::CANNOT_OPEN);
+                }
+                spin_core::validation::text(format_args!("{dir}/{name}"))
+            }
+            Location::Root(database) => {
+                if let Some(suffix) = name.strip_prefix("spin.sqlite") {
+                    spin_core::validation::text(format_args!("{database}{suffix}"))
+                } else if let Some(suffix) = name.strip_prefix("spin-restore") {
+                    spin_core::validation::text(format_args!("{database}.restore{suffix}"))
+                } else if name.strip_prefix("etilqs_").is_some_and(|hex| {
+                    hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit())
+                }) {
+                    // SQLite's tijdelijke bestanden, naast de database.
+                    spin_core::validation::text(format_args!("{database}.{name}"))
+                } else {
+                    return Err(replica_sqlite::Error::CANNOT_OPEN);
+                }
+            }
         };
         Name::new(&suffix.map_err(|_| replica_sqlite::Error::MEMORY)?)
             .map_err(|_| replica_sqlite::Error::CANNOT_OPEN)

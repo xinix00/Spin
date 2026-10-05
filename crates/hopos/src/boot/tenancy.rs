@@ -136,6 +136,7 @@ pub(super) fn owner<'a>(
             s.wait(super::catalog::register(app, net, &domain))
                 .map_err(|_| Error::Http(503, "domain registration cancelled"))??;
             let mut path = database(app, &domain)?;
+            let mut go = false;
             if app.env("SPIN_DATABASE").is_none_or(|s| s.is_empty()) {
                 let legacy = spin_core::validation::text(format_args!("{domain}.db"))?;
                 if files.exists(&wait, &legacy)? {
@@ -146,10 +147,34 @@ pub(super) fn owner<'a>(
                         ));
                     }
                     path = legacy;
+                    go = true;
                     applib::log!("SPIN_LEGACY_DATABASE domain={domain}");
                 }
             }
-            let bridge = storage::Backend::new(files, &wait, path);
+            // Een map per tenant (spin-<hash>/spin.sqlite). Staat de database nog
+            // los in de root, dan herstelt Replica hem in de map en gaan de oude
+            // bestanden na een geslaagde start weg; zonder replicatie blijft hij
+            // waar hij is.
+            let dir = match path.strip_suffix(".sqlite") {
+                Some(base) => spin_domain::try_string(base)?,
+                None => spin_core::validation::text(format_args!("{path}.d"))?,
+            };
+            let in_dir = files.exists(
+                &wait,
+                &spin_core::validation::text(format_args!("{dir}/spin.sqlite"))?,
+            )?;
+            let in_root = files.exists(&wait, &path)?;
+            let moving = in_root && !in_dir && !go && storage::replicating(app);
+            let location = if go || (in_root && !in_dir && !moving) {
+                storage::Location::Root(spin_domain::try_string(&path)?)
+            } else {
+                if moving {
+                    applib::log!("SPIN_STORAGE_MOVING from={path} to={dir}/ via=replica");
+                }
+                storage::Location::Dir(dir)
+            };
+            let in_map = matches!(location, storage::Location::Dir(_));
+            let bridge = storage::Backend::new(files, &wait, location);
             let cipher = Cipher::from_encoded(&cipher.portable_key()?)?;
             let mut random = Random::open(app)?;
             let mut persistence = storage::Owner::new(
@@ -171,6 +196,27 @@ pub(super) fn owner<'a>(
                         .map_err(|_| spin_security::Error::Entropy(-1))
                 })
                 .map_err(failure)?;
+            if in_root && !go && in_map {
+                // De database staat nu in de map; de oude bestanden in de root
+                // (database, journal, Replica-marker, -logs, -spool) gaan weg.
+                for suffix in [
+                    "",
+                    "-journal",
+                    ".replica",
+                    ".replica-dirty-a",
+                    ".replica-dirty-b",
+                    ".replica-capture",
+                    ".replica-restore-data",
+                    ".replica-restore-data-journal",
+                    ".replica-restoring",
+                ] {
+                    let name = spin_core::validation::text(format_args!("{path}{suffix}"))?;
+                    if let Err(error) = files.remove(&wait, &name) {
+                        applib::log!("SPIN_STORAGE_MOVE_CLEANUP_FAILED file={name} error={error}");
+                    }
+                }
+                applib::log!("SPIN_STORAGE_MOVED to=map");
+            }
             let mut server = spin_server::Server::new(spin_store::Store::new(state, persistence));
             let domain_url = if app.env("SPIN_DATABASE").is_some_and(|s| !s.is_empty()) {
                 String::new()

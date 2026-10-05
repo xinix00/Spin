@@ -17,7 +17,7 @@ use spin_store::{BlobReply, BlobRequest, Persistence};
 mod backend;
 mod restore;
 mod upload;
-pub(super) use backend::{Arena, Backend, FilesPool};
+pub(super) use backend::{Arena, Backend, FilesPool, Location};
 pub(super) use upload::Uploads;
 
 pub(super) type Bucket<'a> = replica_s3::S3<Network, Wait<'a>>;
@@ -632,7 +632,7 @@ impl Persistence for Owner<'_> {
             .begin(&mut self.backend, bucket, now)
             .map_err(replica_error)?
         {
-            let database = spin_domain::try_string(self.backend.database())?;
+            let database = self.backend.location().clone();
             self.uploads.start(pending, database);
         }
         Ok(())

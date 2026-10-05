@@ -86,7 +86,13 @@ impl Files {
                 && suffix.as_bytes()[6] == b'9'
                 && suffix.bytes().all(|b| b.is_ascii_hexdigit())
         });
+        // SQLite's tijdelijke bestanden (sorteren, indexbouw): etilqs_ plus
+        // zestien hexcijfers van de VFS, verwijderd bij het sluiten.
+        let temp = name
+            .strip_prefix("etilqs_")
+            .is_some_and(|hex| hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
         if !super_journal
+            && !temp
             && !matches!(
                 name,
                 "spin.sqlite"
