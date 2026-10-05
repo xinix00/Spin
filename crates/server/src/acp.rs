@@ -52,6 +52,8 @@ pub(crate) struct Agent {
     pub(super) failure_reported: bool,
     pub(super) closed: bool,
     launch: bool,
+    /// De start kan nooit slagen (de prompt past niet): meteen parkeren.
+    fatal: bool,
     queued: VecDeque<String>,
     after_turn: bool,
     last_preserve_ms: u64,
@@ -200,6 +202,7 @@ impl<P: Persistence> Server<P> {
                     started_ms: 0,
                     closed: false,
                     launch: false,
+                    fatal: false,
                     queued: VecDeque::new(),
                     after_turn: false,
                     last_preserve_ms: 0,
@@ -429,6 +432,7 @@ impl<P: Persistence> Server<P> {
             started_ms: now_ms(now)?,
             closed: false,
             launch: false,
+            fatal: false,
             queued: VecDeque::new(),
             after_turn: false,
             last_preserve_ms: 0,
@@ -530,6 +534,7 @@ impl<P: Persistence> Server<P> {
             started_ms: now_ms(now)?,
             closed: false,
             launch: false,
+            fatal: false,
             queued: VecDeque::new(),
             after_turn: false,
             last_preserve_ms: 0,
@@ -607,11 +612,7 @@ impl<P: Persistence> Server<P> {
                 session.prompt(
                     Prompt {
                         text: prompt.ok_or(Error::Http(400, "missing chat prompt"))?,
-                        attachments: prompt_attachments(
-                            &mut self.store,
-                            &agent.session_id,
-                            session,
-                        )?,
+                        attachments: prompt_attachments(&self.store, &agent.session_id, session)?,
                     },
                     now,
                     now_ms(now)?,
@@ -918,7 +919,7 @@ impl<P: Persistence> Server<P> {
                         Prompt {
                             text: prompt,
                             attachments: prompt_attachments(
-                                &mut self.store,
+                                &self.store,
                                 &agent.session_id,
                                 session,
                             )?,
@@ -950,7 +951,7 @@ impl<P: Persistence> Server<P> {
                                 Prompt {
                                     text: prompt,
                                     attachments: prompt_attachments(
-                                        &mut self.store,
+                                        &self.store,
                                         &agent.session_id,
                                         session,
                                     )?,
@@ -965,6 +966,7 @@ impl<P: Persistence> Server<P> {
                     })();
                     if let Err(error) = launch {
                         agent.failure = text(format_args!("{error}"))?;
+                        agent.fatal = true;
                     }
                 }
                 if session.ready() && agent.failure.is_empty() && !agent.options_probe {
@@ -1009,7 +1011,7 @@ impl<P: Persistence> Server<P> {
                             .unwrap_or(0)
                             .saturating_add(1)
                     };
-                    if failures >= AGENT_START_ATTEMPTS {
+                    if agent.fatal || failures >= AGENT_START_ATTEMPTS {
                         self.agent_start_failures.remove(&agent.session_id);
                         self.store
                             .park_workflow_phase(&agent.session_id, &agent.failure, now)?;
@@ -1097,12 +1099,11 @@ fn primed_prompt<P: Persistence>(store: &Store<P>, id: &str, message: &str) -> R
 }
 
 fn prompt_attachments<P: Persistence>(
-    store: &mut Store<P>,
+    store: &Store<P>,
     id: &str,
     session: &Session,
 ) -> Result<Vec<spin_core::acp::session::Attachment>> {
     let mut result = Vec::new();
-    let mut budget = 5_usize << 20;
     let record = store.session(id)?;
     if record.job_id.is_empty() {
         return Ok(result);
@@ -1112,7 +1113,6 @@ fn prompt_attachments<P: Persistence>(
         Err(spin_store::Error::NotFound) => return Ok(result),
         Err(error) => return Err(error.into()),
     };
-    let caps = session.prompt_capabilities();
     for job in [&job.id, &job.forked_from_job_id] {
         if job.is_empty() {
             continue;
@@ -1121,53 +1121,23 @@ fn prompt_attachments<P: Persistence>(
             if session.attachment_sent(&attachment.id) {
                 continue;
             }
+            // Nooit ingebed: de bijlage staat op schijf in de capsule en de prompt
+            // noemt haar pad; een agent leest en bekijkt haar daar zelf, ongeacht grootte.
             let uri = text(format_args!("file://{}", attachment.capsule_path))?;
-            let image = attachment.media_type.starts_with("image/");
-            let rich = field(caps, if image { "image" } else { "embeddedContext" }).as_bool()
-                == Some(true);
-            let block = if rich && attachment.size >= 0 && attachment.size as usize <= budget {
-                let bytes = store.read_blob(
-                    &text(format_args!("attachment:{}", attachment.id))?,
-                    15 << 20,
-                )?;
-                budget = budget.saturating_sub(bytes.len());
-                let data = d::Bytes(Some(bytes)).to_value()?;
-                if image {
-                    http::object(&[
-                        ("type", Value::string("image")?),
-                        ("data", data),
-                        ("mimeType", Value::string(&attachment.media_type)?),
-                        ("uri", Value::string(&uri)?),
-                    ])?
-                } else {
-                    http::object(&[
-                        ("type", Value::string("resource")?),
-                        (
-                            "resource",
-                            http::object(&[
-                                ("uri", Value::string(&uri)?),
-                                ("mimeType", Value::string(&attachment.media_type)?),
-                                ("blob", data),
-                            ])?,
-                        ),
-                    ])?
-                }
-            } else {
-                http::object(&[
-                    ("type", Value::string("resource_link")?),
-                    ("uri", Value::string(&uri)?),
-                    ("name", Value::string(&attachment.name)?),
-                    ("mimeType", Value::string(&attachment.media_type)?),
-                    ("size", attachment.size.to_value()?),
-                    (
-                        "description",
-                        Value::string(&text(format_args!(
-                            "Immutable Job attachment supplied by {}",
-                            attachment.created_by
-                        ))?)?,
-                    ),
-                ])?
-            };
+            let block = http::object(&[
+                ("type", Value::string("resource_link")?),
+                ("uri", Value::string(&uri)?),
+                ("name", Value::string(&attachment.name)?),
+                ("mimeType", Value::string(&attachment.media_type)?),
+                ("size", attachment.size.to_value()?),
+                (
+                    "description",
+                    Value::string(&text(format_args!(
+                        "Immutable Job attachment supplied by {}",
+                        attachment.created_by
+                    ))?)?,
+                ),
+            ])?;
             d::try_push(
                 &mut result,
                 spin_core::acp::session::Attachment {

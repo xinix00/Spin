@@ -2,10 +2,13 @@
 use crate::validation::{invalid, normalized, text};
 use alloc::string::String;
 use spin_domain::{self as d, Map, TryClone, try_push_str, try_string};
+/// De prompttekst van een stap. Agents weigeren grote prompts hard (codex:
+/// 1.048.576 tekens voor tekst én ingebedde bijlagen samen, 05-10-2026).
+pub const PROMPT_TEXT_BYTES: usize = 512 << 10;
 struct Prompt(String);
 impl Prompt {
     fn push(&mut self, value: &str) -> d::Fallible {
-        if self.0.len().saturating_add(value.len()) > 4 << 20 {
+        if self.0.len().saturating_add(value.len()) > PROMPT_TEXT_BYTES {
             return Err(invalid("prompt", "workflow context exceeds byte budget"));
         }
         try_push_str(&mut self.0, value)
