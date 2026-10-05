@@ -120,7 +120,7 @@ pub fn settings(env: impl Fn(&str) -> String) -> std::io::Result<Option<Settings
 pub type Bucket = replica_s3::S3<Network, Block>;
 /// De S3-bucket over de host-TLS-dialer.
 pub fn bucket(client: leans3::Client) -> std::io::Result<Bucket> {
-    replica_s3::S3::new(client, Network::new(), Block)
+    replica_s3::S3::new(client, crate::s3::network, Block)
         .map_err(|_| invalid("invalid Replica S3 configuration"))
 }
 /// Een bucket die ook de schrijverlease van Replica levert (`S3::lease`).

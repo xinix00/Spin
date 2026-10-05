@@ -25,6 +25,9 @@ class Bucket(http.server.ThreadingHTTPServer):
         self.reused = 0
         self.pause_next = False
         self.drop_next_segment_get = False
+        # The dropped segment key and how often it was fetched again afterwards.
+        self.dropped_segment = None
+        self.refetched_segment = 0
         self.blocked = threading.Event()
         self.release = threading.Event()
         self.lock = threading.Lock()
@@ -131,8 +134,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if self.requests_served:
                 self.server.reused += 1
             self.requests_served += 1
+            if self.command == 'GET' and key == self.server.dropped_segment:
+                self.server.refetched_segment += 1
             if self.command == 'GET' and '/data/' in key and self.server.drop_next_segment_get:
                 self.server.drop_next_segment_get = False
+                self.server.dropped_segment = key
                 self.send_response(200)
                 self.send_header("Content-Length", "16")
                 self.end_headers()

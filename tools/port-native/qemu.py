@@ -281,7 +281,8 @@ def main():
                                 raise AssertionError(f'Replica did not publish: {log}')
                             if boot == 2:
                                 assert 'SPIN_REPLICA_READY reason=Restored' in log.read_text()
-                                assert 'SPIN_S3_READ_RETRY attempt=1' in log.read_text()
+                                # Lean's leans3http retries the GET itself; the fixture sees it again.
+                                assert bucket.refetched_segment, 'interrupted segment GET was not retried'
                                 print('PASS interrupted S3 segment GET retries without restarting restore', flush=True)
                             if boot == 1:
                                 points = json.loads(call('/api/replica/points', cookie=cookie)[2])['points']

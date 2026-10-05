@@ -42,7 +42,7 @@ impl Platform for Host<'_> {
     type Connection = Connection;
     type Dial = crate::outbound::Dial;
     fn dial(&self) -> Result<Self::Dial> {
-        Ok(crate::outbound::Dial)
+        Ok(crate::outbound::dial())
     }
     type Clock = HostClock;
     fn accept(&mut self, _: &mut Context<'_>) -> Result<Option<(Connection, String)>> {

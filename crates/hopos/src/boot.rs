@@ -221,13 +221,12 @@ async fn serve(
         )
         .map_err(failure)?,
     );
-    let mut discovery = pin!(catalog::discover(app, net, &tenants));
+    let mut discovery = pin!(catalog::discover(app, &tenants));
     let mut discovered = false;
     let mut discovery_retry = 0;
     let mut transport = spin_runtime::Transport::routed(&tenants, secure);
     let mut network = Native {
         app,
-        net,
         listener: Some(net.tcp_listen(port).map_err(failure)?),
         wait: None,
     };
@@ -264,7 +263,7 @@ async fn serve(
                     Poll::Ready(Ok(())) => discovered = true,
                     Poll::Ready(Err(error)) => {
                         applib::log!("SPIN_DOMAIN_DISCOVERY_FAILED error={error}");
-                        discovery.set(catalog::discover(app, net, &tenants));
+                        discovery.set(catalog::discover(app, &tenants));
                         discovery_retry = now.saturating_add(10_000_000_000);
                     }
                     Poll::Pending => {}
@@ -281,7 +280,6 @@ async fn serve(
                     Ok(Some((index, domain))) => {
                         match tenancy::owner(
                             app,
-                            net,
                             port,
                             &heap,
                             &files,

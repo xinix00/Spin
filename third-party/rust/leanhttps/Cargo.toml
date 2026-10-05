@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.93"
 name = "leanhttps"
-version = "3.1.9"
+version = "3.1.11"
 build = false
 autolib = false
 autobins = false
@@ -25,6 +25,9 @@ readme = false
 license = "MIT"
 repository = "https://github.com/xinix00/lean"
 
+[features]
+mozilla-roots = ["leantls/mozilla-roots"]
+
 [lib]
 name = "leanhttps"
 path = "src/lib.rs"
@@ -34,6 +37,10 @@ path = "../leanhttp"
 
 [dependencies.leantls]
 path = "../leantls"
+
+[dev-dependencies.leantls]
+path = "../leantls"
+features = ["mozilla-roots"]
 
 [lints.clippy]
 as_ptr_cast_mut = "warn"

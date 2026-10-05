@@ -1,6 +1,5 @@
 //! Domain discovery and one parked application stack per isolated database.
 use super::*;
-use crate::{outbound::Dial, s3::Network};
 use alloc::string::String;
 use core::{future::poll_fn, pin::Pin, task::Poll};
 use spin_runtime::tenancy::{Tenants, normalize_host};
@@ -82,7 +81,6 @@ pub(super) async fn discover(net: &'static appnet::Net, root: &str, tenants: &Te
 #[allow(clippy::too_many_arguments)]
 pub(super) fn owner<'a>(
     app: &'static App,
-    net: &'static appnet::Net,
     port: u16,
     arena: &'a storage::Arena,
     files: &'a storage::FilesPool,
@@ -100,9 +98,8 @@ pub(super) fn owner<'a>(
         let task = unsafe {
             Task::new(2 << 20, move |s| -> Result {
                 let wait = Wait(s);
-                let mut remote =
-                    storage::Bucket::new(client, Network::new(Dial { app, net }), Wait(s))
-                        .map_err(|_| Error::Http(503, "invalid Replica S3 configuration"))?;
+                let mut remote = storage::Bucket::new(client, crate::s3::network, Wait(s))
+                    .map_err(|_| Error::Http(503, "invalid Replica S3 configuration"))?;
                 loop {
                     let (pending, database) = s
                         .wait(uploads.next())
@@ -133,7 +130,7 @@ pub(super) fn owner<'a>(
             if app.env("SPIN_DATABASE").is_none_or(|s| s.is_empty()) {
                 files.marker(&wait, &domain)?;
             }
-            s.wait(super::catalog::register(app, net, &domain))
+            s.wait(super::catalog::register(app, &domain))
                 .map_err(|_| Error::Http(503, "domain registration cancelled"))??;
             let mut path = database(app, &domain)?;
             let mut go = false;
@@ -183,7 +180,6 @@ pub(super) fn owner<'a>(
                 cipher,
                 Random::open(app)?,
                 app,
-                net,
                 &domain,
                 uploads,
                 mail.restore(),
@@ -260,7 +256,6 @@ pub(super) fn owner<'a>(
             spin_runtime::serve_owner(
                 Native {
                     app,
-                    net,
                     listener: None,
                     wait: Some(s),
                 },

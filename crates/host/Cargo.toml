@@ -9,9 +9,9 @@ publish.workspace = true
 spin-runtime = { path = "../runtime" }
 libc = "=0.2.189"
 spin-core = { path = "../core" }
-leanhttp = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.9" }
-leanhttps = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.9" }
-leantls = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.9" }
+leanhttp = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.11" }
+leanhttps = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.11", features = ["mozilla-roots"] }
+leantls = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.11" }
 spin-server = { path = "../server" }
 spin-domain = { path = "../domain" }
 spin-security = { path = "../security" }
@@ -20,7 +20,8 @@ spin-persistence = { path = "../persistence" }
 replica-sqlite = { path = "../../../replica/sqlite" }
 replica-core = { path = "../../../replica/core" }
 replica-s3 = { path = "../../../replica/s3" }
-leans3 = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.10" }
+leans3 = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.11" }
+leans3http = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.11" }
 hop-types.workspace = true
 
 [lints]

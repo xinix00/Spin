@@ -1,5 +1,6 @@
 //! Niet-blokkerende client-WebSocket. Eén uitgaand frame en één decoder per socket.
 use crate::{client_net::Transport, storage::Random};
+use leanhttp::{AsyncRead, AsyncWrite};
 use spin_core::{
     validation::text,
     websocket::{self as ws, Decoder, Event, Role},
@@ -47,7 +48,8 @@ impl Socket {
             return Err(std::io::Error::other("invalid runner endpoint or token"));
         }
         let socket =
-            Transport::connect(socket, &endpoint.host, endpoint.port, endpoint.encrypted).await?;
+            crate::client_net::connect(socket, &endpoint.host, endpoint.port, endpoint.encrypted)
+                .await?;
         let mut random = Random::open()?;
         let mut nonce = Vec::new();
         nonce.try_reserve_exact(16).map_err(std::io::Error::other)?;
@@ -116,7 +118,10 @@ impl Socket {
             }
             if frame.offset < frame.bytes.len() {
                 let end = frame.bytes.len().min(frame.offset + (64 << 10));
-                match self.socket.write(context, &frame.bytes[frame.offset..end]) {
+                match self
+                    .socket
+                    .poll_write(context, &frame.bytes[frame.offset..end])
+                {
                     Poll::Ready(Ok(0)) => return Err(std::io::ErrorKind::WriteZero.into()),
                     Poll::Ready(Ok(n)) => {
                         frame.offset += n;
@@ -127,7 +132,7 @@ impl Socket {
                 }
             }
             if frame.offset == frame.bytes.len() {
-                match self.socket.flush(context) {
+                match self.socket.poll_flush(context) {
                     Poll::Ready(Ok(())) => {
                         self.acknowledged = frame.ticket;
                         self.writing = None;
@@ -155,7 +160,7 @@ impl Socket {
             return self.decoder.next_event().map_err(std::io::Error::other);
         }
         let mut bytes = [0; 8192];
-        let n = match self.socket.read(context, &mut bytes) {
+        let n = match self.socket.poll_read(context, &mut bytes) {
             Poll::Ready(Ok(0)) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
             Poll::Ready(Ok(n)) => n,
             Poll::Pending => return Ok(None),

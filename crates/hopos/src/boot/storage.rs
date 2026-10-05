@@ -1,12 +1,11 @@
 //! Eén SQLite-epoch per opslagopdracht maakt de bestaande Replica-eigenaar bereikbaar.
 //! De engine sluit vóór capture/upload; er bestaan nooit twee SQL-runtimes tegelijk.
 use crate::{
-    outbound::Dial,
     platform::{Environment, Random},
     s3::Network,
 };
 use alloc::{string::String, vec::Vec};
-use applib::{App, appnet::Net};
+use applib::App;
 use replica_core::{local::Name, owner::Replica, time::Time};
 use replica_hopos::{Files, Wait};
 use replica_sqlite::{Storage, asynchronous::Bridge};
@@ -201,7 +200,6 @@ impl<'a> Owner<'a> {
         cipher: Cipher,
         entropy: Random,
         app: &'static App,
-        net: &'static Net,
         domain: &str,
         uploads: &'a Uploads,
         restore: alloc::rc::Rc<spin_runtime::Restore>,
@@ -239,9 +237,12 @@ impl<'a> Owner<'a> {
             config.generation = duration(env("SPIN_REPLICA_GENERATION"), 7 * 86400)?;
             config.retention = duration(env("SPIN_REPLICA_RETENTION"), 28 * 86400)?;
             config.adopt_local = env("SPIN_REPLICA_ADOPT_LOCAL") == "1";
+            // Replica opent zelf de verbindingen voor een parallel herstel;
+            // iedere stroom telt mee op de openingspagina.
+            let counted = restore.clone();
             let mut remote = Bucket::new(
                 client,
-                Network::new(Dial { app, net }).counting(restore.clone()),
+                move || crate::s3::counting(counted.clone()),
                 Wait(wait.0),
             )
             .map_err(|_| spin_store::Error::Conflict("invalid Replica S3 configuration"))?;

@@ -6,7 +6,8 @@ use std::{
     task::{Context, Poll},
     time::{Duration, Instant},
 };
-pub(crate) struct Connection {
+/// Een niet-blokkerende TCP-socket met eigen lees- en schrijftermijnen.
+pub struct Connection {
     socket: TcpStream,
     read_at: Option<Instant>,
     write_at: Option<Instant>,

@@ -1,5 +1,5 @@
 //! Begrensde HTTP-overdrachten; het archief en de verbinding hebben één eigenaar.
-use crate::{archive::Temporary, client_net::Transport, executor, images, runner_socket};
+use crate::{archive::Temporary, client_net, executor, images, runner_socket};
 use spin_core::{docker::Docker, validation::text};
 use spin_domain::{
     self as d, TryClone, Wire,
@@ -92,7 +92,7 @@ impl Client {
             }
         }
         let socket = socket.ok_or_else(|| io("cannot connect to archive server"))?;
-        let connection = Transport::connect(
+        let connection = client_net::connect(
             socket,
             &self.endpoint.host,
             self.endpoint.port,

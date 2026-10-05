@@ -1,140 +1,72 @@
 //! De uitgaande socket blijft niet-blokkerend, ook tijdens de TLS-handshake.
+//! TLS, ketenverificatie en de Mozilla-wortels zijn van Lean (`WebDial`);
+//! hier staan alleen de wandklok en de entropie van de host.
 use crate::{net::Connection, storage::Random};
-use leanhttp::{AsyncRead, AsyncWrite, Dial, IoError};
+use leanhttp::Dial;
 use spin_security::Entropy;
 use std::{
     net::TcpStream,
-    task::{Context, Poll},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-// Mozilla NSS-wortels uit lean v3.1.1 (db6724745a2c579382c54a68c73c18d643d40038),
-// leantls/testdata/github/mozilla-roots.der. Dezelfde set als Hop hostnet.
-const ROOTS: &[u8] = include_bytes!("roots.der");
-#[allow(clippy::large_enum_variant)] // Eén verbinding bezit haar TLS-staat; geen extra allocatie op iedere dial.
-pub(crate) enum Transport {
-    Plain(Connection),
-    Tls(leanhttps::TlsConn<Connection>),
+/// Een uitgaande verbinding: kaal voor `http://`, TLS voor `https://`.
+pub(crate) type Transport = leanhttps::Link<Connection>;
+/// Lean's webdialer op de klok en entropie van de host.
+pub(crate) type Web<D> =
+    leanhttps::WebDial<D, fn() -> Option<u64>, fn() -> Option<leantls::Entropy>>;
+pub(crate) fn web<D: Dial>(inner: D) -> Web<D>
+where
+    D::Conn: Unpin,
+{
+    leanhttps::WebDial::new(inner, leantls::MOZILLA_ROOTS, unix_seconds, entropy)
 }
-impl Transport {
-    pub(crate) async fn connect(
-        socket: TcpStream,
-        host: &str,
-        port: u16,
-        encrypted: bool,
-    ) -> std::io::Result<Self> {
-        let raw = Connection::new(socket)?;
-        if !encrypted {
-            return Ok(Self::Plain(raw));
-        }
-        let roots = leantls::Roots::from_concatenated_der(ROOTS).map_err(error)?;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(error)?
-            .as_secs();
-        Self::secure(raw, host, port, roots, now).await
-    }
-    async fn secure(
-        mut raw: Connection,
-        host: &str,
-        port: u16,
-        roots: leantls::Roots<'_>,
-        now: u64,
-    ) -> std::io::Result<Self> {
-        raw.set_read_timeout(Some(Duration::from_secs(20)))
-            .map_err(error)?;
-        raw.set_write_timeout(Some(Duration::from_secs(20)))
-            .map_err(error)?;
-        let verifier = leantls::ChainVerifier::new(roots, now);
-        let mut seed = [0; leantls::Entropy::LEN];
-        Random::open()?.fill(&mut seed).map_err(error)?;
-        let mut tls = leanhttps::TlsDial::new(
-            Ready(Some(raw)),
-            leantls::Trust::Chain(&verifier),
-            move || {
-                // Ready accepteert één dial; de entropie wordt precies één keer verbruikt.
-                leantls::Entropy::new(std::mem::replace(&mut seed, [0; leantls::Entropy::LEN]))
-            },
-        );
-        let mut socket = match tls
-            .dial(leanhttp::Target {
-                https: true,
-                host,
-                port,
-            })
-            .await
-        {
-            Ok(socket) => socket,
-            Err(failure) => return Err(error((failure, tls.last_error()))),
-        };
-        socket.set_read_timeout(None).map_err(error)?;
-        socket.set_write_timeout(None).map_err(error)?;
-        Ok(Self::Tls(socket))
-    }
-    pub(crate) fn read(
-        &mut self,
-        cx: &mut Context<'_>,
-        bytes: &mut [u8],
-    ) -> Poll<Result<usize, IoError>> {
-        match self {
-            Self::Plain(raw) => raw.poll_read(cx, bytes),
-            Self::Tls(tls) => tls.poll_read(cx, bytes),
-        }
-    }
-    pub(crate) fn write(
-        &mut self,
-        cx: &mut Context<'_>,
-        bytes: &[u8],
-    ) -> Poll<Result<usize, IoError>> {
-        match self {
-            Self::Plain(raw) => raw.poll_write(cx, bytes),
-            Self::Tls(tls) => tls.poll_write(cx, bytes),
-        }
-    }
-    pub(crate) fn flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        match self {
-            Self::Plain(raw) => raw.poll_flush(cx),
-            Self::Tls(tls) => tls.poll_flush(cx),
-        }
-    }
+fn unix_seconds() -> Option<u64> {
+    Some(SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs())
 }
-impl AsyncRead for Transport {
-    fn poll_read(
-        &mut self,
-        cx: &mut Context<'_>,
-        bytes: &mut [u8],
-    ) -> Poll<Result<usize, IoError>> {
-        self.read(cx, bytes)
-    }
-    fn set_read_timeout(&mut self, value: Option<Duration>) -> Result<(), IoError> {
-        match self {
-            Self::Plain(c) => c.set_read_timeout(value),
-            Self::Tls(c) => c.set_read_timeout(value),
-        }
-    }
+fn entropy() -> Option<leantls::Entropy> {
+    let mut seed = [0; leantls::Entropy::LEN];
+    Random::open().ok()?.fill(&mut seed).ok()?;
+    Some(leantls::Entropy::new(std::mem::replace(
+        &mut seed,
+        [0; leantls::Entropy::LEN],
+    )))
 }
-impl AsyncWrite for Transport {
-    fn poll_write(&mut self, cx: &mut Context<'_>, bytes: &[u8]) -> Poll<Result<usize, IoError>> {
-        self.write(cx, bytes)
-    }
-    fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        self.flush(cx)
-    }
-    fn set_write_timeout(&mut self, value: Option<Duration>) -> Result<(), IoError> {
-        match self {
-            Self::Plain(c) => c.set_write_timeout(value),
-            Self::Tls(c) => c.set_write_timeout(value),
-        }
-    }
+/// Maakt van een socket die de aanroeper al verbond (hij kiest zelf zijn
+/// adres en termijn) een webverbinding naar `host`.
+pub(crate) async fn connect(
+    socket: TcpStream,
+    host: &str,
+    port: u16,
+    encrypted: bool,
+) -> std::io::Result<Transport> {
+    secure(
+        web(Ready(Some(Connection::new(socket)?))),
+        host,
+        port,
+        encrypted,
+    )
+    .await
 }
-impl leanhttp::Close for Transport {
-    fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        match self {
-            Self::Plain(c) => c.poll_close(cx),
-            Self::Tls(c) => c.poll_close(cx),
-        }
-    }
+async fn secure<D: Dial<Conn = Connection>>(
+    mut web: leanhttps::WebDial<
+        D,
+        impl FnMut() -> Option<u64>,
+        impl FnMut() -> Option<leantls::Entropy>,
+    >,
+    host: &str,
+    port: u16,
+    encrypted: bool,
+) -> std::io::Result<Transport> {
+    let target = leanhttp::Target {
+        https: encrypted,
+        host,
+        port,
+    };
+    web.dial(target)
+        .await
+        .map_err(|failure| error((failure, web.last_error())))
 }
+/// Eén al verbonden socket als dialer van precies één verbinding.
 struct Ready(Option<Connection>);
 impl Dial for Ready {
     type Conn = Connection;
@@ -153,12 +85,13 @@ pub(crate) fn error(value: impl std::fmt::Debug) -> std::io::Error {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+    use leanhttp::{AsyncRead, AsyncWrite};
     use spin_store::IdSource;
     use std::{
         io::{BufRead, BufReader},
         path::PathBuf,
         process::{Child, Command, Stdio},
-        time::Instant,
+        time::{Duration, Instant},
     };
     struct Peer(Child, PathBuf);
     impl Drop for Peer {
@@ -168,6 +101,8 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.1);
         }
     }
+    /// De host-socket onder Lean's TLS: keten en naam tegen een testwortel,
+    /// meerdere records heen en terug over de niet-blokkerende verbinding.
     #[test]
     fn tls_transport_checks_chain_name_and_flushes_multiple_records() {
         let data = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -200,24 +135,23 @@ mod tests {
             .unwrap();
         let address = marker.split_whitespace().next().unwrap();
         let port = address.rsplit_once(':').unwrap().1.parse().unwrap();
-        let root = std::fs::read(data.join("chain/ecdsa-root.der")).unwrap();
-        let roots = leantls::Roots::from_concatenated_der(&root).unwrap();
-        assert_eq!(
-            leantls::Roots::from_concatenated_der(ROOTS).unwrap().len(),
-            119
-        );
-        crate::executor::block_on(async {
+        let root: &'static [u8] =
+            Vec::leak(std::fs::read(data.join("chain/ecdsa-root.der")).unwrap());
+        let test = |name: &'static str| {
             let raw = Connection::new(TcpStream::connect(address).unwrap()).unwrap();
-            let mut transport = Transport::secure(raw, "leantls.test", port, roots, 1_790_640_000)
-                .await
-                .unwrap();
+            let web =
+                leanhttps::WebDial::new(Ready(Some(raw)), root, || Some(1_790_640_000), entropy);
+            secure(web, name, port, true)
+        };
+        crate::executor::block_on(async {
+            let mut transport = test("leantls.test").await.unwrap();
             let bytes: Vec<u8> = (0..32_768_u32).map(|n| n.to_le_bytes()[0]).collect();
             let until = Instant::now() + Duration::from_secs(10);
             let mut at = 0;
             while at < bytes.len() {
                 let n = std::future::poll_fn(|cx| {
                     assert!(Instant::now() < until);
-                    transport.write(cx, &bytes[at..])
+                    transport.poll_write(cx, &bytes[at..])
                 })
                 .await
                 .unwrap();
@@ -226,7 +160,7 @@ mod tests {
             }
             std::future::poll_fn(|cx| {
                 assert!(Instant::now() < until);
-                transport.flush(cx)
+                transport.poll_flush(cx)
             })
             .await
             .unwrap();
@@ -235,7 +169,7 @@ mod tests {
             while at < actual.len() {
                 let n = std::future::poll_fn(|cx| {
                     assert!(Instant::now() < until);
-                    transport.read(cx, &mut actual[at..])
+                    transport.poll_read(cx, &mut actual[at..])
                 })
                 .await
                 .unwrap();
@@ -244,14 +178,10 @@ mod tests {
             }
             assert_eq!(actual, bytes);
             drop(transport);
-            let raw = Connection::new(TcpStream::connect(address).unwrap()).unwrap();
+            assert!(test("wrong.example").await.is_err());
+            // De Mozilla-wortels kennen de testwortel niet.
             assert!(
-                Transport::secure(raw, "wrong.example", port, roots, 1_790_640_000)
-                    .await
-                    .is_err()
-            );
-            assert!(
-                Transport::connect(
+                connect(
                     TcpStream::connect(address).unwrap(),
                     "leantls.test",
                     port,

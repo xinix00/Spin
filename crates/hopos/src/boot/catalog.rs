@@ -47,39 +47,39 @@ fn client(app: &App) -> Result<leans3::Client> {
         now: Some(|| applib::app().and_then(|a| a.wall_ns()).unwrap_or(0) / 1_000_000_000),
     })
 }
-pub(super) async fn register(app: &'static App, net: &'static appnet::Net, domain: &str) -> Result {
+pub(super) async fn register(app: &'static App, domain: &str) -> Result {
     if !enabled(app) {
         return Ok(());
     }
     let key = spin_core::validation::text(format_args!("{}{domain}", prefix(app)?))?;
+    let mut network = crate::s3::network();
     client(app)?
         .put(
-            &mut crate::s3::Network::new(crate::outbound::Dial { app, net }),
+            &mut network,
             &key,
             b"spin-domain-v1\n",
             &leans3::PutOptions::default(),
         )
         .await
-        .map_err(failure)?;
+        .map_err(|error| {
+            crate::s3::report(&network);
+            failure(error)
+        })?;
     Ok(())
 }
-pub(super) async fn discover(
-    app: &'static App,
-    net: &'static appnet::Net,
-    tenants: &Tenants,
-) -> Result {
+pub(super) async fn discover(app: &'static App, tenants: &Tenants) -> Result {
     if !enabled(app) {
         return Ok(());
     }
     let prefix = prefix(app)?;
+    let mut network = crate::s3::network();
     let (keys, truncated) = client(app)?
-        .list(
-            &mut crate::s3::Network::new(crate::outbound::Dial { app, net }),
-            &prefix,
-            TENANTS,
-        )
+        .list(&mut network, &prefix, TENANTS)
         .await
-        .map_err(failure)?;
+        .map_err(|error| {
+            crate::s3::report(&network);
+            failure(error)
+        })?;
     if truncated {
         return Err(Error::Http(
             503,

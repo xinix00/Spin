@@ -31,7 +31,6 @@ impl Clock for Monotonic {
 }
 pub(crate) struct Native<'a> {
     pub(crate) app: &'static App,
-    pub(crate) net: &'static applib::appnet::Net,
     pub(crate) listener: Option<TcpListener>,
     pub(crate) wait: Option<&'a Suspender>,
 }
@@ -39,10 +38,7 @@ impl Platform for Native<'_> {
     type Connection = crate::conn::Conn;
     type Dial = crate::outbound::Dial;
     fn dial(&self) -> Result<Self::Dial> {
-        Ok(crate::outbound::Dial {
-            app: self.app,
-            net: self.net,
-        })
+        Ok(crate::outbound::Dial::new())
     }
     type Clock = Monotonic;
     fn accept(&mut self, context: &mut Context<'_>) -> Result<Option<(Self::Connection, String)>> {

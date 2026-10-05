@@ -25,9 +25,13 @@ Replica komt rechtstreeks uit de bron: de crates linken naar `../replica`
 patch van. Wijzigingen aan Replica gebeuren daar.
 
 De overige dependencies zijn vastgelegd in `.cargo/config.toml` en `Cargo.lock`
-en gevendord in `third-party/rust`, ongewijzigd van hun tags: HopOS v3.0.10, Hop
-v3.0.9, Lean v3.1.9 (`leanhttp`, `leanhttps`, `leantls`, dezelfde als `applib`)
-en Lean v3.1.10 (`leans3`, dezelfde als Replica). Lokale patches bestaan niet;
+en gevendord in `third-party/rust`, ongewijzigd van hun tags: HopOS v3.0.12, Hop
+v3.0.9 en Lean v3.1.11, één versie voor Spin, `applib` en Replica. Het uitgaande
+netwerk is van Lean: `leanhttps::WebDial` (TLS met ketenverificatie tegen
+`leantls::MOZILLA_ROOTS`) over de kale TCP-dial van het platform (`applib::tcp::Dialer`
+op HopOS, std op de Mac), en voor S3 `leans3http::Http` met zijn termijnen en
+herkansingen; Spin levert alleen klok, entropie, de voortgangsteller en logregels.
+Lokale patches bestaan niet;
 een wijziging gaat naar de bron en komt terug als tag. Opnieuw vendoren:
 `cargo vendor third-party/rust` (de uitvoer is de inhoud van `.cargo/config.toml`).
 
