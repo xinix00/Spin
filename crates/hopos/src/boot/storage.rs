@@ -29,6 +29,8 @@ pub(super) struct Owner<'a> {
     poisoned: bool,
     /// Er kunnen dode objecten liggen: na de start en na elke blobopdracht.
     purging: bool,
+    /// Wat er per minuut geschreven wordt, voor SPIN_WRITES.
+    writes: crate::trace::Writes,
     exporting: Option<u64>,
     raw_upload: Option<restore::RawUpload>,
     next_upload: i64,
@@ -323,6 +325,7 @@ impl<'a> Owner<'a> {
             initialized: false,
             poisoned: false,
             purging: true,
+            writes: crate::trace::Writes::default(),
             exporting: None,
             raw_upload: None,
             next_upload: -1,
@@ -596,6 +599,7 @@ impl Persistence for Owner<'_> {
         if rows.is_empty() {
             return Ok(());
         }
+        self.writes.save(&rows);
         if let Err(error) = self.execute(Op::Save(&rows)) {
             applib::log!("SPIN_STATE_SAVE_FAILED rows={} error={error}", rows.len());
             return Err(error);
@@ -607,6 +611,7 @@ impl Persistence for Owner<'_> {
             return self.raw_blob(request);
         }
         self.purging = true;
+        self.writes.blob(&request);
         match self.execute(Op::Blob(request))? {
             Reply::Blob(reply) => Ok(reply),
             _ => Err(spin_store::Error::Storage(21)),
@@ -619,6 +624,7 @@ impl Persistence for Owner<'_> {
         if self.poisoned {
             return Err(spin_store::Error::StorageUncertain(10));
         }
+        self.writes.report();
         let now = time(now)?;
         self.renew(now)?;
         // Grote blobs gaan in stukken weg: hoogstens 16 MiB per seconde-beurt.
@@ -633,11 +639,22 @@ impl Persistence for Owner<'_> {
         };
         if let Some((pending, uploaded)) = self.uploads.take_done() {
             let _finish = crate::trace::owner_step(crate::trace::Step::Finish);
-            if replica
+            let synced = replica
                 .finish(&mut self.backend, bucket, pending, uploaded, now)
-                .map_err(replica_error)?
-                .published
+                .map_err(replica_error)?;
+            // Wat Replica's onderhoud binnen deze afronding deed.
+            if synced.maintenance.merged > 0
+                || synced.maintenance.pruned > 0
+                || synced.expired_objects > 0
             {
+                applib::log!(
+                    "SPIN_REPLICA_MAINTENANCE merged={} pruned={} expired_objects={}",
+                    synced.maintenance.merged,
+                    synced.maintenance.pruned,
+                    synced.expired_objects
+                );
+            }
+            if synced.published {
                 applib::log!("SPIN_REPLICA_SYNCED");
             }
             return Ok(());
