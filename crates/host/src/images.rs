@@ -11,7 +11,7 @@ use spin_core::{
 };
 use spin_domain::{self as d, TryClone, Wire, try_push, try_push_str, try_string};
 use std::cell::RefCell;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::Instant;
 mod transfer;
 pub(crate) use transfer::{export, import};
@@ -692,9 +692,118 @@ async fn rebuild(
     }
     result
 }
-/// Geeft ook de bovenste laag terug wanneer de image niet opnieuw gebouwd is.
+/// Leest een pad per regel van stdin (relatief aan /) en schrijft alleen die als tar:
+/// bestanden, links en lege mappen; een gevulde map komt mee via haar inhoud.
+const CHANGED_TAR: &str = "cd / || exit 1\nl=$(mktemp) || exit 1\nwhile IFS= read -r p; do\n  if [ -d \"$p\" ] && [ ! -L \"$p\" ]; then\n    [ -n \"$(ls -A \"$p\" 2>/dev/null)\" ] || printf '%s\\n' \"$p\"\n  elif [ -e \"$p\" ] || [ -L \"$p\" ]; then\n    printf '%s\\n' \"$p\"\n  fi\ndone > \"$l\"\nif [ -s \"$l\" ]; then exec tar -cf - -T \"$l\"; fi";
+/// De bovenste laag zonder `docker save` (dat de hele image wegschrijft): `docker
+/// diff` op de opnamecontainer noemt de veranderde paden en een tijdelijke container
+/// van de zojuist gecommitte image levert alleen die als tar. Verwijderd wordt whiteout.
+async fn changed_layer(
+    docker: &Docker,
+    container: &str,
+    image: &str,
+) -> Result<(Temporary, Vec<tar::Whiteout>)> {
+    let changes = control(docker, &["diff", container]).await?;
+    let mut list = Temporary::new()?;
+    let mut deletions = Vec::new();
+    for line in changes.lines() {
+        let Some((kind, path)) = line.split_once(' ') else {
+            continue;
+        };
+        let name = tar::clean_path(path).map_err(io)?;
+        if name.is_empty() || tar::managed_path(&name).map_err(io)? {
+            continue;
+        }
+        match kind {
+            "D" => try_push(
+                &mut deletions,
+                tar::Whiteout::File(text(format_args!("/{name}")).map_err(io)?),
+            )
+            .map_err(io)?,
+            "A" | "C" => {
+                list.file.write_all(name.as_bytes())?;
+                list.file.write_all(b"\n")?;
+            }
+            _ => return Err(std::io::Error::other("unexpected docker diff line")),
+        }
+    }
+    list.rewind()?;
+    let mut command = docker
+        .command(&[
+            "run",
+            "--rm",
+            "-i",
+            "--user",
+            "0:0",
+            "--network",
+            "none",
+            "--entrypoint",
+            "sh",
+            image,
+            "-c",
+            CHANGED_TAR,
+        ])
+        .map_err(io)?;
+    command.merge_stderr = false;
+    let mut layer = Temporary::new()?;
+    archive::check(
+        process::transfer(
+            command,
+            Some(&mut list.file),
+            Some(&mut layer.file),
+            archive::FILE_LIMIT,
+        )
+        .await?,
+    )?;
+    if layer.file.metadata()?.len() == 0 {
+        archive::finish(&mut layer.file)?;
+    }
+    layer.rewind()?;
+    Ok((layer, deletions))
+}
+/// De laag zoals een delta hem draagt: eerst de whiteouts, dan de bestanden.
+async fn sealed_layer(files: &mut Temporary, deletions: &[tar::Whiteout]) -> Result<Temporary> {
+    let mut layer = Temporary::new()?;
+    for deletion in deletions {
+        let name = match deletion {
+            tar::Whiteout::File(path) => {
+                let (dir, base) = path.rsplit_once('/').unwrap_or(("", path));
+                let dir = dir.trim_start_matches('/');
+                if dir.is_empty() {
+                    text(format_args!(".wh.{base}"))
+                } else {
+                    text(format_args!("{dir}/.wh.{base}"))
+                }
+            }
+            tar::Whiteout::Opaque(path) => text(format_args!(
+                "{}/.wh..wh..opq",
+                path.trim_start_matches('/')
+            )),
+        }
+        .map_err(io)?;
+        layer
+            .file
+            .write_all(&tar::Header::regular(&name, 0).map_err(io)?)?;
+    }
+    let mut reader = Reader::new(&mut files.file)?;
+    while let Some(entry) = reader.next().await? {
+        archive::copy_range(
+            reader.file,
+            &mut layer.file,
+            entry.start,
+            entry.end - entry.start,
+        )
+        .await?;
+    }
+    archive::finish(&mut layer.file)?;
+    layer.rewind()?;
+    Ok(layer)
+}
+/// Geeft ook de laag terug zoals een delta hem draagt, of `None` als die niet te
+/// maken was (dan leest de seal hem alsnog uit `docker save`).
 async fn clean_layer(
     docker: &Docker,
+    container: &str,
     tag: &str,
     parent: &str,
     recording: &str,
@@ -702,14 +811,31 @@ async fn clean_layer(
     progress: Progress<'_>,
 ) -> Result<(d::LayerContents, Option<Temporary>)> {
     let mut steps = Steps::new("LAYER", recording);
-    progress.report("clean", "laag uitlezen", 0, 0);
-    let mut saved = save(docker, tag).await?;
-    steps.step("save");
-    let mut layer = top_layer(&mut saved).await?;
-    steps.step("top_layer");
+    progress.report("clean", "wijzigingen uitlezen", 0, 0);
+    let changed = async {
+        let (mut layer, mut deletions) = changed_layer(docker, container, tag).await?;
+        let (diff, whiteouts) = filter(&mut layer, true, None).await?;
+        for whiteout in whiteouts {
+            try_push(&mut deletions, whiteout).map_err(io)?;
+        }
+        Ok::<_, std::io::Error>((diff, deletions))
+    }
+    .await;
+    let (mut diff, deletions) = match changed {
+        Ok(value) => {
+            steps.step("changes");
+            value
+        }
+        Err(error) => {
+            eprintln!("SPIN_LAYER_SAVE_FALLBACK id={recording} error={error}");
+            let mut saved = save(docker, tag).await?;
+            steps.step("save");
+            let mut layer = top_layer(&mut saved).await?;
+            steps.step("top_layer");
+            filter(&mut layer, true, None).await?
+        }
+    };
     progress.report("clean", "bestanden vergelijken", 0, 0);
-    let (mut diff, deletions) = filter(&mut layer, true, None).await?;
-    steps.step("filter");
     let (entries, hashes) = diff_entries(&mut diff).await?;
     steps.step("hash_entries");
     let parent_hashes = if parent.is_empty() || hashes.is_empty() {
@@ -743,9 +869,17 @@ async fn clean_layer(
         let (mut filtered, _) = filter(&mut diff, false, Some(&dropped)).await?;
         rebuild(docker, tag, parent, recording, &mut filtered, &deletions).await?;
         steps.step("rebuild");
-        return Ok((contents, None));
+        diff = filtered;
     }
-    Ok((contents, Some(layer)))
+    let layer = sealed_layer(&mut diff, &deletions).await;
+    steps.step("sealed_layer");
+    match layer {
+        Ok(layer) => Ok((contents, Some(layer))),
+        Err(error) => {
+            eprintln!("SPIN_LAYER_SAVE_FALLBACK id={recording} error={error}");
+            Ok((contents, None))
+        }
+    }
 }
 async fn extends(docker: &Docker, image: &str, parent: &str) -> bool {
     let result = async {
@@ -852,13 +986,31 @@ pub(crate) async fn seal(
         }
         if rebase && !extends(docker, &tag, &parent).await {
             contents = Some(
-                clean_layer(docker, &tag, &parent, &recording.id, true, progress)
-                    .await?
-                    .0,
+                clean_layer(
+                    docker,
+                    &runtime.container_id,
+                    &tag,
+                    &parent,
+                    &recording.id,
+                    true,
+                    progress,
+                )
+                .await?
+                .0,
             );
         }
     } else {
-        match clean_layer(docker, &tag, &parent, &recording.id, rebase, progress).await {
+        match clean_layer(
+            docker,
+            &runtime.container_id,
+            &tag,
+            &parent,
+            &recording.id,
+            rebase,
+            progress,
+        )
+        .await
+        {
             Ok((value, layer)) => (contents, top) = (Some(value), layer),
             Err(error) if rebase => return Err(error),
             Err(error) => eprintln!("SPIN_SEAL_FULL_DIFF error={error}"),
@@ -962,6 +1114,70 @@ mod tests {
     }
     fn expected() -> d::json::Value {
         d::json::parse(include_str!("../tests/fixtures/archive/expected.json").as_bytes()).unwrap()
+    }
+    #[test]
+    fn sealed_layers_carry_their_whiteouts_to_the_importer() {
+        crate::executor::block_on(async {
+            let expected = expected();
+            let expected = expected.as_object().unwrap();
+            let mut save = spool(include_bytes!("../tests/fixtures/archive/save.tar"));
+            let mut layer = top_layer(&mut save).await.unwrap();
+            let (mut files, deletions) = filter(&mut layer, true, None).await.unwrap();
+            let mut sealed = sealed_layer(&mut files, &deletions).await.unwrap();
+            // De import filtert de delta-laag: dezelfde bestanden en dezelfde verwijderingen.
+            let (mut again, recovered) = filter(&mut sealed, true, None).await.unwrap();
+            assert_eq!(recovered, deletions);
+            assert_eq!(
+                layer_hash(&mut again).await.unwrap(),
+                expected.get("filtered_hash").unwrap().as_str().unwrap()
+            );
+        });
+    }
+    #[test]
+    fn changed_tar_packs_listed_files_links_and_empty_dirs_only() {
+        let root = Temporary::new().unwrap().path().with_extension("root");
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::create_dir_all(root.join("e")).unwrap();
+        std::fs::create_dir_all(root.join("n")).unwrap();
+        std::fs::write(root.join("a/f"), b"file").unwrap();
+        std::fs::write(root.join("n/x"), b"unlisted").unwrap();
+        std::os::unix::fs::symlink("a/f", root.join("l")).unwrap();
+        // macOS-bsdtar schrijft anders binaire xattrs; een capsule-tar doet dat niet.
+        let script = CHANGED_TAR.replacen("cd /", "cd \"$1\"", 1).replacen(
+            "tar -cf",
+            "tar --no-xattrs --no-mac-metadata -cf",
+            1,
+        );
+        let run = |list: &[u8]| {
+            let mut child = std::process::Command::new("/bin/sh")
+                .args(["-c", &script, "sh", root.to_str().unwrap()])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(list).unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success());
+            output.stdout
+        };
+        assert!(run(b"").is_empty());
+        let mut tar = spool(&run(b"a/f\ne\nn\nl\nmissing\n"));
+        let names = crate::executor::block_on(async {
+            let mut names = Vec::new();
+            let mut reader = Reader::new(&mut tar.file).unwrap();
+            while let Some(entry) = reader.next().await.unwrap() {
+                names.push((
+                    entry.header.name.trim_end_matches('/').to_string(),
+                    entry.header.kind,
+                ));
+            }
+            names
+        });
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            names,
+            [("a/f".into(), b'0'), ("e".into(), b'5'), ("l".into(), b'2')]
+        );
     }
     #[test]
     fn go_image_archives_preserve_hashes_links_whiteouts_and_manifests() {
