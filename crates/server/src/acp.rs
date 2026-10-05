@@ -11,6 +11,8 @@ use spin_core::{
 };
 use spin_store::Mutation;
 const MAX_AGENTS: usize = 16;
+/// Zoveel mislukte starts achtereen zet een workflowstap opzij.
+const AGENT_START_ATTEMPTS: i64 = 3;
 /// Een ingelogde browser met een eigen historische cursor en schrijfrechten.
 pub struct ChatLink {
     session: String,
@@ -296,6 +298,13 @@ impl<P: Persistence> Server<P> {
             if !self.agents[index].closed {
                 return Err(Error::Http(409, "previous agent is still closing"));
             }
+            crate::note(
+                &mut self.notes,
+                format_args!(
+                    "SPIN_AGENT_REPLACED session={id} stream={} failure={}",
+                    self.agents[index].stream, self.agents[index].failure
+                ),
+            );
             self.agents.remove(index);
         }
         if self.agents.len() >= MAX_AGENTS {
@@ -987,7 +996,39 @@ impl<P: Persistence> Server<P> {
                         .workflow_for_session(&agent.session_id)
                         .is_ok_and(|view| view.run.status == d::PHASE_RUN_RUNNING)
                 {
-                    self.store.requeue_workflow_phase(&agent.session_id)?;
+                    // Een agent die niet voorbij session/new komt, krijgt drie kansen;
+                    // daarna gaat de stap opzij met de reden, in plaats van elke 30 s
+                    // een nieuw proces op de runner (05-10: 152 starts in een uur).
+                    let started = agent.session.as_ref().is_some_and(|s| s.primed());
+                    let failures = if started {
+                        0
+                    } else {
+                        self.agent_start_failures
+                            .get(&agent.session_id)
+                            .copied()
+                            .unwrap_or(0)
+                            .saturating_add(1)
+                    };
+                    if failures >= AGENT_START_ATTEMPTS {
+                        self.agent_start_failures.remove(&agent.session_id);
+                        self.store
+                            .park_workflow_phase(&agent.session_id, &agent.failure, now)?;
+                        crate::note(
+                            &mut self.notes,
+                            format_args!(
+                                "SPIN_AGENT_PARKED session={} attempts={failures} reason={}",
+                                agent.session_id, agent.failure
+                            ),
+                        );
+                    } else {
+                        if started {
+                            self.agent_start_failures.remove(&agent.session_id);
+                        } else {
+                            self.agent_start_failures
+                                .insert(agent.session_id.try_clone()?, failures)?;
+                        }
+                        self.store.requeue_workflow_phase(&agent.session_id)?;
+                    }
                 }
                 if self.store.composition(&agent.composition).is_ok() {
                     self.store

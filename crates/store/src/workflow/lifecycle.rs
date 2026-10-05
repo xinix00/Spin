@@ -604,6 +604,34 @@ fn restore_decision(
     Ok(true)
 }
 impl<P: Persistence> Store<P> {
+    /// Zet een stap opzij waarvan de agent niet wil starten: pending met de reden,
+    /// tot iemand hem opnieuw start (retry). Alleen de huidige, lopende of wachtende poging.
+    pub fn park_workflow_phase(
+        &mut self,
+        id: &str,
+        reason: &str,
+        now: &Timestamp,
+    ) -> Result<d::PhaseRun> {
+        let reason = reason.trim();
+        if reason.is_empty() || reason.len() > 4000 {
+            return Err(Error::Conflict("a reason of 1 to 4000 bytes is required"));
+        }
+        self.edit(|state| {
+            let mut p = parts(state, id)?;
+            if p.job.current_phase_run_id != p.run.id
+                || !matches!(
+                    p.run.status.as_str(),
+                    d::PHASE_RUN_QUEUED | d::PHASE_RUN_RUNNING
+                )
+            {
+                return Ok(p.run);
+            }
+            pending(&mut p, "agent", reason, now)?;
+            p.run.completed_at = None;
+            save_parts(state, &p.job, &p.run)?;
+            Ok(p.run)
+        })
+    }
     /// Pauzeert de agent met één begrensd formulier; de gebruiker mag vrij antwoorden.
     pub fn ask_workflow_questions(
         &mut self,

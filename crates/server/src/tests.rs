@@ -3884,6 +3884,117 @@ fn acp_start_timeout_pauses_while_the_runner_is_detached_and_the_failure_is_diag
     assert!(!server.take_diagnostics_due());
 }
 #[test]
+fn a_workflow_step_whose_agent_will_not_start_is_parked_after_three_attempts() {
+    use d::protocol as p;
+    let state = PersistedState::from_json(br#"{
+      "users":{"user":{"id":"user","username":"derek"}},
+      "jobs":{"job":{"id":"job","owner":"derek","session_ids":["ses"],"status":"running","workflow_status":"running","current_phase_run_id":"run","branch":"jobs/#1/main","template_snapshot":{"id":"tpl","phases":[{"id":"develop","name":"Bouw","allow_changes":true,"accept":{"target":"DONE"},"reject":{"target":"SELF"}}]}}},
+      "sessions":{"ses":{"id":"ses","job_id":"job","phase_run_id":"run","operator":"derek","status":"queued","prepared_composition_id":"cmp","git_ref":"jobs/#1/sessions/one"}},
+      "phase_runs":{"run":{"id":"run","session_id":"ses","job_id":"job","phase_id":"develop","phase_name":"Bouw","status":"queued","attempt":1}},
+      "compositions":{"cmp":{"id":"cmp","operator":"derek","session_id":"ses","runtime":{"driver":"docker","client_id":"client","container_id":"container","status":"ready"},"enabled":[{"name":"acp","command":"agent","transport":"stdio","protocol_version":1}]}}
+    }"#).unwrap();
+    let fail = Cell::new(false);
+    let mut server = Server::new(Store::new(state, Memory(&fail)));
+    let mut random = Random(41000);
+    server.internal_url = "https://spin.test".into();
+    let mut peer = spin_core::runner::Peer::new(d::Client {
+        id: "client".into(),
+        ..Default::default()
+    });
+    let (generation, _) = peer.attach("runner", None, 0).unwrap();
+    server.runners.push(peer);
+    let clock = ["12:00:00", "12:00:31", "12:01:02", "12:01:33"];
+    for (attempt, hhmmss) in clock.iter().enumerate().take(3) {
+        let now = at(&alloc::format!("2026-09-30T{hhmmss}Z"));
+        server.maintain_capsules(&now, &mut random).unwrap();
+        // Het sluiten van de vorige stream gaat vooraf aan de nieuwe start.
+        let (ticket, request) = loop {
+            let (ticket, request) = server.runners[0].next(generation).unwrap().unwrap();
+            if request.method.is_empty() {
+                server.runners[0].acknowledge(ticket);
+                continue;
+            }
+            break (ticket, request);
+        };
+        assert_eq!(request.method, p::METHOD_START_ENABLED, "attempt {attempt}");
+        let stream = request.id.try_clone().unwrap();
+        server.runners[0].acknowledge(ticket);
+        server.runners[0].response(&stream).unwrap();
+        // De agent start, en valt om vóór session/new: zoals een geweigerd model.
+        for (kind, error) in [
+            (p::MESSAGE_RESPONSE, ""),
+            (p::MESSAGE_STREAM_EXIT, "model rejected"),
+        ] {
+            server
+                .agent_runner(
+                    "client",
+                    &p::WireMessage {
+                        r#type: kind.into(),
+                        id: stream.try_clone().unwrap(),
+                        error: error.into(),
+                        ..Default::default()
+                    },
+                    &now,
+                )
+                .unwrap();
+        }
+        server.maintain_agents(&now, &mut random).unwrap();
+        let run = server.store.workflow_for_session("ses").unwrap().run;
+        if attempt < 2 {
+            assert_eq!(
+                run.status,
+                d::PHASE_RUN_QUEUED,
+                "attempt {attempt} requeues"
+            );
+        } else {
+            assert_eq!(run.status, d::PHASE_RUN_PENDING);
+            assert_eq!(run.pending_reason, "agent");
+            assert_eq!(run.pending_outcome, "model rejected");
+            assert_eq!(server.store.job("job").unwrap().pending_reason, "agent");
+        }
+    }
+    let notes = server.take_notes();
+    assert!(
+        notes.iter().any(
+            |n| n.starts_with("SPIN_AGENT_PARKED session=ses attempts=3 reason=model rejected")
+        ),
+        "{notes:?}"
+    );
+    // Geparkeerd: de volgende ronde start geen vierde agent.
+    server
+        .maintain_capsules(
+            &at(&alloc::format!("2026-09-30T{}Z", clock[3])),
+            &mut random,
+        )
+        .unwrap();
+    while let Some((ticket, request)) = server.runners[0].next(generation).unwrap() {
+        assert!(
+            request.method.is_empty(),
+            "a fourth start: {}",
+            request.method
+        );
+        server.runners[0].acknowledge(ticket);
+    }
+    // Een handmatige herstart telt opnieuw vanaf nul.
+    let Some(Outcome::Operation(_)) = server
+        .operation_route(
+            &req(
+                "POST",
+                "/api/sessions/ses/retry",
+                &[],
+                br#"{"note":"ander model"}"#,
+            ),
+            "derek",
+            &at("2026-09-30T12:02:00Z"),
+            &mut random,
+        )
+        .unwrap()
+    else {
+        panic!("retry operation")
+    };
+    assert!(server.agent_start_failures.get("ses").is_none());
+}
+#[test]
 fn a_queued_capsule_start_reports_why_it_waits() {
     let state = PersistedState::from_json(br#"{
         "artifacts":{"env":{"id":"env","kind":"tool","name":"agent","scope":"global","profile":"default","enables":[{"name":"acp"},{"name":"git"}]}},

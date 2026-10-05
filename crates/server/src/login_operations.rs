@@ -243,7 +243,7 @@ impl<P: Persistence> Server<P> {
                 {
                     return Ok(None);
                 }
-                if let Some(wait) = self.begin_stop(&id, now, random)? {
+                if let Some(wait) = self.begin_stop(&id, "login_captured", now, random)? {
                     self.login_operations[index].pending = Some(Pending {
                         wait,
                         composition: id,

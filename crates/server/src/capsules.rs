@@ -232,10 +232,14 @@ impl<P: Persistence> Server<P> {
                     return Ok(Some(Outcome::Response(Response::json(200, composition)?)));
                 }
                 let id = composition.id.try_clone()?;
-                return Ok(Some(match self.begin_stop(&id, now, random)? {
-                    Some(wait) => Outcome::Capsule(wait),
-                    None => Outcome::Response(Response::json(202, self.store.composition(&id)?)?),
-                }));
+                return Ok(Some(
+                    match self.begin_stop(&id, "api_capsule_stop", now, random)? {
+                        Some(wait) => Outcome::Capsule(wait),
+                        None => {
+                            Outcome::Response(Response::json(202, self.store.composition(&id)?)?)
+                        }
+                    },
+                ));
             }
         } else if stop {
             return Err(Error::Http(409, "Session has no capsule"));
@@ -695,6 +699,10 @@ impl<P: Persistence> Server<P> {
         }
         Ok(())
     }
+    /// De consoleregels van deze ronde (capsule-stops, agents die opzij gaan).
+    pub fn take_notes(&mut self) -> alloc::vec::Vec<String> {
+        core::mem::take(&mut self.notes)
+    }
     /// Of het onderhoud regels voor de console klaar heeft; één keer waar per aanvraag.
     pub fn take_diagnostics_due(&mut self) -> bool {
         core::mem::take(&mut self.diagnostics_due)
@@ -1019,7 +1027,7 @@ impl<P: Persistence> Server<P> {
                 if capsule.status == "stopped" {
                     return Ok(Some(Outcome::Response(Response::json(200, composition)?)));
                 }
-                match self.begin_stop(id, now, runtime)? {
+                match self.begin_stop(id, "api_session_stop", now, runtime)? {
                     Some(wait) => Ok(Some(Outcome::Capsule(wait))),
                     None => Ok(Some(Outcome::Response(Response::json(
                         202,

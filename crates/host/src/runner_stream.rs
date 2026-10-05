@@ -139,6 +139,7 @@ impl<'a> Streams<'a> {
                         old.pending = Some(message);
                     }
                 }
+                eprintln!("SPIN_AGENT_START stream={} key={}", request.id, agent.key);
                 State::Agent(agent)
             } else if request.method == p::METHOD_PULL_SNAPSHOT {
                 let payload = p::SnapshotPullPayload::from_value(payload).map_err(io)?;
@@ -376,9 +377,28 @@ impl<'a> Streams<'a> {
                     }
                     result => {
                         let mut message = exit(&stream.id, Ok(()))?;
+                        let agent = matches!(stream.state, State::Agent(_));
                         match result {
-                            Ok(Output::Exit(execution)) => message.execution = Some(execution),
-                            Err(error) => message = exit(&stream.id, Err(error))?,
+                            Ok(Output::Exit(execution)) => {
+                                if agent {
+                                    // Het einde van een agentproces, met de staart van
+                                    // zijn stderr op één regel: de reden staat daar.
+                                    let tail = execution.output.len().saturating_sub(600);
+                                    eprintln!(
+                                        "SPIN_AGENT_EXIT stream={} code={} stderr={}",
+                                        stream.id,
+                                        execution.exit_code,
+                                        execution.output[tail..].replace(['\n', '\r'], " | ")
+                                    );
+                                }
+                                message.execution = Some(execution);
+                            }
+                            Err(error) => {
+                                if agent {
+                                    eprintln!("SPIN_AGENT_EXIT stream={} error={error}", stream.id);
+                                }
+                                message = exit(&stream.id, Err(error))?;
+                            }
                             _ => {}
                         }
                         stream.pending = Some(message);

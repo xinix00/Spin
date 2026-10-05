@@ -184,6 +184,20 @@ pub struct Server<P: Persistence> {
     /// De aanbevelingen met de Store-versie waarop ze berekend zijn.
     recommendations: Option<(u64, Value)>,
     diagnostics_due: bool,
+    /// Regels voor de console die het onderhoud niet zelf kan schrijven; de
+    /// runtime haalt ze op met `take_notes` (hoogstens 64 per ronde).
+    notes: alloc::vec::Vec<String>,
+    /// Hoe vaak de agent van een stap achtereen niet wilde starten (per sessie).
+    agent_start_failures: Map<i64>,
+}
+/// Bewaart een consoleregel; vol is vol, de regel valt dan weg.
+pub(crate) fn note(notes: &mut alloc::vec::Vec<String>, line: core::fmt::Arguments<'_>) {
+    if notes.len() < 64
+        && notes.try_reserve(1).is_ok()
+        && let Ok(line) = spin_core::validation::text(line)
+    {
+        notes.push(line);
+    }
 }
 impl<P: Persistence> Server<P> {
     /// Neemt de geopende Store over vóór de listener start.
@@ -222,6 +236,8 @@ impl<P: Persistence> Server<P> {
             state_cache: None,
             recommendations: None,
             diagnostics_due: false,
+            notes: alloc::vec::Vec::new(),
+            agent_start_failures: Map::new(),
         }
     }
     /// Of een herstel blok voor blok vordert; de eigenaar yieldt dan in plaats van te slapen.

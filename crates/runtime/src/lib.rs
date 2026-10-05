@@ -1240,6 +1240,9 @@ fn serve_inner<P: Persistence, H: Platform>(
                 server.capsule_diagnostics(now.time().map_or(0, |time| time.0 / 1_000_000), H::log);
                 capsule_diagnosed = Some(clock.millis());
             }
+            for line in server.take_notes() {
+                H::log(format_args!("{line}"));
+            }
             meter.lap::<H>("maintain_capsules");
             // A slow maintenance round must leave an interval for queued requests.
             maintained = clock.millis();

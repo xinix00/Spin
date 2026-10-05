@@ -122,6 +122,7 @@ impl<P: Persistence> Server<P> {
     pub(crate) fn begin_stop(
         &mut self,
         id: &str,
+        reason: &'static str,
         now: &Timestamp,
         random: &mut impl Runtime,
     ) -> Result<Option<CapsuleWait>> {
@@ -135,6 +136,13 @@ impl<P: Persistence> Server<P> {
             return Ok(None);
         }
         if !capsule.stop_pending {
+            crate::note(
+                &mut self.notes,
+                format_args!(
+                    "SPIN_CAPSULE_STOP composition={id} session={} client={} reason={reason}",
+                    composition.session_id, capsule.client_id
+                ),
+            );
             capsule.stop_pending = true;
             self.store
                 .set_composition_runtime(id, &composition.operator, capsule.try_clone()?)?;
@@ -294,7 +302,10 @@ impl<P: Persistence> Server<P> {
                                     }))
                     }),
             };
-            if obsolete && let Some(wait) = self.begin_stop(&composition.id, now, random)? {
+            if obsolete
+                && let Some(wait) =
+                    self.begin_stop(&composition.id, "step_obsolete", now, random)?
+            {
                 self.detach_capsule(wait);
             }
         }
@@ -317,7 +328,7 @@ impl<P: Persistence> Server<P> {
             {
                 continue;
             }
-            if let Some(wait) = self.begin_stop(&composition.id, now, random)? {
+            if let Some(wait) = self.begin_stop(&composition.id, "stop_retry", now, random)? {
                 self.detach_capsule(wait);
                 break;
             }

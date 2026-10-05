@@ -226,7 +226,7 @@ impl<P: Persistence> Server<P> {
         {
             return Ok(false);
         }
-        if let Some(wait) = self.begin_stop(&id, now, random)? {
+        if let Some(wait) = self.begin_stop(&id, "options_probe_done", now, random)? {
             self.options[index].pending = Some(wait);
             Ok(false)
         } else {

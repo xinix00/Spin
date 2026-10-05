@@ -146,6 +146,7 @@ impl<P: Persistence> Server<P> {
             if note.len() > 4000 {
                 return Err(Error::Http(400, "restart note exceeds 4000 bytes"));
             }
+            self.agent_start_failures.remove(id);
             (
                 view.job.id,
                 try_string(id)?,
@@ -329,7 +330,8 @@ impl<P: Persistence> Server<P> {
                 return Ok(None);
             }
             if (!capsule.stop_pending || online)
-                && let Some(wait) = self.begin_stop(&composition.id, now, random)?
+                && let Some(wait) =
+                    self.begin_stop(&composition.id, "job_operation", now, random)?
             {
                 self.detach_capsule(wait);
                 return Ok(None);

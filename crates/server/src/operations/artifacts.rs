@@ -142,7 +142,9 @@ impl<P: Persistence> Server<P> {
                 .as_ref()
                 .is_some_and(|r| r.status != "stopped")
             {
-                if let Some(wait) = self.begin_stop(&composition.id, now, random)? {
+                if let Some(wait) =
+                    self.begin_stop(&composition.id, "artifact_operation", now, random)?
+                {
                     self.operations[index]
                         .artifact
                         .as_mut()
