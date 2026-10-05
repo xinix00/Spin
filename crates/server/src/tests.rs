@@ -4050,6 +4050,7 @@ fn state_stream_sends_the_document_once_then_only_changed_entities() {
 }
 #[test]
 fn agent_options_of_a_credential_layer_without_logins_use_the_layer() {
+    use d::protocol as p;
     let fail = Cell::new(false);
     let state = PersistedState::from_json(br#"{"artifacts":{
         "tool":{"id":"tool","kind":"tool","name":"agent","scope":"global","profile":"default","enables":[{"name":"acp","command":"agent","protocol_version":1}]},
@@ -4059,6 +4060,25 @@ fn agent_options_of_a_credential_layer_without_logins_use_the_layer() {
     let mut server = Server::new(Store::new(state, Memory(&fail)));
     let now = time();
     let mut random = Random(16000);
+    server.ensure_worker_token("seed", &mut random).unwrap();
+    let Outcome::Runner(mut link) = server
+        .begin(
+            req(
+                "GET",
+                "/api/runner/ws",
+                &[("Authorization", "Bearer seed")],
+                b"",
+            ),
+            &now,
+            &mut random,
+        )
+        .unwrap()
+    else {
+        panic!("runner");
+    };
+    server.runner_message(&mut link, p::WireMessage::from_json(br#"{"version":1,"type":"hello","instance_id":"a","process":"one","name":"A","capabilities":{"engine":{"available":true}}}"#).unwrap(), &now, 1, &mut random).unwrap();
+    let (ticket, _) = server.runner_next(&link).unwrap().unwrap();
+    server.runner_acknowledge(&link, ticket);
     // Geen login in de pool: de probe draait op de laag zoals hij is.
     assert_eq!(
         server
@@ -4073,14 +4093,36 @@ fn agent_options_of_a_credential_layer_without_logins_use_the_layer() {
             .status,
         202
     );
-    let error = server
-        .store
-        .artifact("tool")
-        .unwrap()
-        .agent_options
-        .as_ref()
-        .map(|o| o.error.try_clone().unwrap())
-        .unwrap_or_default();
-    assert!(error.is_empty(), "{error}");
-    assert_eq!(server.store.snapshot().unwrap().compositions.len(), 1);
+    server.maintain_options(&now, &mut random).unwrap();
+    for (method, payload) in [
+        (p::METHOD_ACCEPTS, r#"{"accepts":true}"#),
+        (
+            p::METHOD_MATERIALIZE,
+            r#"{"driver":"docker","container_id":"probe-container","status":"ready"}"#,
+        ),
+    ] {
+        let (ticket, message) = server.runner_next(&link).unwrap().unwrap();
+        let message = message.try_clone().unwrap();
+        assert_eq!(message.method, method);
+        server.runner_acknowledge(&link, ticket);
+        server
+            .runner_message(
+                &mut link,
+                p::WireMessage {
+                    r#type: p::MESSAGE_RESPONSE.into(),
+                    id: message.id.clone(),
+                    payload: d::RawJson(Some(Value::from_json(payload.as_bytes()).unwrap())),
+                    ..Default::default()
+                },
+                &now,
+                2,
+                &mut random,
+            )
+            .unwrap();
+    }
+    server.maintain_options(&now, &mut random).unwrap();
+    server.maintain_agents(&now, &mut random).unwrap();
+    // Geen files.read: de probe maakt geen login uit de bestanden van de laag.
+    let (_, message) = server.runner_next(&link).unwrap().unwrap();
+    assert_eq!(message.method, p::METHOD_START_ENABLED);
 }

@@ -17,6 +17,8 @@ pub(crate) struct Placement {
     content_at: usize,
     at: usize,
     phase: Phase,
+    /// Waarom de voorbereiding mislukte; de opruiming geeft het mee in haar antwoord.
+    failure: String,
 }
 // De begrensde voorbereidingslijst bezit haar metadata zonder extra heapobject per item.
 #[allow(clippy::large_enum_variant)]
@@ -383,15 +385,19 @@ impl<P: Persistence> Server<P> {
         now: &Timestamp,
         random: &mut impl Runtime,
     ) -> Result<CapsuleWait> {
-        let targets = self.tracked_targets(composition)?;
+        let mut targets = self.tracked_targets(composition)?;
         if !composition.for_login {
-            for target in &targets {
+            let probe = !composition.probe_artifact_id.is_empty();
+            let mut kept = Vec::new();
+            for target in targets {
                 match self
                     .store
                     .hand_out_login(&composition.id, &target.key, target.exclusive, now)
                 {
-                    // Zonder login draait de laag zoals hij is, ook voor een opties-probe.
-                    Ok(_) | Err(spin_store::Error::NotFound) => {}
+                    // Een opties-probe zonder login draait op de laag zoals hij is:
+                    // ze leest daar geen login uit en houdt niets bij.
+                    Err(spin_store::Error::NotFound) if probe => {}
+                    Ok(_) | Err(spin_store::Error::NotFound) => try_push(&mut kept, target)?,
                     Err(spin_store::Error::LoginsBusy) => {
                         self.note_login_wait(&composition.session_id, &target.key, now, random)?;
                         return Err(spin_store::Error::LoginsBusy.into());
@@ -400,6 +406,7 @@ impl<P: Persistence> Server<P> {
                 }
             }
             self.forget_login_wait(&composition.session_id);
+            targets = kept;
         }
         let authentication = match composition
             .git
@@ -455,6 +462,7 @@ impl<P: Persistence> Server<P> {
             targets,
             at: 0,
             phase: Phase::Build,
+            failure: String::new(),
         });
         self.enqueue_call(
             action,
@@ -529,7 +537,16 @@ impl<P: Persistence> Server<P> {
                 } else {
                     self.store.discard_composition(&work.id, &work.actor, now)?;
                 }
-                return Err(Error::Http(500, "capsule preparation failed"));
+                return Ok(Some(Response::json(
+                    500,
+                    &http::object(&[(
+                        "error",
+                        Value::string(&text(format_args!(
+                            "capsule preparation failed: {}",
+                            work.failure
+                        ))?)?,
+                    )])?,
+                )?));
             }
         }
         let composition = self.store.composition(&work.id)?;
@@ -692,6 +709,7 @@ impl<P: Persistence> Server<P> {
     pub(crate) fn fail_materialize(
         &mut self,
         index: usize,
+        reason: &str,
         now: &Timestamp,
         random: &mut impl Runtime,
     ) -> Result<bool> {
@@ -701,6 +719,7 @@ impl<P: Persistence> Server<P> {
         if work.phase == Phase::Cleanup {
             return Ok(false);
         }
+        work.failure = try_string(reason)?;
         let Some(mut capsule) = work.runtime.as_ref().map(TryClone::try_clone).transpose()? else {
             self.store.discard_composition(&work.id, &work.actor, now)?;
             return Ok(false);

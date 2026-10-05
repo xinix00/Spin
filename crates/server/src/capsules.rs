@@ -1389,6 +1389,8 @@ impl<P: Persistence> Server<P> {
             match self.advance_materialize(index, client, payload, now, runtime) {
                 Ok(None) => return Ok(true),
                 Ok(Some(response)) => {
+                    // De opruiming na een mislukte voorbereiding antwoordt met haar reden.
+                    self.calls[index].error = response.status >= 400;
                     self.calls[index].response = Some(response);
                     self.calls[index].finished = true;
                     self.calls[index].updated = now.try_clone()?;
@@ -1396,7 +1398,8 @@ impl<P: Persistence> Server<P> {
                     return Ok(true);
                 }
                 Err(error) => {
-                    if self.fail_materialize(index, now, runtime)? {
+                    let reason = public_reason(&error)?;
+                    if self.fail_materialize(index, &reason, now, runtime)? {
                         return Ok(true);
                     }
                     self.calls[index].response = Some(error.response()?);
@@ -1408,7 +1411,7 @@ impl<P: Persistence> Server<P> {
             }
         }
         if matches!(self.calls[index].action, Action::Materialize(_))
-            && self.fail_materialize(index, now, runtime)?
+            && self.fail_materialize(index, &message.error, now, runtime)?
         {
             return Ok(true);
         }
@@ -1599,4 +1602,17 @@ fn send_to_peer(
         peer.request(message)?;
     }
     Ok(())
+}
+/// De publieke reden van een fout, zoals de API hem ook zou tonen.
+fn public_reason(error: &Error) -> Result<String> {
+    let response = error.response()?;
+    let body = Value::from_json(&response.body).ok();
+    try_string(
+        body.as_ref()
+            .and_then(|v| v.as_object())
+            .and_then(|o| o.get("error"))
+            .and_then(|e| e.as_str())
+            .unwrap_or(""),
+    )
+    .map_err(Into::into)
 }
