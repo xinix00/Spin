@@ -887,6 +887,8 @@ impl<P: Persistence> Server<P> {
                         }
                         Signal::Idle if !agent.options_probe => {
                             agent.after_turn = true;
+                            // Een afgemaakte beurt: de startteller begint weer bij nul.
+                            self.agent_start_failures.remove(&agent.session_id);
                             self.store.settle_workflow_chat_turn(
                                 &agent.session_id,
                                 Mutation { now, ids: runtime },
@@ -998,19 +1000,16 @@ impl<P: Persistence> Server<P> {
                         .workflow_for_session(&agent.session_id)
                         .is_ok_and(|view| view.run.status == d::PHASE_RUN_RUNNING)
                 {
-                    // Een agent die niet voorbij session/new komt, krijgt drie kansen;
-                    // daarna gaat de stap opzij met de reden, in plaats van elke 30 s
-                    // een nieuw proces op de runner (05-10: 152 starts in een uur).
-                    let started = agent.session.as_ref().is_some_and(|s| s.primed());
-                    let failures = if started {
-                        0
-                    } else {
-                        self.agent_start_failures
-                            .get(&agent.session_id)
-                            .copied()
-                            .unwrap_or(0)
-                            .saturating_add(1)
-                    };
+                    // Een agent die omvalt vóór hij een beurt afmaakt, krijgt drie kansen;
+                    // daarna gaat de stap opzij met de reden, in plaats van elke 30 s een
+                    // nieuw proces op de runner (05-10: 152 starts in een uur). Ook een
+                    // geweigerde eerste prompt telt: die komt pas na session/new.
+                    let failures = self
+                        .agent_start_failures
+                        .get(&agent.session_id)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(1);
                     if agent.fatal || failures >= AGENT_START_ATTEMPTS {
                         self.agent_start_failures.remove(&agent.session_id);
                         self.store
@@ -1023,12 +1022,8 @@ impl<P: Persistence> Server<P> {
                             ),
                         );
                     } else {
-                        if started {
-                            self.agent_start_failures.remove(&agent.session_id);
-                        } else {
-                            self.agent_start_failures
-                                .insert(agent.session_id.try_clone()?, failures)?;
-                        }
+                        self.agent_start_failures
+                            .insert(agent.session_id.try_clone()?, failures)?;
                         self.store.requeue_workflow_phase(&agent.session_id)?;
                     }
                 }

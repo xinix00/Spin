@@ -191,6 +191,8 @@ pub struct Server<P: Persistence> {
     agent_start_failures: Map<i64>,
     /// Hoe vaak de voorbereiding van een stap achtereen mislukte (per sessie).
     prepare_failures: Map<i64>,
+    /// Hoe vaak de watcher van een capsule achtereen stopte (per compositie).
+    watch_failures: Map<i64>,
 }
 /// Bewaart een consoleregel; vol is vol, de regel valt dan weg.
 pub(crate) fn note(notes: &mut alloc::vec::Vec<String>, line: core::fmt::Arguments<'_>) {
@@ -241,6 +243,7 @@ impl<P: Persistence> Server<P> {
             notes: alloc::vec::Vec::new(),
             agent_start_failures: Map::new(),
             prepare_failures: Map::new(),
+            watch_failures: Map::new(),
         }
     }
     /// Of een herstel blok voor blok vordert; de eigenaar yieldt dan in plaats van te slapen.

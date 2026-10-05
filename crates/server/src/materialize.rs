@@ -8,6 +8,8 @@ use spin_store::Context;
 
 /// Zoveel mislukte voorbereidingen achtereen zetten een workflowstap opzij.
 const PREPARE_ATTEMPTS: i64 = 3;
+/// Zoveel gestopte watchers achtereen laten de watcher van een capsule uit.
+const WATCH_ATTEMPTS: i64 = 3;
 pub(crate) struct Placement {
     pub(crate) id: String,
     pub(crate) session: String,
@@ -807,7 +809,29 @@ impl<P: Persistence> Server<P> {
             if composition.runtime.as_ref().is_some_and(|r| {
                 r.client_id == client && r.container_id == report.runtime.container_id
             }) {
-                self.watch_stamps.remove(&composition.id);
+                // Een watcher die drie keer op rij stopt (te grote bijgehouden map,
+                // uitlezen loopt vast) blijft uit: elke herstart leest de hele map
+                // opnieuw in de capsule. De stempel blijft, dus geen herinstallatie.
+                let stops = self
+                    .watch_failures
+                    .get(&composition.id)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_add(1);
+                if stops >= WATCH_ATTEMPTS {
+                    self.watch_failures.remove(&composition.id);
+                    crate::note(
+                        &mut self.notes,
+                        format_args!(
+                            "SPIN_WATCH_DISABLED composition={} session={} stops={stops}",
+                            composition.id, composition.session_id
+                        ),
+                    );
+                } else {
+                    self.watch_failures
+                        .insert(composition.id.try_clone()?, stops)?;
+                    self.watch_stamps.remove(&composition.id);
+                }
             }
         }
         Ok(())
