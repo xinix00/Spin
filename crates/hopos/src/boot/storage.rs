@@ -6,7 +6,11 @@ use crate::{
 };
 use alloc::{string::String, vec::Vec};
 use applib::App;
-use replica_core::{local::Name, owner::Replica, time::Time};
+use replica_core::{
+    local::Name,
+    owner::{Begun, Replica},
+    time::Time,
+};
 use replica_hopos::{Files, Wait};
 use replica_sqlite::{Storage, asynchronous::Bridge};
 use spin_domain::{Timestamp, Wire, state::PersistedState};
@@ -639,6 +643,11 @@ impl Persistence for Owner<'_> {
         };
         if let Some(outcome) = self.uploads.take_done() {
             match outcome {
+                Outcome::Capture(error) => {
+                    replica
+                        .abandon(&mut self.backend, error, now)
+                        .map_err(replica_error)?;
+                }
                 Outcome::Upload(pending, uploaded) => {
                     let _finish = crate::trace::owner_step(crate::trace::Step::Finish);
                     let synced = replica
@@ -665,32 +674,28 @@ impl Persistence for Owner<'_> {
         if self.uploads.busy() {
             return Ok(());
         }
+        // Alleen het plan (kop, broncontrole, schaduw) hier; het lezen van de
+        // pagina's en de upload lopen op de uploader terwijl SQL doorgaat.
         let capture = crate::trace::owner_step(crate::trace::Step::BeginCapture);
-        let begun = replica.begin(&mut self.backend, bucket, now);
+        let begun = replica.begin_capture(&mut self.backend, bucket, now);
         drop(capture);
-        if let Some(pending) = begun.map_err(replica_error)? {
-            let stats = pending.stats();
-            let rate = |ms: u64| stats.bytes / ms.max(1) / 1000;
-            applib::log!(
-                "SPIN_REPLICA_CAPTURE pages={} mb={} read_ms={} read_mb_s={} hash_ms={} hash_mb_s={} write_ms={} write_mb_s={}",
-                pending.pages(),
-                stats.bytes >> 20,
-                stats.read_ms,
-                rate(stats.read_ms),
-                stats.hash_ms,
-                rate(stats.hash_ms),
-                stats.write_ms,
-                rate(stats.write_ms)
-            );
-            let database = self.backend.location().clone();
-            self.uploads.start(Work::Upload(pending), database);
-        } else if let Some(job) = replica
-            .maintenance_begin(&mut self.backend, now)
-            .map_err(replica_error)?
-        {
-            // Niets te uploaden: het onderhoud draait op de uploader, nooit hier.
-            let database = self.backend.location().clone();
-            self.uploads.start(Work::Maintain(job), database);
+        let database = self.backend.location().clone();
+        match begun.map_err(replica_error)? {
+            Some(Begun::Capture(capturing)) => {
+                self.uploads.start(Work::Capture(capturing), database);
+            }
+            Some(Begun::Upload(pending)) => {
+                self.uploads.start(Work::Upload(pending), database);
+            }
+            None => {
+                if let Some(job) = replica
+                    .maintenance_begin(&mut self.backend, now)
+                    .map_err(replica_error)?
+                {
+                    // Niets te uploaden: het onderhoud draait op de uploader, nooit hier.
+                    self.uploads.start(Work::Maintain(job), database);
+                }
+            }
         }
         Ok(())
     }

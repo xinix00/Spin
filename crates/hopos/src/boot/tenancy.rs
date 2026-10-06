@@ -93,8 +93,9 @@ pub(super) fn owner<'a>(
     let mut uploader = if storage::replicating(app) {
         let client = storage::s3_client(app).map_err(failure)?;
         let tag = spin_domain::try_string(&domain)?;
-        // SAFETY: A separate stack and backend own only Replica's spool reads and one S3
-        // connection. They never enter SQLite; the owner keeps marker and tracking.
+        // SAFETY: A separate stack and backend own only Replica's database and spool
+        // reads, the shadow, and one S3 connection. They never enter SQLite; the owner
+        // keeps marker and tracking.
         let task = unsafe {
             Task::new(2 << 20, move |s| -> Result {
                 let wait = Wait(s);
@@ -107,6 +108,43 @@ pub(super) fn owner<'a>(
                     let mut backend = storage::Backend::new(files, &wait, database);
                     let started = applib::clock::now_ns();
                     match work {
+                        // Het beeld lezen naast de eigenaar, dan meteen de delen de lijn op.
+                        storage::Work::Capture(capturing) => {
+                            let step = crate::trace::uploader_step(crate::trace::Step::Capture);
+                            let captured = capturing.run(&mut backend);
+                            drop(step);
+                            let pending = match captured {
+                                Ok(pending) => pending,
+                                Err(error) => {
+                                    applib::log!("SPIN_REPLICA_CAPTURE_FAILED domain={tag} error={error:?}");
+                                    uploads.done(storage::Outcome::Capture(error));
+                                    mail.nudge();
+                                    continue;
+                                }
+                            };
+                            let stats = pending.stats();
+                            let rate = |ms: u64| stats.bytes / ms.max(1) / 1000;
+                            applib::log!(
+                                "SPIN_REPLICA_CAPTURE pages={} mb={} read_ms={} read_mb_s={} hash_ms={} hash_mb_s={} write_ms={} write_mb_s={}",
+                                pending.pages(),
+                                stats.bytes >> 20,
+                                stats.read_ms,
+                                rate(stats.read_ms),
+                                stats.hash_ms,
+                                rate(stats.hash_ms),
+                                stats.write_ms,
+                                rate(stats.write_ms)
+                            );
+                            let step = crate::trace::uploader_step(crate::trace::Step::UploadParts);
+                            let result = pending.upload(&mut backend, &mut remote);
+                            drop(step);
+                            applib::log!(
+                                "SPIN_REPLICA_UPLOADED domain={tag} ok={} ms={}",
+                                result.is_ok(),
+                                applib::clock::now_ns().saturating_sub(started) / 1_000_000
+                            );
+                            uploads.done(storage::Outcome::Upload(pending, result));
+                        }
                         storage::Work::Upload(pending) => {
                             let step = crate::trace::uploader_step(crate::trace::Step::UploadParts);
                             let result = pending.upload(&mut backend, &mut remote);
@@ -258,6 +296,7 @@ pub(super) fn owner<'a>(
                     ".replica-dirty-b",
                     ".replica-capture",
                     ".replica-pending",
+                    ".replica-shadow",
                     ".replica-restore-data",
                     ".replica-restore-data-journal",
                     ".replica-restoring",

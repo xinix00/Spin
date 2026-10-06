@@ -1,8 +1,9 @@
 //! De upload van Replica-delen op een eigen stack, naast de geparkeerde eigenaar.
 //!
-//! De eigenaar doet de capture (één korte leestransactie) en de afronding
-//! (marker, manifest, bevestiging); de delen gaan hier de lijn op terwijl de
-//! eigenaar verzoeken blijft bedienen. Hoogstens één upload per tenant tegelijk.
+//! De eigenaar plant de capture en doet de afronding (marker, manifest,
+//! bevestiging); het lezen van de pagina's en de delen de lijn op gebeuren
+//! hier, terwijl de eigenaar verzoeken blijft bedienen (de schaduw in de VFS
+//! houdt het beeld). Hoogstens één taak per tenant tegelijk.
 use alloc::{rc::Rc, string::String};
 use core::{
     cell::{Cell, RefCell},
@@ -10,15 +11,17 @@ use core::{
     task::{Poll, Waker},
 };
 use replica_core::{
-    owner::{Maintenance, Pending, Synced},
+    owner::{Capturing, Maintenance, Pending, Synced},
     replication::Uploaded,
     writer::Writer,
 };
 
-/// Werk voor de uploader: de delen van een capture, of een onderhoudsbeurt.
+/// Werk voor de uploader: een capture (lezen én uploaden), de delen van een
+/// hervatte snapshot, of een onderhoudsbeurt.
 // Er is hoogstens één taak tegelijk; een box zou alleen een allocatie toevoegen.
 #[allow(clippy::large_enum_variant)]
 pub(in crate::boot) enum Work {
+    Capture(Capturing),
     Upload(Pending),
     Maintain(Maintenance),
 }
@@ -27,6 +30,8 @@ pub(in crate::boot) type Job = (Work, super::backend::Location);
 /// Het resultaat dat de eigenaar afrondt.
 #[allow(clippy::large_enum_variant)]
 pub(in crate::boot) enum Outcome {
+    /// De capture zelf mislukte; er is niets geüpload.
+    Capture(replica_core::Error),
     Upload(Pending, replica_core::Result<Uploaded>),
     Maintain(replica_core::Result<Synced>),
 }
