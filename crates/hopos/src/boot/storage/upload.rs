@@ -3,6 +3,7 @@
 //! De eigenaar doet de capture (één korte leestransactie) en de afronding
 //! (marker, manifest, bevestiging); de delen gaan hier de lijn op terwijl de
 //! eigenaar verzoeken blijft bedienen. Hoogstens één upload per tenant tegelijk.
+use alloc::{rc::Rc, string::String};
 use core::{
     cell::{Cell, RefCell},
     future::poll_fn,
@@ -11,6 +12,7 @@ use core::{
 use replica_core::{
     owner::{Maintenance, Pending, Synced},
     replication::Uploaded,
+    writer::Writer,
 };
 
 /// Werk voor de uploader: de delen van een capture, of een onderhoudsbeurt.
@@ -35,6 +37,10 @@ pub(in crate::boot) struct Uploads {
     done: RefCell<Option<Outcome>>,
     waker: RefCell<Option<Waker>>,
     busy: Cell<bool>,
+    /// De schrijverlease met zijn sleutel, voor de leasetaak: die vernieuwt hem
+    /// op zijn eigen stack, hoe lang eigenaar en uploader ook bezig zijn.
+    lease: RefCell<Option<(Rc<RefCell<Writer>>, String)>>,
+    lease_lost: Cell<bool>,
 }
 impl Uploads {
     pub(in crate::boot) fn new() -> Self {
@@ -43,6 +49,8 @@ impl Uploads {
             done: RefCell::new(None),
             waker: RefCell::new(None),
             busy: Cell::new(false),
+            lease: RefCell::new(None),
+            lease_lost: Cell::new(false),
         }
     }
     /// Bij een (her)start van de eigenaar: een vorige upload ging met zijn stack weg.
@@ -50,6 +58,24 @@ impl Uploads {
         *self.job.borrow_mut() = None;
         *self.done.borrow_mut() = None;
         self.busy.set(false);
+        *self.lease.borrow_mut() = None;
+        self.lease_lost.set(false);
+    }
+    /// De eigenaar geeft na Prepare zijn lease aan de leasetaak.
+    pub(in crate::boot) fn install_lease(&self, writer: Rc<RefCell<Writer>>, key: String) {
+        self.lease_lost.set(false);
+        *self.lease.borrow_mut() = Some((writer, key));
+    }
+    pub(in crate::boot) fn lease(&self) -> Option<(Rc<RefCell<Writer>>, String)> {
+        self.lease.borrow().clone()
+    }
+    /// De leasetaak meldt verlies; de eigenaar stopt dan als bij elke verloren lease.
+    pub(in crate::boot) fn mark_lease_lost(&self) {
+        self.lease_lost.set(true);
+        *self.lease.borrow_mut() = None;
+    }
+    pub(in crate::boot) fn lease_lost(&self) -> bool {
+        self.lease_lost.get()
     }
     /// De eigenaar geeft een capture af en wekt de uploader.
     pub(in crate::boot) fn start(&self, work: Work, database: super::backend::Location) {

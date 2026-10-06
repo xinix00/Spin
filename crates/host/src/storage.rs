@@ -104,6 +104,7 @@ impl Files {
                     | "spin.sqlite.replica-dirty-a"
                     | "spin.sqlite.replica-dirty-b"
                     | "spin.sqlite.replica-capture"
+                    | "spin.sqlite.replica-pending"
                     | "spin.sqlite.replica-restore-data"
                     | "spin.sqlite.replica-restore-data-journal"
                     | "spin.sqlite.replica-restoring"

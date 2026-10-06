@@ -33,11 +33,6 @@ pub(super) struct Owner<'a> {
     writes: crate::trace::Writes,
     exporting: Option<u64>,
     raw_upload: Option<restore::RawUpload>,
-    /// Een eigen S3-client voor de lease, los van de bucket die de capture en
-    /// het onderhoud bedienen: zo kan de lease ín een lange capture worden
-    /// vernieuwd (05-10-2026: een snapshot van 11 GB duurde langer dan de lease,
-    /// LeaseLost, herstart, opnieuw een snapshot; elke 10 minuten, de hele dag).
-    lease_bucket: Option<Bucket<'a>>,
     next_upload: i64,
     importing: Option<restore::Import>,
     restore_fetch: Option<(String, Option<Time>)>,
@@ -45,8 +40,6 @@ pub(super) struct Owner<'a> {
     replica: Option<Replica>,
     bucket: Option<Bucket<'a>>,
     uploads: &'a Uploads,
-    /// `<namespace>/lease`: de schrijverlease van Replica in de bucket.
-    lease_key: String,
 }
 /// De schrijverlease, gelijk aan die van de macOS-server. Replica vernieuwt
 /// hoogstens eens per zesde en weigert writes een derde vóór het verlopen, dus
@@ -54,7 +47,7 @@ pub(super) struct Owner<'a> {
 /// het laden van de state en een onderhoudsbeurt (de eerste na een herstel
 /// duurde op een Mac 166 s). Met 60 s verliep hij al tijdens de boot.
 /// Een herstart wacht de lease van zijn vorige leven af, hoogstens deze TTL.
-const LEASE_TTL_MS: u64 = 300_000;
+pub(super) const LEASE_TTL_MS: u64 = 300_000;
 enum Op<'a> {
     Usage,
     Load,
@@ -113,7 +106,7 @@ fn wall() -> u64 {
     applib::app().and_then(|a| a.wall_ns()).unwrap_or(0) / 1_000_000_000
 }
 /// De wandklok als Replica-tijd, voor de lease tijdens een lange capture.
-fn wall_time() -> Time {
+pub(super) fn wall_time() -> Time {
     Time::unix(i64::try_from(wall()).unwrap_or(0), 0).unwrap_or(Time::ZERO)
 }
 /// Alleen `SPIN_REPLICATION=off` laat een database zonder Replica draaien.
@@ -204,6 +197,16 @@ fn sql<B: Storage>(
     }
 }
 impl<'a> Owner<'a> {
+    /// De leasetaak vernieuwt de lease op haar eigen stack; verlies daar is
+    /// verlies hier: de eigenaar stopt, zoals bij elke verloren lease.
+    fn lease_check(&mut self) -> spin_store::Result {
+        if self.uploads.lease_lost() {
+            applib::log!("SPIN_REPLICA_LEASE_FAILED error=LeaseLost");
+            self.poisoned = true;
+            return Err(spin_store::Error::StorageUncertain(10));
+        }
+        Ok(())
+    }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         heap: &'a Arena,
@@ -218,9 +221,7 @@ impl<'a> Owner<'a> {
         let wait = backend.wait;
         let mut replica = None;
         let mut bucket = None;
-        let mut lease_bucket = None;
         let mut saved_namespace = String::new();
-        let mut lease_key = String::new();
         if replicating(app) {
             let client = s3_client(app)?;
             let env = |key| app.env(key).unwrap_or("").trim();
@@ -266,15 +267,6 @@ impl<'a> Owner<'a> {
             // dezelfde node wacht zijn vorige leven af).
             let key = spin_core::validation::text(format_args!("{namespace}/lease"))?;
             let node = spin_core::validation::text(format_args!("hopos/{domain}"))?;
-            let for_lease = restore.clone();
-            lease_bucket = Some(
-                Bucket::new(
-                    s3_client(app)?,
-                    move || crate::s3::counting(for_lease.clone()),
-                    Wait(wait.0),
-                )
-                .map_err(|_| spin_store::Error::Conflict("invalid Replica S3 configuration"))?,
-            );
             let claim = crate::trace::owner_step(crate::trace::Step::LeaseClaim);
             let writer = loop {
                 let now =
@@ -309,12 +301,14 @@ impl<'a> Owner<'a> {
                     }
                 }
             };
-            lease_key = key;
             let now =
                 crate::platform::timestamp(app).map_err(|_| spin_store::Error::Storage(10))?;
             drop(claim);
             let _prepare = crate::trace::owner_step(crate::trace::Step::Prepare);
-            let owner = Replica::prepare(
+            // De leasetaak vernieuwt vanaf nu, ook tijdens een lang herstel in Prepare.
+            let writer = alloc::rc::Rc::new(core::cell::RefCell::new(writer));
+            uploads.install_lease(writer.clone(), spin_domain::try_string(&key)?);
+            let owner = Replica::prepare_shared(
                 &mut backend,
                 &mut remote,
                 writer,
@@ -334,7 +328,11 @@ impl<'a> Owner<'a> {
                 },
             )
             .map_err(replica_error)?;
-            applib::log!("SPIN_REPLICA_READY reason={:?}", owner.status().reason);
+            applib::log!(
+                "SPIN_REPLICA_READY reason={:?} resumes_snapshot={}",
+                owner.status().reason,
+                owner.resumes()
+            );
             replica = Some(owner);
             bucket = Some(remote);
         }
@@ -349,7 +347,6 @@ impl<'a> Owner<'a> {
             writes: crate::trace::Writes::default(),
             exporting: None,
             raw_upload: None,
-            lease_bucket,
             next_upload: -1,
             importing: None,
             restore_fetch: None,
@@ -357,7 +354,6 @@ impl<'a> Owner<'a> {
             replica,
             bucket,
             uploads,
-            lease_key,
         })
     }
     fn execute(&mut self, op: Op<'_>) -> spin_store::Result<Reply> {
@@ -406,9 +402,8 @@ impl<'a> Owner<'a> {
         &mut self,
         ids: impl FnMut() -> spin_security::Result<String>,
     ) -> spin_store::Result<PersistedState> {
-        // Prepare kan lang duren; geef het laden en opslaan elk een vers budget.
-        let now = self.clock()?;
-        self.renew(now)?;
+        // Prepare kan lang duren; de leasetaak hield de lease intussen bij.
+        self.lease_check()?;
         let Reply::State(bytes, legacy) = self.execute(Op::Load)? else {
             return Err(spin_store::Error::Storage(21));
         };
@@ -424,8 +419,7 @@ impl<'a> Owner<'a> {
         let mut state = spin_domain::TryClone::try_clone(&loaded)?;
         state.normalize_loaded()?;
         applib::log!("SPIN_STATE_DECRYPTED users={}", state.users.len());
-        let now = self.clock()?;
-        self.renew(now)?;
+        self.lease_check()?;
         // De oude enkele rij wordt eenmalig rijen; daarna alleen wat de
         // normalisatie veranderde.
         if legacy {
@@ -434,25 +428,6 @@ impl<'a> Owner<'a> {
             self.save_changes(&state, &spin_store::diff(&loaded, &state)?)?;
         }
         Ok(state)
-    }
-    /// Vernieuwt de schrijverlease; Replica schrijft hoogstens eens per zesde
-    /// TTL. Een transportfout is nog geen verlies; pas na de deadline sluit de
-    /// eigenaar. Elke seconde vanuit maintain, en tussen de stappen van de boot.
-    fn renew(&mut self, now: Time) -> spin_store::Result {
-        let (Some(replica), Some(bucket)) = (&mut self.replica, &mut self.lease_bucket) else {
-            return Ok(());
-        };
-        let renew = crate::trace::owner_step(crate::trace::Step::Renew);
-        let renewed = replica.renew(&mut bucket.lease(&self.lease_key, LEASE_TTL_MS), now);
-        drop(renew);
-        if let Err(error) = renewed {
-            applib::log!("SPIN_REPLICA_LEASE_FAILED error={error:?}");
-            if error == replica_core::Error::LeaseLost {
-                self.poisoned = true;
-                return Err(spin_store::Error::StorageUncertain(10));
-            }
-        }
-        Ok(())
     }
     /// De klok van de opslag, dezelfde waarmee Replica's VFS de deadline toetst.
     fn clock(&mut self) -> spin_store::Result<Time> {
@@ -647,10 +622,8 @@ impl Persistence for Owner<'_> {
             return Err(spin_store::Error::StorageUncertain(10));
         }
         self.writes.report();
-        // De verse klok, niet het `now` van het begin van de beurt: een beurt kan
-        // seconden duren en een vernieuwing in een capture meet later (06-10).
         let now = self.clock().or_else(|_| time(now))?;
-        self.renew(now)?;
+        self.lease_check()?;
         // Grote blobs gaan in stukken weg: hoogstens 16 MiB per seconde-beurt.
         if self.purging {
             match self.execute(Op::Purge)? {
@@ -690,22 +663,7 @@ impl Persistence for Owner<'_> {
             return Ok(());
         }
         let capture = crate::trace::owner_step(crate::trace::Step::BeginCapture);
-        // Per segment van de capture de lease vernieuwen (Replica doet dat hooguit
-        // eens per zesde TTL); een verloren lease breekt de capture af.
-        let lease_key = &self.lease_key;
-        let lease_bucket = &mut self.lease_bucket;
-        let begun =
-            replica.begin_with(
-                &mut self.backend,
-                bucket,
-                now,
-                &mut |writer| match lease_bucket {
-                    Some(lease) => {
-                        writer.renew(&mut lease.lease(lease_key, LEASE_TTL_MS), wall_time())
-                    }
-                    None => Ok(()),
-                },
-            );
+        let begun = replica.begin(&mut self.backend, bucket, now);
         drop(capture);
         if let Some(pending) = begun.map_err(replica_error)? {
             applib::log!("SPIN_REPLICA_CAPTURE pages={}", pending.pages());

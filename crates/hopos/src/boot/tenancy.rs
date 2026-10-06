@@ -140,6 +140,46 @@ pub(super) fn owner<'a>(
     } else {
         None
     };
+    // De leasetaak: elke seconde kijken, hoogstens eens per zesde TTL een PUT,
+    // los van wat eigenaar (capture, herstel) en uploader (delen) doen. Een
+    // verloren lease meldt hij aan de eigenaar, die dan stopt.
+    let mut keeper = if storage::replicating(app) {
+        let client = storage::s3_client(app).map_err(failure)?;
+        // SAFETY: A separate stack with one S3 connection; it touches only the shared
+        // Writer (briefly, never across a wait) and never SQLite.
+        let task = unsafe {
+            Task::new(1 << 20, move |s| -> Result {
+                let mut remote = storage::Bucket::new(client, crate::s3::network, Wait(s))
+                    .map_err(|_| Error::Http(503, "invalid Replica S3 configuration"))?;
+                loop {
+                    s.wait(applib::EXEC.get().after(core::time::Duration::from_secs(1)))
+                        .map_err(|_| Error::Http(503, "replica lease task cancelled"))?;
+                    let Some((writer, key)) = uploads.lease() else {
+                        continue;
+                    };
+                    let step = crate::trace::uploader_step(crate::trace::Step::Renew);
+                    let renewed = writer.borrow_mut().renew(
+                        &mut remote.lease(&key, storage::LEASE_TTL_MS),
+                        storage::wall_time(),
+                    );
+                    drop(step);
+                    match renewed {
+                        Ok(()) => {}
+                        Err(replica_core::Error::LeaseLost) => {
+                            applib::log!("SPIN_REPLICA_LEASE_LOST");
+                            uploads.mark_lease_lost();
+                        }
+                        // Transport: de lease blijft geldig tot zijn deadline; volgende seconde weer.
+                        Err(error) => applib::log!("SPIN_REPLICA_LEASE_RETRY error={error:?}"),
+                    }
+                }
+            })
+        }
+        .map_err(|_| Error::Http(503, "replica lease stack allocation failed"))?;
+        Some(task)
+    } else {
+        None
+    };
     // SAFETY: This bounded stack owns one Store and all its SQLite calls. Arena loans
     // exclude every other SQLite engine and are returned only after Engine::drop.
     let mut owner = unsafe {
@@ -220,6 +260,7 @@ pub(super) fn owner<'a>(
                     ".replica-dirty-a",
                     ".replica-dirty-b",
                     ".replica-capture",
+                    ".replica-pending",
                     ".replica-restore-data",
                     ".replica-restore-data-journal",
                     ".replica-restoring",
@@ -291,6 +332,12 @@ pub(super) fn owner<'a>(
         {
             applib::log!("SPIN_REPLICA_UPLOADER_STOPPED");
             return Poll::Ready(result.and(Err(Error::Http(503, "replica uploader stopped"))));
+        }
+        if let Some(task) = &mut keeper
+            && let Poll::Ready(result) = Pin::new(task).poll(cx)
+        {
+            applib::log!("SPIN_REPLICA_LEASE_TASK_STOPPED");
+            return Poll::Ready(result.and(Err(Error::Http(503, "replica lease task stopped"))));
         }
         Pin::new(&mut owner).poll(cx)
     }))
