@@ -33,6 +33,11 @@ pub(super) struct Owner<'a> {
     writes: crate::trace::Writes,
     exporting: Option<u64>,
     raw_upload: Option<restore::RawUpload>,
+    /// Een eigen S3-client voor de lease, los van de bucket die de capture en
+    /// het onderhoud bedienen: zo kan de lease ín een lange capture worden
+    /// vernieuwd (05-10-2026: een snapshot van 11 GB duurde langer dan de lease,
+    /// LeaseLost, herstart, opnieuw een snapshot; elke 10 minuten, de hele dag).
+    lease_bucket: Option<Bucket<'a>>,
     next_upload: i64,
     importing: Option<restore::Import>,
     restore_fetch: Option<(String, Option<Time>)>,
@@ -106,6 +111,10 @@ fn snapshot_bytes(store: &mut impl replica_core::object::Store, namespace: &str)
 }
 fn wall() -> u64 {
     applib::app().and_then(|a| a.wall_ns()).unwrap_or(0) / 1_000_000_000
+}
+/// De wandklok als Replica-tijd, voor de lease tijdens een lange capture.
+fn wall_time() -> Time {
+    Time::unix(i64::try_from(wall()).unwrap_or(0), 0).unwrap_or(Time::ZERO)
 }
 /// Alleen `SPIN_REPLICATION=off` laat een database zonder Replica draaien.
 pub(super) fn replicating(app: &App) -> bool {
@@ -209,6 +218,7 @@ impl<'a> Owner<'a> {
         let wait = backend.wait;
         let mut replica = None;
         let mut bucket = None;
+        let mut lease_bucket = None;
         let mut saved_namespace = String::new();
         let mut lease_key = String::new();
         if replicating(app) {
@@ -256,6 +266,15 @@ impl<'a> Owner<'a> {
             // dezelfde node wacht zijn vorige leven af).
             let key = spin_core::validation::text(format_args!("{namespace}/lease"))?;
             let node = spin_core::validation::text(format_args!("hopos/{domain}"))?;
+            let for_lease = restore.clone();
+            lease_bucket = Some(
+                Bucket::new(
+                    s3_client(app)?,
+                    move || crate::s3::counting(for_lease.clone()),
+                    Wait(wait.0),
+                )
+                .map_err(|_| spin_store::Error::Conflict("invalid Replica S3 configuration"))?,
+            );
             let claim = crate::trace::owner_step(crate::trace::Step::LeaseClaim);
             let writer = loop {
                 let now =
@@ -330,6 +349,7 @@ impl<'a> Owner<'a> {
             writes: crate::trace::Writes::default(),
             exporting: None,
             raw_upload: None,
+            lease_bucket,
             next_upload: -1,
             importing: None,
             restore_fetch: None,
@@ -419,7 +439,7 @@ impl<'a> Owner<'a> {
     /// TTL. Een transportfout is nog geen verlies; pas na de deadline sluit de
     /// eigenaar. Elke seconde vanuit maintain, en tussen de stappen van de boot.
     fn renew(&mut self, now: Time) -> spin_store::Result {
-        let (Some(replica), Some(bucket)) = (&mut self.replica, &mut self.bucket) else {
+        let (Some(replica), Some(bucket)) = (&mut self.replica, &mut self.lease_bucket) else {
             return Ok(());
         };
         let renew = crate::trace::owner_step(crate::trace::Step::Renew);
@@ -668,7 +688,22 @@ impl Persistence for Owner<'_> {
             return Ok(());
         }
         let capture = crate::trace::owner_step(crate::trace::Step::BeginCapture);
-        let begun = replica.begin(&mut self.backend, bucket, now);
+        // Per segment van de capture de lease vernieuwen (Replica doet dat hooguit
+        // eens per zesde TTL); een verloren lease breekt de capture af.
+        let lease_key = &self.lease_key;
+        let lease_bucket = &mut self.lease_bucket;
+        let begun =
+            replica.begin_with(
+                &mut self.backend,
+                bucket,
+                now,
+                &mut |writer| match lease_bucket {
+                    Some(lease) => {
+                        writer.renew(&mut lease.lease(lease_key, LEASE_TTL_MS), wall_time())
+                    }
+                    None => Ok(()),
+                },
+            );
         drop(capture);
         if let Some(pending) = begun.map_err(replica_error)? {
             applib::log!("SPIN_REPLICA_CAPTURE pages={}", pending.pages());
