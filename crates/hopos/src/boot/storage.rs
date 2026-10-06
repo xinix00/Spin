@@ -647,7 +647,9 @@ impl Persistence for Owner<'_> {
             return Err(spin_store::Error::StorageUncertain(10));
         }
         self.writes.report();
-        let now = time(now)?;
+        // De verse klok, niet het `now` van het begin van de beurt: een beurt kan
+        // seconden duren en een vernieuwing in een capture meet later (06-10).
+        let now = self.clock().or_else(|_| time(now))?;
         self.renew(now)?;
         // Grote blobs gaan in stukken weg: hoogstens 16 MiB per seconde-beurt.
         if self.purging {
