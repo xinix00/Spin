@@ -9,7 +9,7 @@ source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.13#ba0006d2159b0dcf4
 dependencies = [
  "bounded",
  "dev",
- "leancrypto",
+ "leancrypto 3.1.12",
 ]
 
 [[package]]
@@ -187,6 +187,11 @@ version = "3.1.12"
 source = "git+https://github.com/xinix00/lean.git?tag=v3.1.12#30dfbd73743a57b59ad42ed0258b7e3c10d04b20"
 
 [[package]]
+name = "leancrypto"
+version = "3.1.13"
+source = "git+https://github.com/xinix00/lean.git?tag=v3.1.13#1568e4d90acfa6161a1b84beafdd45a3a3b05565"
+
+[[package]]
 name = "leanhttp"
 version = "3.1.12"
 source = "git+https://github.com/xinix00/lean.git?tag=v3.1.12#30dfbd73743a57b59ad42ed0258b7e3c10d04b20"
@@ -210,7 +215,7 @@ name = "leans3"
 version = "3.1.12"
 source = "git+https://github.com/xinix00/lean.git?tag=v3.1.12#30dfbd73743a57b59ad42ed0258b7e3c10d04b20"
 dependencies = [
- "leancrypto",
+ "leancrypto 3.1.12",
 ]
 
 [[package]]
@@ -227,7 +232,7 @@ name = "leantls"
 version = "3.1.12"
 source = "git+https://github.com/xinix00/lean.git?tag=v3.1.12#30dfbd73743a57b59ad42ed0258b7e3c10d04b20"
 dependencies = [
- "leancrypto",
+ "leancrypto 3.1.12",
 ]
 
 [[package]]
@@ -276,7 +281,7 @@ name = "replica-core"
 version = "0.1.0"
 dependencies = [
  "discovery",
- "leancrypto",
+ "leancrypto 3.1.13",
  "replica-sqlite",
  "types",
 ]
@@ -304,17 +309,17 @@ version = "0.1.0"
 
 [[package]]
 name = "spin-core"
-version = "3.0.42"
+version = "3.0.43"
 dependencies = [
  "leanbase64",
- "leancrypto",
+ "leancrypto 3.1.13",
  "miniz_oxide",
  "spin-domain",
 ]
 
 [[package]]
 name = "spin-domain"
-version = "3.0.42"
+version = "3.0.43"
 dependencies = [
  "leanbase64",
  "types",
@@ -322,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "spin-hopos"
-version = "3.0.42"
+version = "3.0.43"
 dependencies = [
  "applib",
  "leanhttp",
@@ -346,7 +351,7 @@ dependencies = [
 
 [[package]]
 name = "spin-host"
-version = "3.0.42"
+version = "3.0.43"
 dependencies = [
  "leanhttp",
  "leanhttps",
@@ -369,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "spin-persistence"
-version = "3.0.42"
+version = "3.0.43"
 dependencies = [
  "replica-sqlite",
  "spin-domain",
@@ -379,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "spin-runtime"
-version = "3.0.42"
+version = "3.0.43"
 dependencies = [
  "leanhttp",
  "spin-core",
@@ -390,19 +395,19 @@ dependencies = [
 
 [[package]]
 name = "spin-security"
-version = "3.0.42"
+version = "3.0.43"
 dependencies = [
  "aes",
  "aes-gcm",
  "leanbase64",
- "leancrypto",
+ "leancrypto 3.1.13",
  "spin-domain",
  "zeroize",
 ]
 
 [[package]]
 name = "spin-server"
-version = "3.0.42"
+version = "3.0.43"
 dependencies = [
  "spin-core",
  "spin-domain",
@@ -412,7 +417,7 @@ dependencies = [
 
 [[package]]
 name = "spin-store"
-version = "3.0.42"
+version = "3.0.43"
 dependencies = [
  "spin-core",
  "spin-domain",

@@ -1,5 +1,6 @@
 //! Alleen boot vestigt de unieke SQLite-runtime en haar parkeerbare C-stack.
 use crate::platform::{Environment, Native, Random, failure, timestamp};
+mod bench;
 mod catalog;
 mod storage;
 mod tenancy;
@@ -115,6 +116,10 @@ async fn run(app: &'static App) -> Result {
     }
     timestamp(app)?;
     let root = app.env("SPIN_DATA_DIR").unwrap_or("/data/spin");
+    // De meetlat naast Spin: alleen cijfers, geen server, geen database.
+    if app.env("SPIN_BENCH").is_some_and(|v| !v.trim().is_empty()) {
+        return bench::run(app, net, root).await;
+    }
     let port = app
         .env("SPIN_PORT")
         .unwrap_or("8080")

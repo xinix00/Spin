@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 spin-domain = { path = "../domain" }
-leancrypto = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.12" }
+leancrypto = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.13" }
 leanbase64 = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.12" }
 # 30-09-2026: bestaande enc:v1-state heeft AES-256-GCM met 32-byte sleutels.
 # Lean biedt alleen AES-128-GCM. Deze gepinde no_std-crate bewaart het formaat;

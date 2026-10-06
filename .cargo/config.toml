@@ -16,5 +16,10 @@ git = "https://github.com/xinix00/lean.git"
 tag = "v3.1.12"
 replace-with = "vendored-sources"
 
+[source."git+https://github.com/xinix00/lean.git?tag=v3.1.13"]
+git = "https://github.com/xinix00/lean.git"
+tag = "v3.1.13"
+replace-with = "vendored-sources"
+
 [source.vendored-sources]
 directory = "third-party/rust"

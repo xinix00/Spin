@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.93"
 name = "leancrypto"
-version = "3.1.13"
+version = "3.1.12"
 build = false
 autolib = false
 autobins = false

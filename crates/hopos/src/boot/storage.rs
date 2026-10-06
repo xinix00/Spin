@@ -259,6 +259,10 @@ impl<'a> Owner<'a> {
             config.adopt_local = env("SPIN_REPLICA_ADOPT_LOCAL") == "1";
             // Compactie en opruimen als losse taak op de uploader, nooit op de eigenaar.
             config.background_maintenance = true;
+            // Elke PUT naar de store kost ~0,8 s ongeacht de grootte (GEMETEN
+            // 06-10 op de M4: 4 MiB-delen 4 MB/s, 16 MiB-delen 19 MB/s): de
+            // grootste delen die het formaat toestaat.
+            config.segment_bytes = 16 << 20;
             // Replica opent zelf de verbindingen voor een parallel herstel;
             // iedere stroom telt mee op de openingspagina.
             let counted = restore.clone();
