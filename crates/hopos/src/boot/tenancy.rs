@@ -158,10 +158,7 @@ pub(super) fn owner<'a>(
                         continue;
                     };
                     let step = crate::trace::uploader_step(crate::trace::Step::Renew);
-                    let renewed = writer.borrow_mut().renew(
-                        &mut remote.lease(&key, storage::LEASE_TTL_MS),
-                        storage::wall_time(),
-                    );
+                    let renewed = renew(&writer, &mut remote.lease(&key, storage::LEASE_TTL_MS));
                     drop(step);
                     match renewed {
                         Ok(()) => {}
@@ -341,4 +338,26 @@ pub(super) fn owner<'a>(
         }
         Pin::new(&mut owner).poll(cx)
     }))
+}
+/// Eén vernieuwing in stappen: de Writer wordt alleen geleend voor het plannen en
+/// bevestigen, nooit over de PUT of GET heen (die parkeren deze stack, terwijl
+/// de eigenaar zijn klok aan dezelfde Writer meet).
+fn renew<L: replica_core::writer::Backend>(
+    writer: &core::cell::RefCell<replica_core::writer::Writer>,
+    lease: &mut L,
+) -> replica_core::Result {
+    use replica_core::writer::Renewed;
+    let Some(renewal) = writer.borrow_mut().renew_request(storage::wall_time())? else {
+        return Ok(());
+    };
+    let written = lease.write(&renewal.prev, &renewal.state);
+    if writer.borrow_mut().renew_commit(&renewal, written)? == Renewed::Done {
+        return Ok(());
+    }
+    let read = lease.read();
+    let Some(again) = writer.borrow_mut().reclaim_request(read, renewal.at)? else {
+        return Ok(());
+    };
+    let written = lease.write(&again.prev, &again.state);
+    writer.borrow_mut().reclaim_commit(&again, written)
 }

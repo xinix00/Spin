@@ -219,6 +219,9 @@ impl<'a> Owner<'a> {
         restore: alloc::rc::Rc<spin_runtime::Restore>,
     ) -> spin_store::Result<Self> {
         let wait = backend.wait;
+        // De meetlat van de opslag, één keer per start: 64 MiB schrijven en
+        // teruglezen in stappen van 1 MiB, zoals een capture dat doet.
+        storage_bench(&mut backend);
         let mut replica = None;
         let mut bucket = None;
         let mut saved_namespace = String::new();
@@ -666,7 +669,19 @@ impl Persistence for Owner<'_> {
         let begun = replica.begin(&mut self.backend, bucket, now);
         drop(capture);
         if let Some(pending) = begun.map_err(replica_error)? {
-            applib::log!("SPIN_REPLICA_CAPTURE pages={}", pending.pages());
+            let stats = pending.stats();
+            let rate = |ms: u64| stats.bytes / ms.max(1) / 1000;
+            applib::log!(
+                "SPIN_REPLICA_CAPTURE pages={} mb={} read_ms={} read_mb_s={} hash_ms={} hash_mb_s={} write_ms={} write_mb_s={}",
+                pending.pages(),
+                stats.bytes >> 20,
+                stats.read_ms,
+                rate(stats.read_ms),
+                stats.hash_ms,
+                rate(stats.hash_ms),
+                stats.write_ms,
+                rate(stats.write_ms)
+            );
             let database = self.backend.location().clone();
             self.uploads.start(Work::Upload(pending), database);
         } else if let Some(job) = replica
@@ -678,5 +693,43 @@ impl Persistence for Owner<'_> {
             self.uploads.start(Work::Maintain(job), database);
         }
         Ok(())
+    }
+}
+/// Schrijft en leest 64 MiB in stappen van 1 MiB via dezelfde opslaglaag als
+/// Replica, en logt de doorvoer: zo staat naast elke trage capture het
+/// vermogen van de schijf eronder.
+fn storage_bench(b: &mut Backend<'_>) {
+    const STEP: usize = 1 << 20;
+    const STEPS: u64 = 64;
+    let result = (|| -> replica_core::Result<(u64, u64)> {
+        let name = Name::new("spin.sqlite.replica-bench")?;
+        let mut block = alloc::vec::Vec::new();
+        block.try_reserve_exact(STEP).map_err(|_| replica_core::Error::Memory)?;
+        block.resize(STEP, 0x5a);
+        let clock = |b: &mut Backend<'_>| b.unix_millis().map_or(0, |ms| u64::try_from(ms).unwrap_or(0));
+        let t0 = clock(b);
+        let mut file = replica_core::local::File::open(b, &name, true)?;
+        for i in 0..STEPS {
+            file.write(i * STEP as u64, &block)?;
+        }
+        file.sync()?;
+        file.close()?;
+        let t1 = clock(b);
+        let mut file = replica_core::local::File::open(b, &name, false)?;
+        for i in 0..STEPS {
+            file.read(i * STEP as u64, &mut block)?;
+        }
+        file.close()?;
+        let t2 = clock(b);
+        let _ = b.remove(name.cstr()?, false);
+        Ok((t1.saturating_sub(t0), t2.saturating_sub(t1)))
+    })();
+    match result {
+        Ok((write_ms, read_ms)) => applib::log!(
+            "SPIN_STORAGE_BENCH mb=64 write_ms={write_ms} write_mb_s={} read_ms={read_ms} read_mb_s={}",
+            64_000 / write_ms.max(1),
+            64_000 / read_ms.max(1)
+        ),
+        Err(error) => applib::log!("SPIN_STORAGE_BENCH_FAILED error={error:?}"),
     }
 }
