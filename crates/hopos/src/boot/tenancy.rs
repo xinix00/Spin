@@ -156,6 +156,25 @@ pub(super) fn owner<'a>(
                             );
                             uploads.done(storage::Outcome::Upload(pending, result));
                         }
+                        storage::Work::Points {
+                            namespace,
+                            generation,
+                            complete,
+                        } => {
+                            let result = replica_core::archive::points_at(
+                                &mut remote,
+                                &namespace,
+                                &generation,
+                                complete,
+                                4096,
+                            );
+                            applib::log!(
+                                "SPIN_REPLICA_POINTS domain={tag} ok={} ms={}",
+                                result.is_ok(),
+                                applib::clock::now_ns().saturating_sub(started) / 1_000_000
+                            );
+                            uploads.done(storage::Outcome::Points(result));
+                        }
                         // Compactie en opruimen naast de eigenaar: alleen S3.
                         storage::Work::Maintain(job) => {
                             let step = crate::trace::uploader_step(crate::trace::Step::Maintenance);

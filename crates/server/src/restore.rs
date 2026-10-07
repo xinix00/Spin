@@ -85,7 +85,17 @@ impl<P: Persistence> Server<P> {
         }
         if req.method == "GET" {
             let mut points = d::List::new();
-            for point in self.store.replica_points()?.into_vec() {
+            // De lijst komt van de store, buiten de eigenaar; tot hij er is: 202.
+            let Some(listed) = self.store.replica_points()? else {
+                return Ok(Some(Response::json(
+                    202,
+                    &http::object(&[
+                        ("points", points.to_value()?),
+                        ("pending", Value::Bool(true)),
+                    ])?,
+                )?));
+            };
+            for point in listed.into_vec() {
                 points.push(http::object(&[
                     ("generation", Value::string(&point.generation)?),
                     ("at", Value::string(&point.at)?),

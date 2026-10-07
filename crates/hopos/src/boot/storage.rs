@@ -44,6 +44,10 @@ pub(super) struct Owner<'a> {
     replica: Option<Replica>,
     bucket: Option<Bucket<'a>>,
     uploads: &'a Uploads,
+    /// De herstelpunten zoals de uploader ze laatst opsomde, met het moment (ms).
+    points: Option<(alloc::vec::Vec<replica_core::archive::Point>, u64)>,
+    /// Een verzoek om de lijst (opnieuw) op te sommen zodra de uploader vrij is.
+    points_wanted: bool,
 }
 /// De schrijverlease, gelijk aan die van de macOS-server. Replica vernieuwt
 /// hoogstens eens per zesde en weigert writes een derde vóór het verlopen, dus
@@ -365,6 +369,8 @@ impl<'a> Owner<'a> {
             replica,
             bucket,
             uploads,
+            points: None,
+            points_wanted: false,
         })
     }
     fn execute(&mut self, op: Op<'_>) -> spin_store::Result<Reply> {
@@ -499,22 +505,33 @@ impl Persistence for Owner<'_> {
     }
     fn replica_points(
         &mut self,
-    ) -> spin_store::Result<spin_domain::List<spin_store::backup::ReplicaPoint>> {
+    ) -> spin_store::Result<Option<spin_domain::List<spin_store::backup::ReplicaPoint>>> {
         let mut out = spin_domain::List::new();
-        if let (Some(replica), Some(bucket)) = (&self.replica, &mut self.bucket) {
-            for point in
-                replica_core::archive::points(bucket, &self.namespace, replica.marker(), 4096)
-                    .map_err(replica_error)?
-            {
-                out.push(spin_store::backup::ReplicaPoint {
-                    generation: point.generation,
-                    at: point.at.encode().map_err(replica_error)?,
-                    level: point.level,
-                    current: point.current,
-                })?;
-            }
+        if self.replica.is_none() || self.bucket.is_none() {
+            return Ok(Some(out));
         }
-        Ok(out)
+        // Hoogstens een minuut oud; het opsommen zelf doet de uploader.
+        let now = applib::clock::now_ns() / 1_000_000;
+        if self
+            .points
+            .as_ref()
+            .is_none_or(|(_, at)| now.saturating_sub(*at) >= 60_000)
+        {
+            self.points_wanted = true;
+            self.request_points();
+        }
+        let Some((points, _)) = &self.points else {
+            return Ok(None);
+        };
+        for point in points {
+            out.push(spin_store::backup::ReplicaPoint {
+                generation: spin_domain::try_string(&point.generation)?,
+                at: point.at.encode().map_err(replica_error)?,
+                level: point.level,
+                current: point.current,
+            })?;
+        }
+        Ok(Some(out))
     }
     fn stage_restore(
         &mut self,
@@ -642,11 +659,19 @@ impl Persistence for Owner<'_> {
                 _ => return Err(spin_store::Error::Storage(21)),
             }
         }
+        self.request_points();
         let (Some(replica), Some(bucket)) = (&mut self.replica, &mut self.bucket) else {
             return Ok(());
         };
         if let Some(outcome) = self.uploads.take_done() {
             match outcome {
+                Outcome::Points(result) => match result {
+                    Ok(points) => {
+                        applib::log!("SPIN_REPLICA_POINTS_LISTED count={}", points.len());
+                        self.points = Some((points, applib::clock::now_ns() / 1_000_000));
+                    }
+                    Err(error) => applib::log!("SPIN_REPLICA_POINTS_FAILED error={error:?}"),
+                },
                 Outcome::Capture(error) => {
                     replica
                         .abandon(&mut self.backend, error, now)
@@ -702,6 +727,33 @@ impl Persistence for Owner<'_> {
             }
         }
         Ok(())
+    }
+}
+impl Owner<'_> {
+    /// Zet het opsommen van de herstelpunten op de uploader zodra die vrij is.
+    fn request_points(&mut self) {
+        if !self.points_wanted || self.uploads.busy() {
+            return;
+        }
+        let Some(replica) = &self.replica else {
+            return;
+        };
+        let marker = replica.marker();
+        let (Ok(namespace), Ok(generation)) = (
+            spin_domain::try_string(&self.namespace),
+            spin_domain::try_string(&marker.generation),
+        ) else {
+            return;
+        };
+        self.points_wanted = false;
+        self.uploads.start(
+            Work::Points {
+                namespace,
+                generation,
+                complete: marker.complete,
+            },
+            self.backend.location().clone(),
+        );
     }
 }
 /// Schrijft en leest 64 MiB in stappen van 1 MiB via dezelfde opslaglaag als

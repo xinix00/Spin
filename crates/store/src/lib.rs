@@ -95,8 +95,9 @@ pub trait Persistence {
         Ok(None)
     }
     /// An unreplicated development database has an empty recovery catalog.
-    fn replica_points(&mut self) -> Result<d::List<backup::ReplicaPoint>> {
-        Ok(d::List::new())
+    /// `None`: the catalog is being listed off the owner; ask again shortly.
+    fn replica_points(&mut self) -> Result<Option<d::List<backup::ReplicaPoint>>> {
+        Ok(Some(d::List::new()))
     }
     /// Prepare an immutable uploaded database without modifying live tables.
     fn stage_restore(&mut self, _: backup::RestoreRequest) -> Result<backup::RestoreReply> {

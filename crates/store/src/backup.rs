@@ -69,7 +69,7 @@ pub enum RestoreReply {
 }
 impl<P: Persistence> Store<P> {
     /// Catalog access remains with the same exclusive Replica owner.
-    pub fn replica_points(&mut self) -> Result<List<ReplicaPoint>> {
+    pub fn replica_points(&mut self) -> Result<Option<List<ReplicaPoint>>> {
         self.persistence.replica_points()
     }
     /// Drive staging under the same durable error fence as ordinary operations.

@@ -24,6 +24,13 @@ pub(in crate::boot) enum Work {
     Capture(Capturing),
     Upload(Pending),
     Maintain(Maintenance),
+    /// De herstelpunten uit de store: één listing per generatie, minuten bij
+    /// tientallen generaties, dus nooit op de eigenaar.
+    Points {
+        namespace: String,
+        generation: String,
+        complete: bool,
+    },
 }
 /// Het werk met de plek van de database van zijn tenant.
 pub(in crate::boot) type Job = (Work, super::backend::Location);
@@ -34,6 +41,7 @@ pub(in crate::boot) enum Outcome {
     Capture(replica_core::Error),
     Upload(Pending, replica_core::Result<Uploaded>),
     Maintain(replica_core::Result<Synced>),
+    Points(replica_core::Result<alloc::vec::Vec<replica_core::archive::Point>>),
 }
 /// Het overdrachtspunt tussen de eigenaar en zijn uploader; beide draaien op
 /// dezelfde kern, dus RefCell volstaat.
