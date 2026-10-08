@@ -154,7 +154,24 @@ impl<P: Persistence> Server<P> {
                 .as_bytes()
                 .windows(8)
                 .any(|b| b.eq_ignore_ascii_case(b"conflict"));
-            return self.finish_action(&id,"reject",if conflict { "De Job-branch conflicteert met de basisbranch; los het conflict op." } else { "De runner kon de Job-branch niet mergen; controleer de Git-verbinding en runner." },!conflict, now, random).map(Some);
+            // De reden van de runner (fetch, push, ls-remote, conflict) hoort erbij:
+            // "controleer de Git-verbinding" alleen is niet te debuggen.
+            let reason = clamp(&single_line(message.error.trim())?, 600)?;
+            crate::note(
+                &mut self.notes,
+                format_args!("SPIN_MERGE_FAILED session={id} error={reason}"),
+            );
+            let detail = text(format_args!(
+                "{} Runner: {reason}",
+                if conflict {
+                    "De Job-branch conflicteert met de basisbranch; los het conflict op."
+                } else {
+                    "De runner kon de Job-branch niet mergen; controleer de Git-verbinding en runner."
+                }
+            ))?;
+            return self
+                .finish_action(&id, "reject", &detail, !conflict, now, random)
+                .map(Some);
         }
         let result = d::engine::WorkspaceMergeResult::from_value(
             message.payload.0.as_ref().unwrap_or(&Value::Null),
