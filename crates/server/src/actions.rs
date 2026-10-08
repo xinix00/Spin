@@ -21,12 +21,19 @@ fn single_line(value: &str) -> Result<String> {
     }
     Ok(out)
 }
+/// Hoogstens `limit` bytes, zoals de runner het telt (`commit()` in
+/// git_operations: 200 voor het onderwerp, 4000 voor de tekst). GEMETEN 08-10:
+/// een telling in tekens plus de "…" (3 bytes) gaf "invalid Git commit
+/// message length" op een Job met een lange doelstelling.
 fn clamp(value: &str, limit: usize) -> Result<String> {
-    if let Some((offset, _)) = value.char_indices().nth(limit.saturating_sub(1)) {
-        Ok(text(format_args!("{}…", value[..offset].trim_end()))?)
-    } else {
-        Ok(try_string(value)?)
+    if value.len() <= limit {
+        return Ok(try_string(value)?);
     }
+    let mut end = limit.saturating_sub("…".len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    Ok(text(format_args!("{}…", value[..end].trim_end()))?)
 }
 impl<P: Persistence> Server<P> {
     pub(crate) fn launch_workflow_action(
