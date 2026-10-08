@@ -906,7 +906,9 @@ impl<P: Persistence> Server<P> {
         if let Some(next) = work.steps.get(work.at + 1) {
             let method = next.method;
             let payload = next.payload.try_clone()?;
+            let id = d::try_string(&self.calls[index].id)?;
             self.continue_capsule(index, client, method, &payload, runtime)?;
+            let index = self.call_index(&id)?;
             if let Action::Workflow(work) = &mut self.calls[index].action {
                 work.at += 1;
             }

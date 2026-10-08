@@ -267,6 +267,15 @@ impl<P: Persistence> Server<P> {
         }
         Ok(Some(Outcome::Response(response)))
     }
+    /// De plek van een call ná een stap die calls kan starten: `reserve_call`
+    /// ruimt dan afgeronde calls op en schuift de vector (GEMETEN 08-10:
+    /// index 43 bij lengte 43 na een workflow-acceptatie, de server viel om).
+    pub(crate) fn call_index(&self, id: &str) -> Result<usize> {
+        self.calls
+            .iter()
+            .position(|c| c.id == id)
+            .ok_or(Error::Http(409, "capsule operation vanished"))
+    }
     pub(crate) fn reserve_call(&mut self, now: &Timestamp) -> Result {
         let cutoff = now.time()?.0.saturating_sub(CALL_LIFETIME_NS);
         self.calls
@@ -1220,6 +1229,7 @@ impl<P: Persistence> Server<P> {
             return Ok(false);
         };
         self.calls[index].updated = now.try_clone()?;
+        let id = try_string(&self.calls[index].id)?;
         self.display_changed();
         let payload = message.payload.0.as_ref().unwrap_or(&Value::Null);
         if matches!(self.calls[index].action, Action::Rebase { .. }) {
@@ -1312,7 +1322,9 @@ impl<P: Persistence> Server<P> {
             return Ok(true);
         }
         if matches!(self.calls[index].action, Action::Preserve(_)) {
-            match self.advance_preservation(index, client, message, now, runtime) {
+            let outcome = self.advance_preservation(index, client, message, now, runtime);
+            let index = self.call_index(&id)?;
+            match outcome {
                 Ok(None) => return Ok(true),
                 Ok(Some(response)) => self.calls[index].response = Some(response),
                 Err(error) => {
@@ -1324,13 +1336,16 @@ impl<P: Persistence> Server<P> {
             return Ok(true);
         }
         if matches!(self.calls[index].action, Action::Delivery(_)) {
-            self.calls[index].response =
-                Some(self.finish_workflow_delivery(index, message, now, runtime)?);
+            let response = self.finish_workflow_delivery(index, message, now, runtime)?;
+            let index = self.call_index(&id)?;
+            self.calls[index].response = Some(response);
             self.calls[index].finished = true;
             return Ok(true);
         }
         if matches!(self.calls[index].action, Action::Workflow(_)) {
-            match self.advance_workflow_accept(index, client, message, now, runtime) {
+            let outcome = self.advance_workflow_accept(index, client, message, now, runtime);
+            let index = self.call_index(&id)?;
+            match outcome {
                 Ok(None) => return Ok(true),
                 Ok(Some(response)) => self.calls[index].response = Some(response),
                 Err(error) => self.calls[index].response = Some(error.response()?),
@@ -1410,7 +1425,9 @@ impl<P: Persistence> Server<P> {
         }
         if matches!(&self.calls[index].action, Action::Materialize(work) if message.error.is_empty() || work.watching() || work.reading())
         {
-            match self.advance_materialize(index, client, payload, now, runtime) {
+            let outcome = self.advance_materialize(index, client, payload, now, runtime);
+            let index = self.call_index(&id)?;
+            match outcome {
                 Ok(None) => return Ok(true),
                 Ok(Some(response)) => {
                     // De opruiming na een mislukte voorbereiding antwoordt met haar reden.
