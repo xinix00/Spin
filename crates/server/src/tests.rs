@@ -4237,3 +4237,78 @@ fn agent_options_of_a_credential_layer_without_logins_use_the_layer() {
     let (_, message) = server.runner_next(&link).unwrap().unwrap();
     assert_eq!(message.method, p::METHOD_START_ENABLED);
 }
+#[test]
+fn a_second_operation_on_the_same_capsule_waits_for_the_first() {
+    use crate::capsules::Action;
+    use d::protocol as p;
+    let state = PersistedState::from_json(br#"{"compositions":{"c":{"id":"c","operator":"derek","runtime":{"status":"ready","client_id":"client","container_id":"container"}}}}"#).unwrap();
+    let fail = Cell::new(false);
+    let now = time();
+    let mut random = Random(8100);
+    let mut server = Server::new(Store::new(state, Memory(&fail)));
+    let mut peer = spin_core::runner::Peer::new(d::Client {
+        id: "client".into(),
+        capabilities: d::ClientCapabilities {
+            engine: d::CapsuleEngineInfo {
+                available: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let (generation, _) = peer
+        .attach("runner", None, now.time().unwrap().0 / 1_000_000)
+        .unwrap();
+    server.runners.push(peer);
+    let payload = p::TrackedFilesPayload::default();
+    for stamp in ["first", "second"] {
+        server
+            .enqueue_call(
+                Action::Watch {
+                    composition: "c".into(),
+                    stamp: stamp.into(),
+                },
+                "client",
+                p::METHOD_WATCH_TRACKED,
+                &payload,
+                &now,
+                &mut random,
+            )
+            .unwrap();
+    }
+    // Alleen de eerste ligt bij de runner; de tweede wacht in de rij (tot 3.0.47: 409).
+    let (ticket, first) = server.runners[0].next(generation).unwrap().unwrap();
+    let first = first.try_clone().unwrap();
+    server.runners[0].acknowledge(ticket);
+    assert!(server.runners[0].next(generation).unwrap().is_none());
+    assert!(server.calls[1].queued());
+    assert_eq!(
+        server.wait_reason(&server.calls[1]),
+        "previous operation on the same object"
+    );
+    server.maintain_capsules(&now, &mut random).unwrap();
+    assert!(
+        server.runners[0].next(generation).unwrap().is_none(),
+        "the row waits for the first reply"
+    );
+    server.runners[0].response(&first.id).unwrap();
+    server
+        .finish_capsule(
+            "client",
+            Some(&first),
+            &p::WireMessage {
+                r#type: p::MESSAGE_RESPONSE.into(),
+                id: first.id.clone(),
+                ..Default::default()
+            },
+            &now,
+            &mut random,
+        )
+        .unwrap();
+    assert!(server.calls[0].finished);
+    server.maintain_capsules(&now, &mut random).unwrap();
+    let (_, second) = server.runners[0].next(generation).unwrap().unwrap();
+    assert_eq!(second.method, p::METHOD_WATCH_TRACKED);
+    assert!(!server.calls[1].queued());
+}

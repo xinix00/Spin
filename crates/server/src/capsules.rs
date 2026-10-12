@@ -302,13 +302,15 @@ impl<P: Persistence> Server<P> {
         runtime: &mut impl Runtime,
     ) -> Result<CapsuleWait> {
         self.reserve_call(now)?;
-        if self
+        // Een tweede opdracht op hetzelfde object (capsule, opname, sessie) wacht in
+        // de rij tot de vorige klaar is; `maintain_capsules` deelt haar dan uit. Tot
+        // 3.0.47 was dit een 409 "capsule operation already in progress": een
+        // goedkeuring tijdens de workspace-sync of het wijzigingenoverzicht
+        // mislukte, en een stop erna bleef hangen in "bezig met sluiten".
+        let busy = self
             .calls
             .iter()
-            .any(|c| !c.finished && c.action.object() == action.object())
-        {
-            return Err(Error::Http(409, "capsule operation already in progress"));
-        }
+            .any(|c| !c.finished && c.action.object() == action.object());
         let id = runtime.next("req")?;
         let wait = CapsuleWait {
             id: id.try_clone()?,
@@ -339,7 +341,7 @@ impl<P: Persistence> Server<P> {
             payload: RawJson(Some(payload.to_value()?)),
             ..Default::default()
         };
-        if client.is_empty() {
+        if busy || client.is_empty() {
             call.waiting = Some(message);
         } else {
             let peer = self
@@ -485,6 +487,9 @@ impl<P: Persistence> Server<P> {
     }
     /// Waarom een opdracht in de rij nog niet bij een runner ligt.
     pub(crate) fn wait_reason(&self, call: &Call) -> &'static str {
+        if self.object_busy(call) {
+            return "previous operation on the same object";
+        }
         if !call.refused_by.is_empty() {
             return "runner refused";
         }
@@ -496,6 +501,13 @@ impl<P: Persistence> Server<P> {
             Some(_) => "runner refused",
             None => "runner offline",
         }
+    }
+    /// Of een eerdere, nog lopende opdracht op hetzelfde object deze in de rij houdt.
+    fn object_busy(&self, call: &Call) -> bool {
+        self.calls
+            .iter()
+            .take_while(|c| c.id != call.id)
+            .any(|c| !c.finished && c.action.object() == call.action.object())
     }
     /// Markeert wat de diagnose moet melden en zegt of er iets nieuws is: een
     /// opdracht die langer dan 30 s wacht of geweigerd is (eens per 60 s) en een
@@ -612,6 +624,9 @@ impl<P: Persistence> Server<P> {
                 continue;
             }
             if self.calls[index].waiting.is_some() {
+                if self.object_busy(&self.calls[index]) {
+                    continue;
+                }
                 let client = if self.calls[index].client.is_empty() {
                     match self.choose_runner(now) {
                         Ok(client) => client,
