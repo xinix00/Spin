@@ -378,7 +378,9 @@ async fn filter(
     output.rewind()?;
     Ok((output, deletions))
 }
-async fn delete_paths(docker: &Docker, container: &str, deletions: &[tar::Whiteout]) -> Result<()> {
+/// De shell-regels die whiteouts uitvoeren, in stukken van hoogstens 512 KiB.
+fn deletion_scripts(deletions: &[tar::Whiteout]) -> Result<Vec<String>> {
+    let mut scripts = Vec::new();
     let mut script = String::new();
     for deletion in deletions {
         let line = match deletion {
@@ -389,12 +391,17 @@ async fn delete_paths(docker: &Docker, container: &str, deletions: &[tar::Whiteo
             }
         }.map_err(io)?;
         if script.len() + line.len() > (512 << 10) {
-            control(docker, &["exec", container, "sh", "-ec", &script]).await?;
-            script.clear();
+            try_push(&mut scripts, core::mem::take(&mut script)).map_err(io)?;
         }
         try_push_str(&mut script, &line).map_err(io)?;
     }
     if !script.is_empty() {
+        try_push(&mut scripts, script).map_err(io)?;
+    }
+    Ok(scripts)
+}
+async fn delete_paths(docker: &Docker, container: &str, deletions: &[tar::Whiteout]) -> Result<()> {
+    for script in deletion_scripts(deletions)? {
         control(docker, &["exec", container, "sh", "-ec", &script]).await?;
     }
     Ok(())
@@ -412,147 +419,270 @@ async fn copy_into(docker: &Docker, container: &str, layer: &mut Temporary) -> R
 async fn remove(docker: &Docker, name: &str) -> bool {
     control(docker, &["rm", "-f", name]).await.is_ok()
 }
+/// Zoveel samengestelde images blijven onder `spin/plan:` staan; de oudste gaan eruit.
+const PLAN_CACHE_ENTRIES: usize = 16;
+/// Eén laag in de Dockerfile van een stapel.
+struct Stacked {
+    reference: String,
+    full: bool,
+    deletions: bool,
+}
+/// De Dockerfile die Docker de stapel laat bouwen: een volle laag komt als geheel
+/// uit haar image, een diff als tar uit de context, na haar verwijderingen. Zo
+/// stapelt Docker zelf, zonder export, `docker cp` en commit per laag (tot 3.0.48:
+/// gemiddeld 155 s per build, 72 % in het exporteren van volle lagen).
+fn dockerfile(base: &str, layers: &[Stacked], composition: &str, key: &str) -> Result<String> {
+    let mut out = text(format_args!("FROM {base}\n")).map_err(io)?;
+    for (index, layer) in layers.iter().enumerate() {
+        let n = index + 1;
+        let line = if layer.full {
+            text(format_args!("COPY --from={} / /\n", layer.reference))
+        } else if layer.deletions {
+            text(format_args!(
+                "COPY delete-{n}.sh /.spin-delete.sh\nRUN sh -e /.spin-delete.sh && rm -f /.spin-delete.sh\nADD layer-{n}.tar /\n"
+            ))
+        } else {
+            text(format_args!("ADD layer-{n}.tar /\n"))
+        };
+        try_push_str(&mut out, &line.map_err(io)?).map_err(io)?;
+    }
+    try_push_str(
+        &mut out,
+        &text(format_args!(
+            "LABEL spin.managed=true spin.kind=composition-image spin.composition_id={composition} spin.plan={key}\n"
+        ))
+        .map_err(io)?,
+    )
+    .map_err(io)?;
+    Ok(out)
+}
+/// De sleutel van een stapel: de image-Id's van basis en lagen en hoe elke laag
+/// wordt toegepast. Dezelfde sleutel is hetzelfde image, dus dat wordt hergebruikt.
+async fn plan_key(
+    docker: &Docker,
+    plan: &spin_core::layers::LayerPlan<'_>,
+) -> Result<(String, Vec<String>)> {
+    let mut ids = Vec::new();
+    let mut hash = spin_security::Sha256::new();
+    hash.update(b"spin-plan");
+    for (artifact, full) in core::iter::once((plan.base, true))
+        .chain(plan.steps.iter().map(|step| (step.artifact, step.full)))
+    {
+        let id = control(
+            docker,
+            &[
+                "image",
+                "inspect",
+                "--format",
+                "{{.Id}}",
+                &artifact.snapshot.r#ref,
+            ],
+        )
+        .await?;
+        let id = try_string(id.trim()).map_err(io)?;
+        hash.update(b"\n");
+        hash.update(id.as_bytes());
+        hash.update(if full { b" full" } else { b" diff" });
+        try_push(&mut ids, id).map_err(io)?;
+    }
+    let digest = hex(&hash.finish())?;
+    Ok((try_string(&digest[..32]).map_err(io)?, ids))
+}
+/// Houdt hoogstens `PLAN_CACHE_ENTRIES` stapels onder `spin/plan:`. Een tag eraf
+/// halen laat het image staan zolang een capsule het nog als composition-tag heeft.
+async fn prune_plans(docker: &Docker, keep: &str) {
+    let result = async {
+        let listing = control(
+            docker,
+            &[
+                "images",
+                "--filter",
+                "reference=spin/plan",
+                "--format",
+                "{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}",
+            ],
+        )
+        .await?;
+        let mut entries = Vec::new();
+        for line in listing.lines() {
+            if let Some((created, tag)) = line.split_once('\t') {
+                try_push(
+                    &mut entries,
+                    (
+                        try_string(created).map_err(io)?,
+                        try_string(tag).map_err(io)?,
+                    ),
+                )
+                .map_err(io)?;
+            }
+        }
+        entries.sort();
+        let excess = entries.len().saturating_sub(PLAN_CACHE_ENTRIES);
+        for (_, tag) in entries.iter().take(excess).filter(|(_, tag)| tag != keep) {
+            let _ = control(docker, &["image", "rm", tag]).await;
+        }
+        Ok::<_, std::io::Error>(())
+    }
+    .await;
+    if let Err(error) = result {
+        eprintln!("SPIN_PLAN_CACHE_SKIP error={error}");
+    }
+}
 async fn build(
     docker: &Docker,
     composition: &d::Composition,
     plan: spin_core::layers::LayerPlan<'_>,
     progress: Progress<'_>,
 ) -> Result<String> {
-    let target =
-        spin_core::docker::runtime_name("spin-compose-build", &composition.id).map_err(io)?;
     let image = text(format_args!(
         "spin/composition:{}",
         spin_core::docker::safe_name(&composition.id).map_err(io)?
     ))
     .map_err(io)?;
-    let cleanup = docker.track_cleanup(&target).map_err(io)?;
     let mut steps = Steps::new("BUILD", &composition.id);
-    remove(docker, &target).await;
-    control(
+    let (key, ids) = plan_key(docker, &plan).await?;
+    let cached = text(format_args!("spin/plan:{key}")).map_err(io)?;
+    steps.step("plan_key");
+    if control(
         docker,
-        &[
-            "run",
-            "-d",
-            "--name",
-            &target,
-            "--label",
-            "spin.managed=true",
-            "--label",
-            "spin.kind=composition-build",
-            "--label",
-            &text(format_args!("spin.composition_id={}", composition.id)).map_err(io)?,
+        &["image", "inspect", "--format", "{{.Id}}", &cached],
+    )
+    .await
+    .is_ok()
+    {
+        control(docker, &["tag", &cached, &image]).await?;
+        progress.report("build", "stapel hergebruikt", 1, 1);
+        steps.step("reused");
+        return Ok(image);
+    }
+    let context = std::env::temp_dir()
+        .join(spin_core::docker::runtime_name("spin-build", &composition.id).map_err(io)?);
+    let _ = std::fs::remove_dir_all(&context);
+    std::fs::create_dir_all(&context)?;
+    let result = stack(
+        docker,
+        composition,
+        &plan,
+        &ids,
+        &key,
+        &image,
+        &cached,
+        &context,
+        progress,
+        &mut steps,
+    )
+    .await;
+    let _ = std::fs::remove_dir_all(&context);
+    result
+}
+/// Legt de diffs en verwijderscripts in de bouwcontext en laat Docker bouwen.
+#[allow(clippy::too_many_arguments)]
+async fn stack(
+    docker: &Docker,
+    composition: &d::Composition,
+    plan: &spin_core::layers::LayerPlan<'_>,
+    ids: &[String],
+    key: &str,
+    image: &str,
+    cached: &str,
+    context: &std::path::Path,
+    progress: Progress<'_>,
+    steps: &mut Steps<'_>,
+) -> Result<String> {
+    let total = u64::try_from(plan.steps.len()).unwrap_or(u64::MAX);
+    let mut layers = Vec::new();
+    for (index, step) in plan.steps.iter().enumerate() {
+        progress.report(
+            "build",
+            "lagen stapelen",
+            u64::try_from(index).unwrap_or(u64::MAX),
+            total,
+        );
+        let n = index + 1;
+        let reference = step.artifact.snapshot.r#ref.try_clone().map_err(io)?;
+        if step.full {
+            try_push(
+                &mut layers,
+                Stacked {
+                    reference,
+                    full: true,
+                    deletions: false,
+                },
+            )
+            .map_err(io)?;
+            continue;
+        }
+        let id = ids
+            .get(n)
+            .ok_or_else(|| std::io::Error::other("layer plan is missing an image id"))?;
+        let mut layer = match cached_layer(id).await? {
+            Some(layer) => {
+                steps.step("cached_layer");
+                layer
+            }
+            None => {
+                let mut saved = save(docker, &reference).await?;
+                steps.step("save");
+                let mut layer = top_layer(&mut saved).await?;
+                steps.step("top_layer");
+                remember_layer(id, &mut layer).await;
+                layer
+            }
+        };
+        let (mut diff, deletions) = filter(&mut layer, true, None).await?;
+        if !deletions.is_empty() {
+            let mut script = String::new();
+            for part in deletion_scripts(&deletions)? {
+                try_push_str(&mut script, &part).map_err(io)?;
+            }
+            std::fs::write(
+                context.join(text(format_args!("delete-{n}.sh")).map_err(io)?),
+                script,
+            )?;
+        }
+        diff.persist(&context.join(text(format_args!("layer-{n}.tar")).map_err(io)?))?;
+        try_push(
+            &mut layers,
+            Stacked {
+                reference,
+                full: false,
+                deletions: !deletions.is_empty(),
+            },
+        )
+        .map_err(io)?;
+        steps.step("layer");
+    }
+    let file = dockerfile(&plan.base.snapshot.r#ref, &layers, &composition.id, key)?;
+    let context = context
+        .to_str()
+        .ok_or_else(|| std::io::Error::other("build context path is not UTF-8"))?;
+    let mut command = docker
+        .command(&[
+            "build",
             "--network",
             "none",
-            "--entrypoint",
-            "sh",
-            &plan.base.snapshot.r#ref,
-            "-lc",
-            "trap 'exit 0' TERM INT; while :; do sleep 3600; done",
-        ],
-    )
-    .await?;
-    steps.step("base_container");
-    let total = u64::try_from(plan.steps.len()).unwrap_or(u64::MAX);
-    let result = async {
-        for (index, step) in plan.steps.iter().enumerate() {
-            let done = u64::try_from(index).unwrap_or(u64::MAX);
-            progress.report("build", "lagen stapelen", done, total);
-            if step.full {
-                let source = spin_core::docker::runtime_name(
-                    "spin-compose-source",
-                    &text(format_args!("{}-{}", composition.id, index + 1)).map_err(io)?,
-                )
-                .map_err(io)?;
-                let source_cleanup = docker.track_cleanup(&source).map_err(io)?;
-                remove(docker, &source).await;
-                control(
-                    docker,
-                    &[
-                        "create",
-                        "--name",
-                        &source,
-                        "--label",
-                        "spin.managed=true",
-                        "--label",
-                        "spin.kind=composition-source",
-                        "--entrypoint",
-                        "sh",
-                        &step.artifact.snapshot.r#ref,
-                        "-lc",
-                        "exit 0",
-                    ],
-                )
-                .await?;
-                let result = async {
-                    let mut export =
-                        Temporary::capture(docker.command(&["export", &source]).map_err(io)?)
-                            .await?;
-                    let (mut filtered, _) = filter(&mut export, false, None).await?;
-                    copy_into(docker, &target, &mut filtered).await
-                }
-                .await;
-                if remove(docker, &source).await {
-                    source_cleanup.complete();
-                }
-                result?;
-                steps.step("full_layer");
-            } else {
-                let image = control(
-                    docker,
-                    &[
-                        "image",
-                        "inspect",
-                        "--format",
-                        "{{.Id}}",
-                        &step.artifact.snapshot.r#ref,
-                    ],
-                )
-                .await?;
-                let mut layer = match cached_layer(&image).await? {
-                    Some(layer) => {
-                        steps.step("cached_layer");
-                        layer
-                    }
-                    None => {
-                        let mut saved = save(docker, &step.artifact.snapshot.r#ref).await?;
-                        steps.step("save");
-                        let mut layer = top_layer(&mut saved).await?;
-                        steps.step("top_layer");
-                        remember_layer(&image, &mut layer).await;
-                        layer
-                    }
-                };
-                let (mut diff, deletions) = filter(&mut layer, true, None).await?;
-                delete_paths(docker, &target, &deletions).await?;
-                copy_into(docker, &target, &mut diff).await?;
-                steps.step("apply_layer");
-            }
-        }
-        control(
-            docker,
-            &[
-                "commit",
-                "--pause=true",
-                "--change",
-                "LABEL spin.managed=true",
-                "--change",
-                "LABEL spin.kind=composition-image",
-                "--change",
-                &text(format_args!("LABEL spin.composition_id={}", composition.id)).map_err(io)?,
-                &target,
-                &image,
-            ],
-        )
-        .await?;
-        progress.report("build", "image vastleggen", total, total);
-        steps.step("commit");
-        Ok(image)
+            "--quiet",
+            "--tag",
+            image,
+            "--tag",
+            cached,
+            "--file",
+            "-",
+            context,
+        ])
+        .map_err(io)?;
+    command.input(file.as_bytes()).map_err(io)?;
+    progress.report("build", "image vastleggen", total, total);
+    let output = DockerExecutor.run(command).await.map_err(io)?;
+    if output.code != 0 {
+        let value = spin_core::docker::utf8(&output.bytes, true).map_err(io)?;
+        return Err(std::io::Error::other(
+            text(format_args!("docker build exited {}: {value}", output.code)).map_err(io)?,
+        ));
     }
-    .await;
-    if remove(docker, &target).await {
-        cleanup.complete();
-    }
-    result
+    steps.step("build");
+    prune_plans(docker, cached).await;
+    try_string(image).map_err(io)
 }
 async fn selected(
     docker: &Docker,
@@ -1211,6 +1341,39 @@ pub(crate) async fn changes(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+    #[test]
+    fn dockerfile_stacks_full_layers_from_images_and_diffs_from_the_context() {
+        let layers = [
+            super::Stacked {
+                reference: "spin/artifact:a".into(),
+                full: true,
+                deletions: false,
+            },
+            super::Stacked {
+                reference: "spin/artifact:b".into(),
+                full: false,
+                deletions: true,
+            },
+            super::Stacked {
+                reference: "spin/artifact:c".into(),
+                full: false,
+                deletions: false,
+            },
+        ];
+        let file = super::dockerfile("spin/artifact:base", &layers, "cmp_1", "k1").unwrap();
+        assert_eq!(
+            file,
+            concat!(
+                "FROM spin/artifact:base\n",
+                "COPY --from=spin/artifact:a / /\n",
+                "COPY delete-2.sh /.spin-delete.sh\n",
+                "RUN sh -e /.spin-delete.sh && rm -f /.spin-delete.sh\n",
+                "ADD layer-2.tar /\n",
+                "ADD layer-3.tar /\n",
+                "LABEL spin.managed=true spin.kind=composition-image spin.composition_id=cmp_1 spin.plan=k1\n"
+            )
+        );
+    }
     use std::io::Write;
     fn spool(bytes: &[u8]) -> Temporary {
         let mut file = Temporary::new().unwrap();

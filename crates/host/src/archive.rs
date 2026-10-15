@@ -46,6 +46,10 @@ impl Temporary {
     pub(crate) fn rewind(&mut self) -> std::io::Result<()> {
         self.file.rewind()
     }
+    /// Verplaatst het bestand naar `dest`; de opruiming bij drop vindt dan niets meer.
+    pub(crate) fn persist(&mut self, dest: &std::path::Path) -> std::io::Result<()> {
+        std::fs::rename(&self.path, dest)
+    }
     pub(crate) async fn capture(mut command: Command) -> std::io::Result<Self> {
         command.merge_stderr = false;
         let mut spool = Self::new()?;
