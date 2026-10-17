@@ -78,7 +78,7 @@ fn run() -> std::io::Result<()> {
         }
         if matches!(arg.as_str(), "-h" | "--help" | "-help") {
             println!(
-                "spin-client --server http://127.0.0.1:8080 --name NAME\n  --id ID --id-file PATH --token-file PATH --tools docker\n  --max-workloads 4 --capsule-base alpine:3.24 --capsule-network bridge\nSPIN_WORKER_TOKEN supplies the runner bearer token; SPIN_DOCKER selects its Docker CLI."
+                "spin-client --server http://127.0.0.1:8080 --name NAME\n  --id ID --id-file PATH --token-file PATH --tools docker\n  --max-workloads 4 --capsule-base alpine:3.24 --capsule-network bridge\nSPIN_WORKER_TOKEN supplies the runner bearer token; SPIN_DOCKER selects its Docker CLI;\nSPIN_CLAIM_UNLABELLED=1 also owns capsules from before the spin.server label."
             );
             return Ok(());
         }
@@ -147,7 +147,16 @@ fn run() -> std::io::Result<()> {
     let process = Random::open()?
         .next("proc")
         .map_err(std::io::Error::other)?;
+    // De host van de server scheidt de capsules van Spins op één Docker daemon.
+    let host = server
+        .split_once("://")
+        .map_or(server.as_str(), |(_, rest)| rest)
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let docker = spin_core::docker::Docker::new(&env("SPIN_DOCKER", "docker"), &base, &network)
+        .and_then(|docker| docker.serving(&host, env("SPIN_CLAIM_UNLABELLED", "") == "1"))
         .map_err(std::io::Error::other)?;
     signals()?;
     runner::run(

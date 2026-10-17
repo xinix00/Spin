@@ -128,9 +128,11 @@ async fn run(app: &'static App) -> Result {
     if port == 0 {
         return Err(Error::Http(500, "SPIN_PORT must be nonzero"));
     }
-    let secure = app
-        .env("SPIN_PUBLIC_URL")
-        .is_some_and(|s| s.starts_with("https://"));
+    // Zonder SPIN_PUBLIC_URL is elk domein `https://<domein>` (boot/tenancy.rs).
+    let secure = match app.env("SPIN_PUBLIC_URL").filter(|s| !s.is_empty()) {
+        Some(url) => url.starts_with("https://"),
+        None => !app.env("SPIN_DATABASE").is_some_and(|s| !s.is_empty()),
+    };
     // Eén schrijver per namespace bewaakt de S3-lease van Replica per tenant
     // (storage::Owner::new); de oude lease op de lokale schijf is weg.
     serve(app, net, root, port, secure).await

@@ -165,6 +165,29 @@ fn labels_keep_empty_last_field_and_cleanup_is_idempotent() {
     }
 }
 #[test]
+fn a_runner_only_counts_and_removes_capsules_of_its_own_spin() {
+    let haas = || docker().serving("haas.getspin.app", false).unwrap();
+    let mut fake = Fake::default();
+    fake.reply(
+        0,
+        b"composition\tcmp-own\t\thaas.getspin.app\ncomposition\tcmp-other\t\tbollenloods.getspin.app\nrecording\t\trec-old\t\n",
+    );
+    let live = run(haas().live_capsules(&mut fake)).unwrap();
+    assert_eq!(&*live.compositions, &["cmp-own"]);
+    assert!(live.recordings.is_empty());
+    fake.reply(0, b"own\thaas.getspin.app\nother\tbollenloods.getspin.app\nold\t\n");
+    fake.reply(0, b"own\n");
+    let ids = ["cmp-own".into()];
+    assert_eq!(run(haas().remove_capsules(&mut fake, &ids, &[])).unwrap(), 1);
+    assert_eq!(fake.commands.last().unwrap().args, ["rm", "-f", "own"]);
+
+    let legacy = docker().serving("bollenloods.getspin.app", true).unwrap();
+    fake.reply(0, b"recording\t\trec-old\t\ncomposition\tcmp-h\t\thaas.getspin.app\n");
+    let live = run(legacy.live_capsules(&mut fake)).unwrap();
+    assert_eq!(&*live.recordings, &["rec-old"]);
+    assert!(live.compositions.is_empty());
+}
+#[test]
 fn tracked_files_distinguish_skipped_empty_binary_and_reject_bad_paths_before_spawn() {
     let mut fake = Fake::default();
     fake.reply(0, b"SPIN_SKIP /root/skipped\nSPIN_FILE /root/empty \nSPIN_FILE /root/binary AP8=\nSPIN_SKIP /root/binary\n");

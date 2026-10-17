@@ -65,6 +65,10 @@ pub struct Docker {
     binary: String,
     base: String,
     network: String,
+    /// Host van de Spin die deze runner bedient; leeg telt elke capsule als eigen.
+    server: String,
+    /// Capsules van vóór het `spin.server`-label horen bij deze runner.
+    unlabelled: bool,
     cleanup: core::cell::RefCell<[Option<Cleanup>; 128]>,
     cleanup_cursor: core::cell::Cell<usize>,
 }
@@ -109,9 +113,28 @@ impl Docker {
             } else {
                 network
             })?,
+            server: String::new(),
+            unlabelled: false,
             cleanup: core::cell::RefCell::new(core::array::from_fn(|_| None)),
             cleanup_cursor: core::cell::Cell::new(0),
         })
+    }
+    /// Runners van verschillende Spins kunnen één Docker daemon delen: elke
+    /// capsule draagt de host van haar Spin, en een runner telt en verwijdert
+    /// alleen die van de zijne. Een andere Spin kent die ids niet en zou ze
+    /// anders als wees laten slopen.
+    pub fn serving(mut self, server: &str, unlabelled: bool) -> Result<Self> {
+        self.server = try_string(server)?;
+        self.unlabelled = unlabelled;
+        Ok(self)
+    }
+    fn owns(&self, server: &str) -> bool {
+        self.server.is_empty()
+            || if server.is_empty() {
+                self.unlabelled
+            } else {
+                server == self.server
+            }
     }
     /// Reserveert cleanup vóór er een buildcontainer gemaakt kan worden.
     pub fn track_cleanup(&self, name: &str) -> Result<CleanupLease<'_>> {
@@ -307,6 +330,8 @@ impl Docker {
                     "spin.kind=recording",
                     "--label",
                     &text(format_args!("spin.recording_id={}", recording.id))?,
+                    "--label",
+                    &text(format_args!("spin.server={}", self.server))?,
                     "--network",
                     &self.network,
                     "--env",
@@ -391,6 +416,8 @@ impl Docker {
             "--label",
             &text(format_args!("spin.composition_id={}", composition.id))?,
             "--label",
+            &text(format_args!("spin.server={}", self.server))?,
+            "--label",
             &text(format_args!(
                 "spin.operator={}",
                 safe_name(&composition.operator)?
@@ -426,13 +453,13 @@ impl Docker {
         runtime.workspace_ref = volume;
         Ok(runtime)
     }
-    /// Alleen gelabelde actieve capsules worden als workload geteld.
+    /// Alleen gelabelde actieve capsules van de eigen Spin worden als workload geteld.
     pub async fn live_capsules(
         &self,
         executor: &mut impl Executor,
     ) -> Result<d::engine::LiveCapsules> {
         let mut command = self.command(&["ps", "--filter", "label=spin.managed=true", "--filter", "status=running",
-            "--format", "{{.Label \"spin.kind\"}}\t{{.Label \"spin.composition_id\"}}\t{{.Label \"spin.recording_id\"}}"])?;
+            "--format", "{{.Label \"spin.kind\"}}\t{{.Label \"spin.composition_id\"}}\t{{.Label \"spin.recording_id\"}}\t{{.Label \"spin.server\"}}"])?;
         command.timeout_ms = 10_000;
         command.output_limit = 1 << 20;
         let output = checked(executor.run(command).await?)?;
@@ -445,6 +472,9 @@ impl Docker {
             let kind = fields.next().unwrap_or("");
             let composition = fields.next().unwrap_or("");
             let recording = fields.next().unwrap_or("");
+            if !self.owns(fields.next().unwrap_or("")) {
+                continue;
+            }
             if kind == "composition" && !composition.is_empty() {
                 live.compositions.push(try_string(composition)?)?;
             }
@@ -484,7 +514,9 @@ impl Docker {
                         executor,
                         &[
                             "ps",
-                            "-aq",
+                            "-a",
+                            "--format",
+                            "{{.ID}}\t{{.Label \"spin.server\"}}",
                             "--filter",
                             "label=spin.managed=true",
                             "--filter",
@@ -496,7 +528,12 @@ impl Docker {
                     .await;
                 match result {
                     Ok(output) => {
-                        for container in output.split_whitespace() {
+                        for line in output.lines() {
+                            let mut fields = line.trim_end_matches('\r').split('\t').map(str::trim);
+                            let container = fields.next().unwrap_or("");
+                            if container.is_empty() || !self.owns(fields.next().unwrap_or("")) {
+                                continue;
+                            }
                             match self.remove_container(executor, container).await {
                                 Ok(()) => removed += 1,
                                 Err(error) => {
