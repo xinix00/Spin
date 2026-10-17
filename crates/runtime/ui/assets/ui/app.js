@@ -93,7 +93,7 @@ async function api(path,options={}) {
 // scrollbar gutter so nothing shifts.
 // Shared adapter preserves the textarea as the form value.
 function mountMarkdown(root=document){globalThis.TactileMarkdown?.mount(root);}
-function openDialog(id){const dialog=document.getElementById(id);if(dialog&&!dialog.open){mountMarkdown(dialog);dialog.showModal();}}
+function openDialog(id){const dialog=document.getElementById(id);if(dialog&&!dialog.open){mountMarkdown(dialog);dialog.showModal();raiseMessages();}}
 function closeDialog(id){const dialog=document.getElementById(id);if(dialog?.open)dialog.close();}
 // The recorder has no command line: a RECORD is a form, END and CANCEL are
 // buttons, and the terminal is the capsule's shell. The log says in plain
@@ -647,10 +647,16 @@ function showBanner(text,kind){
   const close=()=>{clearTimeout(item._hide);item.remove();if(!center.children.length){try{center.hidePopover();}catch(_){}}};
   item.querySelector('.message-close').onclick=close;item.onmouseenter=()=>clearTimeout(item._hide);item.onmouseleave=()=>{item._hide=setTimeout(close,2500);};
   center.prepend(item);while(center.children.length>4)center.lastElementChild.remove();
-  // Re-raising the popover puts it above a dialog that opened after it.
-  try{if(center.matches(':popover-open'))center.hidePopover();center.showPopover();}catch(_){}
+  raiseMessages();
   item._hide=setTimeout(close,kind==='notice'?4500:8000);
 }
+// A modal dialog makes everything outside it inert, a popover too: a click
+// on a message would fall through to the backdrop and close the dialog. So
+// the message center lives in the top open dialog, and goes back on close.
+function raiseMessages(){const center=document.getElementById('messages'),host=[...document.querySelectorAll('dialog[open]')].at(-1)||document.body;
+  if(center.parentElement!==host)host.append(center);
+  // Re-raising the popover puts it above a dialog that opened after it.
+  try{if(center.matches(':popover-open'))center.hidePopover();if(center.children.length)center.showPopover();}catch(_){}}
 function showError(error){showBanner(error.message||error,'error');}
 function showNotice(text){showBanner(text,'notice');}
 // One vocabulary for everything that starts on a runner: a recording, a
@@ -883,7 +889,7 @@ async function closeSessionCapsule(sessionID,fromChat=false){if(!await TactileDi
 // Welke bestanden een login zijn, weet je pas na het inloggen: de runner
 // vergelijkt de capsule met haar start, en wat erbij kwam kies je hier.
 function loginLayer(composition){return (composition.layers||[]).map(id=>byID(snapshot.artifacts,id)).find(artifact=>artifact?.kind==='credential')||null;}
-async function learnLogin(composition,button){const layer=loginLayer(composition);if(!layer)return;button.disabled=true;
+async function learnLogin(composition,button){const layer=loginLayer(composition);if(!layer)return;button.disabled=true;showNotice('De runner kijkt wat er sinds de start in de capsule veranderde…');
   try{await api(`/api/compositions/${encodeURIComponent(composition.id)}/changes`,{method:'POST'});await openContents(`/api/compositions/${encodeURIComponent(composition.id)}/changes`,`Wat het inloggen schreef · ${artifactSelector(layer)}`,layer);}catch(error){showError(error);}finally{button.disabled=false;}}
 function saveLogin(compositionID){return runAction(()=>api(`/api/compositions/${encodeURIComponent(compositionID)}/login`,{method:'POST'}),logins=>showNotice(logins.map(login=>`Login ${login.number} van ${login.key.split('/').slice(1).join('/')} bewaard`).join('; ')+'; de capsule is gesloten en de login is vrij.'));}
 function deleteLogin(loginID){return runAction(()=>api(`/api/logins/${encodeURIComponent(loginID)}`,{method:'DELETE'}),()=>{if(document.getElementById('logins-dialog').open)renderLogins();});}
@@ -1766,7 +1772,7 @@ document.getElementById('job-search').oninput=event=>{jobSearch=event.target.val
 document.querySelectorAll('[data-close-dialog]').forEach(button=>button.onclick=()=>closeDialog(button.dataset.closeDialog));
 document.getElementById('diff-full-toggle').onclick=()=>{fullFileState.chat=!fullFileState.chat;if(chatState.selectedDiffPath)openDiff(chatState.selectedDiffPath);};
 document.getElementById('job-change-full-toggle').onclick=()=>{fullFileState.job=!fullFileState.job;if(jobChangesState.selectedPath)openJobChangeDiff(jobChangesState.selectedPath);};
-document.querySelectorAll('dialog').forEach(dialog=>dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close();}));
+document.querySelectorAll('dialog').forEach(dialog=>{dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close();});dialog.addEventListener('close',()=>{if(dialog.contains(document.getElementById('messages')))raiseMessages();});});
 document.getElementById('deliverable-dialog').addEventListener('close',closeDeliverable);
 document.getElementById('cancel-deliverable-comment').onclick=cancelDeliverableComment;
 document.getElementById('deliverable-comment-form').onsubmit=async event=>{event.preventDefault();const selection=deliverableView.selection,item=byID(snapshot.deliverables,deliverableView.id),submit=event.submitter;if(!selection||!item)return;submit.disabled=true;try{const form=new FormData(event.target),comment=await api(`/api/deliverables/${encodeURIComponent(item.id)}/comments`,{method:'POST',body:JSON.stringify({...selection,body:form.get('body')})});snapshot.deliverable_comments.push(comment);renderDeliverableRevision(item.id);}catch(error){showError(error);await refresh(true);if(byID(snapshot.deliverables,item.id))renderDeliverableRevision(item.id);}finally{submit.disabled=false;}};
