@@ -83,6 +83,48 @@ pub(crate) fn file_response(work: &ReadFile, payload: &Value) -> Result<Response
 }
 
 impl<P: Persistence> Server<P> {
+    /// Vraagt de runner opnieuw wat er buiten de workspace in de capsule
+    /// veranderde. Een inlogcapsule is geen sessie en wordt dus niet bij een
+    /// beurt bijgewerkt: zo zie je na het inloggen welke bestanden de login zijn.
+    pub(crate) fn changes_route(
+        &mut self,
+        req: &Request<'_>,
+        actor: &str,
+        now: &Timestamp,
+        random: &mut impl Runtime,
+    ) -> Result<Option<Outcome>> {
+        let Some(id) = req
+            .path
+            .strip_prefix("/api/compositions/")
+            .and_then(|p| p.strip_suffix("/changes"))
+            .filter(|id| req.method == "POST" && !id.is_empty() && !id.contains('/'))
+        else {
+            return Ok(None);
+        };
+        let composition = self.store.composition(id)?;
+        if composition.operator != actor {
+            return Err(Error::Http(403, "capsule belongs to another operator"));
+        }
+        let capsule = composition
+            .runtime
+            .as_ref()
+            .filter(|r| r.status == "ready" && !r.stop_pending)
+            .ok_or(Error::Http(409, "capsule is not running"))?;
+        let client = capsule.client_id.try_clone()?;
+        let payload = d::protocol::RuntimePayload {
+            runtime: capsule.try_clone()?,
+        };
+        Ok(Some(Outcome::Capsule(self.enqueue_call(
+            crate::capsules::Action::Changes {
+                composition: try_string(id)?,
+            },
+            &client,
+            d::protocol::METHOD_CAPSULE_CHANGES,
+            &payload,
+            now,
+            random,
+        )?)))
+    }
     pub(crate) fn probe_route(
         &mut self,
         req: &Request<'_>,

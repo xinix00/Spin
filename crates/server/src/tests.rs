@@ -2582,6 +2582,71 @@ fn manifest_api_reads_detached_go_listings_and_workspace_files_enforce_session_a
 }
 
 #[test]
+fn a_login_capsule_learns_which_files_the_login_wrote() {
+    use d::protocol as p;
+    let state=PersistedState::from_json(br#"{"artifacts":{"a":{"id":"a","kind":"credential","name":"codex","subject":"derek"}},"compositions":{"c":{"id":"c","operator":"derek","layers":["a"],"for_login":true,"runtime":{"status":"ready","client_id":"client","container_id":"container"}}}}"#).unwrap();
+    let fail = Cell::new(false);
+    let now = time();
+    let mut random = Random(8100);
+    let mut server = Server::new(Store::new(state, Memory(&fail)));
+    let mut peer = spin_core::runner::Peer::new(d::Client {
+        id: "client".into(),
+        ..Default::default()
+    });
+    let (generation, _) = peer
+        .attach("runner", None, now.time().unwrap().0 / 1_000_000)
+        .unwrap();
+    server.runners.push(peer);
+    let request = req("POST", "/api/compositions/c/changes", &[], b"");
+    assert!(
+        server
+            .changes_route(&request, "stranger", &now, &mut random)
+            .is_err()
+    );
+    assert!(matches!(
+        server
+            .changes_route(&request, "derek", &now, &mut random)
+            .unwrap(),
+        Some(Outcome::Capsule(_))
+    ));
+    let (ticket, sent) = server.runners[0].next(generation).unwrap().unwrap();
+    let sent = sent.try_clone().unwrap();
+    assert_eq!(sent.method, p::METHOD_CAPSULE_CHANGES);
+    server.runners[0].acknowledge(ticket);
+    server.runners[0].response(&sent.id).unwrap();
+    let changes = Value::from_json(
+        br#"{"files":2,"bytes":1027}"#,
+    )
+    .unwrap();
+    server
+        .finish_capsule(
+            "client",
+            Some(&sent),
+            &p::WireMessage {
+                r#type: p::MESSAGE_RESPONSE.into(),
+                id: sent.id.clone(),
+                payload: d::RawJson(Some(changes)),
+                ..Default::default()
+            },
+            &now,
+            &mut random,
+        )
+        .unwrap();
+    assert!(!server.calls[0].error);
+    assert_eq!(
+        server
+            .store
+            .composition("c")
+            .unwrap()
+            .capsule_changes
+            .as_ref()
+            .unwrap()
+            .files,
+        2
+    );
+}
+
+#[test]
 fn workflow_retry_requires_git_and_stop_ack_before_replacing_the_capsule() {
     use d::protocol as p;
     let state=PersistedState::from_json(br#"{

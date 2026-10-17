@@ -417,6 +417,9 @@ impl<P: Persistence> Server<P> {
         if let Some(outcome) = self.probe_route(&req, &identity.0.username, now, runtime)? {
             return Ok(outcome);
         }
+        if let Some(outcome) = self.changes_route(&req, &identity.0.username, now, runtime)? {
+            return Ok(outcome);
+        }
         if let Some(outcome) = self.session_file_route(&req, &identity.0.username, now, runtime)? {
             return Ok(outcome);
         }

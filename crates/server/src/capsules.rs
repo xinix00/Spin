@@ -67,6 +67,10 @@ pub(crate) enum Action {
         composition: String,
         stamp: String,
     },
+    /// Een vers filesystemverschil van een capsule, op verzoek van de gebruiker.
+    Changes {
+        composition: String,
+    },
     /// Geen opdracht aan een runner: een stap in de wachtrij waarvoor geen login
     /// van `layer` vrij is. Alleen voor de UI en de diagnose; verdwijnt zodra de
     /// stap start of niet meer in de wachtrij staat.
@@ -95,7 +99,9 @@ impl Action {
             Self::Probe(work) => &work.composition,
             Self::RemoveSnapshot { artifact } => artifact,
             Self::Login(work) => &work.composition,
-            Self::Watch { composition, .. } | Self::Attachment { composition, .. } => composition,
+            Self::Watch { composition, .. }
+            | Self::Attachment { composition, .. }
+            | Self::Changes { composition } => composition,
         }
     }
     fn persistent(&self) -> bool {
@@ -1511,6 +1517,11 @@ impl<P: Persistence> Server<P> {
                 Action::ReadFile(work) => crate::management::file_response(work, payload),
                 Action::Probe(work) => crate::management::probe_response(work, payload),
                 Action::RemoveSnapshot { .. } => Response::empty(204),
+                Action::Changes { composition } => {
+                    self.store
+                        .set_composition_changes(composition, d::LayerContents::from_value(payload)?)?;
+                    Response::empty(204)
+                }
                 Action::Attachment { key, stamp, .. } => {
                     let response = Response::empty(204)?;
                     self.attachment_stamps
