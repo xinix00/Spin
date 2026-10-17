@@ -363,6 +363,21 @@ pub(super) fn owner<'a>(
             }
             server.recover(&timestamp(app)?)?;
             server.ensure_worker_token(app.env("SPIN_WORKER_TOKEN").unwrap_or(""), &mut random)?;
+            // SPIN_RESET_OWNER=<domein>:<wachtwoord> zet bij elke start het
+            // wachtwoord van de oudste admin; haal hem weg na het inloggen.
+            if let Some((target, password)) =
+                app.env("SPIN_RESET_OWNER").and_then(|v| v.split_once(':'))
+                && target == domain
+            {
+                match server.reset_owner_password(password, &mut random) {
+                    Ok(username) => {
+                        applib::log!("SPIN_OWNER_RESET domain={domain} username={username}")
+                    }
+                    Err(error) => {
+                        applib::log!("SPIN_OWNER_RESET_FAILED domain={domain} error={error}")
+                    }
+                }
+            }
             applib::log!(
                 "SPIN_TENANT_READY domain={domain} port={port} version={} platform=hopos",
                 env!("CARGO_PKG_VERSION")

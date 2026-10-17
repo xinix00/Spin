@@ -155,6 +155,16 @@ fn verifier(password: &str, hash: &str) -> Result<Option<(PasswordDeriver, [u8; 
     )))
 }
 impl<P: Persistence> Server<P> {
+    /// Operatorherstel bij het opstarten (`SPIN_RESET_OWNER`): de oudste admin
+    /// krijgt dit wachtwoord. Geeft zijn gebruikersnaam terug.
+    pub fn reset_owner_password(
+        &mut self,
+        password: &str,
+        runtime: &mut impl Runtime,
+    ) -> Result<String> {
+        let hash = spin_security::hash_password(password, runtime)?;
+        Ok(self.store.reset_owner_password(&hash)?.username)
+    }
     pub(super) fn identity(
         &mut self,
         req: &Request<'_>,

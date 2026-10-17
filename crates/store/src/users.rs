@@ -84,6 +84,21 @@ impl<P: Persistence> Store<P> {
     pub fn user(&self, id: &str) -> Result<&d::User> {
         self.state.users.get(id.trim()).ok_or(Error::NotFound)
     }
+    /// Operatorherstel bij het opstarten: de oudste actieve admin krijgt een
+    /// nieuw wachtwoord en al zijn browsersessies eindigen.
+    pub fn reset_owner_password(&mut self, hash: &str) -> Result<d::PublicUser> {
+        let owner = self
+            .state
+            .users
+            .iter()
+            .map(|(_, user)| user)
+            .filter(|user| user.role == d::USER_ADMIN && user.archived_at.is_none())
+            .min_by(|a, b| a.created_at.as_str().cmp(b.created_at.as_str()))
+            .ok_or(Error::NotFound)?
+            .id
+            .try_clone()?;
+        self.reset_user_password(&owner, &owner, hash)
+    }
     /// Zoekt de genormaliseerde gebruikersnaam voor authenticatie.
     pub fn user_by_username(&self, name: &str) -> Result<&d::User> {
         let name = normalized(name)?;
@@ -433,5 +448,12 @@ mod tests {
         assert!(store.authenticate_session("b", &now).is_err());
         assert!(store.authenticate_session("a", &now).is_ok());
         assert_eq!(store.user("member").unwrap().password_hash, "new-hash");
+        assert_eq!(
+            store.reset_owner_password("owner-hash").unwrap().username,
+            "derek"
+        );
+        assert_eq!(store.user("admin").unwrap().password_hash, "owner-hash");
+        assert_eq!(store.user("member").unwrap().password_hash, "new-hash");
+        assert!(store.authenticate_session("a", &now).is_err());
     }
 }

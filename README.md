@@ -180,7 +180,7 @@ Registreer als callbacks respectievelijk `${SPIN_PUBLIC_URL}/api/git/oauth/githu
 
 De ACP-hook volgt het stabiele ACP v1-transport: newline-delimited JSON-RPC 2.0 over stdio. **ACP probe** op de compositiekaart blijft beschikbaar als korte diagnostische handshake. Voor een Job-Session houdt Spin het subprocess levend en doorloopt het `initialize → session/new → session/prompt`; `session/update`, plannen, tool calls en permission requests worden live naar het chatscherm gestreamd. De Changes-kolom leest de echte Git-workspace en toont per bestand toegevoegde en verwijderde regels.
 
-Onder Access kan een admin een gebruiker een nieuw tijdelijk wachtwoord geven (**Wachtwoord**); alle sessies van die gebruiker eindigen daarbij. Voor een collega die het wachtwoord kwijt is, is dat de route.
+Onder Access kan een admin een gebruiker een nieuw tijdelijk wachtwoord geven (**Wachtwoord**); alle sessies van die gebruiker eindigen daarbij. Voor een collega die het wachtwoord kwijt is, is dat de route. Is de enige admin het wachtwoord kwijt, dan zet de operator op de HopOS-server `SPIN_RESET_OWNER=<domein>:<wachtwoord>`: bij elke start krijgt de oudste admin van dat domein dat wachtwoord, en het log meldt zijn gebruikersnaam (`SPIN_OWNER_RESET`). Haal de variabele weg zodra je weer binnen bent.
 
 ## Live status zonder polling
 
