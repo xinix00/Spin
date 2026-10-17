@@ -86,7 +86,7 @@
   .nav-label { flex: 1; min-width: 0; }
   .sidebar-foot { margin-top: auto; padding-top: 20px; border-top: 1px solid var(--line); }
   .online { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; color: var(--muted); font-size: 11px; }
-  .dot,.rec-dot,.app-dot { display: inline-block; flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+  .dot,.rec-dot { display: inline-block; flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
   .user-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .user-copy { min-width: 0; }
   .user-copy strong,.user-copy small { display: block; overflow: hidden; text-overflow: ellipsis; }
@@ -213,11 +213,8 @@
   .question-hint { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
   details.advanced { margin: 0 20px 16px; }
   details.advanced > .form-grid { padding-inline: 12px; }
-  .job-repositories,.service-editor,.deliverable-editor { display: grid; gap: 12px; margin-bottom: 12px; }
+  .job-repositories,.deliverable-editor { display: grid; gap: 12px; margin-bottom: 12px; }
   .job-repository-row { display: grid; grid-template-columns: minmax(0,1.4fr) minmax(0,1fr) minmax(0,1fr) auto; gap: 10px; align-items: center; }
-  .service-row { padding: 14px; }
-  .service-row-head { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)) auto; gap: 10px; align-items: center; }
-  .service-row-body { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin-top: 12px; }
   .template-step-editor { margin: 16px 20px; overflow: hidden; }
   .template-step-editor > .wide { padding: 0 16px 16px; }
   .template-step-head { justify-content: space-between; }
@@ -488,6 +485,7 @@
   .rule-row code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 11px; }
   .rule-controls { display: flex; flex-shrink: 0; gap: 6px; }
   .rule-tag.included,.contents-tracked { color: var(--green); } .rule-tag.excluded { color: var(--amber); }
+  .track-add { display: flex; gap: 8px; margin-top: 10px; } .track-add input { flex: 1; min-width: 0; }
   .logins-lead { padding: 16px 20px 0; margin: 0; color: var(--muted); font-size: 12px; }
   .logins-body { display: grid; gap: 16px; padding: 20px; max-height: 65dvh; overflow: auto; }
   .login-row { padding: 16px; }
@@ -509,15 +507,6 @@
   .runner-token-value { flex: 1; min-width: 0; overflow-wrap: anywhere; font: 12px var(--mono); }
   .restore-points { margin-top: 12px; max-height: 340px; overflow: auto; }
   .replica-generations .binding span:last-child { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-  .app-panel { margin: 16px 0; }
-  .app-panel-body { padding: 12px 16px 16px; }
-  .app-service { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
-  .app-service:last-of-type { border-bottom: 0; }
-  .app-dot { background: var(--muted); } .app-dot.up { background: var(--green); } .app-dot.starting { background: var(--amber); }
-  .app-links { margin-left: auto; } .app-status,.app-note { color: var(--muted); font-size: 12px; }
-  .app-note { padding-top: 12px; } .app-note.error { color: var(--amber); }
-  #app-logs-dialog { --t-dialog-width: 960px; }
-  .app-logs { margin: 0; max-height: 70dvh; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .preview-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
   .preview-frame { width: 100%; height: 100%; min-height: 480px; border: 0; background: var(--input); }
   .preview-file { display: grid; place-items: center; gap: 16px; padding: 32px; }
@@ -584,7 +573,7 @@
     .job-head-actions { display: flex; width: 100%; }
     .job-head-actions > .t-action { flex: 1 1 auto; }
     .form-grid,.spawn-form,.template-step-body,.template-runtime { grid-template-columns: minmax(0,1fr); padding: 16px; gap: 16px; }
-    .recipe-check,.service-row-head,.service-row-body,.transition-editor { grid-template-columns: minmax(0,1fr); }
+    .recipe-check,.transition-editor { grid-template-columns: minmax(0,1fr); }
     .job-repository-row,.deliverable-row { grid-template-columns: minmax(0,1fr) auto; }
     .job-repository-row > .t-select:first-child { grid-column: 1/-1; }
     .template-step-editor { margin-inline: 12px; }

@@ -88,15 +88,6 @@ fn normalize_phase(phase: &mut d::WorkflowPhase, index: usize) -> Fallible {
             }
             phase.with_selectors = selectors(&phase.with_selectors)?;
         }
-        d::WORKFLOW_EXECUTOR_EXPOSE => {
-            phase.resolve_merge = false;
-            phase.action = None;
-            phase.environment_selector = normalized(&phase.environment_selector)?;
-            phase.with_selectors = List::default();
-            phase.model.clear();
-            phase.reasoning_effort.clear();
-            phase.deliverables = List::default();
-        }
         d::WORKFLOW_EXECUTOR_ACTION => {
             phase.resolve_merge = false;
             let action = phase

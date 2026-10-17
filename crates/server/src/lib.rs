@@ -13,7 +13,6 @@ mod external;
 mod oauth;
 mod pulls;
 pub use external::{NetworkRequest, NetworkResponse, NetworkWait};
-mod apps;
 mod auth;
 mod backup;
 mod capsules;
@@ -162,7 +161,6 @@ pub struct Server<P: Persistence> {
     agents: alloc::vec::Vec<acp::Agent>,
     internal_url: String,
     uploads: alloc::vec::Vec<uploads::Upload>,
-    app_starts: Map<apps::Start>,
     public_url: String,
     oauth_env: Map<d::GitOAuthConfiguration>,
     oauth_attempts: Map<oauth::Attempt>,
@@ -219,7 +217,6 @@ impl<P: Persistence> Server<P> {
             agents: alloc::vec::Vec::new(),
             internal_url: String::new(),
             uploads: alloc::vec::Vec::new(),
-            app_starts: Map::new(),
             public_url: String::new(),
             oauth_env: Map::new(),
             oauth_attempts: Map::new(),
@@ -400,9 +397,6 @@ impl<P: Persistence> Server<P> {
         if let Some(outcome) =
             self.oauth_route(&req, &identity.0, &identity.1.token_hash, now, runtime)?
         {
-            return Ok(outcome);
-        }
-        if let Some(outcome) = self.app_route(&req, &identity.0.username, now, runtime)? {
             return Ok(outcome);
         }
         if let Some(outcome) = self.login_operation_route(&req, &identity.0, now, runtime)? {

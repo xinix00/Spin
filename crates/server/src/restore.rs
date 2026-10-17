@@ -272,7 +272,6 @@ impl<P: Persistence> Server<P> {
                     self.calls.clear();
                     self.terminals.clear();
                     self.agents.clear();
-                    self.app_starts = Map::new();
                     self.oauth_attempts = Map::new();
                     self.network.clear();
                     self.refresh_after = Map::new();

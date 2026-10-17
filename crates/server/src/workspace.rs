@@ -157,20 +157,6 @@ impl<P: Persistence> Server<P> {
             return Ok(None);
         }
         let mut steps = Vec::new();
-        if !composition.session_id.is_empty() {
-            d::try_push(
-                &mut steps,
-                Step {
-                    method: p::METHOD_STOP_APP,
-                    payload: p::AppPayload {
-                        session_id: composition.session_id.try_clone()?,
-                        ..Default::default()
-                    }
-                    .to_value()?,
-                },
-            )?;
-        }
-
         for target in self
             .tracked_targets(&composition)?
             .into_iter()

@@ -41,10 +41,6 @@ pub struct Config {
     pub tools: d::List<String>,
     /// Maximaal aantal gelijktijdige capsules, nul betekent onbeperkt.
     pub max_workloads: usize,
-    /// Lokale map met benoemde app-envbestanden.
-    pub env_dir: String,
-    /// Adres waarop gepubliceerde servicepoorten bereikbaar zijn.
-    pub advertise_host: String,
 }
 type Replies = RefCell<[Option<d::Fallible<WireMessage>>; OPERATIONS]>;
 struct Reservation<'a>(&'a Cell<usize>);
@@ -81,17 +77,10 @@ async fn invoke(
     maximum: usize,
     starting: &Cell<usize>,
     archive: &crate::blob_client::Client,
-    apps: &crate::apps::Config,
 ) -> spin_core::docker::Result<Value> {
     let payload = request.payload.0.as_ref().unwrap_or(&Value::Null);
     let mut executor = DockerExecutor;
     match request.method.as_str() {
-        p::METHOD_START_APP | p::METHOD_STOP_APP | p::METHOD_APP_STATUS | p::METHOD_APP_LOGS => {
-            let value = p::AppPayload::from_value(payload)?;
-            apps.invoke(docker, &request.method, &value)
-                .await
-                .map_err(engine_io)
-        }
         p::METHOD_INSPECT_WORKSPACE | p::METHOD_INSPECT_WORKSPACE_AT => {
             let value = p::WorkspacePathPayload::from_value(payload)?;
             Ok(docker
@@ -442,7 +431,6 @@ fn close_error(body: &[u8]) -> std::io::Error {
     )
 }
 fn run_owned(config: Config, docker: &Docker, stop: &AtomicBool) -> std::io::Result<()> {
-    let apps = crate::apps::Config::new(config.env_dir, config.advertise_host)?;
     let archive = crate::blob_client::Client::new(&config.server, &config.token)?;
     // Iedere verbindingspoging zoekt de naam opnieuw op en probeert hoogstens
     // zestien adressen, elk 500 ms (`client_net::connect`).
@@ -623,7 +611,6 @@ fn run_owned(config: Config, docker: &Docker, stop: &AtomicBool) -> std::io::Res
                         config.max_workloads,
                         &starting,
                         &archive,
-                        &apps,
                         &mut watches,
                         &mut streams,
                     )?,
@@ -638,7 +625,6 @@ fn run_owned(config: Config, docker: &Docker, stop: &AtomicBool) -> std::io::Res
                         config.max_workloads,
                         &starting,
                         &archive,
-                        &apps,
                         &mut watches,
                         &mut streams,
                     )?,
@@ -743,7 +729,6 @@ fn dispatch<'a>(
     maximum: usize,
     starting: &'a Cell<usize>,
     archive: &'a crate::blob_client::Client,
-    apps: &'a crate::apps::Config,
     watches: &mut crate::runner_watch::Watches<'a>,
     streams: &mut crate::runner_stream::Streams<'a>,
 ) -> std::io::Result<()> {
@@ -812,7 +797,7 @@ fn dispatch<'a>(
                     return Ok(());
                 }
                 let task = executor::task(async move {
-                    let result = invoke(docker, &request, maximum, starting, archive, apps).await;
+                    let result = invoke(docker, &request, maximum, starting, archive).await;
                     replies.borrow_mut()[index] = Some(response(&request.id, result));
                 });
                 match task {

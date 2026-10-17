@@ -123,11 +123,7 @@ impl<P: Persistence> Server<P> {
                 return Ok(());
             }
             if !session.phase_run_id.is_empty() {
-                if session.executor == d::WORKFLOW_EXECUTOR_EXPOSE {
-                    self.launch_expose(&session.id, now, random)?;
-                } else {
-                    self.launch_workflow_agent(&session.id, now, random)?;
-                }
+                self.launch_workflow_agent(&session.id, now, random)?;
             }
             return Ok(());
         }

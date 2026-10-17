@@ -1658,108 +1658,72 @@ fn human_accept_publishes_before_answering_and_failure_keeps_decision_open() {
 }
 
 #[test]
-fn expose_waits_for_app_ack_and_merge_waits_for_remote_commit() {
+fn merge_waits_for_remote_commit() {
     use d::protocol as p;
-    for expose in [true, false] {
-        let mut state = PersistedState::from_json(br#"{
-          "jobs":{"job":{"id":"job","owner":"derek","status":"running","workflow_status":"running","current_phase_run_id":"run","branch":"jobs/#1/main","base_ref":"main","git_repository_id":"repo","git_remote_url":"https://example.test/repo.git","git_credential_scope":"public","template_snapshot":{"id":"tpl","phases":[{"id":"check","name":"Test","executor":"expose","accept":{"target":"DONE"},"reject":{"target":"SELF"}}]}}},
-          "sessions":{"ses":{"id":"ses","job_id":"job","phase_run_id":"run","operator":"derek","status":"queued","executor":"expose","git_repository_id":"repo","prepared_composition_id":"cmp"}},
-          "phase_runs":{"run":{"id":"run","session_id":"ses","job_id":"job","phase_id":"check","phase_name":"Test","status":"queued","attempt":1}},
-          "git_repositories":{"repo":{"id":"repo","name":"Repo","remote_url":"https://example.test/repo.git","default_ref":"main","credential_scope":"public","services":[{"name":"web","run":"npm start","ports":[3000]}]}},
-          "compositions":{"cmp":{"id":"cmp","operator":"derek","session_id":"ses","runtime":{"driver":"docker","client_id":"client","container_id":"container","status":"ready"}}}
-        }"#).unwrap();
-        if !expose {
-            state.sessions.get_mut("ses").unwrap().executor = "action".into();
-            let phase = state
-                .jobs
-                .get_mut("job")
-                .unwrap()
-                .template_snapshot
-                .as_mut()
-                .unwrap()
-                .phases
-                .as_mut_slice()
-                .get_mut(0)
-                .unwrap();
-            phase.executor = "action".into();
-            phase.action = Some(d::WorkflowAction::from_json(br#"{"type":"git.merge"}"#).unwrap());
-        }
-        let failed = Cell::new(false);
-        let mut server = Server::new(Store::new(state, Memory(&failed)));
-        let now = time();
-        let mut random = Random(300);
-        let mut peer = spin_core::runner::Peer::new(d::Client {
-            id: "client".into(),
-            capabilities: d::ClientCapabilities::from_json(br#"{"engine":{"available":true}}"#)
-                .unwrap(),
-            ..Default::default()
-        });
-        let (generation, _) = peer
-            .attach("runner", None, now.time().unwrap().0 / 1_000_000)
-            .unwrap();
-        server.runners.push(peer);
-        let session = server.store.session("ses").unwrap().try_clone().unwrap();
-        server
-            .schedule_session(&session, &now, &mut random)
-            .unwrap();
-        server
-            .schedule_session(&session, &now, &mut random)
-            .unwrap();
-        assert_eq!(
-            server.calls.len(),
-            1,
-            "repeated sweep must not repeat an external action"
-        );
-        assert_eq!(
-            server.store.workflow_for_session("ses").unwrap().run.status,
-            d::PHASE_RUN_RUNNING
-        );
-        let (ticket, request) = server.runners[0].next(generation).unwrap().unwrap();
-        let request = request.try_clone().unwrap();
-        assert_eq!(
-            request.method,
-            if expose {
-                p::METHOD_START_APP
-            } else {
-                p::METHOD_MERGE_REPOSITORY
-            }
-        );
-        server.runners[0].acknowledge(ticket);
-        server.runners[0].response(&request.id);
-        let payload = if expose {
-            br#"{"services":[{"service":"web","status":"running","host":"runner.test","ports":{"3000":45123},"reachable":true}]}"#.as_slice()
-        } else {
-            br#"{"Head":"0123456789012345678901234567890123456789"}"#.as_slice()
-        };
-        server
-            .finish_capsule(
-                "client",
-                Some(&request),
-                &p::WireMessage {
-                    id: request.id.try_clone().unwrap(),
-                    payload: d::RawJson(Some(Value::from_json(payload).unwrap())),
-                    ..Default::default()
-                },
-                &now,
-                &mut random,
-            )
-            .unwrap();
-        let view = server.store.workflow_for_session("ses").unwrap();
-        if expose {
-            assert_eq!(view.run.status, d::PHASE_RUN_PENDING);
-            assert!(
-                view.questions
-                    .iter()
-                    .any(|q| q.question.contains("runner.test:45123"))
-            );
-        } else {
-            assert_eq!(view.job.workflow_status, d::WORKFLOW_DONE);
-            assert_eq!(
-                view.run.action_result.unwrap().external_id,
-                "0123456789012345678901234567890123456789"
-            );
-        }
-    }
+    let state = PersistedState::from_json(br#"{
+      "jobs":{"job":{"id":"job","owner":"derek","status":"running","workflow_status":"running","current_phase_run_id":"run","branch":"jobs/#1/main","base_ref":"main","git_repository_id":"repo","git_remote_url":"https://example.test/repo.git","git_credential_scope":"public","template_snapshot":{"id":"tpl","phases":[{"id":"check","name":"Test","executor":"action","action":{"type":"git.merge"},"accept":{"target":"DONE"},"reject":{"target":"SELF"}}]}}},
+      "sessions":{"ses":{"id":"ses","job_id":"job","phase_run_id":"run","operator":"derek","status":"queued","executor":"action","git_repository_id":"repo","prepared_composition_id":"cmp"}},
+      "phase_runs":{"run":{"id":"run","session_id":"ses","job_id":"job","phase_id":"check","phase_name":"Test","status":"queued","attempt":1}},
+      "git_repositories":{"repo":{"id":"repo","name":"Repo","remote_url":"https://example.test/repo.git","default_ref":"main","credential_scope":"public"}},
+      "compositions":{"cmp":{"id":"cmp","operator":"derek","session_id":"ses","runtime":{"driver":"docker","client_id":"client","container_id":"container","status":"ready"}}}
+    }"#).unwrap();
+    let failed = Cell::new(false);
+    let mut server = Server::new(Store::new(state, Memory(&failed)));
+    let now = time();
+    let mut random = Random(300);
+    let mut peer = spin_core::runner::Peer::new(d::Client {
+        id: "client".into(),
+        capabilities: d::ClientCapabilities::from_json(br#"{"engine":{"available":true}}"#)
+            .unwrap(),
+        ..Default::default()
+    });
+    let (generation, _) = peer
+        .attach("runner", None, now.time().unwrap().0 / 1_000_000)
+        .unwrap();
+    server.runners.push(peer);
+    let session = server.store.session("ses").unwrap().try_clone().unwrap();
+    server
+        .schedule_session(&session, &now, &mut random)
+        .unwrap();
+    server
+        .schedule_session(&session, &now, &mut random)
+        .unwrap();
+    assert_eq!(
+        server.calls.len(),
+        1,
+        "repeated sweep must not repeat an external action"
+    );
+    assert_eq!(
+        server.store.workflow_for_session("ses").unwrap().run.status,
+        d::PHASE_RUN_RUNNING
+    );
+    let (ticket, request) = server.runners[0].next(generation).unwrap().unwrap();
+    let request = request.try_clone().unwrap();
+    assert_eq!(request.method, p::METHOD_MERGE_REPOSITORY);
+    server.runners[0].acknowledge(ticket);
+    server.runners[0].response(&request.id);
+    server
+        .finish_capsule(
+            "client",
+            Some(&request),
+            &p::WireMessage {
+                id: request.id.try_clone().unwrap(),
+                payload: d::RawJson(Some(
+                    Value::from_json(br#"{"Head":"0123456789012345678901234567890123456789"}"#)
+                        .unwrap(),
+                )),
+                ..Default::default()
+            },
+            &now,
+            &mut random,
+        )
+        .unwrap();
+    let view = server.store.workflow_for_session("ses").unwrap();
+    assert_eq!(view.job.workflow_status, d::WORKFLOW_DONE);
+    assert_eq!(
+        view.run.action_result.unwrap().external_id,
+        "0123456789012345678901234567890123456789"
+    );
 }
 
 #[test]
@@ -2086,11 +2050,7 @@ fn job_delete_waits_for_stop_ack_and_close_keeps_offline_login_reserved() {
     let (generation, _) = peer.attach("instance", None, 0).unwrap();
     server.runners.push(peer);
     server.maintain_operations(&now, &mut random).unwrap();
-    for method in [
-        p::METHOD_STOP_APP,
-        p::METHOD_CAPSULE_CHANGES,
-        p::METHOD_STOP,
-    ] {
+    for method in [p::METHOD_CAPSULE_CHANGES, p::METHOD_STOP] {
         let (ticket, message) = server.runners[0].next(generation).unwrap().unwrap();
         let message = message.try_clone().unwrap();
         assert_eq!(message.method, method);
@@ -2736,7 +2696,6 @@ fn workflow_retry_requires_git_and_stop_ack_before_replacing_the_capsule() {
     );
     server.maintain_operations(&now, &mut random).unwrap();
     for (method, payload) in [
-        (p::METHOD_STOP_APP, "null"),
         (p::METHOD_CAPSULE_CHANGES, r#"{"files":1,"bytes":8}"#),
         (p::METHOD_STOP, "null"),
     ] {

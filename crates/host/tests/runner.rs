@@ -174,8 +174,6 @@ esac
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let config = spin_host::runner::Config {
-        env_dir: String::new(),
-        advertise_host: "127.0.0.1".into(),
         server: format!("http://{}", listener.local_addr().unwrap()),
         token: "test-worker-token".into(),
         instance_id: "host-test".into(),
@@ -333,8 +331,6 @@ esac
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let config = spin_host::runner::Config {
-        env_dir: String::new(),
-        advertise_host: "127.0.0.1".into(),
         server: format!("http://{}", listener.local_addr().unwrap()),
         token: "test-worker-token".into(),
         instance_id: "host-test".into(),
@@ -491,8 +487,6 @@ esac
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let config = spin_host::runner::Config {
-        env_dir: String::new(),
-        advertise_host: "127.0.0.1".into(),
         server: format!("http://{}", listener.local_addr().unwrap()),
         token: "test-worker-token".into(),
         instance_id: "host-test".into(),
@@ -637,8 +631,6 @@ fn only_a_rejected_token_stops_the_runner_a_busy_identity_waits_and_a_policy_clo
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let config = spin_host::runner::Config {
-            env_dir: String::new(),
-            advertise_host: "127.0.0.1".into(),
             server: format!("http://{}", listener.local_addr().unwrap()),
             token: "test-worker-token".into(),
             instance_id: "host-test".into(),

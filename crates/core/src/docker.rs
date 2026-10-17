@@ -3,8 +3,6 @@ use crate::{process::Command, validation::text};
 use alloc::{string::String, vec::Vec};
 use spin_domain::{self as d, TryClone, try_push_str, try_string};
 
-/// Appservice-opdrachten en herstartvaste naamgeving.
-pub mod apps;
 mod enabled;
 mod files;
 mod git;

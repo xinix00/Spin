@@ -14,7 +14,6 @@ pub mod s3;
 /// De HTTP-hostruntime met een vaste pool en één Store-eigenaar.
 pub mod server;
 
-mod apps;
 mod archive;
 mod blob_client;
 mod bundles;

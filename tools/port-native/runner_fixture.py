@@ -35,7 +35,7 @@ def exercise(root, temporary, url, cookie, csrf, token, call):
     environment = dict(os.environ, SPIN_SERVER=url, SPIN_WORKER_TOKEN=token,
                        SPIN_CLIENT_ID_FILE=str(directory/'identity'),
                        SPIN_WORKER_TOKEN_FILE=str(directory/'token'),
-                       SPIN_ENV_DIR=str(directory/'env'), SPIN_DOCKER=str(wrapper),
+                       SPIN_DOCKER=str(wrapper),
                        SPIN_CLIENT_NAME='native-port-fixture')
     headers = {'X-Spin-CSRF':csrf}
 

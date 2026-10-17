@@ -68,8 +68,6 @@ fn run() -> std::io::Result<()> {
     let mut maximum: usize = env("SPIN_MAX_WORKLOADS", "4").parse().unwrap_or(4);
     let mut base = String::from("alpine:3.24");
     let mut network = String::from("bridge");
-    let mut env_dir = env("SPIN_ENV_DIR", "./var/env");
-    let mut advertise_host = env("SPIN_ADVERTISE_HOST", "");
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if matches!(arg.as_str(), "-version" | "--version") {
@@ -86,8 +84,6 @@ fn run() -> std::io::Result<()> {
             .next()
             .ok_or_else(|| std::io::Error::other("runner argument needs a value"))?;
         match arg.trim_start_matches('-') {
-            "env-dir" => env_dir = value,
-            "advertise-host" => advertise_host = value,
             "server" => server = value,
             "name" => name = value,
             "id" => id = value,
@@ -161,8 +157,6 @@ fn run() -> std::io::Result<()> {
     signals()?;
     runner::run(
         Config {
-            env_dir,
-            advertise_host,
             server,
             token,
             instance_id: id,

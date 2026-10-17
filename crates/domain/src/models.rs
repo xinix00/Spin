@@ -78,8 +78,6 @@ pub const WORKFLOW_EXECUTOR_AGENT: &str = "agent";
 /// Protocolwaarde uit de Go-specificatie.
 pub const WORKFLOW_EXECUTOR_ACTION: &str = "action";
 /// Protocolwaarde uit de Go-specificatie.
-pub const WORKFLOW_EXECUTOR_EXPOSE: &str = "expose";
-/// Protocolwaarde uit de Go-specificatie.
 pub const WORKFLOW_ACTION_GIT_PULL_REQUEST: &str = "git.pull_request.create";
 /// Protocolwaarde uit de Go-specificatie.
 pub const WORKFLOW_ACTION_GIT_MERGE: &str = "git.merge";
@@ -1660,56 +1658,12 @@ model! {
         credential_scope: CredentialScope => ("credential_scope", false),
         /// `layer_selectors` in het bestaande JSON-contract.
         layer_selectors: List<String> => ("layer_selectors", true),
-        /// `services` in het bestaande JSON-contract.
-        services: List<AppService> => ("services", true),
-        /// `service_hosts` in het bestaande JSON-contract.
-        service_hosts: List<String> => ("service_hosts", true),
         /// `created_by` in het bestaande JSON-contract.
         created_by: String => ("created_by", false),
         /// `created_at` in het bestaande JSON-contract.
         created_at: Timestamp => ("created_at", false),
         /// `updated_at` in het bestaande JSON-contract.
         updated_at: Timestamp => ("updated_at", false),
-    }
-}
-
-model! {
-    /// Het veldcontract van `AppService`.
-    AppService {
-        /// `name` in het bestaande JSON-contract.
-        name: String => ("name", false),
-        /// `image` in het bestaande JSON-contract.
-        image: String => ("image", true),
-        /// `prepare` in het bestaande JSON-contract.
-        prepare: List<String> => ("prepare", true),
-        /// `run` in het bestaande JSON-contract.
-        run: String => ("run", true),
-        /// `ports` in het bestaande JSON-contract.
-        ports: List<i64> => ("ports", true),
-        /// `env` in het bestaande JSON-contract.
-        env: String => ("env", true),
-    }
-}
-
-model! {
-    /// Het veldcontract van `AppServiceRuntime`.
-    AppServiceRuntime {
-        /// `service` in het bestaande JSON-contract.
-        service: String => ("service", false),
-        /// `container_id` in het bestaande JSON-contract.
-        container_id: String => ("container_id", true),
-        /// `status` in het bestaande JSON-contract.
-        status: String => ("status", false),
-        /// `host` in het bestaande JSON-contract.
-        host: String => ("host", true),
-        /// `ports` in het bestaande JSON-contract.
-        ports: WireMap<i64> => ("ports", true),
-        /// `reachable` in het bestaande JSON-contract.
-        reachable: bool => ("reachable", false),
-        /// `error` in het bestaande JSON-contract.
-        error: String => ("error", true),
-        /// `started_at` in het bestaande JSON-contract.
-        started_at: Option<Timestamp> => ("started_at", true),
     }
 }
 
@@ -2352,10 +2306,6 @@ model! {
         layer_selectors: List<String> => ("layer_selectors", true),
         /// `credential_scope` in het bestaande JSON-contract.
         credential_scope: CredentialScope => ("credential_scope", true),
-        /// `services` in het bestaande JSON-contract.
-        services: List<AppService> => ("services", true),
-        /// `service_hosts` in het bestaande JSON-contract.
-        service_hosts: List<String> => ("service_hosts", true),
     }
 }
 
@@ -2374,10 +2324,6 @@ model! {
         layer_selectors: List<String> => ("layer_selectors", false),
         /// `credential_scope` in het bestaande JSON-contract.
         credential_scope: CredentialScope => ("credential_scope", true),
-        /// `services` in het bestaande JSON-contract.
-        services: List<AppService> => ("services", false),
-        /// `service_hosts` in het bestaande JSON-contract.
-        service_hosts: List<String> => ("service_hosts", false),
     }
 }
 

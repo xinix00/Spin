@@ -516,24 +516,6 @@ fn gitrepository_filled() {
     check::<spin_domain::GitRepository>(include_bytes!("fixtures/GitRepository-filled.json"));
 }
 #[test]
-fn appservice_zero() {
-    check::<spin_domain::AppService>(include_bytes!("fixtures/AppService-zero.json"));
-}
-#[test]
-fn appservice_filled() {
-    check::<spin_domain::AppService>(include_bytes!("fixtures/AppService-filled.json"));
-}
-#[test]
-fn appserviceruntime_zero() {
-    check::<spin_domain::AppServiceRuntime>(include_bytes!("fixtures/AppServiceRuntime-zero.json"));
-}
-#[test]
-fn appserviceruntime_filled() {
-    check::<spin_domain::AppServiceRuntime>(include_bytes!(
-        "fixtures/AppServiceRuntime-filled.json"
-    ));
-}
-#[test]
 fn gitaccount_zero() {
     check::<spin_domain::GitAccount>(include_bytes!("fixtures/GitAccount-zero.json"));
 }

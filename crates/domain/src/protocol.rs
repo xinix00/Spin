@@ -99,14 +99,6 @@ pub const METHOD_ARCHIVE_SNAPSHOT: &str = "snapshot.archive";
 /// Protocolwaarde uit de Go-specificatie.
 pub const METHOD_HAS_SNAPSHOT: &str = "snapshot.has";
 /// Protocolwaarde uit de Go-specificatie.
-pub const METHOD_START_APP: &str = "app.start";
-/// Protocolwaarde uit de Go-specificatie.
-pub const METHOD_STOP_APP: &str = "app.stop";
-/// Protocolwaarde uit de Go-specificatie.
-pub const METHOD_APP_STATUS: &str = "app.status";
-/// Protocolwaarde uit de Go-specificatie.
-pub const METHOD_APP_LOGS: &str = "app.logs";
-/// Protocolwaarde uit de Go-specificatie.
 pub const RUNNER_FULL: &str = "runner full: no room for another capsule";
 /// Protocolwaarde uit de Go-specificatie.
 pub const SNAPSHOT_MODE_PULL: &str = "docker-image-pull";
@@ -285,40 +277,6 @@ model! {
     RepositoryMergePayload {
         /// `merge` in het bestaande JSON-contract.
         merge: crate::engine::RepositoryMerge => ("merge", false),
-    }
-}
-
-model! {
-    /// Het veldcontract van `AppPayload`.
-    AppPayload {
-        /// `runtime` in het bestaande JSON-contract.
-        runtime: crate::CapsuleRuntime => ("runtime", true),
-        /// `session_id` in het bestaande JSON-contract.
-        session_id: String => ("session_id", false),
-        /// `services` in het bestaande JSON-contract.
-        services: List<crate::AppService> => ("services", true),
-        /// `hosts` in het bestaande JSON-contract.
-        hosts: List<String> => ("hosts", true),
-        /// `service` in het bestaande JSON-contract.
-        service: String => ("service", true),
-        /// `tail` in het bestaande JSON-contract.
-        tail: i64 => ("tail", true),
-    }
-}
-
-model! {
-    /// Het veldcontract van `AppStatusResult`.
-    AppStatusResult {
-        /// `services` in het bestaande JSON-contract.
-        services: List<crate::AppServiceRuntime> => ("services", false),
-    }
-}
-
-model! {
-    /// Het veldcontract van `AppLogsResult`.
-    AppLogsResult {
-        /// `output` in het bestaande JSON-contract.
-        output: String => ("output", false),
     }
 }
 

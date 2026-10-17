@@ -136,10 +136,8 @@ impl<P: Persistence> Server<P> {
             view.run.status.as_str(),
             d::PHASE_RUN_QUEUED | d::PHASE_RUN_RUNNING
         ) || view.job.current_phase_run_id != view.run.id
-            || matches!(
-                view.phase.executor.as_str(),
-                d::WORKFLOW_EXECUTOR_ACTION | d::WORKFLOW_EXECUTOR_EXPOSE
-            )
+            // Alleen agentstappen; een stap van een vervallen soort blijft in de wachtrij.
+            || !matches!(view.phase.executor.as_str(), "" | d::WORKFLOW_EXECUTOR_AGENT)
         {
             return Ok(());
         }

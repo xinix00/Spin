@@ -3,7 +3,7 @@ use crate::{Context, Error, Persistence, Result, Store};
 use crate::{composition::project_layers, git_accounts::remote_host};
 use alloc::string::String;
 use spin_core::{
-    git::{app_services, credential_scope, service_hosts, valid_remote},
+    git::{credential_scope, valid_remote},
     validation::{normalized, selectors, valid_git_base_ref},
 };
 use spin_domain::{self as d, Timestamp, TryClone, try_string};
@@ -41,8 +41,6 @@ impl<P: Persistence> Store<P> {
             ));
         }
         let layers = selectors(&req.layer_selectors)?;
-        let services = app_services(req.services)?;
-        let hosts = service_hosts(&req.service_hosts)?;
         let scope = credential_scope(&req.credential_scope, d::CREDENTIAL_SCOPE_PUBLIC)?;
         self.edit(|state| {
             if state.git_repositories.get(context.id).is_some() {
@@ -63,8 +61,6 @@ impl<P: Persistence> Store<P> {
                 provider: provider(remote)?,
                 credential_scope: scope,
                 layer_selectors: layers,
-                services,
-                service_hosts: hosts,
                 created_by: operator,
                 created_at: context.now.try_clone()?,
                 updated_at: context.now.try_clone()?,
@@ -85,8 +81,6 @@ impl<P: Persistence> Store<P> {
         let operator = normalized(&req.operator)?;
         let scope = credential_scope(&req.credential_scope, "")?;
         let layers = selectors(&req.layer_selectors)?;
-        let services = app_services(req.services)?;
-        let hosts = service_hosts(&req.service_hosts)?;
         self.edit(|state| {
             let old = state
                 .git_repositories
@@ -136,8 +130,6 @@ impl<P: Persistence> Store<P> {
             repository.remote_url = remote;
             repository.default_ref = base;
             repository.layer_selectors = layers;
-            repository.services = services;
-            repository.service_hosts = hosts;
             if !scope.is_empty() {
                 repository.credential_scope = scope;
             }

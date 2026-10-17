@@ -51,7 +51,6 @@ pub(crate) enum Action {
     Preserve(crate::workspace::Preservation),
     Browse(crate::code::Browse),
     Inspect(crate::code::Inspection),
-    App(crate::apps::Work),
     Merge(crate::actions::Merge),
     ReadFile(crate::management::ReadFile),
     Probe(crate::management::Probe),
@@ -91,7 +90,6 @@ impl Action {
             Self::Preserve(work) => &work.composition,
             Self::Browse(work) => &work.repository,
             Self::Inspect(work) => &work.composition,
-            Self::App(work) => &work.object,
             Self::Merge(work) => &work.session,
             Self::ReadFile(work) => &work.composition,
             Self::Probe(work) => &work.composition,
@@ -1312,18 +1310,6 @@ impl<P: Persistence> Server<P> {
             self.calls[index].finished = true;
             return Ok(true);
         }
-        if matches!(self.calls[index].action, Action::App(_)) {
-            match self.finish_app(index, message, now, runtime) {
-                Ok(response) => self.calls[index].response = Some(response),
-                Err(error) => {
-                    self.fail_app_reply(index)?;
-                    self.calls[index].response = Some(error.response()?);
-                    self.calls[index].error = true;
-                }
-            }
-            self.calls[index].finished = true;
-            return Ok(true);
-        }
         if matches!(self.calls[index].action, Action::Inspect(_)) && message.error.is_empty() {
             match self.advance_inspection(index, client, payload, runtime, now) {
                 Ok(None) => return Ok(true),
@@ -1520,7 +1506,6 @@ impl<P: Persistence> Server<P> {
                 Action::Rebase { .. } => Err(Error::Http(502, "recording rebase failed")),
                 Action::Login(_) => Err(Error::Http(502, "login operation failed")),
                 Action::Merge(_) => Err(Error::Http(502, "merge operation failed")),
-                Action::App(_) => Err(Error::Http(502, "app operation failed")),
                 Action::Inspect(_) => Err(Error::Http(502, "workspace inspection failed")),
                 Action::Browse(work) => crate::code::browse_response(work, payload),
                 Action::ReadFile(work) => crate::management::file_response(work, payload),

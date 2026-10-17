@@ -247,14 +247,7 @@ fn await_decision(
     count: i64,
     context: &mut Mutation<'_>,
 ) -> Result<d::WorkflowAdvance> {
-    let mut message = if p.phase.executor == d::WORKFLOW_EXECUTOR_EXPOSE {
-        text(format_args!(
-            "De test-app van {} staat klaar.",
-            p.phase.name
-        ))?
-    } else {
-        text(format_args!("AI accepted {}.", p.phase.name))?
-    };
+    let mut message = text(format_args!("AI accepted {}.", p.phase.name))?;
     if !p.run.summary.is_empty() {
         d::try_push_str(&mut message, " ")?;
         d::try_push_str(&mut message, &p.run.summary)?;
@@ -415,9 +408,7 @@ impl<P: Persistence> Store<P> {
     pub fn validate_workflow_phase_transition(&self, id: &str, outcome: &str) -> Result {
         let p = parts(&self.state, id)?;
         let (t, _) = transition(&self.state, &p, &normalized(outcome)?)?;
-        if t.ask_user
-            || p.phase.executor == d::WORKFLOW_EXECUTOR_EXPOSE
-            || target(&p.template, &p.phase.id, &t.target)? == d::WORKFLOW_TARGET_ASK_USER
+        if t.ask_user || target(&p.template, &p.phase.id, &t.target)? == d::WORKFLOW_TARGET_ASK_USER
         {
             return Ok(());
         }
@@ -451,7 +442,6 @@ impl<P: Persistence> Store<P> {
             let (t, count) = transition(state, &p, &outcome)?;
             let ask = always_ask
                 || t.ask_user
-                || p.phase.executor == d::WORKFLOW_EXECUTOR_EXPOSE
                 || target(&p.template, &p.phase.id, &t.target)? == d::WORKFLOW_TARGET_ASK_USER;
             if !ask {
                 injection(state, &p.job.id, &p.template, &p.phase.id, &t.target)?;
