@@ -40,6 +40,25 @@ pub(crate) fn wait_for(fd: RawFd, events: i16) {
         }
     });
 }
+/// Een socketpaar heeft op macOS 8 KiB buffer: een eigenaar pompt per ronde
+/// maar zoveel, en in een drukke runner liep een gzip van een laag daardoor op
+/// 1 MB/s. Een MiB per richting; mislukt het, dan blijft de kleine buffer.
+pub(crate) fn widen(fd: RawFd) {
+    let size: libc::c_int = 1 << 20;
+    for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
+        // SAFETY: fd is een open socket van de aanroeper voor deze aanroep; de
+        // waarde is een geldige c_int met de opgegeven lengte.
+        unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                option,
+                (&raw const size).cast(),
+                core::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+    }
+}
 // Een volle I/O-quantum vraagt een nieuwe eerlijke ronde, geen timerpauze.
 pub(crate) fn progress() {
     PROGRESS.with(|flag| flag.set(true));

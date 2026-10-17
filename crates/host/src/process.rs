@@ -30,6 +30,9 @@ impl Process {
         stdin.set_nonblocking(true)?;
         stdout.set_nonblocking(true)?;
         stderr.set_nonblocking(true)?;
+        for socket in [&stdin, &child_in, &stdout, &child_out] {
+            crate::executor::widen(socket.as_raw_fd());
+        }
         let child_err = if command.merge_stderr {
             child_out.try_clone()?
         } else {
@@ -161,6 +164,13 @@ fn docker_error(error: std::io::Error) -> spin_core::docker::Error {
         Err(error) => error.into(),
     }
 }
+const QUANTUM: usize = 1 << 20;
+fn buffer(size: usize) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(size).map_err(std::io::Error::other)?;
+    bytes.resize(size, 0);
+    Ok(bytes)
+}
 /// Een grote processtroom gaat blok voor blok naar/vanaf een taakbestand.
 /// In RAM blijft hoogstens 64 KiB per kanaal, plus de begrensde diagnostiek.
 pub async fn transfer(
@@ -173,7 +183,10 @@ pub async fn transfer(
     let deadline = Instant::now()
         .checked_add(Duration::from_millis(command.timeout_ms))
         .ok_or_else(|| std::io::Error::other("process deadline overflow"))?;
-    let mut incoming = [0; 8192];
+    // Per ronde tot een MiB in en uit: met 8 KiB per ronde liep een gzip van
+    // een laag in een drukke runner (veel taken per ronde) op 1 MB/s.
+    let mut incoming = buffer(64 << 10)?;
+    let mut bytes = buffer(64 << 10)?;
     let mut pending = 0;
     let mut offset = 0;
     let mut source_offset = 0;
@@ -187,7 +200,8 @@ pub async fn transfer(
         if Instant::now() >= deadline {
             return Err(std::io::ErrorKind::TimedOut.into());
         }
-        if !input_closed {
+        let mut written = 0;
+        while !input_closed && written < QUANTUM {
             if offset == pending {
                 offset = 0;
                 pending = if let Some(source) = &mut source {
@@ -201,23 +215,24 @@ pub async fn transfer(
                 if pending == 0 {
                     process.close_input()?;
                     input_closed = true;
+                    break;
                 }
             }
-            if !input_closed {
-                match process.write_input(&incoming[offset..pending]) {
-                    Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
-                    Ok(n) => offset += n,
-                    Err(error) if would_block(&error) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
-                        input_closed = true;
-                    }
-                    Err(error) => return Err(error),
+            match process.write_input(&incoming[offset..pending]) {
+                Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+                Ok(n) => {
+                    offset += n;
+                    written += n;
                 }
+                Err(error) if would_block(&error) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                    input_closed = true;
+                }
+                Err(error) => return Err(error),
             }
         }
-        let mut bytes = [0; 8192];
         for is_stderr in [false, true] {
-            for _ in 0..8 {
+            for _ in 0..QUANTUM / bytes.len() {
                 if if is_stderr { err_closed } else { out_closed } {
                     break;
                 }

@@ -217,6 +217,13 @@ impl<'a> Reader<'a> {
     }
 }
 /// De metadata en bytes blijven origineel; ook xattrs, hardlinks en symlinks reizen mee.
+/// Eén MiB per executorronde; 8 KiB per ronde was in een drukke runner de rem.
+fn round_buffer() -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(1 << 20).map_err(std::io::Error::other)?;
+    bytes.resize(1 << 20, 0);
+    Ok(bytes)
+}
 pub(crate) async fn copy_range(
     input: &mut File,
     output: &mut File,
@@ -225,7 +232,7 @@ pub(crate) async fn copy_range(
 ) -> std::io::Result<()> {
     input.seek(SeekFrom::Start(start))?;
     let mut remaining = size;
-    let mut bytes = [0; 8192];
+    let mut bytes = round_buffer()?;
     while remaining > 0 {
         let n =
             usize::try_from(remaining.min(bytes.len() as u64)).map_err(std::io::Error::other)?;
@@ -244,7 +251,7 @@ pub(crate) async fn hash_range(
 ) -> std::io::Result<[u8; 32]> {
     input.seek(SeekFrom::Start(start))?;
     let mut remaining = size;
-    let mut bytes = [0; 8192];
+    let mut bytes = round_buffer()?;
     let mut hash = spin_security::Sha256::new();
     while remaining > 0 {
         let n =
