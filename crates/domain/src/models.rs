@@ -83,6 +83,8 @@ pub const APP_ACCESS_STATUS: &str = "status";
 pub const APP_ACCESS_LOGS: &str = "logs";
 /// App-toegang van een stap: ook herstarten.
 pub const APP_ACCESS_RESTART: &str = "restart";
+/// App-toegang van een stap: ook een ander artifact uitrollen.
+pub const APP_ACCESS_UPDATE: &str = "update";
 /// Protocolwaarde uit de Go-specificatie.
 pub const WORKFLOW_ACTION_GIT_PULL_REQUEST: &str = "git.pull_request.create";
 /// Protocolwaarde uit de Go-specificatie.
@@ -291,7 +293,7 @@ model! {
         /// `reasoning_effort` in het bestaande JSON-contract.
         reasoning_effort: String => ("reasoning_effort", true),
         /// Wat de agent van deze stap met de apps van de Job mag: leeg (niets),
-        /// `status`, `logs` of `restart`; elk niveau omvat het vorige. De tags
+        /// `status`, `logs`, `restart` of `update`; elk niveau omvat het vorige. De tags
         /// in het cluster blijven het plafond.
         app_access: String => ("app_access", true),
         /// `accept` in het bestaande JSON-contract.

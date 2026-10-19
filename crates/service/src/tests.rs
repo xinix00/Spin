@@ -42,6 +42,7 @@ fn only_jobs_tagged_for_this_spin_are_visible() {
             service: "api".into(),
             logs: true,
             restart: true,
+            update: false,
         }
     );
     let db = exposure(&jobs[1], "haas").unwrap().unwrap();
@@ -148,4 +149,53 @@ fn throttle_is_per_job() {
     assert_eq!(t.admit("b", 1).unwrap(), Ok(()));
     assert_eq!(t.admit("a", 1_000_000_000).unwrap(), Err(119));
     assert_eq!(t.admit("a", RESTART_EVERY_NS).unwrap(), Ok(()));
+}
+
+#[test]
+fn update_swaps_only_the_url_within_the_same_source() {
+    let mut j = job(
+        r#"{"name":"lumen","driver":"hop","artifacts":[{"url":"s3://haas-software/artifacts/lumen/a.elf","match":{"node.arch":"arm64"},"auth":{"access_key":"k","secret_key":"s"}}]}"#,
+    );
+    update_artifact(&mut j, "s3://haas-software/artifacts/lumen/b.elf", "").unwrap();
+    assert_eq!(
+        j.artifacts[0].url,
+        "s3://haas-software/artifacts/lumen/b.elf"
+    );
+    assert_eq!(j.artifacts[0].auth.get("access_key").unwrap(), "k");
+    for bad in [
+        "s3://other-bucket/x/b.elf",
+        "https://haas-software/artifacts/b.elf",
+        "s3://haas-software/b.elf",
+        "s3://haas-software/artifacts/../../etc",
+        "",
+    ] {
+        assert!(update_artifact(&mut j, bad, "").is_err(), "{bad}");
+    }
+    let mut gh = job(r#"{"name":"spin","driver":"hop","artifacts":[
+            {"url":"https://github.com/xinix00/Spin/releases/download/v3.0.56/spin-server-arm64.elf","match":{"node.arch":"arm64"}},
+            {"url":"https://github.com/xinix00/Spin/releases/download/v3.0.56/spin-server-riscv64.elf","match":{"node.arch":"riscv64"}}]}"#);
+    assert!(
+        update_artifact(
+            &mut gh,
+            "https://github.com/xinix00/Spin/releases/download/v3.0.57/spin-server-arm64.elf",
+            ""
+        )
+        .is_err()
+    );
+    update_artifact(
+        &mut gh,
+        "https://github.com/xinix00/Spin/releases/download/v3.0.57/spin-server-arm64.elf",
+        "arm64",
+    )
+    .unwrap();
+    assert!(gh.artifacts[0].url.contains("v3.0.57") && gh.artifacts[1].url.contains("v3.0.56"));
+    assert!(
+        update_artifact(
+            &mut gh,
+            "https://github.com/someone-else/x/releases/download/a/b.elf",
+            "arm64"
+        )
+        .is_err()
+    );
+    assert!(update_artifact(&mut gh, "https://github.com/xinix00/x.elf", "x86").is_err());
 }

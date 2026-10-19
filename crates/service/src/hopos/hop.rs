@@ -67,6 +67,7 @@ impl Hop {
             p::METHOD_SERVICE_STATUS => self.status().await,
             p::METHOD_SERVICE_LOGS => self.logs(payload).await,
             p::METHOD_SERVICE_RESTART => self.restart(payload).await,
+            p::METHOD_SERVICE_UPDATE => self.update(payload).await,
             _ => Err(String::from("service method is not available")),
         }
     }
@@ -134,6 +135,17 @@ impl Hop {
     /// faalt de nieuwe, dan blijft de oude draaien.
     async fn restart(&self, payload: &Value) -> Reply<Value> {
         let (job, request) = self.job(payload, Right::Restart).await?;
+        self.roll(job, &request, "restart").await
+    }
+    /// Dezelfde spec met een ander artifact (zelfde bron, zie
+    /// [`core_::update_artifact`]): Hop haalt het op en stroomt het de kooi in.
+    async fn update(&self, payload: &Value) -> Reply<Value> {
+        let (mut job, request) = self.job(payload, Right::Update).await?;
+        core_::update_artifact(&mut job, &request.url, &request.arch).map_err(String::from)?;
+        self.roll(job, &request, "update").await
+    }
+    /// Post `job` via de Hop-API; hoogstens eens per twee minuten per service.
+    async fn roll(&self, job: Job, request: &p::ServicePayload, what: &str) -> Reply<Value> {
         let now = applib::clock::now_ns();
         if let Err(wait) = self
             .restarts
@@ -142,19 +154,24 @@ impl Hop {
             .map_err(data_error)?
         {
             return Err(alloc::format!(
-                "{} was restarted less than 2 minutes ago; try again in {wait} s",
+                "{} was rolled out less than 2 minutes ago; try again in {wait} s",
                 request.service
             ));
         }
         log!(
-            "SPIN_SERVICE_RESTART app={} service={} job={}",
+            "SPIN_SERVICE_ROLL what={what} app={} service={} job={} url={}",
             request.app,
             request.service,
-            job.name
+            job.name,
+            if what == "update" {
+                request.url.as_str()
+            } else {
+                "-"
+            }
         );
         let applied = self.agent.apply(&job).await.map_err(|error| {
             alloc::format!(
-                "hop gave no answer ({error}); the restart may still be rolling out, check the status"
+                "hop gave no answer ({error}); the {what} may still be rolling out, check the status"
             )
         })?;
         if !applied.error.is_empty() {

@@ -9,7 +9,7 @@
 //! | `spin`         | welke Spin hem ziet; zonder deze tag is hij onzichtbaar |
 //! | `spin-app`     | `app/omgeving`; jobs met dezelfde waarde zijn één app  |
 //! | `spin-service` | de naam in Spin; standaard de jobnaam zonder app-deel  |
-//! | `spin-allow`   | bovenop status en events: `logs`, `restart`            |
+//! | `spin-allow`   | bovenop status en events: `logs`, `restart`, `update`  |
 //!
 //! Logregels verlaten het cluster gemaskeerd: elke env-waarde van de job
 //! (vanaf [`MASK_MIN`] tekens) wordt `•••`.
@@ -37,6 +37,8 @@ pub const TAG_URLPREFIX: &str = "hoplb-urlprefix";
 pub const ALLOW_LOGS: &str = "logs";
 /// Het recht om te herstarten.
 pub const ALLOW_RESTART: &str = "restart";
+/// Het recht om een ander artifact uit te rollen (dezelfde bron, zie [`update_artifact`]).
+pub const ALLOW_UPDATE: &str = "update";
 /// Kortere env-waarden (`true`, `8080`) blijven staan: ze zijn geen geheim en
 /// zouden elke regel onleesbaar maken.
 pub const MASK_MIN: usize = 6;
@@ -60,6 +62,8 @@ pub struct Exposure {
     pub logs: bool,
     /// Of Spin mag herstarten.
     pub restart: bool,
+    /// Of Spin een ander artifact mag uitrollen.
+    pub update: bool,
 }
 
 /// Wat `job` toont aan de Spin met filter `tag`; `None` als hij onzichtbaar is.
@@ -87,6 +91,7 @@ pub fn exposure(job: &Job, tag: &str) -> d::Fallible<Option<Exposure>> {
         service,
         logs: has(ALLOW_LOGS),
         restart: has(ALLOW_RESTART),
+        update: has(ALLOW_UPDATE),
     }))
 }
 
@@ -99,6 +104,8 @@ pub enum Right {
     Logs,
     /// Herstarten.
     Restart,
+    /// Een ander artifact uitrollen.
+    Update,
 }
 
 /// De job achter `app` + `service`, als die getoond wordt en `right` mag.
@@ -120,6 +127,9 @@ pub fn find<'a>(
             Right::Logs if !e.logs => Err("logs are not allowed for this service (spin-allow)"),
             Right::Restart if !e.restart => {
                 Err("restart is not allowed for this service (spin-allow)")
+            }
+            Right::Update if !e.update => {
+                Err("update is not allowed for this service (spin-allow)")
             }
             _ => Ok(job),
         });
@@ -175,6 +185,9 @@ fn service_state(job: &Job, e: &Exposure, tasks: &[AgentTasks]) -> d::Fallible<p
     if e.restart {
         allow.push(try_string(ALLOW_RESTART)?)?;
     }
+    if e.update {
+        allow.push(try_string(ALLOW_UPDATE)?)?;
+    }
     // De slechtste toestand telt: een gefaalde taak verbergt zich niet achter een gezonde.
     let rank = |s: TaskState| match s {
         TaskState::Failed => 4,
@@ -211,6 +224,58 @@ fn service_state(job: &Job, e: &Exposure, tasks: &[AgentTasks]) -> d::Fallible<p
         started_at: latest(|t| t.started_at)?,
         last_failed_at: latest(|t| t.last_failed_at)?,
     })
+}
+
+/// Zet `url` als artifact van `job`, voor de node-architectuur `arch` (leeg
+/// als de job er maar één heeft). Alleen de URL verandert: `match`, `auth`,
+/// `headers`, `extract` en `filename` blijven, dus een `s3://`-artifact houdt
+/// zijn sleutels.
+///
+/// De nieuwe URL komt uit dezelfde bron als de oude: hetzelfde schema, dezelfde
+/// host en hetzelfde eerste padstuk (de eigenaar op GitHub, de bucket van een
+/// path-style s3). Een agent kan een job zo naar een andere versie laten
+/// wijzen, niet naar een willekeurig binary.
+pub fn update_artifact(job: &mut Job, url: &str, arch: &str) -> Result<(), &'static str> {
+    let url = url.trim();
+    if url.is_empty() || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("give the URL of the new artifact");
+    }
+    let index = if arch.trim().is_empty() {
+        match job.artifacts.len() {
+            1 => 0,
+            0 => return Err("this job has no artifact to update"),
+            _ => return Err("this job has an artifact per arch; name the arch"),
+        }
+    } else {
+        job.artifacts
+            .iter()
+            .position(|a| a.matches.get("node.arch").map(|v| v.as_str()) == Some(arch.trim()))
+            .ok_or("this job has no artifact for that arch")?
+    };
+    let artifact = job
+        .artifacts
+        .get_mut(index)
+        .ok_or("this job has no artifact to update")?;
+    match (source(&artifact.url), source(url)) {
+        (Some(old), Some(new)) if old == new => {}
+        _ => return Err("the new URL must come from the same source as the current artifact"),
+    }
+    artifact.url = String::from(url);
+    Ok(())
+}
+
+/// `schema://host/eerste-padstuk` van een URL met een pad erachter, of `None`.
+fn source(url: &str) -> Option<&str> {
+    let (scheme, rest) = url.split_once("://")?;
+    if !matches!(scheme, "http" | "https" | "s3") {
+        return None;
+    }
+    let (host, path) = rest.split_once('/')?;
+    let (first, tail) = path.split_once('/')?;
+    if host.is_empty() || first.is_empty() || tail.is_empty() || path.contains("..") {
+        return None;
+    }
+    url.get(..scheme.len() + 3 + host.len() + 1 + first.len())
 }
 
 /// De env-waarden van een job, langste eerst, zodat een waarde die een

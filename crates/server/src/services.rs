@@ -50,6 +50,7 @@ fn level(access: &str) -> u8 {
         d::APP_ACCESS_STATUS => 1,
         d::APP_ACCESS_LOGS => 2,
         d::APP_ACCESS_RESTART => 3,
+        d::APP_ACCESS_UPDATE => 4,
         _ => 0,
     }
 }
@@ -286,10 +287,30 @@ impl<P: Persistence> Server<P> {
                     "Herstart een service",
                     "Herstart één service: Hop rolt dezelfde spec opnieuw uit en haalt daarbij de nieuwste release. Faalt de nieuwe, dan blijft de oude draaien. Hoogstens eens per twee minuten per service. Kijk daarna met app_status of de taak opnieuw gestart is (sinds-tijd) en met app_logs of je versie draait.",
                     object(&[
-                        ("app", app),
+                        ("app", app.try_clone()?),
                         ("service", short_text("De service, zoals app_status hem noemt")?),
                     ])?,
                     &names,
+                )?)?;
+            }
+            if access >= 4 {
+                let mut with_url = List::new();
+                for name in &names {
+                    with_url.push(try_string(name)?)?;
+                }
+                with_url.push(try_string("url")?)?;
+                let required: Vec<&str> = with_url.iter().map(String::as_str).collect();
+                tools.push(tool(
+                    "app_update",
+                    "Rol een ander artifact uit",
+                    "Zet een nieuwe build van één service neer: dezelfde job, alleen de URL van het artifact verandert, en Hop haalt hem op en rolt uit (faalt de nieuwe, dan blijft de oude draaien). De URL moet uit dezelfde bron komen als de huidige (zelfde schema, host en eerste padstuk, zoals dezelfde GitHub-eigenaar of dezelfde bucket); sleutels en koppen van het artifact blijven. Hoogstens eens per twee minuten per service. Kijk daarna met app_status en app_logs of je versie draait.",
+                    object(&[
+                        ("app", app),
+                        ("service", short_text("De service, zoals app_status hem noemt")?),
+                        ("url", short_text("De URL van de nieuwe build, uit dezelfde bron als het huidige artifact")?),
+                        ("arch", short_text("arm64 of riscv64; alleen als de job per architectuur een artifact heeft")?),
+                    ])?,
+                    &required,
                 )?)?;
             }
         }
@@ -310,7 +331,8 @@ impl<P: Persistence> Server<P> {
         let needed = match name {
             "app_status" => 1,
             "app_logs" => 2,
-            _ => 3,
+            "app_restart" => 3,
+            _ => 4,
         };
         let refuse = |message: &str| -> Result<Outcome> {
             Ok(Outcome::Response(tool_result(id, message, true)?))
@@ -349,17 +371,19 @@ impl<P: Persistence> Server<P> {
         else {
             return refuse("De spin-service van dit cluster is niet verbonden.");
         };
-        let method = if name == "app_logs" {
-            p::METHOD_SERVICE_LOGS
-        } else {
-            p::METHOD_SERVICE_RESTART
+        let method = match name {
+            "app_logs" => p::METHOD_SERVICE_LOGS,
+            "app_restart" => p::METHOD_SERVICE_RESTART,
+            _ => p::METHOD_SERVICE_UPDATE,
         };
-        if method == p::METHOD_SERVICE_RESTART {
+        if method != p::METHOD_SERVICE_LOGS {
             note(
                 &mut self.notes,
                 format_args!(
-                    "SPIN_APP_RESTART session={session} cluster={} app={} service={service}",
-                    l.cluster, l.app
+                    "SPIN_APP_ROLL tool={name} session={session} cluster={} app={} service={service} url={}",
+                    l.cluster,
+                    l.app,
+                    arg(args, "url")
                 ),
             );
         }
@@ -367,6 +391,8 @@ impl<P: Persistence> Server<P> {
             app: l.app.try_clone()?,
             service: try_string(service)?,
             stream: try_string(arg(args, "stream"))?,
+            url: try_string(arg(args, "url"))?,
+            arch: try_string(arg(args, "arch"))?,
         };
         let call = ServiceCall {
             object: runtime.next("svc")?,
@@ -413,7 +439,11 @@ impl<P: Persistence> Server<P> {
         for s in app.services.iter() {
             let mut rights = Vec::new();
             for right in s.allow.iter() {
-                let step = if right == "logs" { 2 } else { 3 };
+                let step = match right.as_str() {
+                    "logs" => 2,
+                    "restart" => 3,
+                    _ => 4,
+                };
                 if access >= step {
                     rights.push(right.as_str());
                 }
@@ -502,7 +532,12 @@ impl<P: Persistence> Server<P> {
         } else {
             let restart = p::ServiceRestart::from_value(payload)?;
             out = text(format_args!(
-                "Herstart ingediend ({}, {}). Kijk met app_status of de taak opnieuw gestart is en met app_logs of je versie draait.",
+                "{} ingediend ({}, {}). Kijk met app_status of de taak opnieuw gestart is en met app_logs of je versie draait.",
+                if work.method == p::METHOD_SERVICE_UPDATE {
+                    "Update"
+                } else {
+                    "Herstart"
+                },
                 restart.status,
                 if restart.policy.is_empty() {
                     "rolling"

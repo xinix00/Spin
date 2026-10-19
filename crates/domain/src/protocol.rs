@@ -106,6 +106,8 @@ pub const METHOD_SERVICE_STATUS: &str = "service.status";
 pub const METHOD_SERVICE_LOGS: &str = "service.logs";
 /// Herstart één service: Hop rolt dezelfde spec opnieuw uit en haalt de nieuwe release.
 pub const METHOD_SERVICE_RESTART: &str = "service.restart";
+/// Rol een ander artifact uit voor één service: dezelfde spec, een andere URL (zelfde bron).
+pub const METHOD_SERVICE_UPDATE: &str = "service.update";
 /// Event van een spin-service: een taak van een getoonde service crashte.
 pub const METHOD_SERVICE_CRASH: &str = "service.crash";
 /// Protocolwaarde uit de Go-specificatie.
@@ -299,6 +301,10 @@ model! {
         service: String => ("service", false),
         /// `stdout` of `stderr` (logs); leeg is beide.
         stream: String => ("stream", true),
+        /// De URL van het nieuwe artifact (update).
+        url: String => ("url", true),
+        /// De node-architectuur van het artifact (update), leeg als er één is.
+        arch: String => ("arch", true),
     }
 }
 

@@ -90,7 +90,10 @@ fn normalize_phase(phase: &mut d::WorkflowPhase, index: usize) -> Fallible {
             phase.app_access = normalized(&phase.app_access)?;
             if !matches!(
                 phase.app_access.as_str(),
-                "" | d::APP_ACCESS_STATUS | d::APP_ACCESS_LOGS | d::APP_ACCESS_RESTART
+                "" | d::APP_ACCESS_STATUS
+                    | d::APP_ACCESS_LOGS
+                    | d::APP_ACCESS_RESTART
+                    | d::APP_ACCESS_UPDATE
             ) {
                 return Err(invalid(&phase.id, "unknown app access"));
             }

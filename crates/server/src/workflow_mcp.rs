@@ -511,7 +511,7 @@ impl<P: Persistence> Server<P> {
                     "De goal staat vast en stap 1 van de Template start. Deze brainstorm is klaar; beëindig je beurt.",
                 )?
             }
-            "app_status" | "app_logs" | "app_restart" => {
+            "app_status" | "app_logs" | "app_restart" | "app_update" => {
                 return self.call_app_tool(session, id, name, args, now, runtime);
             }
             "put_deliverable" => {

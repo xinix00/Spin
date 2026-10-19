@@ -313,6 +313,80 @@ impl Persistence for Memory<'_> {
 }
 struct Random(u64);
 #[test]
+fn an_update_step_rolls_out_another_artifact_through_the_service() {
+    use d::protocol as p;
+    let mut state = PersistedState::from_json(br#"{
+      "jobs":{"job":{"id":"job","owner":"derek","status":"running","workflow_status":"running","current_phase_run_id":"run","branch":"jobs/#1/main","git_repository_id":"repo","template_snapshot":{"id":"tpl","phases":[{"id":"test","name":"Test","app_access":"update","accept":{"target":"DONE"},"reject":{"target":"SELF"}}]}}},
+      "sessions":{"ses":{"id":"ses","job_id":"job","phase_run_id":"run","operator":"derek","status":"running","prepared_composition_id":"cmp"}},
+      "phase_runs":{"run":{"id":"run","session_id":"ses","job_id":"job","phase_id":"test","phase_name":"Test","status":"running","attempt":1}},
+      "git_repositories":{"repo":{"id":"repo","name":"Repo","remote_url":"https://example.test/repo.git","default_ref":"main","apps":["orion:lumen/prod"]}},
+      "compositions":{"cmp":{"id":"cmp","operator":"derek","session_id":"ses"}}
+    }"#).unwrap();
+    state
+        .workflow_tokens
+        .insert("ses".into(), spin_security::digest_hex(b"secret").unwrap())
+        .unwrap();
+    let fail = Cell::new(false);
+    let mut server = Server::new(Store::new(state, Memory(&fail)));
+    let mut random = Random(400);
+    let now = time();
+    let mut tools = d::List::new();
+    tools.push(String::from(p::TOOL_SERVICE)).unwrap();
+    let mut peer = spin_core::runner::Peer::new(d::Client {
+        id: "svc".into(),
+        name: "orion".into(),
+        capabilities: d::ClientCapabilities {
+            tools,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let (generation, _) = peer.attach("proc", None, 0).unwrap();
+    server.runners.push(peer);
+    let path = "/api/workflow/mcp/ses";
+    let headers = [("Authorization", "Bearer secret")];
+    let list = response(
+        &mut server,
+        req(
+            "POST",
+            path,
+            &headers,
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        ),
+        &now,
+        &mut random,
+    );
+    let list = core::str::from_utf8(&list.body).unwrap();
+    assert!(
+        list.contains("\"app_update\"") && list.contains("\"app_restart\""),
+        "{list}"
+    );
+    let call = br#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"app_update","arguments":{"service":"lumen","url":"s3://haas-software/artifacts/lumen/b.elf","arch":"arm64"}}}"#;
+    let Outcome::Capsule(_) = server
+        .begin(req("POST", path, &headers, call), &now, &mut random)
+        .unwrap()
+    else {
+        panic!("an update goes to the service");
+    };
+    let (_, message) = server.runners[0].next(generation).unwrap().unwrap();
+    assert_eq!(message.method, p::METHOD_SERVICE_UPDATE);
+    let payload = p::ServicePayload::from_value(message.payload.0.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        (
+            payload.app.as_str(),
+            payload.service.as_str(),
+            payload.url.as_str(),
+            payload.arch.as_str()
+        ),
+        (
+            "lumen/prod",
+            "lumen",
+            "s3://haas-software/artifacts/lumen/b.elf",
+            "arm64"
+        )
+    );
+}
+#[test]
 fn app_tools_follow_the_step_and_reach_the_cluster_service() {
     use d::protocol as p;
     let mut state = PersistedState::from_json(br#"{

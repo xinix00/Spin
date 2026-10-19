@@ -220,7 +220,7 @@ Een app draait op Hop, niet op een runner; zijn stdout en stderr staan alleen da
 | `spin` | welke Spin de job ziet (gelijk aan `SPIN_SERVICE_TAG`); zonder deze tag bestaat hij voor Spin niet |
 | `spin-app` | `app/omgeving`, bijvoorbeeld `easyshop/test`; jobs met dezelfde waarde zijn één app |
 | `spin-service` | de naam in Spin; standaard de jobnaam zonder het app-deel (`easyshop-test-api` → `api`) |
-| `spin-allow` | bovenop status en crash-meldingen: `logs` en/of `restart` |
+| `spin-allow` | bovenop status en crash-meldingen: `logs`, `restart` en/of `update` |
 
 ```json
 "tags": { "spin": "haas", "spin-app": "easyshop/test", "spin-allow": "logs,restart" }
@@ -234,9 +234,9 @@ In Spin komt het samen in drie lagen, en een agent krijgt het minste ervan:
 
 1. **Het cluster** bepaalt het plafond met de tags hierboven.
 2. **De repository** zegt welke apps bij haar horen (Connections → Git → *Apps op Hop*, gekozen uit wat de verbonden services melden). De repositorykaart toont ze live: hoeveel services draaien, welke niet, en de laatste crash.
-3. **De Template-stap** kiest *App-toegang*: geen, status, status en logs, of status, logs en herstarten. Een ontwikkelstap krijgt bijvoorbeeld logs maar mag niet herstarten; een teststap van de reviewer wel. De brainstorm (de planning vóór een Job) mag altijd status en logs, nooit herstarten.
+3. **De Template-stap** kiest *App-toegang*: geen, status, status en logs, status, logs en herstarten, of daarbovenop een nieuwe build uitrollen (`update`). Een ontwikkelstap krijgt bijvoorbeeld logs maar mag niet herstarten; een teststap van de reviewer wel. De brainstorm (de planning vóór een Job) mag altijd status en logs, nooit herstarten.
 
-De agent van zo'n stap krijgt de MCP-tools `app_status` (uit het geheugen van Spin: de service duwt zijn status bij elke wijziging in Hop, Spin peilt niet), `app_logs` (de ring plus de regels die bij de laatste crash bewaard zijn) en `app_restart`. Een herstart staat met sessie, cluster, app en service in de log van de server (`SPIN_APP_RESTART`).
+De agent van zo'n stap krijgt de MCP-tools `app_status` (uit het geheugen van Spin: de service duwt zijn status bij elke wijziging in Hop, Spin peilt niet), `app_logs` (de ring plus de regels die bij de laatste crash bewaard zijn), `app_restart` en `app_update`. `app_update` is de ontwikkelstraat: dezelfde job met een andere artifact-URL via de Hop-API, en Hop haalt hem op en stroomt hem de kooi in. Alleen de URL verandert (`match`, `auth`, koppen blijven, dus een `s3://`-artifact houdt zijn sleutels), en de nieuwe URL komt uit dezelfde bron: zelfde schema, host en eerste padstuk (dezelfde GitHub-eigenaar, dezelfde bucket). Herstart en update staan met sessie, cluster, app, service en URL in de log van de server (`SPIN_APP_ROLL`), hoogstens eens per twee minuten per service.
 
 `hop-spin-service.example.json` is de job: `SPIN_SERVER`, `SPIN_WORKER_TOKEN` (hetzelfde als de runners: de service is een worker van die Spin), `SPIN_SERVICE_TAG`, `SPIN_SERVICE_NAME`, `HOP_API_KEY` en `DNS`. Hij praat met de agent van zijn eigen node (`HOP_AGENT`, standaard `http://HOP:8080`), die `/v1` naar de leider doorzet.
 
