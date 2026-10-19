@@ -15,6 +15,7 @@ use crate::tail::{Tail, TailError, tail_of};
 use core::cell::{Cell, RefCell};
 use core::fmt;
 use core::time::Duration;
+use sync::Stop;
 
 /// Waarom een app niet op zijn slot past.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -52,6 +53,22 @@ pub const MEM_EVERY: u64 = 40;
 /// 200 ms nog openstaat, wacht op een peer die er niet meer is.
 pub const SHUTDOWN_LIMIT: Duration = Duration::from_millis(200);
 
+/// Zoveel taken tegelijk kunnen op de stopbel wachten zonder zichzelf per
+/// ronde te wekken: de hoofdlus en een paar werkers. Meer blijft goed en
+/// telt in [`Stop::overflows`].
+pub const STOP_WAITERS: usize = 8;
+
+/// De termijn als de kern er geen op de vlag zet (een kern van vóór 05-10,
+/// `KILL_STOP`): het venster van Hop, `HOP_STOP_TIMEOUT_MS` in de hop-repo,
+/// want zo lang wachtte die kern toch al vóór zijn intrekking.
+pub const STOP_GRACE_DEFAULT: Duration = Duration::from_secs(3);
+
+/// Wat van de termijn niet aan de app is: één hartslag om de vlag te zien
+/// ([`crate::rt::WATCH_PERIOD`], 50 ms), het net-afscheid ([`SHUTDOWN_LIMIT`],
+/// 200 ms), de poll van de kern (10 ms), en de rest voor een gedeelde core
+/// die zijn beurt moet krijgen. Zo is de app weg vóór de kern intrekt.
+pub const STOP_MARGIN: Duration = Duration::from_millis(500);
+
 /// Het handvat van een app.
 pub struct App {
     slot: u64,
@@ -65,6 +82,8 @@ pub struct App {
     env: Env,
     /// De netstack draait (zie [`App::network_ready`]).
     net_ready: Cell<bool>,
+    /// De stopbel: luidt als de kern vraagt te stoppen (zie [`App::stop`]).
+    stop: Stop<STOP_WAITERS>,
 }
 
 impl App {
@@ -85,6 +104,7 @@ impl App {
             outbox: RefCell::new(outbox),
             env,
             net_ready: Cell::new(false),
+            stop: Stop::new(),
         })
     }
 
@@ -164,6 +184,46 @@ impl App {
         }
     }
 
+    /// De stopbel: luidt zodra de kern vraagt te stoppen, en gaat nooit meer
+    /// uit (`close(stop)`, `context.WithCancel`). Voor een `select` in de
+    /// hoofdlus; [`App::stopped`] is dezelfde bel als future. Wie hem
+    /// hoort, rondt af (een database dicht, een sessie beëindigd, een
+    /// laatste regel) en keert terug uit `main`: de main-schil doet dan het
+    /// net-afscheid en de exit. Wie hem negeert, krijgt na
+    /// [`App::stop_grace`] hetzelfde van de heartbeat.
+    #[must_use]
+    pub const fn stop(&self) -> &Stop<STOP_WAITERS> {
+        &self.stop
+    }
+
+    /// Wacht tot de kern vraagt te stoppen.
+    pub async fn stopped(&self) {
+        self.stop.wait().await;
+    }
+
+    /// Hoeveel tijd de app na de bel heeft om af te ronden: de termijn van de
+    /// kern (of [`STOP_GRACE_DEFAULT`]) min [`STOP_MARGIN`].
+    #[must_use]
+    pub fn stop_grace(&self) -> Duration {
+        self.ctrl
+            .kill_grace()
+            .unwrap_or(STOP_GRACE_DEFAULT)
+            .saturating_sub(STOP_MARGIN)
+    }
+
+    /// Het stopverzoek van de kern: één regel, de bel, en de gratie die
+    /// erbij hoort. De heartbeat roept dit één keer, bij [`Beat::Kill`].
+    pub fn request_stop(&self) -> Duration {
+        let grace = self.stop_grace();
+        self.log(format_args!(
+            "applib: stop requested by the kernel, {} ms to finish HOPOS_APP_STOP grace_ms={}",
+            grace.as_millis(),
+            grace.as_millis()
+        ));
+        self.stop.set();
+        grace
+    }
+
     /// Eén hartslag: de teller op de pagina, de kill-vlag gelezen, en om de
     /// [`MEM_EVERY`] slagen de geheugen-draw `mem`.
     pub fn beat(&self, beat: u64, mem: u64) -> Beat {
@@ -232,12 +292,13 @@ pub fn port_of(env: Option<&str>, default: u16) -> u16 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::contract::{
         ABI_TAIL, CTRL_HEARTBEAT, CTRL_KILL, CTRL_MEM_SYS, CTRL_RAM_SIZE, CTRL_STATUS,
     };
     use crate::ring;
+    use core::task::{Context, Poll, Waker};
 
     /// Een hele partitie over een buffer: een RAM-declaratie van één pagina
     /// en de staart erboven. Pagina-gealigneerd via een grotere buffer.
@@ -290,6 +351,46 @@ mod tests {
         app.ctrl().set(CTRL_KILL, 1);
         assert_eq!(app.beat(42, 0), Beat::Kill);
         assert_eq!(app.ctrl().get(CTRL_HEARTBEAT), 42);
+    }
+
+    /// Eén regel uit de outbox van `app`.
+    fn next_line(app: &App) -> String {
+        let mut r = ring::Reader::open(app.tail().outbox(), RING_DATA_CAP).unwrap();
+        let mut buf = [0u8; 128];
+        let rec = r.read_into(&mut buf).unwrap();
+        String::from_utf8_lossy(rec.payload).into_owned()
+    }
+
+    #[test]
+    fn the_stop_bell_rings_with_the_kernels_grace_less_the_margin() {
+        let part = Partition::new();
+        let app = part.app();
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut waiting = core::pin::pin!(app.stopped());
+        assert_eq!(waiting.as_mut().poll(&mut cx), Poll::Pending);
+        assert_eq!(app.stop_grace(), STOP_GRACE_DEFAULT - STOP_MARGIN);
+        // De kern van na 05-10: de termijn in ms op de vlag.
+        app.ctrl().set(CTRL_KILL, 3_000);
+        assert_eq!(app.beat(1, 0), Beat::Kill);
+        assert_eq!(app.request_stop(), Duration::from_millis(2_500));
+        assert!(app.stop().is_set());
+        assert_eq!(waiting.as_mut().poll(&mut cx), Poll::Ready(()));
+        assert_eq!(
+            next_line(&app),
+            "applib: stop requested by the kernel, 2500 ms to finish HOPOS_APP_STOP grace_ms=2500"
+        );
+        // Een termijn korter dan de marge: meteen het afscheid, niet negatief.
+        app.ctrl().set(CTRL_KILL, 100);
+        assert_eq!(app.stop_grace(), Duration::ZERO);
+    }
+
+    #[test]
+    fn an_old_kernel_writes_one_and_gets_the_default_grace() {
+        let part = Partition::new();
+        let app = part.app();
+        app.ctrl().set(CTRL_KILL, 1);
+        assert_eq!(app.beat(1, 0), Beat::Kill);
+        assert_eq!(app.stop_grace(), Duration::from_millis(2_500));
     }
 
     #[test]

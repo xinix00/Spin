@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.93"
 name = "discovery"
-version = "3.0.11"
+version = "3.0.12"
 build = false
 autolib = false
 autobins = false

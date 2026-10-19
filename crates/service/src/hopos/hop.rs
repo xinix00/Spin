@@ -268,7 +268,12 @@ async fn ring(request: &hoplib::Request) -> Reply<Vec<u8>> {
 }
 
 /// Volgt `/v1/events` zolang de service leeft; een crash wordt een event voor Spin.
+///
+/// Een breuk staat één keer in de log zolang zijn reden dezelfde blijft: een
+/// Go-Hop (v1) stuurt geen keepalive, en daar sluit de stilte van hoplib de
+/// stroom elke minuut dat er niets gebeurt; hij gaat meteen weer open.
 pub(crate) async fn watch(hop: &'static Hop) {
+    let mut last = String::new();
     hop.agent
         .events(
             async |event: &Event| {
@@ -282,7 +287,13 @@ pub(crate) async fn watch(hop: &'static Hop) {
                 }
                 ControlFlow::Continue(())
             },
-            |error, retry| log!("SPIN_SERVICE_EVENTS_LOST error={error} retry_in={retry:?}"),
+            |error, retry| {
+                let why = alloc::format!("{error}");
+                if why != last {
+                    log!("SPIN_SERVICE_EVENTS_LOST error={why} retry_in={retry:?} (herhalingen met deze reden niet opnieuw gemeld)");
+                    last = why;
+                }
+            },
         )
         .await;
 }

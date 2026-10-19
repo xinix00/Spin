@@ -14,8 +14,9 @@ use crate::contract::{
     CTRL_CORES, CTRL_ENV_DATA, CTRL_ENV_LEGACY_MAX, CTRL_ENV_LEN, CTRL_ENV_MAX, CTRL_EXIT_CODE,
     CTRL_HART, CTRL_HEARTBEAT, CTRL_IDLE, CTRL_IDLE_MODE, CTRL_KILL, CTRL_MEM_SYS, CTRL_RAM_SIZE,
     CTRL_RNG_SOURCE, CTRL_RX_DOOR, CTRL_SHARED, CTRL_STATUS, CTRL_TEMP, CTRL_WAKES, CTRL_WALL_OFF,
-    IDLE_YIELD, rng_source, shares_kern_hart,
+    IDLE_YIELD, KILL_STOP, rng_source, shares_kern_hart,
 };
+use core::time::Duration;
 use dev::Pa;
 
 pub use abi::hopabi::AppStatus;
@@ -123,6 +124,17 @@ impl Ctrl {
     #[must_use]
     pub fn kill_requested(&self) -> bool {
         self.get(CTRL_KILL) != 0
+    }
+
+    /// De termijn die de kern bij zijn stopverzoek op de vlag zette, of
+    /// `None`: hij vraagt nog niets, of hij is van vóór 05-10 en schreef
+    /// alleen [`KILL_STOP`].
+    #[must_use]
+    pub fn kill_grace(&self) -> Option<Duration> {
+        match self.get(CTRL_KILL) {
+            ms if ms > KILL_STOP => Some(Duration::from_millis(ms)),
+            _ => None,
+        }
     }
 
     /// De werkelijke geheugen-draw, voor het per-taak-rapport van de kern.

@@ -38,7 +38,9 @@ pub mod many;
 pub const CTRL_STATUS: u64 = 0x00;
 /// App: de exitcode, gezet bij exit.
 pub const CTRL_EXIT_CODE: u64 = 0x08;
-/// Kern naar app: 1 is "stop jezelf" (coöperatief).
+/// Kern naar app: niet 0 is "stop jezelf" (coöperatief). Sinds 05-10 is de
+/// waarde de termijn in ms die de app krijgt vóór de intrekking
+/// ([`KILL_STOP`] is de oude vorm zonder termijn, en de ondergrens).
 pub const CTRL_KILL: u64 = 0x10;
 /// App: een oplopende teller, voor hang-detectie.
 pub const CTRL_HEARTBEAT: u64 = 0x18;
@@ -292,7 +294,10 @@ pub const FAULT_NONE: u64 = 0;
 /// allebei hier.
 pub const FAULT_SYNC: u64 = 9;
 
-/// [`CTRL_KILL`]: stop jezelf.
+/// [`CTRL_KILL`]: stop jezelf, zonder termijn. Een kern van vóór 05-10
+/// schrijft dit; een nieuwe schrijft de termijn in ms, nooit lager dan dit
+/// (0 zou geen verzoek zijn). Een app die alleen op "niet 0" kijkt (de
+/// Go-SDK, applib tot 05-10) stopt bij allebei meteen.
 pub const KILL_STOP: u64 = 1;
 
 /// De status van een app op de control-page ([`CTRL_STATUS`]).

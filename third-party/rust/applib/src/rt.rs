@@ -7,7 +7,9 @@
 //! heartbeat, de app zelf, en bij een SMP-app de opgang van zijn andere
 //! cores ([`crate::smp::bring_up`], wat in Go `smp.Configure` was). Keert
 //! de app terug, dan is dat exit 0, na het net-afscheid van
-//! [`App::shutdown`].
+//! [`App::shutdown`]. Vraagt de kern de stop, dan luidt de heartbeat de
+//! stopbel ([`App::stop`]) en is terugkeren uit `main` binnen de gratie de
+//! nette weg; anders doet de heartbeat het afscheid zelf.
 //!
 //! Een app schrijft:
 //!
@@ -72,19 +74,87 @@ pub const STACK_SIZE: u64 = 256 << 10;
 /// `ramStackOffset` in de Go-hopslot.
 pub const STACK_TOP_GAP: u64 = 0x100;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::tests::Partition;
+    use crate::contract::{CTRL_HEARTBEAT, CTRL_KILL};
+
+    #[test]
+    fn the_heartbeat_rings_once_and_forces_after_the_grace() {
+        let part = Partition::new();
+        let app = part.app();
+        let mut w = Watch::default();
+        let t0 = 7_000_000_000u64;
+        assert_eq!(w.tick(&app, 0, 0), Tick::Alive);
+        assert!(!app.stop().is_set());
+        // De kern vraagt met 3 s op de vlag: de bel, en 2,5 s gratie.
+        app.ctrl().set(CTRL_KILL, 3_000);
+        assert_eq!(w.tick(&app, t0, 0), Tick::Stop);
+        assert!(app.stop().is_set());
+        // De vlag blijft staan: de bel luidt niet opnieuw, de teller loopt.
+        assert_eq!(w.tick(&app, t0 + 2_499_999_999, 0), Tick::Alive);
+        assert_eq!(w.tick(&app, t0 + 2_500_000_000, 0), Tick::Forced);
+        assert_eq!(app.ctrl().get(CTRL_HEARTBEAT), 4);
+    }
+}
+
 /// Het ritme van de heartbeat.
 pub const WATCH_PERIOD: Duration = Duration::from_millis(50);
 
+/// De staat van de heartbeat: de teller, en na het stopverzoek de deadline
+/// van de gratie (ns op de klok van de executor).
+#[derive(Default)]
+struct Watch {
+    beat: u64,
+    deadline: Option<u64>,
+}
+
+/// Wat één hartslag vond.
+#[derive(Debug, PartialEq, Eq)]
+enum Tick {
+    /// Doorgaan.
+    Alive,
+    /// De kern vraagt de stop: de bel is geluid, de gratie loopt.
+    Stop,
+    /// De gratie is om en `main` is nog niet terug.
+    Forced,
+}
+
+impl Watch {
+    /// Eén slag op tijd `now`: de teller, de vlag, en de gratie bewaken.
+    fn tick(&mut self, app: &App, now: u64, mem: u64) -> Tick {
+        self.beat = self.beat.wrapping_add(1);
+        let kill = app.beat(self.beat, mem) == Beat::Kill;
+        match self.deadline {
+            None if kill => {
+                let grace = app.request_stop();
+                let ns = u64::try_from(grace.as_nanos()).unwrap_or(u64::MAX);
+                self.deadline = Some(now.saturating_add(ns));
+                Tick::Stop
+            }
+            Some(d) if now >= d => Tick::Forced,
+            _ => Tick::Alive,
+        }
+    }
+}
+
 /// De heartbeat als taak: elke 50 ms de teller, de kill-vlag, en om de twee
-/// seconden de geheugen-draw.
+/// seconden de geheugen-draw. Vraagt de kern de stop, dan luidt de bel
+/// ([`App::stop`]) en krijgt de app zijn gratie ([`App::stop_grace`]) om
+/// uit `main` terug te keren (de main-schil doet dan het net-afscheid en de
+/// exit); is hij dan nog niet terug, dan doet de heartbeat dat afscheid
+/// zelf. Tot 05-10 was dit een kale `exit` op de slag die de vlag zag: geen
+/// afscheid, en niets dicht (SIGTERM, dan SIGKILL; wij deden alleen KILL).
 pub async fn watch(app: &'static App) {
     let exec: &'static Exec = EXEC.get();
-    let mut beat: u64 = 0;
+    let mut w = Watch::default();
     loop {
-        beat = beat.wrapping_add(1);
-        // Een kill wacht niet op het net-afscheid: de kern vraagt nu.
-        if app.beat(beat, HEAP.used()) == Beat::Kill {
-            app.exit(0);
+        if w.tick(app, exec.now(), HEAP.used()) == Tick::Forced {
+            crate::log!(
+                "applib: main did not return within the grace, shutting down HOPOS_APP_STOP_FORCED"
+            );
+            app.shutdown(0).await;
         }
         exec.after(WATCH_PERIOD).await;
     }

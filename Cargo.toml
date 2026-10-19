@@ -3,13 +3,13 @@ resolver = "3"
 members = ["crates/domain", "crates/core", "crates/store", "crates/security", "crates/persistence", "crates/host", "crates/server", "crates/runtime", "crates/hopos", "crates/service"]
 
 [workspace.package]
-version = "3.0.56"
+version = "3.0.57"
 edition = "2024"
 rust-version = "1.93"
 publish = false
 
 [workspace.dependencies]
-hop-types = { package = "types", git = "https://github.com/xinix00/hop.git", tag = "v3.0.11" }
+hop-types = { package = "types", git = "https://github.com/xinix00/hop.git", tag = "v3.0.12" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
