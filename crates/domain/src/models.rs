@@ -77,6 +77,12 @@ pub const WORKFLOW_TARGET_ASK_USER: &str = "ASK_USER";
 pub const WORKFLOW_EXECUTOR_AGENT: &str = "agent";
 /// Protocolwaarde uit de Go-specificatie.
 pub const WORKFLOW_EXECUTOR_ACTION: &str = "action";
+/// App-toegang van een stap: de toestand van de services zien.
+pub const APP_ACCESS_STATUS: &str = "status";
+/// App-toegang van een stap: ook logregels lezen.
+pub const APP_ACCESS_LOGS: &str = "logs";
+/// App-toegang van een stap: ook herstarten.
+pub const APP_ACCESS_RESTART: &str = "restart";
 /// Protocolwaarde uit de Go-specificatie.
 pub const WORKFLOW_ACTION_GIT_PULL_REQUEST: &str = "git.pull_request.create";
 /// Protocolwaarde uit de Go-specificatie.
@@ -284,6 +290,10 @@ model! {
         model: String => ("model", true),
         /// `reasoning_effort` in het bestaande JSON-contract.
         reasoning_effort: String => ("reasoning_effort", true),
+        /// Wat de agent van deze stap met de apps van de Job mag: leeg (niets),
+        /// `status`, `logs` of `restart`; elk niveau omvat het vorige. De tags
+        /// in het cluster blijven het plafond.
+        app_access: String => ("app_access", true),
         /// `accept` in het bestaande JSON-contract.
         accept: WorkflowTransition => ("accept", false),
         /// `reject` in het bestaande JSON-contract.
@@ -1658,6 +1668,8 @@ model! {
         credential_scope: CredentialScope => ("credential_scope", false),
         /// `layer_selectors` in het bestaande JSON-contract.
         layer_selectors: List<String> => ("layer_selectors", true),
+        /// De apps van deze repository, als `cluster:app/omgeving` van een spin-service.
+        apps: List<String> => ("apps", true),
         /// `created_by` in het bestaande JSON-contract.
         created_by: String => ("created_by", false),
         /// `created_at` in het bestaande JSON-contract.
@@ -2306,6 +2318,8 @@ model! {
         layer_selectors: List<String> => ("layer_selectors", true),
         /// `credential_scope` in het bestaande JSON-contract.
         credential_scope: CredentialScope => ("credential_scope", true),
+        /// De apps van deze repository, als `cluster:app/omgeving`.
+        apps: List<String> => ("apps", true),
     }
 }
 
@@ -2324,6 +2338,8 @@ model! {
         layer_selectors: List<String> => ("layer_selectors", false),
         /// `credential_scope` in het bestaande JSON-contract.
         credential_scope: CredentialScope => ("credential_scope", true),
+        /// De apps van deze repository, als `cluster:app/omgeving`; vervangt de lijst.
+        apps: List<String> => ("apps", true),
     }
 }
 

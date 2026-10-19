@@ -183,6 +183,8 @@ pub fn brainstorm_phase() -> Fallible<WorkflowPhase> {
             target: try_string(WORKFLOW_TARGET_SELF)?,
             ..Default::default()
         },
+        // Verkennen mag de draaiende app zien en lezen, nooit herstarten.
+        app_access: try_string(APP_ACCESS_LOGS)?,
         ..Default::default()
     })
 }

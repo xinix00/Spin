@@ -215,6 +215,7 @@
           <div class="wide"><label for="git-remote">HTTPS remote zonder secrets</label><input class="t-field" id="git-remote" name="remote_url" required placeholder="https://github.com/team/project.git"></div>
           <div class="wide"><label for="git-repository-credential-scope">Git identity</label><select id="git-repository-credential-scope" name="credential_scope"><option value="user">Persoonlijk · account van de uitvoerende gebruiker</option><option value="global">Global · gedeeld service-account</option></select></div>
           <div class="wide"><label for="git-layers">Projectlagen</label><select id="git-layers" name="layer_selectors" multiple size="5"><option disabled>record eerst buildtools of configlagen</option></select><small>Bijvoorbeeld tool:node en tool:dotnet. Iedere nieuwe Job neemt deze selectie immutable over.</small></div>
+          <div class="wide"><label for="git-apps">Apps op Hop</label><select id="git-apps" name="apps" multiple size="4"><option disabled>nog geen spin-service verbonden</option></select><small>Van de verbonden spin-services (tag <code>spin-app</code> in het cluster). Een Template-stap met app-toegang mag de services van deze apps zien, hun logs lezen of ze herstarten.</small></div>
           <div class="wide panel-actions t-actions t-actions--end"><button class="small-button t-action t-action--neutral" type="button" data-close-dialog="git-dialog">Annuleren</button><button class="primary t-action" id="git-submit" type="submit">Repository bewaren</button></div>
         </form>
       </dialog>

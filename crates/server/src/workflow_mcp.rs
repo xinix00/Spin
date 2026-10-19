@@ -57,7 +57,7 @@ fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
 fn string<'a>(value: &'a Value, key: &str) -> &'a str {
     field(value, key).as_str().unwrap_or("")
 }
-fn object(fields: &[(&str, Value)]) -> Result<Value> {
+pub(crate) fn object(fields: &[(&str, Value)]) -> Result<Value> {
     http::object(fields)
 }
 fn result(id: &Value, value: Value) -> Result<Response> {
@@ -86,7 +86,7 @@ fn rpc_error(status: u16, id: &Value, code: i64, message: &str) -> Result<Respon
         ])?,
     )
 }
-fn tool_result(id: &Value, message: &str, failed: bool) -> Result<Response> {
+pub(crate) fn tool_result(id: &Value, message: &str, failed: bool) -> Result<Response> {
     let mut blocks = List::new();
     blocks.push(object(&[
         ("type", Value::string("text")?),
@@ -114,7 +114,7 @@ fn schema(properties: Value, required: &[&str]) -> Result<Value> {
     }
     Ok(Value::Object(schema))
 }
-fn tool(
+pub(crate) fn tool(
     name: &str,
     title: &str,
     description: &str,
@@ -128,7 +128,7 @@ fn tool(
         ("inputSchema", schema(properties, required)?),
     ])
 }
-fn short_text(description: &str) -> Result<Value> {
+pub(crate) fn short_text(description: &str) -> Result<Value> {
     object(&[
         ("type", Value::string("string")?),
         ("description", Value::string(description)?),
@@ -399,6 +399,7 @@ impl<P: Persistence> Server<P> {
         }
         if view.phase.id == d::BRAINSTORM_PHASE_ID {
             tools.push(tool("start_process", "Start het proces", "Leg de goal vast waar de brainstorm op uitkwam en start daarmee de gewone flow van de Template. Roep dit pas aan als de gebruiker het eens is met de goal. De goal is Markdown en wordt zo getoond: gebruik koppen, lijsten en acceptatiecriteria waar dat helpt.", object(&[("goal", short_text("De goal van de Job, in Markdown: wat er klaar moet zijn en waaraan je dat ziet")?)])?, &["goal"])?)?;
+            self.app_tools(session, &mut tools)?;
             return Ok(tools.to_value()?);
         }
         let options = object(&[
@@ -436,6 +437,7 @@ impl<P: Persistence> Server<P> {
             }
             tools.push(tool("put_deliverable", "Lever deliverable op", "Zet een bestand of map uit /root/deliverables als nieuwe revisie van een deliverable: een Markdown-bestand voor een document, een map met index.html (eigen CSS, JS en afbeeldingen mogen los) of een afbeelding of PDF voor een visuele deliverable. Bewerk het bestand op schijf en put het opnieuw voor een volgende versie.", object(&[("name", object(&[("type", Value::string("string")?), ("enum", names.to_value()?)])?), ("path", short_text("Absoluut pad binnen /root/deliverables, bijvoorbeeld /root/deliverables/fo.md of /root/deliverables/website/")?)])?, &["name", "path"])?)?;
         }
+        self.app_tools(session, &mut tools)?;
         Ok(tools.to_value()?)
     }
     fn call_workflow_tool(
@@ -508,6 +510,9 @@ impl<P: Persistence> Server<P> {
                 try_string(
                     "De goal staat vast en stap 1 van de Template start. Deze brainstorm is klaar; beëindig je beurt.",
                 )?
+            }
+            "app_status" | "app_logs" | "app_restart" => {
+                return self.call_app_tool(session, id, name, args, now, runtime);
             }
             "put_deliverable" => {
                 return self.begin_workflow_delivery(

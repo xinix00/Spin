@@ -1,0 +1,27 @@
+[package]
+name = "spin-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "spin-service"
+path = "src/main.rs"
+
+[dependencies]
+spin-core = { path = "../core" }
+spin-domain = { path = "../domain" }
+hoplib = { git = "https://github.com/xinix00/hop.git", tag = "v3.0.11" }
+
+[target.'cfg(target_os = "none")'.dependencies]
+hoplib = { git = "https://github.com/xinix00/hop.git", tag = "v3.0.11", features = ["hopos"] }
+applib = { git = "https://github.com/xinix00/HopOS.git", tag = "v3.0.13", features = ["http"] }
+sync = { git = "https://github.com/xinix00/HopOS.git", tag = "v3.0.13" }
+leanhttp = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.12" }
+leanhttps = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.12", features = ["mozilla-roots"] }
+leantls = { git = "https://github.com/xinix00/lean.git", tag = "v3.1.12" }
+spin-security = { path = "../security" }
+
+[lints]
+workspace = true

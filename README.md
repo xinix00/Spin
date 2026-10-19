@@ -211,6 +211,35 @@ End & save maakt het resultaat de nieuwe versie en zet de oude opzij: die versch
 
 Runners van verschillende Spins mogen één Docker daemon delen. Elke capsule krijgt het label `spin.server` met de host uit `SPIN_SERVER`, en een runner telt (`SPIN_MAX_WORKLOADS`) en verwijdert alleen de capsules van zijn eigen Spin; zonder dat label zou een Spin de capsules van een andere als wees laten slopen. De limiet geldt dus per Spin per daemon: twee runners van dezelfde Spin op één machine delen hem. Capsules van vóór dit label zijn alleen van runners met `SPIN_CLAIM_UNLABELLED=1`; zet dat alleen bij runners van de Spin die ze maakte, en haal het weg zodra ze verdwenen zijn.
 
+## spin-service: een Hop-cluster tonen
+
+Een app draait op Hop, niet op een runner; zijn stdout en stderr staan alleen daar. `spin-service` is een HopOS-bewoner die per cluster één keer draait, zich net als een runner uitgaand bij Spin meldt, en laat zien wat het cluster toestaat. Hop krijgt geen internet en Spin geen Hop-sleutel: de HMAC-sleutel blijft in het cluster, en wat Spin mag staat in de tags van de jobs, die alleen wie de job-spec post zet.
+
+| tag op een job | betekenis |
+|---|---|
+| `spin` | welke Spin de job ziet (gelijk aan `SPIN_SERVICE_TAG`); zonder deze tag bestaat hij voor Spin niet |
+| `spin-app` | `app/omgeving`, bijvoorbeeld `easyshop/test`; jobs met dezelfde waarde zijn één app |
+| `spin-service` | de naam in Spin; standaard de jobnaam zonder het app-deel (`easyshop-test-api` → `api`) |
+| `spin-allow` | bovenop status en crash-meldingen: `logs` en/of `restart` |
+
+```json
+"tags": { "spin": "haas", "spin-app": "easyshop/test", "spin-allow": "logs,restart" }
+```
+
+Productie krijgt typisch alleen `"spin"` en `"spin-app"`: Spin weet dan dat er iets crasht, zonder dat er een logregel met klantdata het cluster verlaat. Logregels die wel mogen, gaan gemaskeerd: elke env-waarde van de job vanaf zes tekens wordt `•••`.
+
+De service beantwoordt `service.status` (de apps met per service de toestand, herstarts, de `hoplb-urlprefix`), `service.logs` (een momentopname van de ring die Hop per taak bewaart: 50 regels, en nog 5 minuten na het einde) en `service.restart` (dezelfde spec opnieuw: Hop rolt hem uit en haalt de nieuwe release; faalt de nieuwe, dan blijft de oude draaien; hoogstens eens per twee minuten per service). Een `crash` uit `/v1/events` wordt het event `service.crash` met de laatste regels. Een HopOS-node houdt hoogstens drie stromen open, daarom volgt de service alleen `/v1/events` en geen logs.
+
+In Spin komt het samen in drie lagen, en een agent krijgt het minste ervan:
+
+1. **Het cluster** bepaalt het plafond met de tags hierboven.
+2. **De repository** zegt welke apps bij haar horen (Connections → Git → *Apps op Hop*, gekozen uit wat de verbonden services melden). De repositorykaart toont ze live: hoeveel services draaien, welke niet, en de laatste crash.
+3. **De Template-stap** kiest *App-toegang*: geen, status, status en logs, of status, logs en herstarten. Een ontwikkelstap krijgt bijvoorbeeld logs maar mag niet herstarten; een teststap van de reviewer wel. De brainstorm (de planning vóór een Job) mag altijd status en logs, nooit herstarten.
+
+De agent van zo'n stap krijgt de MCP-tools `app_status` (uit het geheugen van Spin: de service duwt zijn status bij elke wijziging in Hop, Spin peilt niet), `app_logs` (de ring plus de regels die bij de laatste crash bewaard zijn) en `app_restart`. Een herstart staat met sessie, cluster, app en service in de log van de server (`SPIN_APP_RESTART`).
+
+`hop-spin-service.example.json` is de job: `SPIN_SERVER`, `SPIN_WORKER_TOKEN` (hetzelfde als de runners: de service is een worker van die Spin), `SPIN_SERVICE_TAG`, `SPIN_SERVICE_NAME`, `HOP_API_KEY` en `DNS`. Hij praat met de agent van zijn eigen node (`HOP_AGENT`, standaard `http://HOP:8080`), die `/v1` naar de leider doorzet.
+
 ## Server, client en opslag
 
 - `crates/hopos` (`spin-hopos-server`): de native HopOS-server met HTTP, web-GUI, state, Git/OAuth en orchestrator; hij voert zelf geen Docker uit.
@@ -290,13 +319,13 @@ Connections → Runners toont online/offline/draining, engine, capaciteit, last-
 
 ### Releases
 
-`release.sh` bouwt de drie artefacten en publiceert ze zowel onder een immutable versie als onder de overschrijfbare `rolling`-release. De versie is die van `Cargo.toml` (`[workspace.package]`): verhoog hem daar, commit, en draai:
+`release.sh` bouwt de artefacten en publiceert ze zowel onder een immutable versie als onder de overschrijfbare `rolling`-release. De versie is die van `Cargo.toml` (`[workspace.package]`): verhoog hem daar, commit, en draai:
 
 ```sh
 ./release.sh
 ```
 
-Het script bouwt de native HopOS-server-ELF's voor arm64 en riscv64 (`spin-server-arm64.elf`, `spin-server-riscv64.elf`) en de macOS arm64-runner (`spin-client-darwin-arm64`), op een Apple Silicon Mac met Homebrew-LLVM. Met `PUBLISH=0` voer je alleen de compile-gate uit.
+Het script bouwt de native HopOS-ELF's voor arm64 en riscv64 (`spin-server-*.elf`, `spin-service-*.elf`) en de macOS arm64-runner (`spin-client-darwin-arm64`), op een Apple Silicon Mac met Homebrew-LLVM. Met `PUBLISH=0` voer je alleen de compile-gate uit.
 
 Een client krijgt alleen de publieke server-URL. `https://spin.example.test` wordt automatisch `wss://spin.example.test/api/runner/ws`; bij disconnect gebruikt hij ping/pong en exponential reconnect. Server en client delen uitsluitend het worker-token van dat domein.
 

@@ -53,7 +53,7 @@ impl Default for Worker {
 }
 impl Worker {
     /// Lege eigenaar; ieder later groeipad reserveert faalbaar.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             operations: Vec::new(),
             cache: VecDeque::new(),

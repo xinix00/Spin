@@ -72,6 +72,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "auth"
+version = "3.0.11"
+source = "git+https://github.com/xinix00/hop.git?tag=v3.0.11#f34fbb7a96351792751554b49c1b40d1e7a01c7c"
+
+[[package]]
 name = "bounded"
 version = "3.0.13"
 source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.13#ba0006d2159b0dcf4e51fa787cd0b11defe8cc25"
@@ -127,8 +132,8 @@ source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.13#ba0006d2159b0dcf4
 
 [[package]]
 name = "discovery"
-version = "3.0.9"
-source = "git+https://github.com/xinix00/hop.git?tag=v3.0.9#a0130f207b58415e7c541a1b23fca63f7d809214"
+version = "3.0.11"
+source = "git+https://github.com/xinix00/hop.git?tag=v3.0.11#f34fbb7a96351792751554b49c1b40d1e7a01c7c"
 dependencies = [
  "types",
 ]
@@ -166,6 +171,17 @@ dependencies = [
 name = "heap"
 version = "3.0.13"
 source = "git+https://github.com/xinix00/HopOS.git?tag=v3.0.13#ba0006d2159b0dcf4e51fa787cd0b11defe8cc25"
+
+[[package]]
+name = "hoplib"
+version = "3.0.11"
+source = "git+https://github.com/xinix00/hop.git?tag=v3.0.11#f34fbb7a96351792751554b49c1b40d1e7a01c7c"
+dependencies = [
+ "applib",
+ "auth",
+ "leanhttp",
+ "types",
+]
 
 [[package]]
 name = "inout"
@@ -316,7 +332,7 @@ version = "0.1.0"
 
 [[package]]
 name = "spin-core"
-version = "3.0.55"
+version = "3.0.56"
 dependencies = [
  "leanbase64",
  "leancrypto 3.1.13",
@@ -326,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "spin-domain"
-version = "3.0.55"
+version = "3.0.56"
 dependencies = [
  "leanbase64",
  "types",
@@ -334,7 +350,7 @@ dependencies = [
 
 [[package]]
 name = "spin-hopos"
-version = "3.0.55"
+version = "3.0.56"
 dependencies = [
  "applib",
  "leanhttp",
@@ -358,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "spin-host"
-version = "3.0.55"
+version = "3.0.56"
 dependencies = [
  "leanhttp",
  "leanhttps",
@@ -381,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "spin-persistence"
-version = "3.0.55"
+version = "3.0.56"
 dependencies = [
  "replica-sqlite",
  "spin-domain",
@@ -391,7 +407,7 @@ dependencies = [
 
 [[package]]
 name = "spin-runtime"
-version = "3.0.55"
+version = "3.0.56"
 dependencies = [
  "leanhttp",
  "spin-core",
@@ -402,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "spin-security"
-version = "3.0.55"
+version = "3.0.56"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -414,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "spin-server"
-version = "3.0.55"
+version = "3.0.56"
 dependencies = [
  "spin-core",
  "spin-domain",
@@ -423,8 +439,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin-service"
+version = "3.0.56"
+dependencies = [
+ "applib",
+ "hoplib",
+ "leanhttp",
+ "leanhttps",
+ "leantls",
+ "spin-core",
+ "spin-domain",
+ "spin-security",
+ "sync",
+]
+
+[[package]]
 name = "spin-store"
-version = "3.0.55"
+version = "3.0.56"
 dependencies = [
  "spin-core",
  "spin-domain",
@@ -453,8 +484,8 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "types"
-version = "3.0.9"
-source = "git+https://github.com/xinix00/hop.git?tag=v3.0.9#a0130f207b58415e7c541a1b23fca63f7d809214"
+version = "3.0.11"
+source = "git+https://github.com/xinix00/hop.git?tag=v3.0.11#f34fbb7a96351792751554b49c1b40d1e7a01c7c"
 
 [[package]]
 name = "universal-hash"

@@ -68,6 +68,10 @@ for pair in arm64:aarch64-unknown-none-softfloat riscv64:riscv64gc-unknown-none-
 	asset="$OUTDIR/spin-server-$arch.elf"
 	"$LLVM/llvm-objcopy" --strip-debug "target/$target/release/spin-hopos-server" "$asset"
 	ASSETS+=("$asset")
+	cargo build --offline --release -p spin-service --target "$target"
+	asset="$OUTDIR/spin-service-$arch.elf"
+	"$LLVM/llvm-objcopy" --strip-debug "target/$target/release/spin-service" "$asset"
+	ASSETS+=("$asset")
 done
 file "$OUTDIR/spin-server-arm64.elf" | grep -q "ARM aarch64" || { echo "FOUT: HopOS arm64 artifact is geen AArch64 ELF" >&2; exit 1; }
 file "$OUTDIR/spin-server-riscv64.elf" | grep -q "RISC-V" || { echo "FOUT: HopOS riscv64 artifact is geen RISC-V ELF" >&2; exit 1; }
@@ -87,6 +91,7 @@ Spin $VERSION ($SHORT_COMMIT), built $BUILT_AT.
 Artifacts:
 - spin-server-arm64.elf / spin-server-riscv64.elf: native HopOS slot images (control plane and web frontend)
 - spin-client-darwin-arm64: macOS runner (needs Docker Desktop)
+- spin-service-arm64.elf / spin-service-riscv64.elf: HopOS resident that shows a Hop cluster to Spin (status, logs, restart of jobs tagged \`spin\`); see hop-spin-service.example.json
 
 The runner connects outbound to SPIN_SERVER; it derives wss:// from https:// and uses /api/runner/ws. Supply the same SPIN_WORKER_TOKEN on both sides.
 

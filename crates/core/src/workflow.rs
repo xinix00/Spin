@@ -87,6 +87,13 @@ fn normalize_phase(phase: &mut d::WorkflowPhase, index: usize) -> Fallible {
                 selector(&phase.environment_selector)?;
             }
             phase.with_selectors = selectors(&phase.with_selectors)?;
+            phase.app_access = normalized(&phase.app_access)?;
+            if !matches!(
+                phase.app_access.as_str(),
+                "" | d::APP_ACCESS_STATUS | d::APP_ACCESS_LOGS | d::APP_ACCESS_RESTART
+            ) {
+                return Err(invalid(&phase.id, "unknown app access"));
+            }
         }
         d::WORKFLOW_EXECUTOR_ACTION => {
             phase.resolve_merge = false;
@@ -102,6 +109,7 @@ fn normalize_phase(phase: &mut d::WorkflowPhase, index: usize) -> Fallible {
             phase.deliverables = List::default();
             phase.inject = List::default();
             phase.allow_changes = false;
+            phase.app_access.clear();
         }
         _ => return Err(invalid(&phase.id, "unsupported executor")),
     }
@@ -233,5 +241,18 @@ mod tests {
         assert!(!t.phases[0].allow_changes);
         assert!(!t.phases[0].resolve_merge);
         assert!(t.phases[0].model.is_empty());
+    }
+    #[test]
+    fn app_access_is_a_known_level_and_only_for_agents() {
+        let parse = |json: &str| {
+            normalize_template(
+                d::CreateWorkflowTemplateRequest::from_json(json.as_bytes()).unwrap(),
+            )
+        };
+        let t = parse(r#"{"operator":"derek","name":"T","phases":[{"name":"Review","instructions":"Test","app_access":" Restart "}]}"#).unwrap();
+        assert_eq!(t.phases[0].app_access, "restart");
+        assert!(parse(r#"{"operator":"derek","name":"T","phases":[{"name":"Review","instructions":"Test","app_access":"exec"}]}"#).is_err());
+        let t = parse(r#"{"operator":"derek","name":"T","phases":[{"name":"Land","action":{"type":"git.merge"},"app_access":"restart"}]}"#).unwrap();
+        assert!(t.phases[0].app_access.is_empty());
     }
 }

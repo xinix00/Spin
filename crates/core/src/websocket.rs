@@ -1,4 +1,5 @@
 //! RFC 6455-framing met expliciete rollen, berichtlimiet en fragmentlevensloop.
+use crate::validation::{invalid, text};
 use alloc::{string::String, vec::Vec};
 use spin_domain as d;
 /// Een ongeldige peer sluit zijn eigen verbinding, nooit de actor.
@@ -290,9 +291,191 @@ pub fn encode(op: u8, body: &[u8], mask: Option<[u8; 4]>) -> Result<Vec<u8>> {
     }
     Ok(out)
 }
+/// Waar een runner of service de server bereikt; een HTTPS-URL wordt nooit
+/// verlaagd naar plaintext of naar een andere identiteit.
+#[derive(Debug, PartialEq)]
+pub struct Endpoint {
+    /// `host[:poort]` zoals in de URL, voor de Host-kop.
+    pub authority: String,
+    /// De host zonder poort of IPv6-haken.
+    pub host: String,
+    /// De poort, 443 of 80 als de URL er geen noemt.
+    pub port: u16,
+    /// Het WebSocket-pad, onder het voorvoegsel van de URL.
+    pub path: String,
+    /// `https`/`wss`.
+    pub encrypted: bool,
+}
+/// Leest `SPIN_SERVER`; het pad wordt `/api/runner/ws`, onder een eventueel voorvoegsel.
+pub fn endpoint(url: &str) -> d::Fallible<Endpoint> {
+    let bad = |why| invalid("server", why);
+    let (scheme, tail) = url.trim().split_once("://").ok_or(bad("invalid URL"))?;
+    let encrypted = match scheme {
+        "https" | "wss" => true,
+        "http" | "ws" => false,
+        _ => return Err(bad("unsupported URL scheme")),
+    };
+    let tail = tail.split(['?', '#']).next().unwrap_or("");
+    let (authority, prefix) = tail.split_once('/').unwrap_or((tail, ""));
+    if authority.is_empty()
+        || authority.contains('@')
+        || tail.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err(bad("invalid URL"));
+    }
+    let (host, port) = if let Some(ipv6) = authority.strip_prefix('[') {
+        let (host, suffix) = ipv6.split_once(']').ok_or(bad("invalid IPv6 address"))?;
+        let port = if suffix.is_empty() {
+            ""
+        } else {
+            suffix.strip_prefix(':').ok_or(bad("invalid port"))?
+        };
+        (host, port)
+    } else {
+        authority.rsplit_once(':').unwrap_or((authority, ""))
+    };
+    if host.is_empty() {
+        return Err(bad("URL has no host"));
+    }
+    let port = if port.is_empty() {
+        if encrypted { 443 } else { 80 }
+    } else {
+        port.parse::<u16>().map_err(|_| bad("invalid port"))?
+    };
+    if port == 0 {
+        return Err(bad("invalid port"));
+    }
+    let prefix = prefix.trim_end_matches('/');
+    let path = if prefix.is_empty() {
+        d::try_string("/api/runner/ws")?
+    } else {
+        text(format_args!("/{prefix}/api/runner/ws"))?
+    };
+    Ok(Endpoint {
+        authority: d::try_string(authority)?,
+        host: d::try_string(host)?,
+        port,
+        path,
+        encrypted,
+    })
+}
+/// De upgrade van een client; `key` is de base64-nonce, `token` de bearer.
+pub fn upgrade_request(endpoint: &Endpoint, key: &str, token: &str) -> d::Fallible<String> {
+    let unsafe_text = |s: &str| s.chars().any(|c| c.is_control() || c.is_whitespace());
+    if unsafe_text(&endpoint.authority)
+        || unsafe_text(&endpoint.path)
+        || !endpoint.path.starts_with('/')
+        || token.is_empty()
+        || unsafe_text(token)
+    {
+        return Err(invalid("server", "invalid endpoint or token"));
+    }
+    text(format_args!(
+        "GET {} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {key}\r\nAuthorization: Bearer {token}\r\n\r\n",
+        endpoint.path, endpoint.authority
+    ))
+}
+/// Hoe de server op een client-upgrade antwoordde.
+#[derive(Debug, PartialEq)]
+pub enum Upgrade {
+    /// 101 met de juiste accept: de socket is open.
+    Accepted,
+    /// 401/403: het token is geweigerd; opnieuw proberen helpt niet.
+    Denied,
+    /// 409: dezelfde identiteit is nog verbonden; die komt vanzelf vrij.
+    Busy,
+}
+/// Toetst de antwoordkop tot en met de lege regel; al het andere is [`Error::Protocol`].
+pub fn check_upgrade(head: &[u8], expected: &str) -> Result<Upgrade> {
+    let head = core::str::from_utf8(head).map_err(|_| Error::Protocol)?;
+    let mut lines = head.split("\r\n");
+    let first = lines.next().unwrap_or("");
+    match first.split_whitespace().nth(1) {
+        Some("401" | "403") => return Ok(Upgrade::Denied),
+        Some("409") => return Ok(Upgrade::Busy),
+        _ => {}
+    }
+    if !first.starts_with("HTTP/1.1 101 ") && first != "HTTP/1.1 101" {
+        return Err(Error::Protocol);
+    }
+    let (mut upgrade, mut connection, mut accepted) = (false, false, false);
+    for line in lines.filter(|line| !line.is_empty()) {
+        let (name, value) = line.split_once(':').ok_or(Error::Protocol)?;
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("Sec-WebSocket-Accept") {
+            if accepted || value != expected {
+                return Err(Error::Protocol);
+            }
+            accepted = true;
+        } else if name.eq_ignore_ascii_case("Upgrade") {
+            upgrade |= value.eq_ignore_ascii_case("websocket");
+        } else if name.eq_ignore_ascii_case("Connection") {
+            connection |= value
+                .split(',')
+                .any(|v| v.trim().eq_ignore_ascii_case("upgrade"));
+        } else if name.eq_ignore_ascii_case("Sec-WebSocket-Extensions")
+            || name.eq_ignore_ascii_case("Sec-WebSocket-Protocol")
+        {
+            return Err(Error::Protocol);
+        }
+    }
+    if accepted && upgrade && connection {
+        Ok(Upgrade::Accepted)
+    } else {
+        Err(Error::Protocol)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn endpoints_keep_scheme_identity_and_prefix() {
+        let e = endpoint("https://haas.getspin.app").unwrap();
+        assert_eq!(
+            (e.host.as_str(), e.port, e.path.as_str(), e.encrypted),
+            ("haas.getspin.app", 443, "/api/runner/ws", true)
+        );
+        let e = endpoint("http://[::1]:8080/spin/").unwrap();
+        assert_eq!(
+            (
+                e.authority.as_str(),
+                e.host.as_str(),
+                e.port,
+                e.path.as_str()
+            ),
+            ("[::1]:8080", "::1", 8080, "/spin/api/runner/ws")
+        );
+        for bad in [
+            "ftp://x",
+            "https://u@x",
+            "https://",
+            "https://x:0",
+            "https://x y",
+        ] {
+            assert!(endpoint(bad).is_err(), "{bad}");
+        }
+        assert!(upgrade_request(&e, "k", "tok en").is_err());
+    }
+    #[test]
+    fn upgrade_answers_are_classified() {
+        let key = "dGhlIHNhbXBsZSBub25jZQ==";
+        let ok = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n";
+        let expected = accept(key).unwrap();
+        assert_eq!(
+            check_upgrade(ok.as_bytes(), &expected),
+            Ok(Upgrade::Accepted)
+        );
+        assert_eq!(
+            check_upgrade(b"HTTP/1.1 401 Unauthorized\r\n\r\n", &expected),
+            Ok(Upgrade::Denied)
+        );
+        assert_eq!(
+            check_upgrade(b"HTTP/1.1 409 Conflict\r\n\r\n", &expected),
+            Ok(Upgrade::Busy)
+        );
+        assert!(check_upgrade(ok.replace("s3p", "x3p").as_bytes(), &expected).is_err());
+        assert!(check_upgrade(b"HTTP/1.1 200 OK\r\n\r\n", &expected).is_err());
+    }
     #[test]
     fn rfc_handshake_and_known_masked_frame() {
         assert_eq!(

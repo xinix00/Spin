@@ -98,6 +98,16 @@ pub const METHOD_IMPORT_SNAPSHOT: &str = "snapshot.import";
 pub const METHOD_ARCHIVE_SNAPSHOT: &str = "snapshot.archive";
 /// Protocolwaarde uit de Go-specificatie.
 pub const METHOD_HAS_SNAPSHOT: &str = "snapshot.has";
+/// Het gereedschap waarmee een spin-service zich meldt; hij draait nooit capsules.
+pub const TOOL_SERVICE: &str = "spin-service";
+/// De apps die een spin-service toont, met hun services.
+pub const METHOD_SERVICE_STATUS: &str = "service.status";
+/// De laatste logregels van één service (gemaskeerd, momentopname).
+pub const METHOD_SERVICE_LOGS: &str = "service.logs";
+/// Herstart één service: Hop rolt dezelfde spec opnieuw uit en haalt de nieuwe release.
+pub const METHOD_SERVICE_RESTART: &str = "service.restart";
+/// Event van een spin-service: een taak van een getoonde service crashte.
+pub const METHOD_SERVICE_CRASH: &str = "service.crash";
 /// Protocolwaarde uit de Go-specificatie.
 pub const RUNNER_FULL: &str = "runner full: no room for another capsule";
 /// Protocolwaarde uit de Go-specificatie.
@@ -277,6 +287,94 @@ model! {
     RepositoryMergePayload {
         /// `merge` in het bestaande JSON-contract.
         merge: crate::engine::RepositoryMerge => ("merge", false),
+    }
+}
+
+model! {
+    /// Welke service een aanvraag aan een spin-service bedoelt.
+    ServicePayload {
+        /// `app/omgeving` uit de tag `spin-app`.
+        app: String => ("app", false),
+        /// De service binnen die app.
+        service: String => ("service", false),
+        /// `stdout` of `stderr` (logs); leeg is beide.
+        stream: String => ("stream", true),
+    }
+}
+
+model! {
+    /// Wat een spin-service van zijn cluster toont.
+    ServiceStatus {
+        /// De apps, op naam gesorteerd.
+        apps: List<ServiceApp> => ("apps", false),
+    }
+}
+
+model! {
+    /// Eén app/omgeving: de jobs met dezelfde `spin-app`.
+    ServiceApp {
+        /// `app/omgeving`.
+        name: String => ("name", false),
+        /// De services, op naam gesorteerd.
+        services: List<ServiceState> => ("services", false),
+    }
+}
+
+model! {
+    /// Eén service: één Hop-job, met wat zijn taken nu doen.
+    ServiceState {
+        /// De naam binnen de app.
+        name: String => ("name", false),
+        /// De Hop-job.
+        job: String => ("job", false),
+        /// Wat bovenop status en events mag: `logs`, `restart`.
+        allow: List<String> => ("allow", true),
+        /// De `hoplb-urlprefix`, als de service verkeer krijgt.
+        url: String => ("url", true),
+        /// Het gewenste aantal taken; -1 is één per node.
+        count: i64 => ("count", false),
+        /// Taken in `running`.
+        running: i64 => ("running", false),
+        /// De slechtste toestand van zijn taken, of `missing` zonder taken.
+        state: String => ("state", false),
+        /// Herstarts van zijn taken samen.
+        restarts: i64 => ("restarts", false),
+        /// De start van de jongste taak.
+        started_at: Option<crate::Timestamp> => ("started_at", true),
+        /// De laatste mislukking.
+        last_failed_at: Option<crate::Timestamp> => ("last_failed_at", true),
+    }
+}
+
+model! {
+    /// De logregels van één service, oudste eerst en gemaskeerd.
+    ServiceLogs {
+        /// `stdout` en/of `stderr` per regel, als `[stderr] …`.
+        lines: List<String> => ("lines", false),
+    }
+}
+
+model! {
+    /// Het antwoord van Hop op een herstart.
+    ServiceRestart {
+        /// `updated`, of `pending` als Hop nog uitrolt na de wachttijd.
+        status: String => ("status", false),
+        /// `rolling`, `recreate` of `blue-green`.
+        policy: String => ("policy", true),
+    }
+}
+
+model! {
+    /// Event: een taak van een service crashte, met zijn laatste regels.
+    ServiceCrash {
+        /// `app/omgeving`.
+        app: String => ("app", false),
+        /// De service.
+        service: String => ("service", false),
+        /// De Hop-job.
+        job: String => ("job", false),
+        /// De laatste regels, gemaskeerd, als bij [`ServiceLogs`].
+        lines: List<String> => ("lines", false),
     }
 }
 

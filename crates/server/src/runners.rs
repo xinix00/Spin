@@ -282,6 +282,12 @@ impl<P: Persistence> Server<P> {
             .binding
             .as_ref()
             .ok_or(Error::Http(409, "runner has no identity"))?;
+        if message.r#type == p::MESSAGE_EVENT
+            && self.service_event(&binding.client, &message, now)?
+        {
+            self.peer_mut(binding)?.touch(now_ms);
+            return Ok(RunnerEvent::Ignored);
+        }
         let peer = self.peer_mut(binding)?;
         peer.touch(now_ms);
         match message.r#type.as_str() {

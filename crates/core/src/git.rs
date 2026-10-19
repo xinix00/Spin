@@ -1,7 +1,7 @@
 //! Git-remotes blijven credential-vrije, begrensde metadata.
 use crate::validation::normalized;
 use alloc::string::String;
-use spin_domain::{self as d, Fallible, try_string};
+use spin_domain::{self as d, Fallible, List, try_string};
 
 /// De bestaande Git-schemes, zonder HTTP-userinfo, querydata of SSH-wachtwoord.
 pub fn valid_remote(value: &str) -> bool {
@@ -82,6 +82,32 @@ pub fn credential_scope(value: &str, fallback: &str) -> Fallible<String> {
         try_string(fallback)
     }
 }
+/// De apps van een repository: `cluster:app/omgeving`, uniek, hoogstens 32.
+pub fn repository_apps(values: &[String]) -> Fallible<List<String>> {
+    let mut out = List::new();
+    for value in values {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let valid = value.split_once(':').is_some_and(|(cluster, app)| {
+            !cluster.is_empty() && !app.is_empty() && cluster.len() + app.len() < 200
+        }) && !value.chars().any(|c| c.is_control() || c.is_whitespace());
+        if !valid {
+            return Err(crate::validation::invalid(
+                "apps",
+                "app must be cluster:app/environment",
+            ));
+        }
+        if !out.iter().any(|known: &String| known == value) {
+            if out.len() >= 32 {
+                return Err(crate::validation::invalid("apps", "too many apps"));
+            }
+            out.push(try_string(value)?)?;
+        }
+    }
+    Ok(out)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +133,19 @@ mod tests {
             "https://host/repo%xx",
         ] {
             assert!(!valid_remote(remote), "{remote}");
+        }
+    }
+    #[test]
+    fn repository_apps_are_cluster_qualified_and_unique() {
+        let apps = repository_apps(&[
+            " traqqr:easyshop/test ".into(),
+            "traqqr:easyshop/test".into(),
+            "".into(),
+        ])
+        .unwrap();
+        assert_eq!(apps.as_slice(), ["traqqr:easyshop/test"]);
+        for bad in ["easyshop/test", ":x", "x:", "a b:c"] {
+            assert!(repository_apps(&[bad.into()]).is_err(), "{bad}");
         }
     }
 }

@@ -1,0 +1,31 @@
+{
+  "name": "spin-service",
+  "driver": "hop",
+  "count": 1,
+  "artifacts": [
+    {
+      "url": "https://github.com/xinix00/Spin/releases/download/rolling/spin-service-arm64.elf",
+      "match": {
+        "node.arch": "arm64"
+      }
+    },
+    {
+      "url": "https://github.com/xinix00/Spin/releases/download/rolling/spin-service-riscv64.elf",
+      "match": {
+        "node.arch": "riscv64"
+      }
+    }
+  ],
+  "env": {
+    "SPIN_SERVER": "https://haas.getspin.app",
+    "SPIN_WORKER_TOKEN": "REPLACE_WITH_WORKER_TOKEN",
+    "SPIN_SERVICE_TAG": "haas",
+    "SPIN_SERVICE_NAME": "traqqr",
+    "HOP_API_KEY": "REPLACE_WITH_CLUSTER_HMAC_KEY",
+    "DNS": "192.168.1.1"
+  },
+  "memory_limit": 67108864,
+  "cpu_shares": 256,
+  "max_restarts": -1,
+  "update_policy": "recreate"
+}

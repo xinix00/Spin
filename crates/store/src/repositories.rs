@@ -3,7 +3,7 @@ use crate::{Context, Error, Persistence, Result, Store};
 use crate::{composition::project_layers, git_accounts::remote_host};
 use alloc::string::String;
 use spin_core::{
-    git::{credential_scope, valid_remote},
+    git::{credential_scope, repository_apps, valid_remote},
     validation::{normalized, selectors, valid_git_base_ref},
 };
 use spin_domain::{self as d, Timestamp, TryClone, try_string};
@@ -41,6 +41,7 @@ impl<P: Persistence> Store<P> {
             ));
         }
         let layers = selectors(&req.layer_selectors)?;
+        let apps = repository_apps(req.apps.as_slice())?;
         let scope = credential_scope(&req.credential_scope, d::CREDENTIAL_SCOPE_PUBLIC)?;
         self.edit(|state| {
             if state.git_repositories.get(context.id).is_some() {
@@ -61,6 +62,7 @@ impl<P: Persistence> Store<P> {
                 provider: provider(remote)?,
                 credential_scope: scope,
                 layer_selectors: layers,
+                apps,
                 created_by: operator,
                 created_at: context.now.try_clone()?,
                 updated_at: context.now.try_clone()?,
@@ -81,6 +83,7 @@ impl<P: Persistence> Store<P> {
         let operator = normalized(&req.operator)?;
         let scope = credential_scope(&req.credential_scope, "")?;
         let layers = selectors(&req.layer_selectors)?;
+        let apps = repository_apps(req.apps.as_slice())?;
         self.edit(|state| {
             let old = state
                 .git_repositories
@@ -130,6 +133,7 @@ impl<P: Persistence> Store<P> {
             repository.remote_url = remote;
             repository.default_ref = base;
             repository.layer_selectors = layers;
+            repository.apps = apps;
             if !scope.is_empty() {
                 repository.credential_scope = scope;
             }

@@ -313,6 +313,134 @@ impl Persistence for Memory<'_> {
 }
 struct Random(u64);
 #[test]
+fn app_tools_follow_the_step_and_reach_the_cluster_service() {
+    use d::protocol as p;
+    let mut state = PersistedState::from_json(br#"{
+      "jobs":{"job":{"id":"job","owner":"derek","status":"running","workflow_status":"running","current_phase_run_id":"run","branch":"jobs/#1/main","git_repository_id":"repo","template_snapshot":{"id":"tpl","phases":[{"id":"review","name":"Review","app_access":"logs","accept":{"target":"DONE"},"reject":{"target":"SELF"}}]}}},
+      "sessions":{"ses":{"id":"ses","job_id":"job","phase_run_id":"run","operator":"derek","status":"running","prepared_composition_id":"cmp"}},
+      "phase_runs":{"run":{"id":"run","session_id":"ses","job_id":"job","phase_id":"review","phase_name":"Review","status":"running","attempt":1}},
+      "git_repositories":{"repo":{"id":"repo","name":"Repo","remote_url":"https://example.test/repo.git","default_ref":"main","apps":["traqqr:easyshop/test"]}},
+      "compositions":{"cmp":{"id":"cmp","operator":"derek","session_id":"ses"}}
+    }"#).unwrap();
+    state
+        .workflow_tokens
+        .insert("ses".into(), spin_security::digest_hex(b"secret").unwrap())
+        .unwrap();
+    let fail = Cell::new(false);
+    let mut server = Server::new(Store::new(state, Memory(&fail)));
+    let mut random = Random(200);
+    let now = time();
+    let mut tools = d::List::new();
+    tools.push(String::from(p::TOOL_SERVICE)).unwrap();
+    let mut peer = spin_core::runner::Peer::new(d::Client {
+        id: "svc".into(),
+        name: "traqqr".into(),
+        capabilities: d::ClientCapabilities {
+            tools,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let (generation, _) = peer.attach("proc", None, 0).unwrap();
+    server.runners.push(peer);
+    let event = |method: &str, payload: &[u8]| p::WireMessage {
+        r#type: p::MESSAGE_EVENT.into(),
+        method: method.into(),
+        payload: d::RawJson(Some(Value::from_json(payload).unwrap())),
+        ..Default::default()
+    };
+    let status = event(
+        p::METHOD_SERVICE_STATUS,
+        br#"{"apps":[{"name":"easyshop/test","services":[{"name":"api","job":"easyshop-test-api","allow":["logs","restart"],"count":1,"running":1,"state":"running","restarts":2}]}]}"#,
+    );
+    // Alleen een service mag status melden; een runner met dezelfde boodschap niet.
+    assert!(!server.service_event("runner", &status, &now).unwrap());
+    assert!(server.service_event("svc", &status, &now).unwrap());
+    let value = d::json::to_string(&server.services_value().unwrap()).unwrap();
+    assert!(
+        value.contains("easyshop/test") && value.contains("\"connected\":true"),
+        "{value}"
+    );
+
+    let path = "/api/workflow/mcp/ses";
+    let headers = [("Authorization", "Bearer secret")];
+    let call = |server: &mut Server<Memory<'_>>, body: &[u8]| {
+        response(
+            server,
+            req("POST", path, &headers, body),
+            &now,
+            &mut Random(300),
+        )
+    };
+    let list = call(
+        &mut server,
+        br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    );
+    let list = core::str::from_utf8(&list.body).unwrap();
+    assert!(
+        list.contains("\"app_status\"") && list.contains("\"app_logs\""),
+        "{list}"
+    );
+    assert!(
+        !list.contains("\"app_restart\""),
+        "a logs step cannot restart: {list}"
+    );
+    let status = call(&mut server, br#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"app_status","arguments":{}}}"#);
+    let status = core::str::from_utf8(&status.body).unwrap();
+    assert!(
+        status.contains("api: running") && status.contains("mag: logs"),
+        "{status}"
+    );
+    assert!(
+        !status.contains("restart"),
+        "the step caps the tags: {status}"
+    );
+    let restart = call(&mut server, br#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"app_restart","arguments":{"service":"api"}}}"#);
+    assert!(
+        core::str::from_utf8(&restart.body)
+            .unwrap()
+            .contains("\"isError\":true")
+    );
+    assert_eq!(server.runners[0].pending_count(), 0);
+
+    assert!(server.service_event("svc", &event(p::METHOD_SERVICE_CRASH, br#"{"app":"easyshop/test","service":"api","job":"easyshop-test-api","lines":["[stderr] panic: boom"]}"#), &now).unwrap());
+    let logs = br#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"app_logs","arguments":{"service":"api"}}}"#;
+    let Outcome::Capsule(wait) = server
+        .begin(req("POST", path, &headers, logs), &now, &mut random)
+        .unwrap()
+    else {
+        panic!("logs go to the service");
+    };
+    let (ticket, message) = server.runners[0].next(generation).unwrap().unwrap();
+    let request = message.try_clone().unwrap();
+    assert_eq!(request.method, p::METHOD_SERVICE_LOGS);
+    let payload = p::ServicePayload::from_value(request.payload.0.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        (payload.app.as_str(), payload.service.as_str()),
+        ("easyshop/test", "api")
+    );
+    server.runners[0].acknowledge(ticket);
+    server.runners[0].response(&request.id);
+    let reply = p::WireMessage {
+        id: request.id.try_clone().unwrap(),
+        r#type: p::MESSAGE_RESPONSE.into(),
+        payload: d::RawJson(Some(
+            Value::from_json(br#"{"lines":["[stdout] listening on 8080"]}"#).unwrap(),
+        )),
+        ..Default::default()
+    };
+    server
+        .finish_capsule("svc", Some(&request), &reply, &now, &mut random)
+        .unwrap();
+    let response = server.poll_capsule(&wait, &now).unwrap().unwrap();
+    let body = core::str::from_utf8(&response.body).unwrap();
+    assert!(
+        body.contains("listening on 8080") && body.contains("panic: boom"),
+        "{body}"
+    );
+    assert!(body.contains("\"isError\":false"), "{body}");
+}
+#[test]
 fn workflow_mcp_capability_is_session_bound_and_accept_waits_for_git() {
     use d::protocol as p;
     let mut state = PersistedState::from_json(br#"{
@@ -2614,10 +2742,7 @@ fn a_login_capsule_learns_which_files_the_login_wrote() {
     assert_eq!(sent.method, p::METHOD_CAPSULE_CHANGES);
     server.runners[0].acknowledge(ticket);
     server.runners[0].response(&sent.id).unwrap();
-    let changes = Value::from_json(
-        br#"{"files":2,"bytes":1027}"#,
-    )
-    .unwrap();
+    let changes = Value::from_json(br#"{"files":2,"bytes":1027}"#).unwrap();
     server
         .finish_capsule(
             "client",

@@ -33,6 +33,7 @@ mod deliverables;
 pub mod http;
 mod routes;
 mod runners;
+mod services;
 mod terminal;
 mod uploads;
 mod worker_api;
@@ -191,6 +192,8 @@ pub struct Server<P: Persistence> {
     prepare_failures: Map<i64>,
     /// Hoe vaak de watcher van een capsule achtereen stopte (per compositie).
     watch_failures: Map<i64>,
+    /// Wat de spin-services van de clusters meldden.
+    services: alloc::vec::Vec<services::Cluster>,
 }
 /// Bewaart een consoleregel; vol is vol, de regel valt dan weg.
 pub(crate) fn note(notes: &mut alloc::vec::Vec<String>, line: core::fmt::Arguments<'_>) {
@@ -241,6 +244,7 @@ impl<P: Persistence> Server<P> {
             agent_start_failures: Map::new(),
             prepare_failures: Map::new(),
             watch_failures: Map::new(),
+            services: alloc::vec::Vec::new(),
         }
     }
     /// Of een herstel blok voor blok vordert; de eigenaar yieldt dan in plaats van te slapen.

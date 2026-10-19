@@ -18,7 +18,9 @@ transacties; `security` de encryptie en authenticatie; `persistence` de
 SQLite-opslag; `server` de HTTP-routes en app-eigenaar. Deze crates gebruiken
 `no_std`. `runtime` bevat netwerkafhandeling en hostrouting. `hopos` levert
 de native boot en platformadapters. `host` levert de macOS-runner en een
-lokale server die alleen voor integratietests bedoeld is.
+lokale server die alleen voor integratietests bedoeld is. `service` is
+spin-service, de HopOS-bewoner die een Hop-cluster aan Spin toont; zijn kern
+is `no_std` en op de host getest, de schil linkt `hoplib` uit de Hop-repo.
 
 Replica komt rechtstreeks uit de bron: de crates linken naar `../replica`
 (naast deze checkout, `~/Git/haas.software/replica`); Spin houdt er geen kopie of
@@ -56,6 +58,7 @@ sluit de eigenaar. De oude lease op de lokale schijf is weg.
 CARGO_INCREMENTAL=0 cargo test --offline --workspace
 CARGO_INCREMENTAL=0 cargo clippy --offline --workspace --all-targets -- -D warnings
 CARGO_INCREMENTAL=0 SQLITE_CC=/opt/homebrew/opt/llvm/bin/clang SQLITE_AR=/opt/homebrew/opt/llvm/bin/llvm-ar cargo clippy --offline -p spin-hopos --target aarch64-unknown-none-softfloat --target riscv64gc-unknown-none-elf -- -D warnings
+CARGO_INCREMENTAL=0 cargo clippy --offline -p spin-service --target aarch64-unknown-none-softfloat --target riscv64gc-unknown-none-elf -- -D warnings
 PUBLISH=0 ./release.sh
 ```
 

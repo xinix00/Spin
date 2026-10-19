@@ -16,7 +16,7 @@ pub mod workflow;
 /// Hervatbare uploads met begrensde tickets en expliciete I/O-bevestigingen.
 pub mod upload;
 
-/// Credential-vrije Git-remotes en apprecepten.
+/// Credential-vrije Git-remotes.
 pub mod git;
 
 /// Tar-koppen en laagpaden zonder bestands-I/O of onbegrensde bodybuffers.
@@ -29,7 +29,7 @@ pub mod bundle;
 pub mod docker;
 /// Expliciete, begrensde opdrachten voor de host-procesadapter.
 pub mod process;
-/// WebSocket-handshake en begrensde frames voor browsers en runners.
+/// WebSocket-handshake en begrensde frames voor browsers, runners en services.
 pub mod websocket;
 /// Runnerzijde van het protocol: tickets, herhaling en antwoordbudgetten.
 pub mod worker;

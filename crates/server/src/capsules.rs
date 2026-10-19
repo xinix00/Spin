@@ -52,6 +52,7 @@ pub(crate) enum Action {
     Browse(crate::code::Browse),
     Inspect(crate::code::Inspection),
     Merge(crate::actions::Merge),
+    Service(crate::services::ServiceCall),
     ReadFile(crate::management::ReadFile),
     Probe(crate::management::Probe),
     RemoveSnapshot {
@@ -95,6 +96,7 @@ impl Action {
             Self::Browse(work) => &work.repository,
             Self::Inspect(work) => &work.composition,
             Self::Merge(work) => &work.session,
+            Self::Service(work) => &work.object,
             Self::ReadFile(work) => &work.composition,
             Self::Probe(work) => &work.composition,
             Self::RemoveSnapshot { artifact } => artifact,
@@ -1342,6 +1344,12 @@ impl<P: Persistence> Server<P> {
             self.calls[index].finished = true;
             return Ok(true);
         }
+        if matches!(self.calls[index].action, Action::Service(_)) {
+            let response = self.finish_service_call(index, message)?;
+            self.calls[index].response = Some(response);
+            self.calls[index].finished = true;
+            return Ok(true);
+        }
         if matches!(self.calls[index].action, Action::Delivery(_)) {
             let response = self.finish_workflow_delivery(index, message, now, runtime)?;
             let index = self.call_index(&id)?;
@@ -1518,8 +1526,10 @@ impl<P: Persistence> Server<P> {
                 Action::Probe(work) => crate::management::probe_response(work, payload),
                 Action::RemoveSnapshot { .. } => Response::empty(204),
                 Action::Changes { composition } => {
-                    self.store
-                        .set_composition_changes(composition, d::LayerContents::from_value(payload)?)?;
+                    self.store.set_composition_changes(
+                        composition,
+                        d::LayerContents::from_value(payload)?,
+                    )?;
                     Response::empty(204)
                 }
                 Action::Attachment { key, stamp, .. } => {
@@ -1538,6 +1548,7 @@ impl<P: Persistence> Server<P> {
                 Action::WaitLogin { .. } => Err(Error::Http(500, "login wait has no runner call")),
                 Action::Workflow(_) => Err(Error::Http(502, "workflow operation failed")),
                 Action::Delivery(_) => Err(Error::Http(502, "deliverable operation failed")),
+                Action::Service(_) => Err(Error::Http(502, "service operation failed")),
                 Action::Preserve(_) => Err(Error::Http(502, "workspace preservation failed")),
                 Action::Start { recording, actor } => {
                     let mut capsule = d::CapsuleRuntime::from_value(payload)?;

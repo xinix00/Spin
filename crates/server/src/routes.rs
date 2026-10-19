@@ -132,7 +132,7 @@ impl<P: Persistence> Server<P> {
             .ok_or(Error::Http(500, "state cache unavailable"))
     }
     /// De vluchtige velden die elk document en elke delta meekrijgt.
-    fn volatile(&mut self) -> Result<[(&'static str, Value); 6]> {
+    fn volatile(&mut self) -> Result<[(&'static str, Value); 7]> {
         Ok([
             ("version", Value::uint(self.version())),
             (
@@ -143,6 +143,7 @@ impl<P: Persistence> Server<P> {
             ("git_oauth_providers", self.oauth_providers()?),
             ("engine", self.runner_info()?.to_value()?),
             ("storage", self.storage_report.try_clone()?),
+            ("services", self.services_value()?),
         ])
     }
     /// De aanbevelingen, alleen opnieuw berekend als jobs of sessions veranderden.

@@ -277,6 +277,7 @@ impl<P: Persistence> Server<P> {
                     self.refresh_after = Map::new();
                     self.operations.clear();
                     self.login_operations.clear();
+                    self.services.clear();
                     self.options.clear();
                     self.backup_tickets = Map::new();
                     self.refresh_checked = None;
