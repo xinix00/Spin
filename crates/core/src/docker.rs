@@ -8,6 +8,7 @@ mod files;
 mod git;
 mod git_operations;
 mod git_read;
+mod maintain;
 #[cfg(test)]
 mod tests;
 

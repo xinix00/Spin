@@ -31,6 +31,8 @@ impl Docker {
                 "spin.kind=workspace",
                 "--label",
                 &text(format_args!("spin.session_id={}", composition.session_id))?,
+                "--label",
+                &text(format_args!("spin.server={}", self.server))?,
                 &volume,
             ],
         )

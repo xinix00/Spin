@@ -188,6 +188,44 @@ fn a_runner_only_counts_and_removes_capsules_of_its_own_spin() {
     assert!(live.compositions.is_empty());
 }
 #[test]
+fn only_old_loose_workspaces_of_its_own_spin_are_pruned() {
+    let haas = docker().serving("haas.getspin.app", false).unwrap();
+    let mut fake = Fake::default();
+    fake.reply(0, b"spin-work-a\nspin-work-b\nspin-work-c\nspin-work-d\nspin-work-e\n");
+    fake.reply(
+        0,
+        b"2026-10-01T10:00:00Z\thaas.getspin.app\tspin-work-a\n\
+          2026-10-03T10:00:00Z\thaas.getspin.app\tspin-work-b\n\
+          2026-10-02T10:00:00Z\thaas.getspin.app\tspin-work-c\n\
+          2026-09-01T10:00:00Z\tbollenloods.getspin.app\tspin-work-d\n\
+          2026-09-01T10:00:00Z\t<no value>\tspin-work-e\n",
+    );
+    fake.reply(0, b"spin-work-a\n");
+    assert_eq!(run(haas.prune_workspaces(&mut fake, 2)).unwrap(), 1);
+    assert!(fake.commands[0].args.iter().any(|a| a == "dangling=true"));
+    assert_eq!(fake.commands.last().unwrap().args, ["volume", "rm", "spin-work-a"]);
+
+    // Niet meer losse volumes dan er mogen blijven: geen inspect, niets weg.
+    let mut fake = Fake::default();
+    fake.reply(0, b"spin-work-a\n");
+    assert_eq!(run(haas.prune_workspaces(&mut fake, 2)).unwrap(), 0);
+    assert_eq!(fake.commands.len(), 1);
+}
+#[test]
+fn ownerless_pruning_spares_every_spin_label_and_tries_every_step() {
+    let mut fake = Fake::default();
+    fake.reply(1, b"daemon busy");
+    fake.reply(0, b"");
+    fake.reply(0, b"");
+    assert!(run(docker().prune_ownerless(&mut fake)).is_err());
+    assert_eq!(fake.commands.len(), 3);
+    for command in &fake.commands[..2] {
+        assert!(command.args.iter().any(|a| a == "label!=spin.server"));
+    }
+    assert!(fake.commands[0].args.iter().any(|a| a == "until=1h"));
+    assert!(fake.commands.iter().all(|c| c.args.iter().any(|a| a == "--force")));
+}
+#[test]
 fn tracked_files_distinguish_skipped_empty_binary_and_reject_bad_paths_before_spawn() {
     let mut fake = Fake::default();
     fake.reply(0, b"SPIN_SKIP /root/skipped\nSPIN_FILE /root/empty \nSPIN_FILE /root/binary AP8=\nSPIN_SKIP /root/binary\n");

@@ -10,7 +10,7 @@ use spin_core::{
     validation::text,
 };
 use spin_domain::{self as d, TryClone, Wire, try_push, try_push_str, try_string};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::Instant;
 mod transfer;
@@ -421,6 +421,13 @@ async fn remove(docker: &Docker, name: &str) -> bool {
 }
 /// Zoveel samengestelde images blijven onder `spin/plan:` staan; de oudste gaan eruit.
 const PLAN_CACHE_ENTRIES: usize = 16;
+/// Zoveel Session-volumes zonder capsule blijven per Spin staan voor een Retry.
+const WORKSPACE_KEEP: usize = 24;
+const MAINTAIN_EVERY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// Onder deze vrije ruimte ruimt de runner alles op wat geen capsule gebruikt.
+const DISK_LOW: u64 = 40 << 30;
+/// Onder deze vrije ruimte (na opruimen) start de runner geen capsule meer.
+const DISK_FULL: u64 = 10 << 30;
 /// Eén laag in de Dockerfile van een stapel.
 struct Stacked {
     reference: String,
@@ -709,6 +716,7 @@ pub(crate) async fn materialize(
     value: &d::protocol::MaterializePayload,
     progress: Progress<'_>,
 ) -> Result<d::CapsuleRuntime> {
+    maintain(docker).await?;
     let (snapshot, ephemeral) =
         selected(docker, &value.composition, &value.artifacts, progress).await?;
     progress.report("start", "capsule starten", 0, 0);
@@ -726,11 +734,67 @@ pub(crate) async fn materialize(
     }
     result
 }
+thread_local! {
+    static MAINTAINED: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+/// Houdt de Docker-daemon schoon vóór een nieuwe capsule: elke tien minuten,
+/// en meteen (zonder volumes te sparen) als de schijf krap wordt. Blijft hij
+/// vol, dan start er niets: een volle schijf liet Docker vastlopen.
+async fn maintain(docker: &Docker) -> Result<()> {
+    let before = free_disk().await;
+    let low = before.is_some_and(|free| free < DISK_LOW);
+    if !low
+        && MAINTAINED
+            .get()
+            .is_some_and(|at| at.elapsed() < MAINTAIN_EVERY)
+    {
+        return Ok(());
+    }
+    MAINTAINED.set(Some(Instant::now()));
+    let keep = if low { 0 } else { WORKSPACE_KEEP };
+    match docker.prune_workspaces(&mut DockerExecutor, keep).await {
+        Ok(0) => {}
+        Ok(removed) => eprintln!("SPIN_WORKSPACE_PRUNED removed={removed}"),
+        Err(error) => eprintln!("SPIN_WORKSPACE_PRUNE_SKIP error={error}"),
+    }
+    if let Err(error) = docker.prune_ownerless(&mut DockerExecutor).await {
+        eprintln!("SPIN_DOCKER_PRUNE_SKIP error={error}");
+    }
+    if low {
+        let after = free_disk().await;
+        let gib = |free: Option<u64>| free.map_or(-1, |f| i64::try_from(f >> 30).unwrap_or(-1));
+        eprintln!(
+            "SPIN_DOCKER_DISK_LOW free_gib_before={} free_gib_after={}",
+            gib(before),
+            gib(after)
+        );
+        if after.is_some_and(|free| free < DISK_FULL) {
+            return Err(std::io::Error::other(
+                "Docker-schijf van de runner is vol; ruim de daemon op voordat er capsules starten",
+            ));
+        }
+    }
+    Ok(())
+}
+/// Vrije bytes op de schijf van de runner. Docker Desktop zet zijn virtuele
+/// schijf (Docker.raw) op dezelfde APFS-container als de werkmap.
+async fn free_disk() -> Option<u64> {
+    let mut command = spin_core::process::Command::new("df").ok()?;
+    for arg in ["-Pk", "."] {
+        command.arg(arg).ok()?;
+    }
+    command.timeout_ms = 10_000;
+    let output = DockerExecutor.run(command).await.ok()?;
+    let text = core::str::from_utf8(&output.bytes).ok()?;
+    let kib: u64 = text.lines().nth(1)?.split_whitespace().nth(3)?.parse().ok()?;
+    Some(kib << 10)
+}
 pub(crate) async fn start_recording(
     docker: &Docker,
     value: &d::protocol::StartRecordingPayload,
     progress: Progress<'_>,
 ) -> Result<d::CapsuleRuntime> {
+    maintain(docker).await?;
     let Some(stack) = value
         .stack
         .as_ref()
