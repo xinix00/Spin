@@ -93,7 +93,7 @@ fn a_capsule_on_a_runner_that_never_returns_is_rebuilt_after_ten_minutes() {
         "artifacts":{"env":{"id":"env","kind":"tool","name":"agent","scope":"global","profile":"default","enables":[{"name":"acp","command":"agent"},{"name":"git"}]}},
         "git_repositories":{"repo":{"id":"repo","remote_url":"https://example.test/repo.git","default_ref":"main","credential_scope":"public"}},
         "jobs":{"job":{"id":"job","owner":"derek","status":"running","git_repository_id":"repo","branch":"jobs/job/main","current_phase_run_id":"run","template_snapshot":{"id":"tpl","phases":[{"id":"build","executor":"agent"}]}}},
-        "sessions":{"ses":{"id":"ses","job_id":"job","phase_run_id":"run","operator":"derek","status":"queued","tool":"agent","git_repository_id":"repo","prepared_composition_id":"lost","created_at":"2026-09-28T12:00:00Z"}},
+        "sessions":{"ses":{"id":"ses","job_id":"job","phase_run_id":"run","operator":"derek","status":"queued","tool":"agent","git_repository_id":"repo","client_id":"gone","prepared_composition_id":"lost","created_at":"2026-09-28T12:00:00Z"}},
         "phase_runs":{"run":{"id":"run","job_id":"job","session_id":"ses","phase_id":"build","status":"queued"}},
         "compositions":{"lost":{"id":"lost","session_id":"ses","operator":"derek","runtime":{"client_id":"gone","container_id":"wiped","status":"ready"},"enabled":[{"name":"acp","command":"agent","transport":"stdio","protocol_version":1}]}}
     }"#).unwrap();
@@ -128,10 +128,14 @@ fn a_capsule_on_a_runner_that_never_returns_is_rebuilt_after_ten_minutes() {
             .iter()
             .any(|n| n.contains("SPIN_RUNNER_ABSENT client=gone"))
     );
-    assert_ne!(
-        server.store.session("ses").unwrap().prepared_composition_id,
-        "lost"
+    let session = server.store.session("ses").unwrap();
+    assert_ne!(session.prepared_composition_id, "lost");
+    assert_eq!(
+        session.client_id, "",
+        "no longer pinned to the vanished runner"
     );
+    assert_eq!(server.calls.len(), 1);
+    assert_eq!(server.calls[0].client, "client");
     let (_, message) = server.runners[0].next(generation).unwrap().unwrap();
     assert_eq!(message.method, p::METHOD_ACCEPTS);
 }

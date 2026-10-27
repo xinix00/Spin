@@ -737,10 +737,11 @@ impl<P: Persistence> Server<P> {
         Ok(())
     }
     /// Een runner die zich sinds de start van deze server niet heeft gemeld,
-    /// heeft na tien minuten geen capsules meer: hun stappen bouwen opnieuw op
-    /// (27-10-2026: Docker gewist, een stap startte elke 30 s een agent in een
-    /// verdwenen capsule en kreeg "capsule runner is offline"). Meldt de runner
-    /// zich later toch, dan ruimt `orphan_capsules` zijn oude capsules op.
+    /// heeft na tien minuten geen capsules en geen Sessions meer: hun stappen
+    /// bouwen opnieuw op (27-10-2026: Docker gewist, een stap startte elke 30 s
+    /// een agent in een verdwenen capsule, daarna een capsule op de verdwenen
+    /// runner). Meldt de runner zich later toch, dan ruimt `orphan_capsules`
+    /// zijn oude capsules op.
     fn forget_absent_runners(&mut self, time: u64) -> Result {
         let since = *self.runners_since.get_or_insert(d::Time(time));
         if time.saturating_sub(since.0) < RUNNER_ABSENT_NS {
@@ -748,7 +749,7 @@ impl<P: Persistence> Server<P> {
         }
         let snapshot = self.store.snapshot()?;
         let mut absent = List::new();
-        let clients = snapshot
+        let capsules = snapshot
             .compositions
             .iter()
             .filter_map(|c| c.runtime.as_ref())
@@ -758,10 +759,21 @@ impl<P: Persistence> Server<P> {
                     .iter()
                     .filter_map(|r| r.runtime.as_ref()),
             )
-            .filter(|r| r.status != "stopped" && !r.client_id.is_empty())
+            .filter(|r| r.status != "stopped")
             .map(|r| &r.client_id);
-        for client in clients {
-            if !self.runners.iter().any(|p| p.client().id == *client)
+        let sessions = snapshot
+            .sessions
+            .iter()
+            .filter(|s| {
+                !matches!(
+                    s.status.as_str(),
+                    d::SESSION_COMPLETED | d::SESSION_CANCELLED
+                )
+            })
+            .map(|s| &s.client_id);
+        for client in capsules.chain(sessions) {
+            if !client.is_empty()
+                && !self.runners.iter().any(|p| p.client().id == *client)
                 && !absent.iter().any(|a: &String| a == client)
             {
                 absent.push(client.try_clone()?)?;
@@ -769,9 +781,12 @@ impl<P: Persistence> Server<P> {
         }
         for client in absent.iter() {
             let stopped = self.store.reconcile_client_capsules(client, &[], &[])?;
+            let unpinned = self.store.unpin_sessions(client)?;
             crate::note(
                 &mut self.notes,
-                format_args!("SPIN_RUNNER_ABSENT client={client} capsules_stopped={stopped}"),
+                format_args!(
+                    "SPIN_RUNNER_ABSENT client={client} capsules_stopped={stopped} sessions_unpinned={unpinned}"
+                ),
             );
         }
         if !absent.is_empty() {

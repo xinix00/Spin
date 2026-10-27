@@ -301,6 +301,25 @@ impl<P: Persistence> Store<P> {
             Ok(count)
         })
     }
+    /// Een runner die niet terugkomt, houdt geen Sessions vast: hun werk staat
+    /// op de sessiebranch en bouwt op een andere runner opnieuw op.
+    pub fn unpin_sessions(&mut self, client_id: &str) -> Result<usize> {
+        self.edit(|state| {
+            let mut count = 0;
+            for (_, session) in state.sessions.iter_mut() {
+                if session.client_id == client_id
+                    && !matches!(
+                        session.status.as_str(),
+                        d::SESSION_COMPLETED | d::SESSION_CANCELLED
+                    )
+                {
+                    session.client_id.clear();
+                    count += 1;
+                }
+            }
+            Ok(count)
+        })
+    }
     /// Capsules zonder eigenaar nemen onterecht runnerplaatsen in. Een capsule
     /// zonder runtime is nog in aanbouw. Een andere runner kan dezelfde Docker
     /// daemon zien: diens capsules zijn geen bewijs van een verweesde kopie.
