@@ -151,7 +151,11 @@ fn generation_start(name: &str) -> Option<u64> {
         s.get(11..13)?,
         s.get(13..15)?
     );
-    Timestamp::from_json(iso.as_bytes()).ok()?.time().ok().map(|t| t.0)
+    Timestamp::from_json(iso.as_bytes())
+        .ok()?
+        .time()
+        .ok()
+        .map(|t| t.0)
 }
 #[cfg(test)]
 mod tests {
@@ -187,7 +191,10 @@ mod tests {
         assert!(report.contains("sinds 43 min"), "{report}");
         assert!(!report.contains("niet gesynchroniseerd."), "{report}");
         let report = level(&mut server, "2026-10-27T17:00:00Z");
-        assert!(report.contains("Er is nog geen complete generatie"), "{report}");
+        assert!(
+            report.contains("Er is nog geen complete generatie"),
+            "{report}"
+        );
         assert!(report.contains("niet gesynchroniseerd."), "{report}");
     }
     use core::cell::Cell;

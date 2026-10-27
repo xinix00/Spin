@@ -157,6 +157,8 @@ pub struct Server<P: Persistence> {
     calls: alloc::vec::Vec<capsules::Call>,
     runner_cursor: usize,
     last_launch_sweep: Option<d::Time>,
+    /// Sinds wanneer deze server runners ziet; een runner die daarna lang wegblijft, is weg.
+    runners_since: Option<d::Time>,
     display_version: u64,
     terminals: alloc::vec::Vec<terminal::Terminal>,
     agents: alloc::vec::Vec<acp::Agent>,
@@ -215,6 +217,7 @@ impl<P: Persistence> Server<P> {
             calls: alloc::vec::Vec::new(),
             runner_cursor: 0,
             last_launch_sweep: None,
+            runners_since: None,
             display_version: 0,
             terminals: alloc::vec::Vec::new(),
             agents: alloc::vec::Vec::new(),

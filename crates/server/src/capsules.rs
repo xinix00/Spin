@@ -10,6 +10,8 @@ use spin_store::Context;
 
 const MAX_CALLS: usize = 64;
 const CALL_LIFETIME_NS: u64 = 15 * 60 * 1_000_000_000;
+/// Zo lang mag een runner na de start van de server wegblijven voordat zijn capsules als weg gelden.
+const RUNNER_ABSENT_NS: u64 = 10 * 60 * 1_000_000_000;
 fn maintenance_context(error: Error, context: &'static str) -> Error {
     match error {
         Error::Store(spin_store::Error::NotFound) => Error::Http(404, context),
@@ -697,6 +699,7 @@ impl<P: Persistence> Server<P> {
             self.last_launch_sweep = Some(d::Time(time));
             self.sweep_idle_capsules(now, runtime)
                 .map_err(|e| maintenance_context(e, "idle capsule references missing data"))?;
+            self.forget_absent_runners(time)?;
             let mut launch_error = None;
             let snapshot = self.store.snapshot()?;
             // Een login-wachtregel hoort bij een stap die nog in de wachtrij staat.
@@ -730,6 +733,49 @@ impl<P: Persistence> Server<P> {
             // de SPIN_CAPSULE_WAITING-, SPIN_RUNNER_REFUSED-, SPIN_AGENT_FAILED- en
             // SPIN_SESSION_WAITING_LOGIN-regels.
             self.diagnostics_due = true;
+        }
+        Ok(())
+    }
+    /// Een runner die zich sinds de start van deze server niet heeft gemeld,
+    /// heeft na tien minuten geen capsules meer: hun stappen bouwen opnieuw op
+    /// (27-10-2026: Docker gewist, een stap startte elke 30 s een agent in een
+    /// verdwenen capsule en kreeg "capsule runner is offline"). Meldt de runner
+    /// zich later toch, dan ruimt `orphan_capsules` zijn oude capsules op.
+    fn forget_absent_runners(&mut self, time: u64) -> Result {
+        let since = *self.runners_since.get_or_insert(d::Time(time));
+        if time.saturating_sub(since.0) < RUNNER_ABSENT_NS {
+            return Ok(());
+        }
+        let snapshot = self.store.snapshot()?;
+        let mut absent = List::new();
+        let clients = snapshot
+            .compositions
+            .iter()
+            .filter_map(|c| c.runtime.as_ref())
+            .chain(
+                snapshot
+                    .recordings
+                    .iter()
+                    .filter_map(|r| r.runtime.as_ref()),
+            )
+            .filter(|r| r.status != "stopped" && !r.client_id.is_empty())
+            .map(|r| &r.client_id);
+        for client in clients {
+            if !self.runners.iter().any(|p| p.client().id == *client)
+                && !absent.iter().any(|a: &String| a == client)
+            {
+                absent.push(client.try_clone()?)?;
+            }
+        }
+        for client in absent.iter() {
+            let stopped = self.store.reconcile_client_capsules(client, &[], &[])?;
+            crate::note(
+                &mut self.notes,
+                format_args!("SPIN_RUNNER_ABSENT client={client} capsules_stopped={stopped}"),
+            );
+        }
+        if !absent.is_empty() {
+            self.display_changed();
         }
         Ok(())
     }

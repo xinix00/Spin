@@ -87,6 +87,56 @@ fn stale_workflow_attempts_cannot_block_another_jobs_lost_capsule() {
 }
 
 #[test]
+fn a_capsule_on_a_runner_that_never_returns_is_rebuilt_after_ten_minutes() {
+    use d::protocol as p;
+    let state = PersistedState::from_json(br#"{
+        "artifacts":{"env":{"id":"env","kind":"tool","name":"agent","scope":"global","profile":"default","enables":[{"name":"acp","command":"agent"},{"name":"git"}]}},
+        "git_repositories":{"repo":{"id":"repo","remote_url":"https://example.test/repo.git","default_ref":"main","credential_scope":"public"}},
+        "jobs":{"job":{"id":"job","owner":"derek","status":"running","git_repository_id":"repo","branch":"jobs/job/main","current_phase_run_id":"run","template_snapshot":{"id":"tpl","phases":[{"id":"build","executor":"agent"}]}}},
+        "sessions":{"ses":{"id":"ses","job_id":"job","phase_run_id":"run","operator":"derek","status":"queued","tool":"agent","git_repository_id":"repo","prepared_composition_id":"lost","created_at":"2026-09-28T12:00:00Z"}},
+        "phase_runs":{"run":{"id":"run","job_id":"job","session_id":"ses","phase_id":"build","status":"queued"}},
+        "compositions":{"lost":{"id":"lost","session_id":"ses","operator":"derek","runtime":{"client_id":"gone","container_id":"wiped","status":"ready"},"enabled":[{"name":"acp","command":"agent","transport":"stdio","protocol_version":1}]}}
+    }"#).unwrap();
+    let fail = Cell::new(false);
+    let mut server = Server::new(Store::new(state, Memory(&fail)));
+    let now = time();
+    let mut random = Random(71000);
+    let mut peer = spin_core::runner::Peer::new(d::Client {
+        id: "client".into(),
+        capabilities: d::ClientCapabilities::from_json(br#"{"engine":{"available":true}}"#)
+            .unwrap(),
+        ..Default::default()
+    });
+    let (generation, _) = peer
+        .attach("runner", None, now.time().unwrap().0 / 1_000_000)
+        .unwrap();
+    server.runners.push(peer);
+    // Direct na de start kan de runner nog onderweg zijn: niets vergeten.
+    let result = server.maintain_capsules(&now, &mut random);
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(
+        server.store.session("ses").unwrap().prepared_composition_id,
+        "lost"
+    );
+    let later = Timestamp::from_time(d::Time(now.time().unwrap().0 + 601_000_000_000)).unwrap();
+    server.maintain_capsules(&later, &mut random).unwrap();
+    let lost = server.store.composition("lost").unwrap();
+    assert_eq!(lost.runtime.as_ref().unwrap().status, "stopped");
+    assert!(
+        server
+            .take_notes()
+            .iter()
+            .any(|n| n.contains("SPIN_RUNNER_ABSENT client=gone"))
+    );
+    assert_ne!(
+        server.store.session("ses").unwrap().prepared_composition_id,
+        "lost"
+    );
+    let (_, message) = server.runners[0].next(generation).unwrap().unwrap();
+    assert_eq!(message.method, p::METHOD_ACCEPTS);
+}
+
+#[test]
 fn chat_shares_agents_persists_live_turns_and_reports_lost_streams_after_restart() {
     use core::cell::RefCell;
     use d::protocol as p;
