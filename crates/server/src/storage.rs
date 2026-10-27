@@ -39,7 +39,25 @@ impl<P: Persistence> Server<P> {
                 }
             };
         if let Some(replica) = replication.as_object() {
-            if replica.get("complete") != Some(&Value::Bool(true)) {
+            // Elke week (en na een onzekere stop) begint Replica een nieuwe
+            // generatie met een volledige kopie; tot die binnen is, is de
+            // generatie niet compleet en synct er niets. Dat is gepland werk.
+            let uploading = replica
+                .get("generation")
+                .and_then(Value::as_str)
+                .and_then(generation_start)
+                .map(|start| time.0.saturating_sub(start) / 60_000_000_000)
+                .filter(|_| replica.get("complete") != Some(&Value::Bool(true)))
+                .filter(|minutes| *minutes < FULL_UPLOAD_MINUTES);
+            if let Some(minutes) = uploading {
+                add(
+                    "warning",
+                    &spin_core::validation::text(format_args!(
+                        "De wekelijkse volledige backup wordt geüpload (sinds {minutes} min, database {:.1} GiB); tot hij binnen is, synchroniseert de replica niet.",
+                        database_bytes as f64 / (1u64 << 30) as f64
+                    ))?,
+                )?;
+            } else if replica.get("complete") != Some(&Value::Bool(true)) {
                 add("error", "Er is nog geen complete generatie in de replica.")?;
             }
             if replica
@@ -59,7 +77,9 @@ impl<P: Persistence> Server<P> {
                 .transpose()?
                 .map(|t| t.time())
                 .transpose()?;
-            if time.0.saturating_sub(synced.unwrap_or(started).0) > 300_000_000_000 {
+            if uploading.is_none()
+                && time.0.saturating_sub(synced.unwrap_or(started).0) > 300_000_000_000
+            {
                 add(
                     "error",
                     "De replica is al meer dan vijf minuten niet gesynchroniseerd.",
@@ -117,9 +137,59 @@ impl<P: Persistence> Server<P> {
     }
 }
 
+/// Zo lang mag een volledige kopie duren voordat een onvolledige generatie een fout is.
+const FULL_UPLOAD_MINUTES: u64 = 3 * 60;
+/// De starttijd uit een generatienaam (`20261027T134625Z-<id>`), in nanoseconden.
+fn generation_start(name: &str) -> Option<u64> {
+    let s = name.get(..16).filter(|s| s.ends_with('Z'))?;
+    let iso = alloc::format!(
+        "\"{}-{}-{}T{}:{}:{}Z\"",
+        s.get(0..4)?,
+        s.get(4..6)?,
+        s.get(6..8)?,
+        s.get(9..11)?,
+        s.get(11..13)?,
+        s.get(13..15)?
+    );
+    Timestamp::from_json(iso.as_bytes()).ok()?.time().ok().map(|t| t.0)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct Uploading;
+    impl Persistence for Uploading {
+        fn save(&mut self, _: &PersistedState) -> spin_store::Result {
+            Ok(())
+        }
+        fn storage_usage(&mut self) -> spin_store::Result<Option<spin_store::StorageUsage>> {
+            Ok(Some(spin_store::StorageUsage {
+                database_bytes: 17 << 30,
+                object_bytes: 0,
+                objects: 0,
+                replication: Value::from_json(
+                    br#"{"generation":"20261027T134625Z-856d","complete":false,"last_sync_at":null,"last_error":""}"#,
+                )
+                .unwrap(),
+            }))
+        }
+    }
+    #[test]
+    fn a_running_full_backup_is_a_warning_until_it_takes_too_long() {
+        assert_eq!(generation_start("current"), None);
+        let mut server = Server::new(Store::new(PersistedState::default(), Uploading));
+        let level = |server: &mut Server<Uploading>, at: &str| {
+            let now = Timestamp::from_json(alloc::format!("\"{at}\"").as_bytes()).unwrap();
+            server.refresh_storage(&now).unwrap();
+            server.storage_report.to_json().unwrap()
+        };
+        let report = level(&mut server, "2026-10-27T14:30:00Z");
+        assert!(report.contains("\"level\":\"warning\""), "{report}");
+        assert!(report.contains("sinds 43 min"), "{report}");
+        assert!(!report.contains("niet gesynchroniseerd."), "{report}");
+        let report = level(&mut server, "2026-10-27T17:00:00Z");
+        assert!(report.contains("Er is nog geen complete generatie"), "{report}");
+        assert!(report.contains("niet gesynchroniseerd."), "{report}");
+    }
     use core::cell::Cell;
     use d::state::PersistedState;
     struct Counting<'a>(&'a Cell<u32>);

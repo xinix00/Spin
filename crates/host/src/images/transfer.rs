@@ -241,13 +241,35 @@ async fn import_delta(
     if !note.layer.is_empty() && hash != note.layer {
         return Err(io("delta layer hash mismatch"));
     }
-    let parent_content = image_identity(docker, parent).await?;
-    let identity = text(format_args!("spin-layer\n{parent_content}\n{hash}")).map_err(io)?;
-    let content = text(format_args!(
-        "content:{}",
-        spin_security::digest_hex(identity.as_bytes()).map_err(io)?
-    ))
-    .map_err(io)?;
+    let identity_on = |parent: &str| -> Result<String> {
+        let identity = text(format_args!("spin-layer\n{parent}\n{hash}")).map_err(io)?;
+        text(format_args!(
+            "content:{}",
+            spin_security::digest_hex(identity.as_bytes()).map_err(io)?
+        ))
+        .map_err(io)
+    };
+    let mut content = identity_on(&image_identity(docker, parent).await?)?;
+    if !snapshot.content.is_empty() && content != snapshot.content {
+        // Een seal labelt zijn image niet: een kind is dan opgenomen op de
+        // laagketen van de ouder zoals die toen was. Een geïmporteerde ouder
+        // bewaart die in `spin.root_fs` (een verse runner, 27-10-2026).
+        let original = control(
+            docker,
+            &[
+                "image",
+                "inspect",
+                "--format",
+                "{{index .Config.Labels \"spin.root_fs\"}}",
+                parent,
+            ],
+        )
+        .await
+        .unwrap_or_default();
+        if !original.is_empty() {
+            content = identity_on(&original)?;
+        }
+    }
     if !snapshot.content.is_empty() && content != snapshot.content {
         return Err(io(
             "rebuilt snapshot has different content; delta parent is another version",
@@ -289,6 +311,17 @@ async fn import_delta(
         delete_paths(docker, &target, &deletions).await?;
         copy_into(docker, &target, &mut clean).await?;
         let label = text(format_args!("LABEL spin.content={content}")).map_err(io)?;
+        // Altijd zetten: anders erft dit image de laagketen van zijn ouder.
+        let original = if snapshot
+            .root_fs
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == ':')
+        {
+            snapshot.root_fs.as_str()
+        } else {
+            ""
+        };
+        let root_fs = text(format_args!("LABEL spin.root_fs=\"{original}\"")).map_err(io)?;
         control(
             docker,
             &[
@@ -298,6 +331,8 @@ async fn import_delta(
                 "LABEL spin.managed=true",
                 "--change",
                 &label,
+                "--change",
+                &root_fs,
                 &target,
                 &snapshot.r#ref,
             ],
